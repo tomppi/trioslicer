@@ -1,0 +1,42 @@
+name: Thermal Tab Observer Guard
+
+on:
+  push:
+    branches:
+      - feature/thermal-integrity-simulation
+  pull_request:
+    branches:
+      - feature/thermal-fea-build-simulation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thermal-observer-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  observer-feedback-loop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+
+      - name: Validate Thermal runtime syntax
+        run: |
+          node --check app/src/main/filasim/thermal-integrity-guard.js
+          node --check app/src/main/filasim/thermal-integrity-workspace.js
+
+      - name: Reproduce and block progress observer feedback loop
+        run: node scripts/test-thermal-observer-guard.mjs
+
+      - name: Verify observer contract
+        run: |
+          grep -q 'installMutationObserverGuard' app/src/main/filasim/thermal-integrity-guard.js
+          grep -q 'callback.name === "ensureUi"' app/src/main/filasim/thermal-integrity-guard.js
+          grep -q 'recordsAddThermalGroup' app/src/main/filasim/thermal-integrity-guard.js

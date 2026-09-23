@@ -1,0 +1,168 @@
+name: Thermal Integrity Asset Checks
+
+on:
+  push:
+    branches:
+      - feature/thermal-integrity-simulation
+  pull_request:
+    branches:
+      - feature/thermal-fea-build-simulation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thermal-integrity-assets-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FILASIM_COMMIT: e7485ec22d4ebe8baca04190404fbb877c90e031
+  NODE_VERSION: 22.18.0
+  WASM_PACK_VERSION: 0.15.0
+
+jobs:
+  validate-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+
+      - name: Validate preparation scripts
+        run: |
+          python3 -m py_compile \
+            scripts/prepare-filasim-assets-with-pinch.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v8.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v9.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v10.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v11.py \
+            scripts/finalize-filasim-apk-manifest.py \
+            scripts/filasim-thermal-integrity-patch.py \
+            scripts/filasim-thermal-integrity-hardening.py \
+            scripts/filasim-thermal-integrity-audit-fixes.py \
+            scripts/filasim-thermal-integrity-progress.py \
+            scripts/filasim-thermal-integrity-react-tab.py \
+            scripts/filasim-thermal-integrity-bugfix-round1.py \
+            scripts/filasim-thermal-integrity-bugfix-round2.py \
+            scripts/filasim-thermal-integrity-linear-fast-path.py \
+            scripts/filasim-thermal-integrity-physical-model-v1.py
+          node --check app/src/main/filasim/thermal-integrity.js
+          node --check app/src/main/filasim/thermal-integrity-guard.js
+          node --check app/src/main/filasim/thermal-integrity-workspace.js
+          node --check app/src/main/filasim/thermal-integrity-live-progress.js
+
+      - name: Prepare verified format-8 thermal filaSim assets
+        run: python3 scripts/prepare-filasim-assets-with-pinch.py
+
+      - name: Verify generated thermal asset contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=app/src/main/assets/filasim
+          marker="$root/thermal-integrity-version.txt"
+
+          test -f "$root/.source-version"
+          grep -qx 'format=8' "$root/.source-version"
+          grep -qx "commit=${FILASIM_COMMIT}" "$root/.source-version"
+          test -s "$root/source-version.txt"
+          cmp "$root/.source-version" "$root/source-version.txt"
+          test -s "$root/thermal-integrity.js"
+          test -s "$root/thermal-integrity-guard.js"
+          test -s "$root/thermal-integrity-workspace.js"
+          test -s "$root/thermal-integrity-live-progress.js"
+          grep -q 'enderslicer-thermal-integrity' "$root/thermal-integrity.js"
+          grep -q 'fdm-service-thermal-integrity' "$root/thermal-integrity.js"
+          grep -q 'enderslicer-thermal-integrity-mount' "$root/thermal-integrity.js"
+          grep -q 'runInFlight' "$root/thermal-integrity.js"
+          grep -q 'analysisEpoch' "$root/thermal-integrity.js"
+          grep -q 'sourceIdentity' "$root/thermal-integrity.js"
+          grep -q 'stale result was discarded' "$root/thermal-integrity.js"
+          grep -q '2_000_000' "$root/thermal-integrity.js"
+          grep -q 'enderslicer-thermal-integrity-invalidated' "$root/thermal-integrity.js"
+          grep -q 'thermalIntegrityPreflight' "$root/thermal-integrity.js"
+          grep -q 'All exterior Z+ faces' "$root/thermal-integrity.js"
+          grep -q 'Total contact-heater power' "$root/thermal-integrity.js"
+          grep -q 'effectiveHeatFluxWm2' "$root/thermal-integrity.js"
+          grep -q 'THERMAL FAILURE / OUTSIDE MATERIAL MODEL' "$root/thermal-integrity.js"
+          grep -q 'vertexTemperatures' "$root/thermal-integrity.js"
+          ! grep -q 'document.querySelector(".panel")' "$root/thermal-integrity.js"
+          grep -q 'MUTATING_OPS' "$root/thermal-integrity-guard.js"
+          grep -q 'rejectOverlappingRequest' "$root/thermal-integrity-guard.js"
+          grep -q 'messageerror' "$root/thermal-integrity-guard.js"
+          grep -q 'enderslicer-thermal-integrity-invalidated' "$root/thermal-integrity-guard.js"
+          grep -q 'recordsAddThermalGroup' "$root/thermal-integrity-guard.js"
+          grep -q 'ti-progress-bar' "$root/thermal-integrity-workspace.js"
+          grep -q 'ti-cancel' "$root/thermal-integrity-workspace.js"
+          grep -q 'engineWorker.terminate()' "$root/thermal-integrity-workspace.js"
+          grep -q 'hard restart available' "$root/thermal-integrity-workspace.js"
+          ! grep -q 'enderslicer-thermal-integrity-tab' "$root/thermal-integrity-workspace.js"
+          ! grep -q 'document.querySelector(".panel")' "$root/thermal-integrity-workspace.js"
+          ! grep -q 'style.display' "$root/thermal-integrity-workspace.js"
+          grep -q 'ti-progress-solver' "$root/thermal-integrity-live-progress.js"
+          grep -q 'setProgressBuffer' "$root/thermal-integrity-live-progress.js"
+          grep -R -q 'enderslicer-thermal-workspace' "$root/assets"
+          grep -R -q 'enderslicer-thermal-integrity-mount' "$root/assets"
+          grep -R -q 'enderslicer-thermal-result-3d' "$root/assets"
+          grep -R -q 'Temperature · 3D result' "$root/assets"
+          grep -q '<script src="./thermal-integrity-guard.js"></script>' "$root/index.html"
+          grep -q '<script src="./thermal-integrity-live-progress.js"></script>' "$root/index.html"
+          grep -q '<script src="./thermal-integrity-workspace.js"></script>' "$root/index.html"
+          grep -q '<script src="./thermal-integrity.js"></script>' "$root/index.html"
+          guard_line=$(grep -n 'thermal-integrity-guard.js' "$root/index.html" | cut -d: -f1)
+          live_line=$(grep -n 'thermal-integrity-live-progress.js' "$root/index.html" | cut -d: -f1)
+          workspace_line=$(grep -n 'thermal-integrity-workspace.js' "$root/index.html" | cut -d: -f1)
+          ui_line=$(grep -n 'thermal-integrity.js' "$root/index.html" | cut -d: -f1)
+          test "$guard_line" -le "$live_line"
+          test "$live_line" -le "$workspace_line"
+          test "$workspace_line" -le "$ui_line"
+
+          test -s "$marker"
+          grep -qx 'format=1' "$marker"
+          grep -qx "filasim=${FILASIM_COMMIT}" "$marker"
+          grep -qx 'transforms=solver,hardening,audit-fixes,progress-v2,react-tab-v1,bugfix-round1,bugfix-round2,linear-fast-path-v1,physical-model-v1' "$marker"
+          grep -q 'source-version.txt' "$root/SHA256SUMS"
+          ! grep -q '  \.source-version$' "$root/SHA256SUMS"
+          grep -q 'thermal-integrity.js' "$root/SHA256SUMS"
+          grep -q 'thermal-integrity-guard.js' "$root/SHA256SUMS"
+          grep -q 'thermal-integrity-workspace.js' "$root/SHA256SUMS"
+          grep -q 'thermal-integrity-live-progress.js' "$root/SHA256SUMS"
+          grep -q 'thermal-integrity-version.txt' "$root/SHA256SUMS"
+          (cd "$root" && sha256sum -c SHA256SUMS)
+
+          wasm=$(find "$root/assets" -type f -name '*.wasm' -print -quit)
+          test -n "$wasm"
+          test -s "$wasm"
+          grep -a -q 'thermal grid is too large for the Android safety budget' "$wasm"
+          grep -a -q 'transient thermal workload is too large for Android' "$wasm"
+          grep -a -q 'steady thermal radiation iteration' "$wasm"
+          grep -a -q 'line search could not reduce nonlinear residual' "$wasm"
+          grep -a -q 'steady thermal solve violated global energy balance' "$wasm"
+          grep -a -q 'thermal result exceeds the Android reportable maximum of 2000' "$wasm"
+          grep -a -q 'thermal structural FEA did not converge' "$wasm"
+          grep -a -q 'Temperature field is outside the material model' "$wasm"
+          grep -a -q 'contact-all-exterior-faces-with-selected-normal' "$wasm"
+          test -n "$(find "$root/assets" -type f -name '*.js' -print -quit)"
+
+      - name: Run thermal report unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:testDebugUnitTest \
+            --tests 'com.tomppi.enderslicer.smartinfill.ThermalIntegrityReportTest' \
+            -x :app:verifyCuraEngineExecutable

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">TrioSlicer icon</title>
+  <desc id="description">Rounded dark app icon with three extruder hotends: blue (CuraEngine), orange (PrusaSlicer) and teal (OrcaSlicer).</desc>
+  <rect width="512" height="512" rx="112" fill="#10151C"/>
+  <g transform="scale(4.74074)">
+    <path fill="#4CA2FF" fill-opacity="0.55" d="M32,32L36,32L36,36L32,36Z"/>
+    <path fill="#4CA2FF" d="M26.5,36L41.5,36L41.5,48L26.5,48Z"/>
+    <path fill="#10151C" d="M28,39L40,39L40,40.5L28,40.5Z"/>
+    <path fill="#10151C" d="M28,43L40,43L40,44.5L28,44.5Z"/>
+    <path fill="#4CA2FF" d="M25.5,48L42.5,48L42.5,57L25.5,57Z"/>
+    <path fill="#3775B8" d="M25.5,57L42.5,57L35.2,70L32.8,70Z"/>
+    <path fill="#3775B8" d="M32.8,70L35.2,70L35.2,75L32.8,75Z"/>
+    <path fill="#FF9E45" fill-opacity="0.55" d="M51,32L55,32L55,36L51,36Z"/>
+    <path fill="#FF9E45" d="M45.5,36L60.5,36L60.5,48L45.5,48Z"/>
+    <path fill="#10151C" d="M47,39L59,39L59,40.5L47,40.5Z"/>
+    <path fill="#10151C" d="M47,43L59,43L59,44.5L47,44.5Z"/>
+    <path fill="#FF9E45" d="M44.5,48L61.5,48L61.5,57L44.5,57Z"/>
+    <path fill="#B87232" d="M44.5,57L61.5,57L54.2,70L51.8,70Z"/>
+    <path fill="#B87232" d="M51.8,70L54.2,70L54.2,75L51.8,75Z"/>
+    <path fill="#4DB6AC" fill-opacity="0.55" d="M70,32L74,32L74,36L70,36Z"/>
+    <path fill="#4DB6AC" d="M64.5,36L79.5,36L79.5,48L64.5,48Z"/>
+    <path fill="#10151C" d="M66,39L78,39L78,40.5L66,40.5Z"/>
+    <path fill="#10151C" d="M66,43L78,43L78,44.5L66,44.5Z"/>
+    <path fill="#4DB6AC" d="M63.5,48L80.5,48L80.5,57L63.5,57Z"/>
+    <path fill="#37837C" d="M63.5,57L80.5,57L73.2,70L70.8,70Z"/>
+    <path fill="#37837C" d="M70.8,70L73.2,70L73.2,75L70.8,75Z"/>
+  </g>
+</svg>

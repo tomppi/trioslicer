@@ -1,0 +1,170 @@
+name: Build the native filaSim engine
+
+# The Smart Infill structural engine runs in the app as libfilasim_jni.so. It is
+# built from the pinned upstream source (native/filasim/README.md), so a change
+# to the JNI session layer or the crate manifest is what this workflow guards.
+# The artifact it uploads is what scripts/fetch-filasim-engine-android.sh stages
+# into a clone that does not have a Rust toolchain.
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths:
+      - '.github/workflows/filasim-engine-android.yml'
+      - 'native/filasim/**'
+      - 'scripts/build-filasim-engine-android.sh'
+      - 'scripts/fetch-filasim-engine-android.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/filasim-engine-android.yml'
+      - 'native/filasim/**'
+      - 'scripts/build-filasim-engine-android.sh'
+  workflow_dispatch:
+
+env:
+  NDK_VERSION: 28.2.13676358
+
+jobs:
+  build-filasim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/android-sdk
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # The staged upstream tree and its cargo target directory, keyed by the
+      # pinned commit the build script fetches.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .build/filasim-native -> target
+
+      - name: Install the Android NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;${NDK_VERSION}"
+          sudo apt-get update
+          sudo apt-get install -y file binutils
+
+      - name: Build the engine for arm64 Android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          chmod +x scripts/build-filasim-engine-android.sh
+          set -o pipefail
+          scripts/build-filasim-engine-android.sh 2>&1 | tee filasim-engine-build.log
+
+      - name: Verify the packaged library
+        run: |
+          LIB=app/src/main/jniLibs/arm64-v8a/libfilasim_jni.so
+          test -s "$LIB"
+          file "$LIB"
+          readelf -h "$LIB" | tee filasim-elf.log
+          grep -q 'AArch64' filasim-elf.log
+          # Android's bionic is the only runtime this may ask for.
+          readelf -d "$LIB" | tee filasim-needed.log
+          ! grep -qE 'libc\+\+_shared|libstdc\+\+|libgcc_s' filasim-needed.log
+          # JNI resolves by name, so the entry points have to survive stripping.
+          grep -qa 'Java_com_tomppi_enderslicer_smartinfill_FilaSimNative_createSession' "$LIB"
+
+      - name: Run the session tests and the pipeline smoke
+        run: |
+          set -o pipefail
+          scripts/build-filasim-engine-android.sh --host 2>&1 | tee filasim-host-build.log
+          SOURCE="$(ls -d .build/filasim-native/*/ | head -1)"
+          echo "Session source: $SOURCE"
+          (cd "$SOURCE" && cargo test -p filasim-jni --lib 2>&1 | tee ../../filasim-tests.log)
+          # The smoke needs a small part with an interior; the pinned source
+          # ships a STEP and an 11 MB benchy, so build one instead: a 30x12x8 mm
+          # beam fixes one end and pulls the other, which is a real bending case.
+          python3 - <<'PY'
+          import struct
+
+          x, y, z = 30.0, 12.0, 8.0
+          v = [
+              (0, 0, 0), (x, 0, 0), (x, y, 0), (0, y, 0),
+              (0, 0, z), (x, 0, z), (x, y, z), (0, y, z),
+          ]
+          faces = [
+              (0, 1, 2), (0, 2, 3), (4, 6, 5), (4, 7, 6),
+              (0, 4, 5), (0, 5, 1), (1, 5, 6), (1, 6, 2),
+              (2, 6, 7), (2, 7, 3), (3, 7, 4), (3, 4, 0),
+          ]
+          with open('/tmp/filasim-beam.stl', 'wb') as handle:
+              handle.write(b' ' * 80)
+              handle.write(struct.pack('<I', len(faces)))
+              for a, b, c in faces:
+                  handle.write(struct.pack('<3f', 0.0, 0.0, 0.0))
+                  for index in (a, b, c):
+                      handle.write(struct.pack('<3f', *v[index]))
+                  handle.write(struct.pack('<H', 0))
+          print('wrote /tmp/filasim-beam.stl with', len(faces), 'triangles')
+          PY
+          .build/filasim-engine-android/target/release/filasim-smoke \
+            /tmp/filasim-beam.stl /tmp/filasim-smoke 25 2>&1 | tee filasim-smoke.log
+          # A converged solve and at least one modifier region is what the app
+          # needs from the engine; grep the result rather than trusting the exit.
+          python3 - <<'PY'
+          import json
+          summary = json.load(open('/tmp/filasim-smoke/smoke-summary.json'))
+          assert summary['converged'], summary
+          assert summary['regionCount'] >= 1, summary
+          assert summary['massGrams'] < summary['massSolidGrams'], summary
+          print('smoke ok:', summary['regionCount'], 'regions,',
+                round(summary['meanInfill'] * 100, 1), '% mean infill,',
+                round(summary['massGrams'], 2), 'g of', round(summary['massSolidGrams'], 2), 'g solid')
+          PY
+          # Binary (hollow and solid regions) and Part Topo (one body STL) take
+          # different binning and export paths, so both get their own run: the
+          # smoke reads the exported archive back and checks the entry names, the
+          # rising densities and every binary STL header.
+          .build/filasim-engine-android/target/release/filasim-smoke \
+            /tmp/filasim-beam.stl /tmp/filasim-smoke-binary 25 budget binary 2>&1 | tee filasim-smoke-binary.log
+          grep -E '^verify: modifiers ok \(binary' filasim-smoke-binary.log
+          .build/filasim-engine-android/target/release/filasim-smoke \
+            /tmp/filasim-beam.stl /tmp/filasim-smoke-solid 25 budget solid 2>&1 | tee filasim-smoke-solid.log
+          grep -E '^verify: solid ok \(' filasim-smoke-solid.log
+          # The result view tints the part by the density under each surface
+          # triangle; the lookup must resolve all 12 triangles of the beam.
+          grep -E '^surface bins: 12/12 triangles resolved' filasim-smoke.log
+          unzip -l /tmp/filasim-smoke/smoke-modifiers.zip
+          # The strength goal is a UI choice now, and it runs a different
+          # pipeline: it scores the safety factor and walks the budget down to
+          # the target instead of holding it.
+          .build/filasim-engine-android/target/release/filasim-smoke \
+            /tmp/filasim-beam.stl /tmp/filasim-smoke-strength 25 strength 2>&1 | tee filasim-smoke-strength.log
+          python3 - <<'PY'
+          import json
+          summary = json.load(open('/tmp/filasim-smoke-strength/smoke-summary.json'))
+          assert summary['goal'] == 'strength', summary
+          assert summary['converged'], summary
+          assert summary['sfFeasible'], summary
+          assert summary['sfAchieved'] >= summary['sfTarget'], summary
+          print('strength smoke ok: SF', round(summary['sfAchieved'], 2),
+                'against', summary['sfTarget'], 'at',
+                round(summary['meanInfill'] * 100, 1), '% mean infill')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FilaSimEngine-android-arm64-v8a
+          path: app/src/main/jniLibs/arm64-v8a/libfilasim_jni.so
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filasim-engine-logs
+          path: |
+            filasim-engine-build.log
+            filasim-host-build.log
+            filasim-tests.log
+            filasim-smoke.log
+          if-no-files-found: ignore
+          retention-days: 14

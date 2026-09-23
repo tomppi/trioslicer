@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- As in the cloud-backup rules: the OctoPrint credential is device-bound,
+         and the harness file holds credentials too - the launch token and the
+         30-day session cookie, both encrypted with a Keystore key that never
+         leaves this device, so a restored copy is ciphertext nothing can read.
+         The address and session ids beside them are this device's business. -->
+    <exclude domain="sharedpref" path="octoprint_client.xml" />
+    <exclude domain="sharedpref" path="harness_config.xml" />
+    <exclude domain="file" path="smart-infill/" />
+    <!-- Everything else the app writes under files/ as well: the engine tree
+         (blender/, ~480 MB, MCP token included), the imported and staged models
+         (models/), the sliced G-code (slice-results/), the thermal FEA reports
+         (thermal-fea/), the imported Cura project bundle
+         (persistent-state/, up to 128 MiB), the staged engine bundles and
+         datadirs (orca/, prusa/), the engine logs (logs/), the saved
+         annotations (annotations/) and the last crash report (crash.log) are all
+         regenerated on the new device - blender-home/, the engine's own scratch
+         HOME, included - and they are far past the 25 MB an Auto Backup gets. -->
+    <exclude domain="file" path="blender/" />
+    <exclude domain="file" path="blender-home/" />
+    <exclude domain="file" path="models/" />
+    <exclude domain="file" path="slice-results/" />
+    <exclude domain="file" path="thermal-fea/" />
+    <exclude domain="file" path="persistent-state/" />
+    <exclude domain="file" path="orca/" />
+    <exclude domain="file" path="prusa/" />
+    <exclude domain="file" path="logs/" />
+    <exclude domain="file" path="annotations/" />
+    <exclude domain="file" path="crash.log" />
+</full-backup-content>

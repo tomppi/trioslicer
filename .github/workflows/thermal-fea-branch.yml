@@ -1,0 +1,81 @@
+name: Thermal FEA Branch Checks
+
+on:
+  push:
+    branches:
+      - feature/thermal-fea-build-simulation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thermal-fea-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  thermal-report-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Parse Android filaSim bridge
+        run: node --check app/src/main/filasim/android-bridge.js
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Compile and run thermal report contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/thermal-report-contract"
+          mkdir -p "$work/src/main/kotlin/android/content" "$work/src/main/kotlin/com/tomppi/enderslicer/smartinfill" "$work/src/test/kotlin/com/tomppi/enderslicer/smartinfill"
+          cp app/src/main/java/com/tomppi/enderslicer/smartinfill/ThermalFeaReport.kt \
+            "$work/src/main/kotlin/com/tomppi/enderslicer/smartinfill/"
+          cp app/src/test/java/com/tomppi/enderslicer/smartinfill/ThermalFeaReportTest.kt \
+            "$work/src/test/kotlin/com/tomppi/enderslicer/smartinfill/"
+          cat > "$work/settings.gradle.kts" <<'EOF'
+          pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { mavenCentral() } }
+          rootProject.name = "thermal-report-contract"
+          EOF
+          cat > "$work/build.gradle.kts" <<'EOF'
+          plugins { kotlin("jvm") version "2.3.21" }
+          kotlin { jvmToolchain(17) }
+          dependencies {
+              implementation("org.json:json:20240303")
+              testImplementation("junit:junit:4.13.2")
+          }
+          tasks.test { useJUnit() }
+          EOF
+          cat > "$work/src/main/kotlin/android/content/Context.kt" <<'EOF'
+          package android.content
+          import java.io.File
+          open class Context(open val filesDir: File)
+          EOF
+          gradle -p "$work" test --stacktrace
+
+      - name: Check bridge and native schema lockstep
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'precisionSource: "raw-worker-response"' app/src/main/filasim/android-bridge.js
+          grep -q 'PRECISION_SOURCE = "raw-worker-response"' app/src/main/java/com/tomppi/enderslicer/smartinfill/ThermalFeaReport.kt
+          grep -q 'solverModel: "sequential-voxel-inherent-strain"' app/src/main/filasim/android-bridge.js
+          grep -q 'SOLVER_MODEL = "sequential-voxel-inherent-strain"' app/src/main/java/com/tomppi/enderslicer/smartinfill/ThermalFeaReport.kt
+          grep -q 'op: "transformMatrix"' app/src/main/filasim/android-bridge.js
+          grep -q 'transform3x4' app/src/main/filasim/android-bridge.js
+          grep -q 'analysisFingerprintSha256' app/src/main/java/com/tomppi/enderslicer/smartinfill/ThermalFeaReport.kt
+          grep -q 'forwardWithoutReport' app/src/main/filasim/android-bridge.js

@@ -1,0 +1,49 @@
+name: Build CuraEngine Android ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-curaengine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: ./.github/actions/android-sdk
+
+      - name: Install Android NDK and native tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "ndk;28.2.13676358" \
+            "cmake;3.31.6"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build file
+          ninja --version
+
+      - name: Build CuraEngine 5.14.0-alpha.0 for arm64-v8a
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          chmod +x scripts/build-curaengine-android.sh
+          set -o pipefail
+          scripts/build-curaengine-android.sh 2>&1 | tee curaengine-android-build.log
+
+      - name: Upload CuraEngine Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CuraEngine-5.14.0-alpha.0-android-arm64
+          path: .build/curaengine-android/artifacts/
+
+      - name: Upload CuraEngine build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CuraEngine-android-build-log
+          path: curaengine-android-build.log
+          if-no-files-found: ignore

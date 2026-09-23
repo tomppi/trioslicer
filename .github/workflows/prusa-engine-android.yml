@@ -1,0 +1,88 @@
+name: Build PrusaSlicer Android ARM64
+
+on:
+  push:
+    branches: [ 'feature/prusa-engine-android' ]
+    paths:
+      - '.github/workflows/prusa-engine-android.yml'
+      - 'scripts/build-prusa-engine-android.sh'
+  workflow_dispatch:
+
+jobs:
+  build-prusa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/android-sdk
+      - name: Install Android NDK and native tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager 'ndk;28.2.13676358'
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake curl tar
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          cmake --version
+          ninja --version
+      - name: Build PrusaSlicer 2.9.6 console for arm64-v8a
+        run: |
+          chmod +x scripts/build-prusa-engine-android.sh
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/ndk/28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          ls -d $ANDROID_NDK_HOME || true
+          set -o pipefail
+          scripts/build-prusa-engine-android.sh 2>&1 | tee prusa-android-build.log
+      - name: Upload PrusaSlicer Android artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrusaSlicer-2.9.6-android-arm64
+          if-no-files-found: ignore
+          path: |
+            prusa-build/out/**
+            prusa-android-build.log
+      - name: Upload PrusaSlicer build log only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prusa-build-log
+          if-no-files-found: ignore
+          path: prusa-android-build.log
+      # The stripped console and the resources tarball are published as a
+      # workflow artifact. They used to be committed to
+      # .build-artifacts/prusa-engine/ on every push to this branch, which put
+      # 90 MB of a 2.9.6 engine that nothing in the tree reads into the
+      # repository (and into every clone) for good.
+      - name: Package the stripped engine
+        run: |
+          set -euo pipefail
+          DEST="${GITHUB_WORKSPACE}/.build-artifacts/prusa-engine"
+          BIN="${GITHUB_WORKSPACE}/prusa-build/out/prusa-slicer"
+          RESDIR="${GITHUB_WORKSPACE}/prusa-build/out/resources"
+          test -s "$BIN"
+          test -f "$RESDIR/profiles/Anker.ini"
+          mkdir -p "$DEST"
+          STRIP=""
+          for CAND in \
+            "${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            "${ANDROID_SDK_ROOT:-}/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            "${ANDROID_HOME:-}/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"; do
+            if [ -n "$CAND" ] && [ -x "$CAND" ]; then STRIP="$CAND"; break; fi
+          done
+          [ -x "$STRIP" ] || { echo "llvm-strip not found for the engine binary"; exit 1; }
+          "$STRIP" -s "$BIN" -o "$DEST/prusa-slicer"
+          ( cd "${GITHUB_WORKSPACE}/prusa-build/out" && tar -czf "$DEST/resources.tar.gz" resources )
+          ls -la "$DEST"
+      - name: Upload the packaged PrusaSlicer 2.9.6 engine
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrusaSlicer-2.9.6-android-arm64-packaged
+          if-no-files-found: ignore
+          path: .build-artifacts/prusa-engine/**

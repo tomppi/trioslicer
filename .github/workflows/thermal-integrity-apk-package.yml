@@ -1,0 +1,148 @@
+name: Thermal Integrity APK Package Check
+
+on:
+  workflow_run:
+    workflows:
+      - Build Android APK
+    types:
+      - completed
+    branches:
+      - feature/thermal-integrity-simulation
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect-apk:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download APK from completed build
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: '*-debug-apk'
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify packaged Thermal Integrity runtime
+        shell: bash
+        env:
+          FILASIM_COMMIT: e7485ec22d4ebe8baca04190404fbb877c90e031
+        run: |
+          set -euo pipefail
+          apk=$(find artifacts -type f -name '*.apk' -print -quit)
+          test -n "$apk"
+          test -s "$apk"
+
+          unzip -t "$apk"
+          unzip -Z1 "$apk" > apk-entries.txt
+          grep -qx 'assets/filasim/thermal-integrity.js' apk-entries.txt
+          grep -qx 'assets/filasim/thermal-integrity-guard.js' apk-entries.txt
+          grep -qx 'assets/filasim/thermal-integrity-workspace.js' apk-entries.txt
+          grep -qx 'assets/filasim/thermal-integrity-live-progress.js' apk-entries.txt
+          grep -qx 'assets/filasim/thermal-integrity-version.txt' apk-entries.txt
+          grep -qx 'assets/filasim/source-version.txt' apk-entries.txt
+          ! grep -qx 'assets/filasim/.source-version' apk-entries.txt
+          grep -qx 'assets/filasim/SHA256SUMS' apk-entries.txt
+          grep -qx 'assets/filasim/index.html' apk-entries.txt
+          grep -q '^assets/filasim/assets/.*\.wasm$' apk-entries.txt
+          grep -qx 'lib/arm64-v8a/libcuraengine_exec.so' apk-entries.txt
+
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$apk" 'assets/filasim/*' -d extracted
+          test -d extracted/assets/filasim
+          (cd extracted/assets/filasim && sha256sum -c SHA256SUMS)
+
+          cp extracted/assets/filasim/index.html index.html
+          cp extracted/assets/filasim/thermal-integrity.js thermal-integrity.js
+          cp extracted/assets/filasim/thermal-integrity-guard.js thermal-integrity-guard.js
+          cp extracted/assets/filasim/thermal-integrity-workspace.js thermal-integrity-workspace.js
+          cp extracted/assets/filasim/thermal-integrity-live-progress.js thermal-integrity-live-progress.js
+          cp extracted/assets/filasim/thermal-integrity-version.txt thermal-integrity-version.txt
+          cp extracted/assets/filasim/source-version.txt source-version.txt
+          cp extracted/assets/filasim/SHA256SUMS SHA256SUMS
+          cat extracted/assets/filasim/assets/*.js > bundled-filasim.js
+          wasm=$(find extracted/assets/filasim/assets -type f -name '*.wasm' -print -quit)
+          test -n "$wasm"
+          test -s "$wasm"
+
+          grep -q '<script src="./thermal-integrity-guard.js"></script>' index.html
+          grep -q '<script src="./thermal-integrity-live-progress.js"></script>' index.html
+          grep -q '<script src="./thermal-integrity-workspace.js"></script>' index.html
+          grep -q '<script src="./thermal-integrity.js"></script>' index.html
+          guard_line=$(grep -n 'thermal-integrity-guard.js' index.html | cut -d: -f1)
+          live_line=$(grep -n 'thermal-integrity-live-progress.js' index.html | cut -d: -f1)
+          workspace_line=$(grep -n 'thermal-integrity-workspace.js' index.html | cut -d: -f1)
+          ui_line=$(grep -n 'thermal-integrity.js' index.html | cut -d: -f1)
+          test "$guard_line" -le "$live_line"
+          test "$live_line" -le "$workspace_line"
+          test "$workspace_line" -le "$ui_line"
+          grep -q 'enderslicer-thermal-integrity' thermal-integrity.js
+          grep -q 'fdm-service-thermal-integrity' thermal-integrity.js
+          grep -q 'enderslicer-thermal-integrity-mount' thermal-integrity.js
+          grep -q 'runInFlight' thermal-integrity.js
+          grep -q 'analysisEpoch' thermal-integrity.js
+          grep -q 'sourceIdentity' thermal-integrity.js
+          grep -q 'stale result was discarded' thermal-integrity.js
+          grep -q '2_000_000' thermal-integrity.js
+          grep -q 'thermalIntegrityPreflight' thermal-integrity.js
+          grep -q 'All exterior Z+ faces' thermal-integrity.js
+          grep -q 'Total contact-heater power' thermal-integrity.js
+          grep -q 'effectiveHeatFluxWm2' thermal-integrity.js
+          grep -q 'THERMAL FAILURE / OUTSIDE MATERIAL MODEL' thermal-integrity.js
+          grep -q 'vertexTemperatures' thermal-integrity.js
+          ! grep -q 'document.querySelector(".panel")' thermal-integrity.js
+          grep -q 'MUTATING_OPS' thermal-integrity-guard.js
+          grep -q 'rejectOverlappingRequest' thermal-integrity-guard.js
+          grep -q 'messageerror' thermal-integrity-guard.js
+          grep -q 'enderslicer-thermal-integrity-invalidated' thermal-integrity-guard.js
+          grep -q 'recordsAddThermalGroup' thermal-integrity-guard.js
+          grep -q 'ti-progress-bar' thermal-integrity-workspace.js
+          grep -q 'ti-cancel' thermal-integrity-workspace.js
+          grep -q 'engineWorker.terminate()' thermal-integrity-workspace.js
+          grep -q 'hard restart available' thermal-integrity-workspace.js
+          ! grep -q 'enderslicer-thermal-integrity-tab' thermal-integrity-workspace.js
+          ! grep -q 'document.querySelector(".panel")' thermal-integrity-workspace.js
+          ! grep -q 'style.display' thermal-integrity-workspace.js
+          grep -q 'ti-progress-solver' thermal-integrity-live-progress.js
+          grep -q 'setProgressBuffer' thermal-integrity-live-progress.js
+          grep -q 'enderslicer-thermal-workspace' bundled-filasim.js
+          grep -q 'enderslicer-thermal-integrity-mount' bundled-filasim.js
+          grep -q 'enderslicer-thermal-result-3d' bundled-filasim.js
+          grep -q 'Temperature · 3D result' bundled-filasim.js
+          grep -a -q 'thermal grid is too large for the Android safety budget' "$wasm"
+          grep -a -q 'transient thermal workload is too large for Android' "$wasm"
+          grep -a -q 'steady thermal radiation iteration' "$wasm"
+          grep -a -q 'line search could not reduce nonlinear residual' "$wasm"
+          grep -a -q 'steady thermal solve violated global energy balance' "$wasm"
+          grep -a -q 'thermal result exceeds the Android reportable maximum of 2000' "$wasm"
+          grep -a -q 'thermal structural FEA did not converge' "$wasm"
+          grep -a -q 'Temperature field is outside the material model' "$wasm"
+          grep -a -q 'contact-all-exterior-faces-with-selected-normal' "$wasm"
+          grep -qx 'format=8' source-version.txt
+          grep -qx "commit=${FILASIM_COMMIT}" source-version.txt
+          grep -qx 'format=1' thermal-integrity-version.txt
+          grep -qx "filasim=${FILASIM_COMMIT}" thermal-integrity-version.txt
+          grep -qx 'transforms=solver,hardening,audit-fixes,progress-v2,react-tab-v1,bugfix-round1,bugfix-round2,linear-fast-path-v1,physical-model-v1' thermal-integrity-version.txt
+          grep -q 'source-version.txt' SHA256SUMS
+          ! grep -q '  \.source-version$' SHA256SUMS
+          grep -q 'thermal-integrity.js' SHA256SUMS
+          grep -q 'thermal-integrity-guard.js' SHA256SUMS
+          grep -q 'thermal-integrity-workspace.js' SHA256SUMS
+          grep -q 'thermal-integrity-live-progress.js' SHA256SUMS
+          grep -q 'thermal-integrity-version.txt' SHA256SUMS
+
+          sha256sum "$apk" | tee thermal-integrity-apk.sha256
+
+      - name: Upload package verification digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: thermal-integrity-apk-verification
+          path: thermal-integrity-apk.sha256
+          if-no-files-found: error
+          retention-days: 90

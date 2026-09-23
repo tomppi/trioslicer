@@ -1,0 +1,23 @@
+[package]
+name = "filasim-jni"
+# Staged into the pinned upstream workspace as `crates/filasim-jni` by
+# scripts/build-filasim-engine-android.sh, so the workspace version and the
+# sibling filasim-core path are the upstream ones.
+version.workspace = true
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+[lib]
+name = "filasim_jni"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+filasim-core = { path = "../filasim-core" }
+jni = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "filasim-smoke"
+path = "src/bin/smoke.rs"

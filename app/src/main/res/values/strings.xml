@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">TrioSlicer</string>
+    <string name="bumpmesh_title">BumpMesh · %1$s triangle limit</string>
+    <string name="smart_infill_title">Smart Infill / Thermal FEA · filaSim (experimental)</string>
+    <string name="smart_infill_report">Report</string>
+</resources>

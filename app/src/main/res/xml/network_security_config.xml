@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      OctoPrint commonly runs on trusted home LANs over plain HTTP. The app
+      supports those installations, while the UI warns that HTTP is not
+      encrypted and recommends HTTPS for remote or untrusted networks.
+
+      This permits cleartext; it does not spend it. The harness client refuses
+      plain HTTP to anything but loopback until the user accepts that address in
+      a dialog, and keeps a notice on the chat while such a connection is open -
+      the launch token and the 30-day session cookie are worth more than the
+      printer's. A network security config cannot express "only with consent",
+      so the rule stays broad and the check lives where the request is made.
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- User-installed CAs are accepted only by debuggable builds. -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

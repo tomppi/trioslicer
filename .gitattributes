@@ -1,0 +1,8 @@
+# Scripts run on the Linux runner and in WSL. A Windows checkout that converts
+# them to CRLF breaks them: `set -euo pipefail` becomes `set -euo pipefail\r` and
+# bash rejects it at line 2. Keep these LF everywhere; docs can stay native.
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

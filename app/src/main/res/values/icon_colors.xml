@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive icon background: the same near-black plate the icon art sits on. -->
+    <color name="trioslicer_icon_background">#10151C</color>
+</resources>

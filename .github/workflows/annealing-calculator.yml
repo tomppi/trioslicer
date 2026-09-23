@@ -1,0 +1,190 @@
+name: Geometry-Aware Annealing Checks
+
+on:
+  push:
+    branches:
+      - feature/geometry-aware-annealing-calculator
+  pull_request:
+    branches:
+      - feature/thermal-integrity-simulation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: annealing-calculator-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FILASIM_COMMIT: e7485ec22d4ebe8baca04190404fbb877c90e031
+  NODE_VERSION: 22.18.0
+  WASM_PACK_VERSION: 0.15.0
+  STATUS_CONTEXT: annealing-calculator/contract
+
+jobs:
+  annealing-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark annealing checks pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          payload="$(jq -n \
+            --arg state pending \
+            --arg context "$STATUS_CONTEXT" \
+            --arg description "Geometry-aware annealing validation is running" \
+            --arg target_url "$target_url" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -d "$payload"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+
+      - name: Validate deterministic scripts and Android runtime
+        run: |
+          python3 -m py_compile \
+            scripts/filasim-thermal-integrity-patch.py \
+            scripts/filasim-thermal-integrity-hardening.py \
+            scripts/filasim-thermal-integrity-audit-fixes.py \
+            scripts/filasim-thermal-integrity-progress.py \
+            scripts/filasim-thermal-integrity-react-tab.py \
+            scripts/filasim-thermal-integrity-bugfix-round1.py \
+            scripts/filasim-thermal-integrity-bugfix-round2.py \
+            scripts/filasim-thermal-integrity-linear-fast-path.py \
+            scripts/filasim-thermal-integrity-physical-model-v1.py \
+            scripts/filasim-thermal-integrity-physical-contract-fix.py \
+            scripts/filasim_annealing_common.py \
+            scripts/filasim_annealing_core.py \
+            scripts/filasim_annealing_web.py \
+            scripts/filasim-annealing-cycle.py \
+            scripts/filasim-annealing-material-source.py \
+            scripts/filasim-annealing-3d-result-fix.py \
+            scripts/filasim-annealing-partial-duration.py \
+            scripts/filasim-annealing-short-duration-stability.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v12.py \
+            scripts/prepare-filasim-assets-with-annealing-v13.py \
+            scripts/prepare-filasim-assets-with-pinch.py
+          node --check app/src/main/filasim/material-profile-source.js
+          node --check app/src/main/filasim/thermal-material-profile-adapter.js
+          node --check app/src/main/filasim/annealing-calculator-03c-partial-duration.js
+          node --check scripts/test-annealing-calculator.mjs
+          node scripts/test-annealing-calculator.mjs
+
+      - name: Patch exact pinned filaSim source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          git clone --filter=blob:none https://github.com/CNCKitchen/smartInfillGenerator.git "$source"
+          git -C "$source" checkout --detach "$FILASIM_COMMIT"
+          python3 scripts/filasim-thermal-integrity-patch.py "$source"
+          python3 scripts/filasim-thermal-integrity-hardening.py "$source"
+          python3 scripts/filasim-thermal-integrity-audit-fixes.py "$source"
+          python3 scripts/filasim-thermal-integrity-progress.py "$source"
+          python3 scripts/filasim-thermal-integrity-react-tab.py "$source"
+          python3 scripts/filasim-thermal-integrity-bugfix-round1.py "$source"
+          python3 scripts/filasim-thermal-integrity-bugfix-round2.py "$source"
+          python3 scripts/filasim-thermal-integrity-linear-fast-path.py "$source"
+          python3 scripts/filasim-thermal-integrity-physical-model-v1.py "$source"
+          python3 scripts/filasim-thermal-integrity-physical-contract-fix.py "$source"
+          python3 scripts/filasim-annealing-cycle.py "$source"
+          python3 scripts/filasim-annealing-material-source.py "$source"
+          python3 scripts/filasim-annealing-3d-result-fix.py "$source"
+          python3 scripts/filasim-annealing-partial-duration.py "$source"
+          python3 scripts/filasim-annealing-short-duration-stability.py "$source"
+
+          test -f "$source/.enderslicer-annealing-cycle-v1"
+          test -f "$source/.enderslicer-filasim-material-source-v1"
+          test -f "$source/.enderslicer-annealing-3d-result-fix-v1"
+          test -f "$source/.enderslicer-annealing-partial-duration-v1"
+          test -f "$source/.enderslicer-annealing-short-duration-stability-v1"
+          grep -q 'fixed_surface_enabled' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'readiness_complete_time_seconds' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'coldest material voxel' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'geometry_aware_annealing_thickness_test' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'thicker_part_takes_longer_for_its_coldest_voxel_to_reach_target' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'cooling_completion_uses_the_hottest_voxel' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'partial_duration_nonuniform_initial_field' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'initial_temperature_field_c' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'minute_scale_duration_uses_uniform_timestep_partition' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'NONLINEAR_ROUNDOFF_W_PER_SQRT_CELL' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'let effective_dt = options.duration_seconds / steps as f64' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'readinessCompleteTimeSeconds' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'initial_temperature_field_c: opts.initial_temperature_field_c.clone()' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'fixedSurfaceEnabled' "$source/web/src/engine/EngineClient.ts"
+          grep -q 'initialTemperatureFieldC' "$source/web/src/engine/EngineClient.ts"
+          grep -q 'const displayDisplacements = detail.structuralValid' "$source/web/src/viewer/Viewer.tsx"
+          grep -q 'EnderSlicerFilaSimMaterialSource' "$source/web/src/store.ts"
+          grep -q 'enderslicer-filasim-materials-changed' "$source/web/src/store.ts"
+          grep -q 'state.materials.map' "$source/web/src/store.ts"
+          grep -q 'state.setMaterial(material)' "$source/web/src/store.ts"
+          grep -q 'enderslicer-annealing-workspace' "$source/web/src/ui/StepRail.tsx"
+          grep -q '<span className="st-name">Anneal</span>' "$source/web/src/ui/StepRail.tsx"
+          grep -q 'enderslicer-annealing-calculator-mount' "$source/web/src/ui/StepPanel.tsx"
+
+      - name: Run finite-volume thickness and readiness tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          cargo test --manifest-path "$source/Cargo.toml" -p filasim-core thermal --locked
+
+      - name: Compile patched WASM and TypeScript workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          cd "$source/web"
+          npm ci --no-audit --no-fund
+          node scripts/build-wasm.mjs st
+          VITE_BASE=./ npm run build
+          test -f dist/index.html
+          grep -R -q 'enderslicer-annealing-workspace' dist/assets
+          grep -R -q 'enderslicer-annealing-calculator-mount' dist/assets
+          grep -R -q 'EnderSlicerFilaSimMaterialSource' dist/assets
+          grep -R -q 'enderslicer-filasim-materials-changed' dist/assets
+
+      - name: Publish annealing check status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          state=failure
+          description="Geometry-aware annealing validation failed"
+          if [ "$JOB_STATUS" = success ]; then
+            state=success
+            description="Geometry-aware annealing validation passed"
+          fi
+          target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          payload="$(jq -n \
+            --arg state "$state" \
+            --arg context "$STATUS_CONTEXT" \
+            --arg description "$description" \
+            --arg target_url "$target_url" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -d "$payload"

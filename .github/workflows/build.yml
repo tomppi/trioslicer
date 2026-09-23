@@ -1,0 +1,503 @@
+name: Build Android APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    env:
+      NPM_CONFIG_ENGINE_STRICT: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+
+      - name: Verify JavaScript toolchain
+        run: |
+          test "$(node --version)" = "v22.18.0"
+          node --version
+          npm --version
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32 for the filaSim workspace, aarch64 for the native engine.
+          targets: wasm32-unknown-unknown, aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .build/filasim-android -> target
+            .build/filasim-native -> target
+
+      - name: Install pinned wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.0
+
+      - uses: ./.github/actions/android-sdk
+
+      - name: Install Android SDK and native build tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1" \
+            "cmake;3.31.6"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build file binutils
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-curaengine-5.14-alpha0-android-host-v1-${{ hashFiles('scripts/build-curaengine-android.sh', 'scripts/build-curaengine-host-tests.sh', 'native/curaengine/profiles/android-arm64') }}
+          restore-keys: |
+            conan-curaengine-5.14-alpha0-android-host-v1-
+            conan-curaengine-5.14-alpha0-android-arm64-v1-
+
+      - name: Fetch and validate pinned Cura definitions
+        run: |
+          chmod +x scripts/fetch-cura-resources.sh
+          scripts/fetch-cura-resources.sh
+          # version.txt is written from a heredoc by the fetch script, so asserting
+          # its contents only ever asserts the script's own text. These assertions
+          # read the downloaded definitions instead: the pinned Cura metadata, and
+          # a digest over the complete fetched chain.
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+
+          root = pathlib.Path("app/src/main/assets/cura/definitions")
+          names = [
+              "fdmprinter",
+              "fdmextruder",
+              "creality_base",
+              "creality_base_extruder_0",
+              "creality_ender3",
+          ]
+          # The chain the embedded engine and the definition tests are verified
+          # against. It moves only when the Cura resources move, and then the
+          # engine build, the definition tests and this digest move together.
+          # Computed on Linux from the fetched chain. It also pins the line endings
+          # of the rewritten fdmprinter.def.json, which is why the fetch script now
+          # writes that file with newline="\n" instead of letting Windows turn it
+          # into CRLF and give the same resources a different digest.
+          expected_digest = "244bd62a668727b1e2d4215819d77cc83af7a99fbce92aaa06ed5bc1a9b59e9b"
+
+          missing = [name for name in names if not (root / (name + ".def.json")).is_file()]
+          if missing:
+              raise SystemExit("Cura definitions were not fetched: " + ", ".join(missing))
+
+          fdmprinter = json.loads((root / "fdmprinter.def.json").read_text(encoding="utf-8"))
+          setting_version = fdmprinter.get("metadata", {}).get("setting_version")
+          if fdmprinter.get("version") != 2 or setting_version != 27:
+              raise SystemExit(
+                  "fdmprinter.def.json is not the pinned Cura definition "
+                  "(file version {}, setting version {})".format(fdmprinter.get("version"), setting_version)
+              )
+
+          digest = hashlib.sha256()
+          for path in sorted(root.glob("*.def.json")):
+              digest.update(path.name.encode())
+              digest.update(b"\0")
+              digest.update(path.read_bytes())
+          if digest.hexdigest() != expected_digest:
+              raise SystemExit(
+                  "The fetched Cura definition chain changed (sha256 {}). Review the new "
+                  "resources, re-run the definition tests, then update expected_digest "
+                  "in .github/workflows/build.yml.".format(digest.hexdigest())
+              )
+          print("Validated {} Cura definitions, setting version {}, sha256 {}".format(
+              len(names), setting_version, digest.hexdigest()))
+          PY
+
+      - name: Prepare and validate pinned BumpMesh workspace
+        run: |
+          set -o pipefail
+          gradle :app:verifyBumpMeshAssets --stacktrace 2>&1 | tee bumpmesh-build.log
+          test -s app/src/main/assets/bumpmesh/index.html
+          test -s app/src/main/assets/bumpmesh/LICENSE
+          test -s app/src/main/assets/bumpmesh/android-bridge.js
+          test -s app/src/main/assets/bumpmesh/js/main.js
+          test -s app/src/main/assets/bumpmesh/js/stepWorker.js
+          test -s app/src/main/assets/bumpmesh/vendor/three/build/three.module.js
+          test -s app/src/main/assets/bumpmesh/vendor/three/LICENSE
+          test -s app/src/main/assets/bumpmesh/vendor/fflate/esm/browser.js
+          test -s app/src/main/assets/bumpmesh/vendor/fflate/LICENSE
+          test -s app/src/main/assets/bumpmesh/vendor/meshstep/dist/index.js
+          test -s app/src/main/assets/bumpmesh/vendor/meshstep/src/index.ts
+          test -s app/src/main/assets/bumpmesh/vendor/meshstep/LICENSE
+          test -s app/src/main/assets/bumpmesh/SHA256SUMS
+          grep -q 'format=2' app/src/main/assets/bumpmesh/.source-version
+          grep -q 'BumpMesh=a6ac179149b8a17c71a9469dd4cb6f866c0c01d1' app/src/main/assets/bumpmesh/.source-version
+          grep -q './vendor/three/build/three.module.js' app/src/main/assets/bumpmesh/index.html
+          grep -q 'android-bridge.js' app/src/main/assets/bumpmesh/index.html
+          grep -q '../vendor/meshstep/dist/index.js' app/src/main/assets/bumpmesh/js/stepWorker.js
+          grep -q '../vendor/three/build/three.module.js' app/src/main/assets/bumpmesh/js/threeCompat.js
+          ! grep -R 'https://cdn.jsdelivr.net/npm' \
+            app/src/main/assets/bumpmesh/index.html \
+            app/src/main/assets/bumpmesh/js
+          (cd app/src/main/assets/bumpmesh && sha256sum --check SHA256SUMS)
+
+          gradle :app:verifyBumpMeshAssets --info | tee bumpmesh-warm-build.log
+          grep -q 'verifyBumpMeshAssets UP-TO-DATE' bumpmesh-warm-build.log
+
+          rm app/src/main/assets/bumpmesh/js/main.js
+          if python3 scripts/verify-bumpmesh-assets.py \
+            --root app/src/main/assets/bumpmesh \
+            --check-only > bumpmesh-corrupt-build.log 2>&1; then
+            echo 'Corrupted BumpMesh warm tree was incorrectly accepted' >&2
+            exit 1
+          fi
+          test ! -e app/src/main/assets/bumpmesh/.source-version
+          grep -q 'BumpMesh asset verification failed' bumpmesh-corrupt-build.log
+
+          gradle :app:verifyBumpMeshAssets --stacktrace 2>&1 | tee bumpmesh-recovery-build.log
+          test -s app/src/main/assets/bumpmesh/js/main.js
+          test -s app/src/main/assets/bumpmesh/SHA256SUMS
+          (cd app/src/main/assets/bumpmesh && sha256sum --check SHA256SUMS)
+
+      - name: Prepare and validate pinned filaSim workspace
+        run: |
+          set -o pipefail
+          gradle :app:prepareFilaSimAssets --stacktrace 2>&1 | tee filasim-build.log
+          test -s app/src/main/assets/filasim/index.html
+          test -s app/src/main/assets/filasim/android-bridge.js
+          test -s app/src/main/assets/filasim/LICENSE
+          test -s app/src/main/assets/filasim/SOURCE.md
+          test -s app/src/main/assets/filasim/SHA256SUMS
+          test -s app/src/main/assets/filasim/source-manifest/Cargo.lock
+          test -s app/src/main/assets/filasim/source-manifest/web-package-lock.json
+          grep -q 'format=8' app/src/main/assets/filasim/.source-version
+          grep -q 'commit=e7485ec22d4ebe8baca04190404fbb877c90e031' app/src/main/assets/filasim/.source-version
+          grep -q 'android-bridge.js' app/src/main/assets/filasim/index.html
+          FILASIM_SOURCE=.build/filasim-android/e7485ec22d4ebe8baca04190404fbb877c90e031-format8/web/src
+          grep -R -q 'EnderSlicerBridge.*captureModifierZip' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'EnderSlicerBridge.*captureOptimizedShape' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'EnderSlicer Android regional pattern metadata v2' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'metadataVersion: 2' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'basePattern: state.pattern' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'binarySolidPattern: state.optMode === "binary" ? state.solidPattern : null' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'gradedFullDensityPattern: "rectilinear"' "$FILASIM_SOURCE/store.ts"
+          grep -R -q 'EnderSlicer Android host supplies the exact displayed model' "$FILASIM_SOURCE/App.tsx"
+          grep -R -q 'EnderSlicer Android owns project persistence' "$FILASIM_SOURCE/ui/TopBar.tsx"
+          grep -R -q '!androidHosted' "$FILASIM_SOURCE/ui/TopBar.tsx"
+          grep -R -q 'EnderSlicer Android deterministic touch pan' "$FILASIM_SOURCE/viewer/SceneManager.ts"
+          grep -R -q 'EnderSlicer Android deterministic touch pinch zoom' "$FILASIM_SOURCE/viewer/SceneManager.ts"
+          grep -R -q 'private zoomTouchCamera' "$FILASIM_SOURCE/viewer/SceneManager.ts"
+          grep -R -q 'pointercancel' "$FILASIM_SOURCE/viewer/SceneManager.ts"
+          test -n "$(find app/src/main/assets/filasim -type f -name '*.wasm' -size +0c -print -quit)"
+          (cd app/src/main/assets/filasim && sha256sum --check SHA256SUMS)
+          gradle :app:prepareFilaSimAssets --info | tee filasim-warm-build.log
+          grep -q 'prepareFilaSimAssets UP-TO-DATE' filasim-warm-build.log
+
+      - name: Build and package CuraEngine ARM64
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          APP_JNILIBS_DIR: ${{ github.workspace }}/app/src/main/jniLibs
+        run: |
+          chmod +x scripts/build-curaengine-android.sh
+          set -o pipefail
+          scripts/build-curaengine-android.sh 2>&1 | tee curaengine-android-build.log
+          grep -q 'CuraEngine Android artifacts (5.14.0-alpha.0)' curaengine-android-build.log
+          grep -q 'EnderSlicer: Cura.*frontend applies the complete affine' .build/CuraEngine/src/communication/CommandLine.cpp
+          grep -q 'EnderSlicer: carry the affine translation in the transform' .build/CuraEngine/src/communication/CommandLine.cpp
+          grep -q 'EnderSlicer: resolved model values must live on the' .build/CuraEngine/src/communication/CommandLine.cpp
+          grep -q 'EnderSlicer: zero cool_min_temperature is a Cura frontend sentinel' .build/CuraEngine/src/LayerPlanBuffer.cpp
+          grep -q "Preserve the generator's inner-to-outer order" .build/CuraEngine/src/FffGcodeWriter.cpp
+          grep -q 'One centre is retained for the complete connected island' .build/CuraEngine/include/ArcOverhang.h
+          grep -q 'TYPE:ARC-OVERHANG' .build/CuraEngine/src/LayerPlan.cpp
+          grep -q 'is_arc_overhang' .build/CuraEngine/include/GCodePathConfig.h
+          test -s .build/CuraEngine/src/ArcOverhang.cpp
+          grep -q 'TYPE:WAVE-OVERHANG' .build/CuraEngine/src/LayerPlan.cpp
+          grep -q 'is_wave_overhang' .build/CuraEngine/include/GCodePathConfig.h
+          test -s .build/CuraEngine/src/WaveOverhang.cpp
+
+          test -s app/src/main/jniLibs/arm64-v8a/libcuraengine_exec.so
+          file app/src/main/jniLibs/arm64-v8a/libcuraengine_exec.so
+          readelf -d app/src/main/jniLibs/arm64-v8a/libcuraengine_exec.so | tee curaengine-needed.log
+          ! grep -q 'libc++_shared.so' curaengine-needed.log
+
+      - name: Fetch and validate the OrcaSlicer ARM64 console
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/fetch-orca-engine-android.sh
+          scripts/fetch-orca-engine-android.sh
+          test -s app/src/main/jniLibs/arm64-v8a/liborca_console_exec.so
+          file app/src/main/jniLibs/arm64-v8a/liborca_console_exec.so
+          test -s app/src/main/assets/orca/resources/profiles/BBL/filament/fdm_filament_common.json
+
+      - name: Fetch and validate PrusaSlicer ARM64 engine
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/fetch-prusa-engine-android.sh
+          set -o pipefail
+          scripts/fetch-prusa-engine-android.sh 2>&1 | tee prusa-engine-fetch.log
+          test -s app/src/main/jniLibs/arm64-v8a/libprusa_slicer_exec.so
+          file app/src/main/jniLibs/arm64-v8a/libprusa_slicer_exec.so
+          readelf -d app/src/main/jniLibs/arm64-v8a/libprusa_slicer_exec.so | tee prusa-needed.log
+          ! grep -qE 'libc\+\+_shared|libz\.so|libz3\.so|libstdc\+\+\.so|libTK' prusa-needed.log
+          test -s app/src/main/assets/prusa/resources/presets/prusa-research-fff/PrusaResearch/vendor.yaml
+          test -s app/src/main/assets/prusa/all-settings.json
+
+      - name: Fetch and validate the embedded Blender engine
+        run: |
+          chmod +x scripts/fetch-blender-engine-android.sh
+          scripts/fetch-blender-engine-android.sh 2>&1 | tee blender-engine-fetch.log
+          test -s app/src/main/jniLibs/arm64-v8a/libblender_exec.so
+          file app/src/main/jniLibs/arm64-v8a/libblender_exec.so
+          # It is one library among 121: without the bundled cpython, ffmpeg,
+          # OpenVDB, USD and OpenImageDenoise beside it the engine cannot load.
+          for lib in \
+            libcpython.so \
+            libopenvdb.so \
+            libavcodec.so \
+            libOpenImageDenoise_core.so \
+            libc++_shared.so; do
+            [ -s "app/src/main/jniLibs/arm64-v8a/$lib" ] || { echo "Blender engine runtime library missing: $lib" >&2; exit 1; }
+          done
+          lib_count=$(find app/src/main/jniLibs/arm64-v8a -maxdepth 1 -name '*.so' | wc -l)
+          [ "$lib_count" -ge 120 ] || { echo "expected at least 120 native libraries, found $lib_count" >&2; exit 1; }
+          echo "native libraries staged: $lib_count"
+          # The runtime assets are what the engine cannot boot without: CPython's
+          # stdlib, Blender's scripts (including the MCP addon) and the datafiles.
+          for dir in \
+            app/src/main/assets/blender/python/lib/python3.11 \
+            app/src/main/assets/blender/3.6/config/datafiles \
+            app/src/main/assets/blender/licenses/deps; do
+            [ -d "$dir" ] || { echo "Blender engine assets: no such directory: $dir" >&2; exit 1; }
+          done
+          # The licence texts ship with the binary, not beside the download.
+          for file in \
+            app/src/main/assets/blender/scripts/startup/blender_mcp_slim.py \
+            app/src/main/assets/blender/licenses/blender/GPL-license.txt; do
+            [ -s "$file" ] || { echo "Blender engine assets: missing or empty: $file" >&2; exit 1; }
+          done
+          # The startup scripts are the one tracked piece laid over the fetched
+          # package, and nothing else compiles or exercises them: a syntax error
+          # or a transport regression would only surface on a device. Compile the
+          # tracked sources and the staged copies, keeping the bytecode cache in a
+          # temporary directory so no __pycache__ reaches the staged assets (and
+          # so the APK), then drive the server without Blender.
+          python3 - <<'PY'
+          import pathlib
+          import py_compile
+          import tempfile
+
+          files = [
+              "native/blender/assets/startup/blender_mcp_slim.py",
+              "native/blender/assets/startup/start_blender_mcp.py",
+              "app/src/main/assets/blender/scripts/startup/blender_mcp_slim.py",
+              "app/src/main/assets/blender/scripts/startup/start_blender_mcp.py",
+          ]
+          with tempfile.TemporaryDirectory() as cache:
+              for index, name in enumerate(files):
+                  if not pathlib.Path(name).is_file():
+                      raise SystemExit("missing Blender startup script: " + name)
+                  py_compile.compile(name, cfile=pathlib.Path(cache, "check-%d.pyc" % index), doraise=True)
+                  print("compiled", name)
+          PY
+          python3 scripts/test-blender-mcp-slim.py
+
+      - name: Build pinned host CuraEngine fixture binary
+        run: |
+          chmod +x scripts/build-curaengine-host-tests.sh
+          set -o pipefail
+          scripts/build-curaengine-host-tests.sh 2>&1 | tee curaengine-host-build.log
+          test -x .build/curaengine-host-tests/artifacts/CuraEngine
+          echo "CURAENGINE_HOST_BINARY=${GITHUB_WORKSPACE}/.build/curaengine-host-tests/artifacts/CuraEngine" >> "$GITHUB_ENV"
+
+      - name: Unit, definition, and real CuraEngine regional-toolpath tests
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest --stacktrace 2>&1 | tee unit-tests.log
+          test -n "$CURAENGINE_HOST_BINARY"
+          # A bare grep for a class name also matches a testsuite whose cases
+          # all carry <skipped/>, which is what a self-skipping real-engine test
+          # looks like: the proof disappears and the build stays green. The
+          # results are parsed instead, and every class has to report tests that
+          # ran, with nothing failed and nothing skipped.
+          python3 scripts/verify-real-curaengine-tests.py app/build/test-results/testDebugUnitTest
+
+      - name: Build the native filaSim engine
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          chmod +x scripts/build-filasim-engine-android.sh
+          set -o pipefail
+          scripts/build-filasim-engine-android.sh 2>&1 | tee filasim-engine-build.log
+          test -s app/src/main/jniLibs/arm64-v8a/libfilasim_jni.so
+          file app/src/main/jniLibs/arm64-v8a/libfilasim_jni.so
+
+      # The release key is private, so it is not in the checkout: the build takes it
+      # from the repository secrets and writes the same keystore.properties a local
+      # build reads. A pull request from a fork gets no secrets, so it signs with a
+      # throwaway key - enough to prove the release APK still builds - and the
+      # signer pin below is then skipped.
+      - name: Materialise the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p keystore
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > keystore/release.jks
+            REAL=1
+          else
+            echo "::warning::no KEYSTORE_BASE64 secret (fork pull request?): signing with a throwaway key"
+            KEYSTORE_PASSWORD=$(openssl rand -hex 16)
+            KEY_ALIAS=throwaway
+            KEY_PASSWORD=$KEYSTORE_PASSWORD
+            keytool -genkeypair -keystore keystore/release.jks -storetype PKCS12 \
+              -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 1 \
+              -dname "CN=Throwaway CI, O=fork-pr" \
+              -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD"
+            REAL=0
+          fi
+          cat > keystore.properties <<PROPS
+          storeFile=keystore/release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          PROPS
+          chmod 600 keystore/release.jks keystore.properties
+          echo "RELEASE_KEY_IS_REAL=$REAL" >> "$GITHUB_ENV"
+
+      - name: Build the release APK
+        run: |
+          set -o pipefail
+          # Both variants: the debug one is what a developer installs, and the
+          # release one - signed, not debuggable - is what gets published.
+          gradle :app:verifyDebugApkEngines :app:verifyReleaseApkEngines --stacktrace 2>&1 | tee apk-build.log
+          APK=app/build/outputs/apk/release/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          # android:debuggable off is the whole point of publishing this variant:
+          # it is what closes adb run-as, heap dumps, the WebView's remote
+          # debugging hook and the debug-only trust anchors.
+          "$BUILD_TOOLS/aapt2" dump badging "$APK" > apk-badging.log
+          cat apk-badging.log
+          if grep -q 'application-debuggable' apk-badging.log; then
+            echo "::error::the release APK is debuggable" >&2
+            exit 1
+          fi
+          grep -q "package: name='com.tomppi.enderslicercura'" apk-badging.log
+          # And it has to be signed, or nothing installs it: apksigner fails on an
+          # unsigned or tampered APK.
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | tee apk-signer.log
+          # The signing identity is pinned: the release key is private and this is
+          # the only place that can notice a build falling back to another one. A
+          # fork pull request signs with a throwaway key on purpose, so the pin is
+          # skipped there; the debug-key check is not.
+          if grep -q 'CN=Android Debug' apk-signer.log; then
+            echo "::error::the release APK is signed with an Android debug key" >&2
+            exit 1
+          fi
+          if [ "${RELEASE_KEY_IS_REAL:-0}" = "1" ]; then
+            grep -q 'e4d88ac927ecb945e256e783ae431254785fd110fa9c78559f89d832128ea5d7' apk-signer.log \
+              || { echo "::error::the release APK is not signed with the release key" >&2; exit 1; }
+          fi
+          unzip -l "$APK" | tee apk-contents.log
+          sha256sum "$APK" | tee apk-sha256.log
+          grep -q 'lib/arm64-v8a/libcuraengine_exec.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libcura-formulae-engine.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libprusa_slicer_exec.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libblender_exec.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libfilasim_jni.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libcpython.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libopenvdb.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libavcodec.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libOpenImageDenoise_core.so' apk-contents.log
+          grep -q 'assets/blender/scripts/startup/blender_mcp_slim.py' apk-contents.log
+          grep -q 'assets/blender/licenses/blender/GPL-license.txt' apk-contents.log
+          grep -q 'assets/cura/definitions/version.txt' apk-contents.log
+          grep -q 'assets/prusa/resources/presets/prusa-research-fff/PrusaResearch/vendor.yaml' apk-contents.log
+          grep -q 'assets/bumpmesh/index.html' apk-contents.log
+          grep -q 'assets/bumpmesh/LICENSE' apk-contents.log
+          grep -q 'assets/bumpmesh/android-bridge.js' apk-contents.log
+          grep -q 'assets/bumpmesh/SHA256SUMS' apk-contents.log
+          grep -q 'assets/bumpmesh/vendor/three/build/three.module.js' apk-contents.log
+          grep -q 'assets/bumpmesh/vendor/meshstep/src/index.ts' apk-contents.log
+          grep -q 'assets/bumpmesh/vendor/meshstep/LICENSE' apk-contents.log
+          grep -q 'assets/filasim/index.html' apk-contents.log
+          grep -q 'assets/filasim/android-bridge.js' apk-contents.log
+          grep -q 'assets/filasim/LICENSE' apk-contents.log
+          grep -q 'assets/filasim/SOURCE.md' apk-contents.log
+          grep -q 'assets/filasim/SHA256SUMS' apk-contents.log
+          grep -q 'assets/filasim/source-manifest/Cargo.lock' apk-contents.log
+          grep -q 'assets/filasim/source-manifest/web-package-lock.json' apk-contents.log
+          grep -Eq 'assets/filasim/.*\.wasm' apk-contents.log
+          for name in \
+            fdmprinter \
+            fdmextruder \
+            creality_base \
+            creality_base_extruder_0 \
+            creality_ender3; do
+            grep -q "assets/cura/definitions/$name.def.json" apk-contents.log
+          done
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: enderslicercura-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enderslicercura-smart-infill-fix-build-logs
+          path: |
+            bumpmesh-build.log
+            bumpmesh-warm-build.log
+            bumpmesh-corrupt-build.log
+            bumpmesh-recovery-build.log
+            filasim-build.log
+            filasim-warm-build.log
+            curaengine-android-build.log
+            curaengine-host-build.log
+            curaengine-needed.log
+            prusa-engine-fetch.log
+            prusa-needed.log
+            blender-engine-fetch.log
+            unit-tests.log
+            apk-build.log
+            apk-badging.log
+            apk-signer.log
+            apk-contents.log
+            apk-sha256.log
+          if-no-files-found: ignore

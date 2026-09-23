@@ -1,0 +1,91 @@
+name: Build OrcaSlicer 2.4.2 Android
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths:
+      - '.github/workflows/orca-engine-android.yml'
+      - 'scripts/build-orca-deps-android.sh'
+      - 'scripts/build-orca-engine-android.sh'
+      - 'scripts/stage-orca-resources.sh'
+      - 'native/orca/**'
+  workflow_dispatch:
+
+jobs:
+  build-orca:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-sdk
+      - name: Install Android NDK and native tools
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager 'ndk;28.2.13676358'
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake curl tar perl python3 m4 make
+          echo ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT
+      # The clone comes first: restoring the bundle materializes .build/orca-src/deps/... before
+      # the guard below can see an empty .build, and a restored (non-git) .build/orca-src then
+      # makes the guard skip the clone and fails the checkout.
+      - name: Check out OrcaSlicer 2.4.2
+        run: |
+          mkdir -p .build
+          [ -d .build/orca-src/.git ] || git clone --depth 1 --branch v2.4.2 https://github.com/SoftFever/OrcaSlicer.git .build/orca-src
+      # The dependency bundle is the expensive half (OCCT alone is ~5000 objects). Its cache key
+      # carries the hash of the script that defines it, with no restore-keys fallback: a prefix
+      # match would restore exactly the bundle a changed dependency list is meant to invalidate.
+      - name: Restore OrcaSlicer deps bundle
+        uses: actions/cache@v4
+        with:
+          path: .build/orca-src/deps/build-android
+          key: orca-deps-arm64-v8a-2.4.2-v1-${{ hashFiles('scripts/build-orca-deps-android.sh') }}
+      - name: Build dependencies
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          ORCA_SRC: ${{ github.workspace }}/.build/orca-src
+          DEP_JOBS: 4
+        run: |
+          chmod +x scripts/build-orca-deps-android.sh
+          set -o pipefail
+          scripts/build-orca-deps-android.sh 2>&1 | tee /tmp/orca-deps.log
+      - name: Build the headless console
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          ORCA_SRC: ${{ github.workspace }}/.build/orca-src
+          JOBS: 4
+        run: |
+          chmod +x scripts/build-orca-engine-android.sh scripts/stage-orca-resources.sh
+          set -o pipefail
+          scripts/build-orca-engine-android.sh 2>&1 | tee /tmp/orca-engine.log
+          scripts/stage-orca-resources.sh 2>&1 | tee /tmp/orca-resources.log
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # What this job produces is the console and its resources, so that is what it verifies: the
+      # APK-level gate cannot run here - it builds the whole app, which needs Cura's definitions,
+      # the other three engines and the Rust/wasm-pack toolchain for filaSim, none of which an
+      # engine-only job stages. The APK workflow runs that gate on a complete tree.
+      - name: Verify the packaged engine
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          chmod +x gradlew
+          # The console is an AArch64 ELF (the same check preBuild runs).
+          ./gradlew :app:verifyOrcaEngineExecutable
+          # OrcaSlicer's profile tree and the settings catalogue the app reads at slice time.
+          test -s app/src/main/assets/orca/resources/profiles/BBL/filament/fdm_filament_common.json
+          test -s app/src/main/assets/orca/all-settings.json
+          test -s app/src/main/assets/orca/resources/profiles/BBL/process/fdm_process_common.json
+          du -sh app/src/main/assets/orca/resources app/src/main/jniLibs/arm64-v8a/liborca_console_exec.so
+      - name: Upload the engine package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrcaSlicer-2.4.2-android-arm64-v8a
+          path: |
+            app/src/main/jniLibs/arm64-v8a/liborca_console_exec.so
+            app/src/main/assets/orca
+          if-no-files-found: error
+          retention-days: 14

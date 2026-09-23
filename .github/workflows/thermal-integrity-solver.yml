@@ -1,0 +1,134 @@
+name: Thermal Integrity Solver Checks
+
+on:
+  push:
+    branches:
+      - feature/thermal-integrity-simulation
+  pull_request:
+    branches:
+      - feature/thermal-fea-build-simulation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thermal-integrity-solver-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FILASIM_COMMIT: e7485ec22d4ebe8baca04190404fbb877c90e031
+  NODE_VERSION: 22.18.0
+  WASM_PACK_VERSION: 0.15.0
+
+jobs:
+  solver-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+
+      - name: Validate deterministic transforms
+        run: |
+          python3 -m py_compile \
+            scripts/filasim-thermal-integrity-patch.py \
+            scripts/filasim-thermal-integrity-hardening.py \
+            scripts/filasim-thermal-integrity-audit-fixes.py \
+            scripts/filasim-thermal-integrity-progress.py \
+            scripts/filasim-thermal-integrity-react-tab.py \
+            scripts/filasim-thermal-integrity-bugfix-round1.py \
+            scripts/filasim-thermal-integrity-bugfix-round2.py \
+            scripts/filasim-thermal-integrity-linear-fast-path.py \
+            scripts/filasim-thermal-integrity-physical-model-v1.py \
+            scripts/filasim-thermal-integrity-physical-contract-fix.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v9.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v10.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v11.py \
+            scripts/prepare-filasim-assets-with-thermal-integrity-v12.py
+
+      - name: Patch exact pinned filaSim source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          git clone --filter=blob:none https://github.com/CNCKitchen/smartInfillGenerator.git "$source"
+          git -C "$source" checkout --detach "$FILASIM_COMMIT"
+          python3 scripts/filasim-thermal-integrity-patch.py "$source"
+          python3 scripts/filasim-thermal-integrity-hardening.py "$source"
+          python3 scripts/filasim-thermal-integrity-audit-fixes.py "$source"
+          python3 scripts/filasim-thermal-integrity-progress.py "$source"
+          python3 scripts/filasim-thermal-integrity-react-tab.py "$source"
+          python3 scripts/filasim-thermal-integrity-bugfix-round1.py "$source"
+          python3 scripts/filasim-thermal-integrity-bugfix-round2.py "$source"
+          python3 scripts/filasim-thermal-integrity-linear-fast-path.py "$source"
+          python3 scripts/filasim-thermal-integrity-physical-model-v1.py "$source"
+          python3 scripts/filasim-thermal-integrity-physical-contract-fix.py "$source"
+          test -f "$source/.enderslicer-thermal-integrity"
+          test -f "$source/.enderslicer-thermal-integrity-hardening"
+          test -f "$source/.enderslicer-thermal-integrity-audit-fixes"
+          test -f "$source/.enderslicer-thermal-integrity-progress-v2"
+          test -f "$source/.enderslicer-thermal-integrity-react-tab-v1"
+          test -f "$source/.enderslicer-thermal-integrity-bugfix-round1"
+          test -f "$source/.enderslicer-thermal-integrity-bugfix-round2"
+          test -f "$source/.enderslicer-thermal-integrity-linear-fast-path-v1"
+          test -f "$source/.enderslicer-thermal-integrity-physical-model-v1"
+          test -f "$source/.enderslicer-thermal-integrity-physical-contract-fix-v1"
+          grep -q 'pub mod thermal;' "$source/crates/filasim-core/src/lib.rs"
+          grep -q 'progress::publish' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'MAX_SUPPORTED_TEMPERATURE_C' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'radiation_tangent_w_m2' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'solve_nonlinear_temperature' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'NONLINEAR_ABS_RESIDUAL_W' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'steady thermal solve violated global energy balance' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'thermal_boundary_summary' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'let heated = face == options.heated_face;' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'Contact-heater power enters through source_w' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'physical_model_all_exterior_heater_area' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'contact_heater_does_not_reject_power_directly_to_ambient' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'heater_orientation_uses_all_exterior_faces_while_sink_stays_global' "$source/crates/filasim-core/src/thermal.rs"
+          ! grep -q 'selected_face_uses_only_the_global_extreme_not_a_step_underside' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q 'solve_thermal_integrity' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'thermal_integrity_preflight' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'map_cell_temperature_to_mesh' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q '"structuralValid": false' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q '"materialValidity": "outside-model"' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'contact-all-exterior-faces-with-selected-normal' "$source/crates/filasim-wasm/src/lib.rs"
+          grep -q 'thermalIntegrityPreflight' "$source/web/src/engine/EngineProtocol.ts"
+          grep -q 'vertexTemperatures' "$source/web/src/engine/EngineProtocol.ts"
+          grep -q 'thermalIntegrityPreflight' "$source/web/src/worker/engine.worker.ts"
+          grep -q 'vertexTemperatures' "$source/web/src/worker/engine.worker.ts"
+          grep -q 'enderslicer-thermal-result-3d' "$source/web/src/viewer/Viewer.tsx"
+          grep -q 'Temperature · 3D result' "$source/web/src/viewer/Viewer.tsx"
+          grep -q 'enderslicer-thermal-workspace' "$source/web/src/ui/StepRail.tsx"
+          grep -q 'enderslicer-thermal-integrity-mount' "$source/web/src/ui/StepPanel.tsx"
+          grep -q 'sealed_cavity_does_not_receive_ambient_boundary_faces' "$source/crates/filasim-core/src/thermal.rs"
+          grep -q '&material_stiffness' "$source/crates/filasim-wasm/src/lib.rs"
+
+      - name: Run thermal finite-volume tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          cargo test --manifest-path "$source/Cargo.toml" -p filasim-core thermal --locked
+
+      - name: Compile patched WASM and TypeScript workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/filasim-source"
+          cd "$source/web"
+          npm ci --no-audit --no-fund
+          node scripts/build-wasm.mjs st
+          VITE_BASE=./ npm run build
+          test -f dist/index.html
