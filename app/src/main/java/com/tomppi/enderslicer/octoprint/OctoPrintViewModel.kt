@@ -30,6 +30,7 @@ class OctoPrintViewModel(application: Application) : AndroidViewModel(applicatio
     fun cancelAuthorization() = repository.cancelAuthorization()
     fun clearConfiguration() = repository.clearConfiguration()
     fun refresh() = repository.refresh()
+    fun setPrinterPower(on: Boolean) = repository.setPrinterPower(on)
     fun refreshFiles() = repository.refreshFiles()
 
     fun uploadGcode(

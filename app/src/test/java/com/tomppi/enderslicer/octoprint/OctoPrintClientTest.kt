@@ -1,6 +1,11 @@
 package com.tomppi.enderslicer.octoprint
 
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpHandler
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
 import java.net.URI
+import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -483,5 +488,81 @@ class OctoPrintClientTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun parsesPsuControlStateAndRejectsResponsesWithoutTheFlag() {
+        assertEquals(true, OctoPrintJson.parsePowerState(JSONObject().put("isPSUOn", true)))
+        assertEquals(false, OctoPrintJson.parsePowerState(JSONObject().put("isPSUOn", false)))
+        assertNull(OctoPrintJson.parsePowerState(JSONObject()))
+    }
+
+    @Test
+    fun readsPsuStateAndPostsPsuControlCommands() {
+        val posts = CopyOnWriteArrayList<String>()
+        val server = startFakeServer { exchange ->
+            when {
+                exchange.requestURI.path != "/api/plugin/psucontrol" ->
+                    exchange.respond(200, "<html></html>", "text/html")
+
+                exchange.requestMethod == "GET" -> exchange.respond(200, """{"isPSUOn": true}""")
+
+                else -> {
+                    posts += exchange.requestBody.readBytes().toString(Charsets.UTF_8)
+                    exchange.respond(200, "")
+                }
+            }
+        }
+        try {
+            val client = OctoPrintClient(server.baseUrl(), "test-key")
+
+            assertEquals(true, client.powerState())
+
+            client.setPower(false)
+            client.setPower(true)
+            assertEquals(
+                listOf("""{"command":"turnPSUOff"}""", """{"command":"turnPSUOn"}"""),
+                posts.toList(),
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun missingPsuControlPluginIsAnAbsentFeatureRatherThanAnError() {
+        val server = startFakeServer { exchange -> exchange.respond(404, """{"error": "Not found"}""") }
+        try {
+            val client = OctoPrintClient(server.baseUrl(), "test-key")
+
+            assertNull(client.powerState())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun startFakeServer(handler: (HttpExchange) -> Unit): HttpServer {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext(
+            "/",
+            HttpHandler { exchange ->
+                try {
+                    handler(exchange)
+                } finally {
+                    exchange.close()
+                }
+            },
+        )
+        server.start()
+        return server
+    }
+
+    private fun HttpServer.baseUrl(): String = "http://127.0.0.1:" + address.port
+
+    private fun HttpExchange.respond(status: Int, body: String, contentType: String = "application/json") {
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        responseHeaders.add("Content-Type", contentType)
+        sendResponseHeaders(status, if (bytes.isEmpty()) -1L else bytes.size.toLong())
+        if (bytes.isNotEmpty()) responseBody.use { it.write(bytes) }
     }
 }

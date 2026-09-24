@@ -464,6 +464,25 @@ class OctoPrintRepository(
         ) { disconnect() }
     }
 
+    /**
+     * Switches the printer's mains power through the PSU Control plugin.
+     *
+     * Cutting power while a print is running is destructive and cannot be
+     * undone, so the UI confirms it first; the repository only refuses when the
+     * plugin is missing altogether.
+     */
+    fun setPrinterPower(on: Boolean) = operation(
+        message = if (on) "Switching printer power on…" else "Switching printer power off…",
+        guard = { state ->
+            if (state.power.supported) null else "PSU Control is not installed on this OctoPrint server"
+        },
+    ) {
+        setPower(on)
+        _state.update { current ->
+            current.copy(power = current.power.copy(isPending = true))
+        }
+    }
+
     fun jog(x: Double? = null, y: Double? = null, z: Double? = null) = operation(
         message = "Jogging printer…",
         guard = idlePrinterGuard("Jogging"),
@@ -673,6 +692,17 @@ class OctoPrintRepository(
                             OctoPrintPrinterState(text = connection.await().state)
                         }
                     }
+                    // PSU Control is optional: a missing plugin or a failed
+                    // request must never fail the rest of the refresh.
+                    val power = async(Dispatchers.IO) {
+                        try {
+                            PowerStateFetch.Value(client.powerState())
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            PowerStateFetch.Unavailable
+                        }
+                    }
                     val staticResult = static?.await()
                     RefreshSnapshot(
                         server = staticResult?.first ?: cachedServerInfo ?: _state.value.serverInfo,
@@ -680,6 +710,13 @@ class OctoPrintRepository(
                         connection = connection.await(),
                         printer = printer.await(),
                         webcam = staticResult?.second ?: cachedWebcam ?: _state.value.webcam,
+                        power = when (val fetched = power.await()) {
+                            is PowerStateFetch.Value -> OctoPrintPowerState(
+                                supported = fetched.isOn != null,
+                                isOn = fetched.isOn,
+                            )
+                            PowerStateFetch.Unavailable -> _state.value.power.copy(isPending = false)
+                        },
                         refreshedStatic = staticResult != null,
                     )
                 }
@@ -697,6 +734,7 @@ class OctoPrintRepository(
                         connection = snapshot.connection,
                         printer = snapshot.printer,
                         webcam = snapshot.webcam,
+                        power = snapshot.power,
                         isRefreshing = false,
                         lastUpdatedEpochMillis = System.currentTimeMillis(),
                         statusMessage = snapshot.job.error
@@ -1065,12 +1103,21 @@ class OctoPrintRepository(
         return "$stem.gcode"
     }
 
+    private sealed interface PowerStateFetch {
+        /** The plugin answered; a null state means it is not installed. */
+        data class Value(val isOn: Boolean?) : PowerStateFetch
+
+        /** The request itself failed; keep showing the last known state. */
+        object Unavailable : PowerStateFetch
+    }
+
     private data class RefreshSnapshot(
         val server: OctoPrintServerInfo,
         val job: OctoPrintJobState,
         val connection: OctoPrintConnectionState,
         val printer: OctoPrintPrinterState,
         val webcam: OctoPrintWebcamConfig,
+        val power: OctoPrintPowerState,
         val refreshedStatic: Boolean,
     )
 

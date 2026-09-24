@@ -95,6 +95,19 @@ data class OctoPrintWebcamConfig(
     val rotate90: Boolean = false,
 )
 
+/**
+ * Printer mains power as reported by the OctoPrint PSU Control plugin.
+ *
+ * [supported] is false when the plugin is not installed, which is an ordinary
+ * configuration rather than an error; [isOn] is null until a state has been
+ * read back from the server.
+ */
+data class OctoPrintPowerState(
+    val supported: Boolean = false,
+    val isOn: Boolean? = null,
+    val isPending: Boolean = false,
+)
+
 data class OctoPrintServerInfo(
     val apiVersion: String? = null,
     val serverVersion: String? = null,
@@ -111,6 +124,7 @@ data class OctoPrintUiState(
     val printer: OctoPrintPrinterState = OctoPrintPrinterState(),
     val job: OctoPrintJobState = OctoPrintJobState(),
     val connection: OctoPrintConnectionState = OctoPrintConnectionState(),
+    val power: OctoPrintPowerState = OctoPrintPowerState(),
     val files: List<OctoPrintFileEntry> = emptyList(),
     val freeBytes: Long? = null,
     val webcam: OctoPrintWebcamConfig = OctoPrintWebcamConfig(),
@@ -236,6 +250,10 @@ internal object OctoPrintJson {
             autoConnect = options.optBoolean("autoconnect", false),
         )
     }
+
+    /** PSU Control's "isPSUOn" flag, or null when the response does not carry it. */
+    fun parsePowerState(root: JSONObject): Boolean? =
+        if (root.has("isPSUOn")) root.optBoolean("isPSUOn") else null
 
     fun parseFiles(root: JSONObject): Pair<List<OctoPrintFileEntry>, Long?> {
         val output = mutableListOf<OctoPrintFileEntry>()

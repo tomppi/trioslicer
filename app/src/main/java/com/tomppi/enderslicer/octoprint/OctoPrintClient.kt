@@ -455,6 +455,26 @@ class OctoPrintClient(
         }
     }
 
+    /**
+     * Printer power state from the PSU Control plugin.
+     *
+     * Returns null when the plugin is not installed (HTTP 404): the printer can
+     * still be used without it, so its absence is not an error.
+     */
+    fun powerState(): Boolean? = try {
+        OctoPrintJson.parsePowerState(getJson(apiUrl("api", "plugin", "psucontrol")))
+    } catch (error: OctoPrintHttpException) {
+        if (error.statusCode == 404) null else throw error
+    }
+
+    /** Switches printer mains power through the PSU Control plugin. */
+    fun setPower(on: Boolean) {
+        postJson(
+            apiUrl("api", "plugin", "psucontrol"),
+            JSONObject().put("command", if (on) "turnPSUOn" else "turnPSUOff"),
+        )
+    }
+
     fun resolveServerUrl(value: String): URI? {
         val trimmed = value.trim()
         if (trimmed.isBlank()) return null

@@ -67,6 +67,54 @@ The control page supports:
 
 Raw commands and motion/heater controls can damage a printer or create a fire risk when used incorrectly. The app validates basic ranges, but it cannot determine whether an otherwise valid command is safe for the connected machine.
 
+## Printer power
+
+When the OctoPrint server has the [PSU Control](https://plugins.octoprint.org/plugins/psucontrol/) plugin installed, the status page shows a **Printer power** card with the current mains state and Turn on / Turn off actions. Servers without the plugin show one line naming the missing plugin instead, because switching power is optional and the rest of the panel works without it.
+
+The app uses the plugin's own endpoints and does not need to know how the OctoPrint host switches the power:
+
+- `GET /api/plugin/psucontrol` returns the plugin's `isPSUOn` state;
+- `POST /api/plugin/psucontrol` with `{"command": "turnPSUOn"}` or `{"command": "turnPSUOff"}` switches it.
+
+A 404 on those endpoints is treated as "plugin not installed", not as a failure, so the panel keeps working on servers that do not have it.
+
+Turning power off is the one action in the app that can destroy a running print with no chance of recovery, so it is confirmed first and the confirmation says plainly when a print is active. Turning power on needs no confirmation.
+
+### Configuring PSU Control
+
+On the OctoPrint host itself (the plugin runs its commands there):
+
+1. Install **PSU Control** from the Plugin Manager.
+2. Settings → PSU Control → switching method **System Command**.
+3. Switching on: `sudo -n /root/printer-power/printer-power on`
+4. Switching off: `sudo -n /root/printer-power/printer-power off`
+5. Sensing method **System Command**, sensing command `sudo -n /root/printer-power/printer-power sense`, so the card reflects the plug itself rather than the plugin's own bookkeeping. Its exit code follows PSU Control's convention: 0 on, 1 off, 2 (plug unreachable) leaves the last state alone.
+
+The `sudo -n` prefix matters. OctoPrint runs plugin commands as its own service
+user (`octoprint`), which cannot read `/root/printer-power` — and should not,
+because the plug's credential hash lives there. A dedicated drop-in,
+`/etc/sudoers.d/printer-power`, grants that user exactly three commands:
+
+```
+octoprint ALL=(root) NOPASSWD: /root/printer-power/printer-power on, /root/printer-power/printer-power off, /root/printer-power/printer-power sense
+```
+
+so OctoPrint can switch the plug without ever being able to read its credential
+or run anything else as root. Setting PSU Control's commands up this way is what
+keeps a compromised plugin limited to switching the printer's power, rather than
+handing it the plug's long-lived credential.
+
+If OctoPrint runs on a different machine from the one that reaches the plug, the
+commands must use that machine's own path to the plug — a small HTTP endpoint,
+for example — instead of a local script. PSU Control itself is not on PyPI, so it
+installs from its GitHub release archive (1.0.6) and updates by hand.
+
+## Remote mains power (Tapo P110)
+
+The installation this app was developed against switches the printer's mains power with a TP-Link Tapo P110 smart plug on the printer's own LAN, driven by `/root/printer-power/printer-power` — a wrapper around python-kasa that authenticates against the plug locally, so no cloud service is involved in switching. No TP-Link cloud account is involved in switching: the account password is used once to derive a plug-specific credential hash, and only that hash is stored (mode 600).
+
+The plug also reports live power draw, which distinguishes an idle printer from one that is heating, and it exposes over-temperature and over-current flags. The wrapper reports `ON 7.0 W since 16:34:03` style state; `--json` gives the same data for scripts. The P110's own overload protection (an over-power cut-off) is a separate safety net configured in the Tapo app.
+
 ## Webcam behavior
 
 The app reads the snapshot URL and orientation settings from OctoPrint. A manual snapshot URL override is available for reverse proxies or webcam plugins that do not expose a usable URL through `/api/settings`.

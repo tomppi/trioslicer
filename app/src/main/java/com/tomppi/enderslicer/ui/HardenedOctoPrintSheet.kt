@@ -314,6 +314,8 @@ private fun HardenedStatusPage(
             return@Column
         }
 
+        HardenedPowerCard(state, viewModel)
+
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Printer", style = MaterialTheme.typography.titleMedium)
@@ -444,6 +446,75 @@ private fun HardenedStatusPage(
 
         HardenedWebcamCard(state)
         Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun HardenedPowerCard(state: OctoPrintUiState, viewModel: OctoPrintViewModel) {
+    var confirmingPowerOff by remember { mutableStateOf(false) }
+    val power = state.power
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text("Printer power", style = MaterialTheme.typography.titleMedium)
+            if (!power.supported) {
+                Text(
+                    "The PSU Control plugin is not installed on this OctoPrint server, " +
+                        "so the app cannot switch printer power.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                return@Column
+            }
+            Text(
+                when {
+                    power.isPending -> "Switching…"
+                    power.isOn == true -> "On"
+                    power.isOn == false -> "Off"
+                    else -> "Unknown"
+                },
+            )
+            if (power.isOn == true && state.hasActiveJob) {
+                Text(
+                    "A print is running. Switching power off stops it immediately.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.setPrinterPower(true) },
+                    enabled = !power.isPending && power.isOn != true,
+                ) { Text("Turn on") }
+                OutlinedButton(
+                    onClick = { confirmingPowerOff = true },
+                    enabled = !power.isPending && power.isOn != false,
+                ) { Text("Turn off") }
+            }
+        }
+    }
+    if (confirmingPowerOff) {
+        AlertDialog(
+            onDismissRequest = { confirmingPowerOff = false },
+            title = { Text("Cut printer power?") },
+            text = {
+                Text(
+                    if (state.hasActiveJob) {
+                        "A print is running. The printer stops immediately and the print cannot be resumed."
+                    } else {
+                        "The printer's mains power will be switched off."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmingPowerOff = false
+                        viewModel.setPrinterPower(false)
+                    },
+                ) { Text("Turn off") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingPowerOff = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
