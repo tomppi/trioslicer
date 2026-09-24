@@ -56,6 +56,10 @@ native/blender/blender-gensrc/
 # DSH harness local workspace config — keep local
 .dsh/*
 
+# Agent scratch dirs and payload chunks (base64 archives, patch bundles) — never commit
+.agent-*/
+.agent-*
+
 # Release signing: the key is private and keystore.properties carries its
 # passwords. Neither is ever committed - see keystore/README.md.
 keystore.properties
