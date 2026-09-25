@@ -6,7 +6,7 @@
 
 TrioSlicer (formerly DuoSlicer, and EnderSlicerCura before that) is an Android-first front end for
 **CuraEngine, PrusaSlicer and OrcaSlicer** - importing, preparing, slicing, previewing and sending 3D
-prints from a phone or foldable. It is **1.3.6** and runs on Android 10+ on **ARM64**, with all three
+prints from a phone or foldable. It is **1.3.11** and runs on Android 10+ on **ARM64**, with all three
 engines cross-compiled for the phone together with their own upstream profile systems: CuraEngine
 **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline is
 a modified Creality Ender 3 V2.
@@ -45,11 +45,11 @@ a modified Creality Ender 3 V2.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/plate.jpg" width="220" alt="Plate with a model loaded, ready to slice">
+  <img src="docs/screenshots/plate.jpg" width="220" alt="Plate with a 3MF model loaded, sliced and ready to export">
   <img src="docs/screenshots/settings.jpg" width="220" alt="Print settings for the active engine">
-  <img src="docs/screenshots/octoprint.jpg" width="220" alt="OctoPrint setup">
+  <img src="docs/screenshots/octoprint.jpg" width="220" alt="OctoPrint status with the printer power control">
   <br>
-  <em>Plate &middot; print settings &middot; OctoPrint setup</em>
+  <em>Plate &middot; print settings &middot; OctoPrint status, printer power included</em>
 </p>
 
 <p align="center">
@@ -61,22 +61,29 @@ a modified Creality Ender 3 V2.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/modelling.jpg" width="300" alt="Modelling screen: the model filling the view, with the agent's report in the chat below it">
+  <img src="docs/screenshots/modelling.jpg" width="220" alt="Modelling screen: the model with the agent's report in the chat below it">
+  <img src="docs/screenshots/modelling-result.jpg" width="220" alt="The model the agent handed back, waiting on the plate">
   <br>
-  <em>Modelling: the embedded Blender engine, driven by the assistant</em>
+  <em>Modelling: the embedded Blender engine driven by the assistant &middot; what it handed back to the plate</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/more.jpg" width="220" alt="More screen: configuration, the experimental tools and about">
+  <br>
+  <em>More: profiles, the printer and its G-code, the experimental tools</em>
 </p>
 
 ## Install
 
-Download `TrioSlicer-1.3.6.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
+Download `TrioSlicer-1.3.11.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
 and open it on the phone, or install it over adb:
 
 ```sh
-adb install TrioSlicer-1.3.6.apk
+adb install TrioSlicer-1.3.11.apk
 ```
 
 Android 10+ on arm64-v8a. It is a **release** build - `android:debuggable` is off - signed with the
-project's private release key, so it installs over 1.3.5 and keeps its data. An install from the
+project's private release key, so it installs over any release since 1.3.6 and keeps its data. An install from the
 **original** 1.3.5 or earlier was signed with a debug key that is now retired, and Android refuses an
 update across signing keys (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`): uninstall it once first.
 
@@ -84,7 +91,7 @@ To check that a downloaded APK is ours (`apksigner` ships in the Android SDK's b
 carries a v2 signature, which `keytool -printcert -jarfile` cannot read):
 
 ```sh
-apksigner verify --print-certs TrioSlicer-1.3.6.apk
+apksigner verify --print-certs TrioSlicer-1.3.11.apk
 ```
 
 The signer's certificate digest must be
