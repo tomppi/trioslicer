@@ -96,6 +96,25 @@ private const val FramingFactor = 2.9f
  * engine's main thread - the same thread the agent's commands run on - so
  * falling behind would also mean starving the agent.
  */
+/** How often the preview looks for a new STL from the engine. */
+private const val ExportWatchMillis = 1_000L
+
+/**
+ * Signature of the newest STL the engine has published, or "" when there is none.
+ *
+ * The engine rewrites an STL in exports/ for every finished iteration and the
+ * preview has no other signal that the scene it is looking at has changed: the
+ * camera has not moved and the view has not been resized, but the model is a
+ * different one. Length and modification time are in the signature because the
+ * agent overwrites the same file name.
+ */
+internal fun blenderExportSignature(blenderDir: File): String =
+    File(blenderDir, "exports")
+        .listFiles { file -> file.isFile && file.name.endsWith(".stl", ignoreCase = true) }
+        ?.maxByOrNull { it.lastModified() }
+        ?.let { newest -> newest.name + "|" + newest.length() + "|" + newest.lastModified() }
+        .orEmpty()
+
 @Composable
 fun ModellingPreview(
     blenderDir: File,
@@ -372,6 +391,23 @@ fun ModellingPreview(
         while (System.currentTimeMillis() - lastGestureAt.get() < SettleMs) delay(40)
         interacting = false
         renderNonce++
+    }
+
+    // The engine publishes every finished iteration by rewriting an STL in
+    // exports/. Nothing told this view about that, so the picture stayed on the
+    // previous model until something else forced a render - which is why the
+    // agent's work only appeared after the chat was collapsed and the box
+    // resized. Watch what the engine produces instead of waiting to be resized.
+    LaunchedEffect(client) {
+        var seen = blenderExportSignature(blenderDir)
+        while (currentCoroutineContext().isActive) {
+            delay(ExportWatchMillis)
+            val signature = blenderExportSignature(blenderDir)
+            if (signature != seen) {
+                seen = signature
+                renderNonce++
+            }
+        }
     }
 
     // One render at a time, always the newest camera.
