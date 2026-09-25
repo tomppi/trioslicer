@@ -97,8 +97,8 @@ class EnginePreviewClient(
         val body = JSONObject()
             .put("type", type)
             .put("params", params)
-        // The engine refuses anything but ping without it, so a co-installed app
-        // cannot reach this socket and run Python as us.
+        // The engine refuses anything without it - ping included - so a
+        // co-installed app cannot reach this socket and run Python as us.
         token()?.let { body.put("token", it) }
         val payload = body.toString().toByteArray(Charsets.UTF_8)
 

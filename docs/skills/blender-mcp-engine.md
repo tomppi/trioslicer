@@ -52,15 +52,19 @@ This reads the app's private file over the exposed 5555 shell, so anyone who rea
 An engine started by hand (`blender -b --python start_blender_mcp.py`) has no token file and **refuses to serve**, and the app likewise refuses to start the addon when it could not write one: without a token there is nothing to authorize a request against, so a tokenless server would let any co-installed app run Python as this app's uid. To use a hand-run engine, write `blender_mcp_token.txt` beside the script and send that token with every request.
 
 ```text
-→ {"type": "ping", "params": {}}
+→ {"type": "ping", "params": {}, "token": "<token>"}
 ← {"status": "success", "result": {"pong": true}}
 
 → {"type": "execute_code", "params": {"code": "..."}, "token": "<token>"}
 ← {"status": "success", "result": {"executed": true, "result": "<captured stdout>"}}
 
-→ {"type": "execute_code", "params": {"code": "..."}}
+→ {"type": "ping", "params": {}}
 ← {"status": "error", "message": "unauthorized: send the token from blender_mcp_token.txt"}
 ```
+
+There is no token-free command, `ping` included: the server checks `_authorized()` before it
+dispatches, and answers `unauthorized` when the field is missing. A tokenless ping is a failed
+ping, not a liveness check.
 
 While one command is running nothing else can: a request that arrives while another has been running for more than ten seconds is answered `{"status": "error", "message": "engine busy in another command for Ns"}` instead of waiting out the client's own timeout.
 
@@ -76,7 +80,7 @@ Commands (`params` are keyword args, so `{"type":"execute_code","code":...}` wit
 
 | type | params | notes |
 |---|---|---|
-| `ping` | – | liveness; touches no bpy data |
+| `ping` | – | liveness; touches no bpy data. **Needs the token too** — without it the answer is `unauthorized`, not `pong` |
 | `execute_code` | `code` | namespace: `bpy`, `mathutils`, `json`, `os`; stdout captured via `redirect_stdout` |
 | `export_stl` | `filepath` | writes ALL scene meshes as binary STL via native writer (no `bpy.ops`); returns `{filepath, bytes, triangles}` |
 | `get_scene_info` | – | name, object_count, objects[{name,type,location,dimensions}] |
