@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Import model, and 3MF models at that.** The Import menu only ever read STL: a 3MF was accepted by the picker and then failed in the STL parser, and the label said "Import STL" as if that were the only model format. The entry is now *Import model*, and a `.3mf` is read properly — mesh, components, build items, their affine transforms and the file's unit — and staged as STL so every downstream path (resolved Cura profiles, the texturizer, Smart Infill) keeps one model format. Painted support facets inside the file are read back too, so a painted model round-trips through export and import.
+- **Non-planar slicing on OrcaSlicer.** Enabling non-planar with that engine sets its own `zaa_enabled` (Z-layer contouring); the sheet says so, because the relief-field and hot-end clearance options belong to the CuraEngine pipeline.
+
+### Fixed
+
+- **Painted supports were silently dropped on PrusaSlicer and OrcaSlicer.** Paint became CuraEngine modifier volumes, and those two engines were handed the transformed STL, which cannot express per-facet paint: the paint showed in the viewer and never reached the G-code. A painted model is now staged as 3MF with the `slic3rpe:custom_supports` attribute both readers consume — one hex nibble per painted facet, `4` for an enforcer and `8` for a blocker.
+- **Non-planar and conical slicing no longer fail silently off CuraEngine.** Non-planar is refused on PrusaSlicer, which has no such feature, and conical is refused on both other engines because it is the app's own G-code transform, wired into the CuraEngine pipeline. Both used to slice flat while the UI still said the mode was on.
+
 ## [1.3.6] - 2026-09-23
 
 ### Added
