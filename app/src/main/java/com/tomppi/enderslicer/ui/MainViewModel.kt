@@ -76,6 +76,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.PaintedMeshWriter
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.StlParser
 import java.io.File
@@ -1580,6 +1581,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        // Engine capabilities, checked before the slice rather than discovered after
+        // it. OrcaSlicer has its own non-planar implementation (Z-layer contouring),
+        // PrusaSlicer has none, and conical slicing is the app's own G-code
+        // transform, wired into the CuraEngine pipeline only. Each of these used to
+        // slice flat while the UI still said the mode was on.
+        val nonPlanarActive = NonPlanarRuntime.snapshot() != null
+        val conicalActive = ConicalRuntime.snapshot() != null
+        if (sliceEngine == SlicerEngine.PRUSA && nonPlanarActive) {
+            showOperationFailure(
+                IllegalStateException(
+                    "PrusaSlicer has no non-planar slicing; switch to OrcaSlicer or CuraEngine, or disable it",
+                ),
+            )
+            return
+        }
+        if (sliceEngine != SlicerEngine.CURA && conicalActive) {
+            showOperationFailure(
+                IllegalStateException(
+                    "Conical slicing runs in the CuraEngine pipeline only; switch to CuraEngine or disable it",
+                ),
+            )
+            return
+        }
         val slicingMessage = when (sliceEngine) {
             SlicerEngine.CURA -> "CuraEngine is slicing…"
             SlicerEngine.PRUSA -> "PrusaSlicer is slicing…"
@@ -1612,8 +1636,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         check(mkdir()) { "Unable to create an isolated model staging directory" }
                     }
                     val outcome = try {
-                        val transformedFile = File(stagingDirectory, "transformed.stl")
-                        StlMeshWriter.writeBinary(transformedMesh, transformedFile)
+                        // CuraEngine gets the STL plus painted modifier volumes;
+                        // PrusaSlicer and OrcaSlicer read paint from the model file
+                        // itself, so a painted model has to reach them as 3MF or the
+                        // paint is silently dropped.
+                        val paintedModel = sliceEngine != SlicerEngine.CURA && !snapshot.supportPaint.isEmpty
+                        val transformedFile = if (paintedModel) {
+                            File(stagingDirectory, "transformed.3mf").also { staged ->
+                                PaintedMeshWriter.write(transformedMesh, snapshot.supportPaint, staged)
+                            }
+                        } else {
+                            File(stagingDirectory, "transformed.stl").also { staged ->
+                                StlMeshWriter.writeBinary(transformedMesh, staged)
+                            }
+                        }
                         if (sliceEngine == SlicerEngine.PRUSA) {
                             val prusaResult = prusaEngine.slice(
                                 modelFile = transformedFile,
@@ -1645,10 +1681,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 collisionSweepFailure = null,
                             )
                         } else if (sliceEngine == SlicerEngine.ORCA) {
+                            // OrcaSlicer's own non-planar implementation: Z-layer
+                            // contouring varies Z inside a layer so top-facing
+                            // surfaces follow the model. The relief-field settings
+                            // of the CuraEngine path do not apply here; zaa_min_z
+                            // and zaa_minimize_perimeter_height keep their Orca
+                            // defaults unless All settings overrides them.
+                            val orcaExtras = snapshot.extraOrcaSettings +
+                                if (nonPlanarActive) mapOf("zaa_enabled" to "1") else emptyMap()
                             val orcaResult = orcaEngine.slice(
                                 modelFile = transformedFile,
                                 printer = snapshot.printer,
-                                settings = snapshot.orcaSettings.copy(extraKeys = snapshot.extraOrcaSettings),
+                                settings = snapshot.orcaSettings.copy(extraKeys = orcaExtras),
                                 machineSettings = snapshot.settings,
                                 startGcode = snapshot.startGcode,
                                 endGcode = snapshot.endGcode,

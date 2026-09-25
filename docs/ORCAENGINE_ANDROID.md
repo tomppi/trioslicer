@@ -62,9 +62,27 @@ The GUI directories (`images/` 35 MB, `fonts/` 35 MB, `hms/` 63 MB, `web/` 22 MB
 `i18n/`, `dailytip/`, `handy_models/`) are not packaged: nothing in a headless console reads
 them.
 
+## Painted supports and Z contouring
+
+Support painting reaches OrcaSlicer inside the model file, because an STL cannot say that one
+facet is a support enforcer and another a blocker. When a model carries paint and OrcaSlicer is
+the active engine, the slice stages `transformed.3mf` instead of `transformed.stl` and the
+request workspace keeps that extension, so the engine picks its 3MF reader. Paint is written as a
+`slic3rpe:custom_supports` attribute on each painted triangle — one hex nibble holding the
+triangle's serialised TriangleSelector state, `4` for an enforcer and `8` for a blocker, with
+unpainted triangles carrying no attribute at all. Painted supports still need support enabled in
+the print settings, exactly as they do in OrcaSlicer's own window.
+
+Non-planar slicing is OrcaSlicer's own Z-layer contouring: enabling it sets `zaa_enabled=1` in the
+print configuration, which varies Z inside a layer so top-facing surfaces follow the model. The
+CurviSlicer relief-field options in the sheet belong to the CuraEngine path and do not apply here;
+`zaa_min_z` and `zaa_minimize_perimeter_height` keep OrcaSlicer's defaults unless All settings
+overrides them. Conical slicing is refused on this engine: it is the app's own G-code transform,
+wired into the CuraEngine pipeline.
+
 ## G-code dialect
 
-OrcaSlicer is a PrusaSlicer fork, so the estimated-time and filament footer comments are the
+OrcaSlicer is a PrusaSlicer fork,, so the estimated-time and filament footer comments are the
 same text. The layer marker depends on **which vendor is being sliced**: the engine picks the
 envelope in `GCode.cpp:4619-4622`.
 

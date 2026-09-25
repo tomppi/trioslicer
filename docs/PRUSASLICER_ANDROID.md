@@ -85,6 +85,22 @@ snapshot: 24 printer, 95 print and 39 filament values, all equal, counts pinned.
 The bundle's own default material for that machine is Prusament PLA, which is
 what the picker preselects.
 
+## Painted supports, non-planar and conical
+
+Painted support enforcers and blockers reach PrusaSlicer inside the model file: an STL cannot
+express per-facet paint, so a painted model is staged as `transformed.3mf` and the request
+workspace keeps that extension. The paint is written as the legacy per-triangle
+`slic3rpe:custom_supports` attribute (hex nibble `4` for an enforcer, `8` for a blocker, absent
+on unpainted triangles), which this build reads through PrusaSlicer's legacy-painting path;
+PrusaSlicer 3.x writes painting as JSON metadata, so a file this app produces is understood
+rather than round-tripped by newer PrusaSlicer builds. Supports must be enabled in the print
+settings for the paint to matter, as in PrusaSlicer's own window.
+
+Non-planar slicing is refused before the slice starts, with a message naming the engines that can
+do it: PrusaSlicer has no Z contouring, and silently slicing flat while the UI says non-planar is
+the failure this avoids. Conical slicing is refused for the same reason — it is the app's own
+G-code transform, wired into the CuraEngine pipeline.
+
 ## The All-settings catalogue
 
 The sheet's "all settings" list reads

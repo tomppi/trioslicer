@@ -51,6 +51,14 @@ Numeric drafts are preserved across configuration recreation. Save is disabled u
 
 Changing any CurviSlicer option invalidates previously published G-code. Export, Layers and Path remain unavailable until a fresh slice exists for the current configuration.
 
+## Engines
+
+The relief-field pipeline described here is CuraEngine's. With OrcaSlicer active the same switch
+sets OrcaSlicer's own `zaa_enabled` (Z-layer contouring) instead, which is why the sheet says so
+and why the relief-field and hot-end clearance values do not apply on that engine. PrusaSlicer has
+no non-planar slicing at all, so a slice with it enabled is refused with a message rather than
+producing flat G-code.
+
 ## Path viewer
 
 After slicing, the preview selector contains three independent modes:

@@ -1482,6 +1482,7 @@ fun EnderSlicerApp(
                 initial = nonPlanarSettings,
                 layerHeightMm = state.settings.layerHeightMm,
                 nozzleDiameterMm = effectivePrinter.nozzleSizeMm,
+                engine = engine,
                 onSave = { value ->
                     val safe = value.validated()
                     // The store reports the change it saw, and that is also what

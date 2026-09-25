@@ -49,7 +49,7 @@ class OrcaEngineRunner(private val context: Context) {
         val id: String,
         val directory: File,
         val output: File = File(directory, "output.gcode"),
-        val model: File = File(directory, "model.stl"),
+        val model: File,
         val printerConfig: File = File(directory, "orca-printer.ini"),
         val printConfig: File = File(directory, "orca-print.ini"),
         val filamentConfig: File = File(directory, "orca-filament.ini"),
@@ -114,12 +114,12 @@ class OrcaEngineRunner(private val context: Context) {
         onProgress: (Int) -> Unit,
     ): SliceResult {
         require(isAvailable()) { status() }
-        require(modelFile.isFile && modelFile.length() > 0L) { "The imported STL is no longer available" }
+        require(modelFile.isFile && modelFile.length() > 0L) { "The staged slice model is no longer available" }
         if (!prepareResources()) {
             throw IllegalStateException("OrcaSlicer profiles are not packaged in this APK")
         }
 
-        val workspace = createWorkspace()
+        val workspace = createWorkspace(modelFile)
         val log = requestLog(workspace.id)
         val started = System.nanoTime()
         val effectivePrinter = effectiveMachine(printer, machineSettings)
@@ -281,7 +281,7 @@ class OrcaEngineRunner(private val context: Context) {
             extruders = settings.enabledExtruderCount,
         )
 
-    private fun createWorkspace(): Workspace {
+    private fun createWorkspace(modelFile: File): Workspace {
         val id = "orca-" + System.currentTimeMillis() + "-" + UUID.randomUUID()
         val root = File(context.cacheDir, "orcaengine/requests").apply {
             check(mkdirs() || isDirectory) { "Unable to create the OrcaSlicer request directory" }
@@ -293,8 +293,12 @@ class OrcaEngineRunner(private val context: Context) {
         cleanupStaleRequestLogs(File(context.filesDir, "logs"), "orcaengine-")
         val directory = File(root, id)
         check(directory.mkdir()) { "Unable to create an isolated OrcaSlicer workspace" }
-        return Workspace(id, directory)
+        return Workspace(id, directory, model = stagedModel(directory, modelFile))
     }
+
+    /** The engine picks its reader from the extension, so the staged name keeps it. */
+    private fun stagedModel(directory: File, modelFile: File): File =
+        File(directory, "model." + modelFile.extension.ifBlank { "stl" })
 
     private fun requestLog(id: String): File = File(context.filesDir, "logs/orcaengine-" + id + ".log").apply {
         parentFile?.mkdirs()

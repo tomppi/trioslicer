@@ -1,5 +1,7 @@
 package com.tomppi.enderslicer.ui
 
+import com.tomppi.enderslicer.model.SlicerEngine
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,6 +34,7 @@ internal fun NonPlanarSettingsSheet(
     initial: NonPlanarSettings,
     layerHeightMm: Double,
     nozzleDiameterMm: Double,
+    engine: SlicerEngine,
     onSave: (NonPlanarSettings) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -158,6 +161,30 @@ internal fun NonPlanarSettingsSheet(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Non Planar", style = MaterialTheme.typography.headlineSmall)
+        // Which implementation will actually run depends on the active engine, and
+        // that is not something the user should have to discover from the G-code.
+        when (engine) {
+            SlicerEngine.ORCA -> Text(
+                "OrcaSlicer slices this itself: non-planar runs as Z-layer contouring " +
+                    "(zaa_enabled), which varies Z inside a layer so top-facing surfaces follow " +
+                    "the model. The relief-field and hot-end clearance options below belong to " +
+                    "the CuraEngine path and are ignored here; Z contouring's own minimum Z and " +
+                    "perimeter-height values stay at their OrcaSlicer defaults unless All " +
+                    "settings overrides them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            SlicerEngine.PRUSA -> Text(
+                "PrusaSlicer has no non-planar slicing. Slicing while this is enabled is " +
+                    "refused instead of silently producing flat G-code; switch to OrcaSlicer or " +
+                    "CuraEngine to use it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+
+            SlicerEngine.CURA -> Unit
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(NonPlanarSettingsStore.BACKEND_NAME, style = MaterialTheme.typography.titleMedium)
