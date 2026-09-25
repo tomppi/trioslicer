@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The Blender engine's MCP token can be copied from the app** (Blender menu → *Copy MCP token*). The token lives in app-private storage and the engine refuses every command without it, so on a phone without root there was no way to hand it to a modelling agent: the file cannot be read from outside, which is what the token is for. Copying it marks the clip sensitive, so Android keeps it out of the clipboard preview.
+
 - **Import model, and 3MF models at that.** The Import menu only ever read STL: a 3MF was accepted by the picker and then failed in the STL parser, and the label said "Import STL" as if that were the only model format. The entry is now *Import model*, and a `.3mf` is read properly — mesh, components, build items, their affine transforms and the file's unit — and staged as STL so every downstream path (resolved Cura profiles, the texturizer, Smart Infill) keeps one model format. Painted support facets inside the file are read back too, so a painted model round-trips through export and import.
 - **Non-planar slicing on OrcaSlicer.** Enabling non-planar with that engine sets its own `zaa_enabled` (Z-layer contouring); the sheet says so, because the relief-field and hot-end clearance options belong to the CuraEngine pipeline.
 

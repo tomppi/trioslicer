@@ -120,6 +120,14 @@ import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.ViewerOrientation
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
+import androidx.compose.material.icons.filled.Lock
+import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -1064,6 +1072,19 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
+                                        // The engine's shared secret lives in app-private storage,
+                                        // which nothing outside the app can read on a phone without
+                                        // root, so the app is the only place a modelling agent can
+                                        // be handed it.
+                                        DropdownMenuItem(
+                                            text = { Text("Copy MCP token") },
+                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                            onClick = {
+                                                blenderMenuExpanded = false
+                                                copyMcpToken(context)
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
                                         HorizontalDivider()
                                         MenuSectionLabel("Paint")
                                         DropdownMenuItem(
@@ -1774,6 +1795,32 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
 }
 
 /** More hub: grouped navigation to everything outside the plate. */
+/**
+ * Puts the Blender engine's token on the clipboard so a modelling agent can be
+ * given it directly.
+ *
+ * The token file sits in app-private storage and the engine refuses every
+ * command, ping included, without it. On a phone without root there is no way
+ * to read that file from outside, which is exactly what the token is for, so the
+ * app hands it over instead - marked sensitive so Android keeps it out of the
+ * clipboard preview.
+ */
+private fun copyMcpToken(context: Context) {
+    val token = BlenderEngine.ensureToken(File(context.applicationContext.filesDir, "blender"))
+    if (token.isNullOrBlank()) {
+        Toast.makeText(context, "The MCP token is not available yet", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val clip = ClipData.newPlainText("Blender MCP token", token)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+    Toast.makeText(context, "MCP token copied", Toast.LENGTH_SHORT).show()
+}
+
 @Composable
 private fun MoreScreen(
     state: MainUiState,
