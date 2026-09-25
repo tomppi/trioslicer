@@ -43,14 +43,15 @@ Plain TCP, one JSON object per request. Either a single write with no terminator
 **Every request needs the engine's token**, which the app generates on first run and the engine reads at startup:
 
 ```bash
-adb -s <phone-tailscale-ip>:5555 shell su -c 'cat /data/user/0/com.tomppi.enderslicercura/files/blender/scripts/startup/blender_mcp_token.txt'
+adb -s <phone-tailscale-ip>:5555 shell cat /data/user/0/com.tomppi.enderslicercura/files/blender/scripts/startup/blender_mcp_token.txt
 ```
 
 This reads the app's private file over the exposed 5555 shell, so anyone who reaches that port
-(see the exposure note in section 1) can read the token the same way. The shell must actually have
-`su`: on a build where root over adb is off the read fails with `su: inaccessible or not found`
-(or returns nothing), and every request then comes back `unauthorized` however the token field is
-set — check the length you read, not just that the command exited.
+(see the exposure note in section 1) can read the token the same way. There is no `su` binary to
+call on this build: with rooted debugging enabled adbd already runs as root (`adb shell id` reports
+`uid=0(root)`, and `adb root` answers "adbd is already running as root"), so a plain `cat` reads
+it. A non-root shell fails with permission denied, which then looks exactly like a wrong token —
+every request answers `unauthorized` — so check what you read, not just that the command exited.
 
 An engine started by hand (`blender -b --python start_blender_mcp.py`) has no token file and **refuses to serve**, and the app likewise refuses to start the addon when it could not write one: without a token there is nothing to authorize a request against, so a tokenless server would let any co-installed app run Python as this app's uid. To use a hand-run engine, write `blender_mcp_token.txt` beside the script and send that token with every request.
 
