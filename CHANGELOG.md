@@ -6,9 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The modelling preview follows the engine's own model.** The preview rendered only when the camera moved, the view was resized or a gesture settled, and nothing told it that the agent had published a new model: the picture kept showing the previous one until something unrelated forced a render — in practice, collapsing the chat, which resizes the box. It now watches the STL the engine rewrites for each finished iteration and renders again when that revision changes, which is also the moment the app imports the model.
+
+## [1.3.10] - 2026-09-25
+
 ### Added
 
 - **The Blender engine's MCP token can be copied from the app** (Blender menu → *Copy MCP token*). The token lives in app-private storage and the engine refuses every command without it, so on a phone without root there was no way to hand it to a modelling agent: the file cannot be read from outside, which is what the token is for. Copying it marks the clip sensitive, so Android keeps it out of the clipboard preview.
+
+## [1.3.9] - 2026-09-25
+
+### Added
 
 - **Import model, and 3MF models at that.** The Import menu only ever read STL: a 3MF was accepted by the picker and then failed in the STL parser, and the label said "Import STL" as if that were the only model format. The entry is now *Import model*, and a `.3mf` is read properly — mesh, components, build items, their affine transforms and the file's unit — and staged as STL so every downstream path (resolved Cura profiles, the texturizer, Smart Infill) keeps one model format. Painted support facets inside the file are read back too, so a painted model round-trips through export and import.
 - **Non-planar slicing on OrcaSlicer.** Enabling non-planar with that engine sets its own `zaa_enabled` (Z-layer contouring); the sheet says so, because the relief-field and hot-end clearance options belong to the CuraEngine pipeline.
