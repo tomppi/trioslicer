@@ -79,6 +79,7 @@ import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.StlParser
+import com.tomppi.enderslicer.viewer.ThreeMfModelParser
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -318,25 +319,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importStl(uri: Uri) {
-        if (deferUntilRestoreCompletes { importStl(uri) }) return
-        if (!beginOperation("Reading STL…")) return
+    fun importModel(uri: Uri) {
+        if (deferUntilRestoreCompletes { importModel(uri) }) return
+        if (!beginOperation("Reading model…")) return
         val sceneSnapshot = importedScene
         val stateSnapshot = _uiState.value
         val previousModelPath = stateSnapshot.modelPath
         viewModelScope.launch {
+            // Hoisted: the paint is read by the onSuccess lambda, which is outside
+            // the runCatching block the destructuring lives in.
+            var importedPaint = SupportPaintState()
             runCatching {
-                val (mesh, modelFile) = withContext(Dispatchers.IO) {
+                val (mesh, modelFile, paint) = withContext(Dispatchers.IO) {
                     retainReadPermission(uri)
                     val triangleLimit = MeshTriangleLimits.current()
-                    val file = materializeModel(uri, triangleLimit)
-                    try {
-                        StlParser.parse(file, displayName(uri), triangleLimit) to file
-                    } catch (error: Throwable) {
-                        file.delete()
-                        throw error
+                    val name = displayName(uri)
+                    if (name.endsWith(".3mf", ignoreCase = true)) {
+                        // A 3MF brings its own build placement and paint. The mesh is
+                        // staged as STL so every downstream path - resolved Cura
+                        // profiles, the texturizer, Smart Infill - keeps working with
+                        // one model format, while the paint is kept in the session.
+                        val source = materializeModel(uri, triangleLimit, "3mf")
+                        val staged = stagedModelFile()
+                        try {
+                            val parsed = ThreeMfModelParser.parse(source, name, triangleLimit)
+                            StlMeshWriter.writeBinary(parsed.mesh, staged)
+                            ImportedModel(parsed.mesh, staged, parsed.paint)
+                        } catch (error: Throwable) {
+                            staged.delete()
+                            throw error
+                        } finally {
+                            source.delete()
+                        }
+                    } else {
+                        val file = materializeModel(uri, triangleLimit, "stl")
+                        try {
+                            ImportedModel(StlParser.parse(file, name, triangleLimit), file, SupportPaintState())
+                        } catch (error: Throwable) {
+                            file.delete()
+                            throw error
+                        }
                     }
                 }
+                importedPaint = paint
                 val prepared = withContext(Dispatchers.Default) {
                     val automaticPlacement = sceneSnapshot
                         ?.takeIf { scene -> scene.affine != null && modelNamesMatch(scene.modelName, mesh.displayName) }
@@ -369,7 +394,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             modelFile = prepared.modelFile,
                             displayName = prepared.source.displayName,
                             placement = prepared.placement,
-                            state = stateSnapshot.copy(supportPaint = SupportPaintState()),
+                            state = stateSnapshot.copy(supportPaint = paint),
                         ),
                     )
                 }
@@ -381,7 +406,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mesh = prepared.transformed,
                         modelPath = prepared.modelFile.absolutePath,
                         modelPlacement = prepared.placement,
-                        supportPaint = SupportPaintState(),
+                        // Paint that arrived inside the 3MF belongs to the session now.
+                        supportPaint = importedPaint,
                         paintMode = SupportPaintMode.NONE,
                         importedSceneTransformAvailable = sceneSnapshot?.affine != null,
                         importedSceneModelName = sceneSnapshot?.modelName,
@@ -390,6 +416,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         statusMessage = buildString {
                             append("Loaded ${prepared.source.displayName}: ${prepared.source.triangleCount} triangles")
                             if (prepared.automaticImportedPlacement) append(" · imported Cura scene transform applied")
+                            if (!importedPaint.isEmpty) {
+                                append(" · ${importedPaint.enforcerTriangles.size + importedPaint.blockerTriangles.size} painted facets")
+                            }
                         },
                     )
                 }
@@ -2627,9 +2656,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isBusy = false) }
     }
 
-    private fun materializeModel(uri: Uri, maxTriangles: Int): File {
+    private data class ImportedModel(
+        val mesh: StlMesh,
+        val modelFile: File,
+        val paint: SupportPaintState,
+    )
+
+    /** A fresh staging path for a model that arrived in another format. */
+    private fun stagedModelFile(): File =
+        File(File(app.filesDir, "models").apply { mkdirs() }, "model-${System.nanoTime()}.stl")
+
+    private fun materializeModel(uri: Uri, maxTriangles: Int, extension: String): File {
         val directory = File(app.filesDir, "models").apply { mkdirs() }
-        val target = File(directory, "model-${System.nanoTime()}.stl")
+        val target = File(directory, "model-${System.nanoTime()}.$extension")
         val temporary = File(directory, "${target.name}.tmp")
         val maxBytes = MeshTriangleLimits.maxInputFileBytes(maxTriangles)
         temporary.delete()
@@ -2643,15 +2682,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (count < 0) break
                         total += count
                         require(total <= maxBytes) {
-                            "STL is larger than ${MeshTriangleLimits.formatBytes(maxBytes)} for the ${MeshTriangleLimits.formatCount(maxTriangles)}-triangle limit"
+                            "The model is larger than ${MeshTriangleLimits.formatBytes(maxBytes)} for the ${MeshTriangleLimits.formatCount(maxTriangles)}-triangle limit"
                         }
                         output.write(buffer, 0, count)
                     }
                 }
-            } ?: error("Unable to copy the selected STL")
-            check(temporary.length() > 0L) { "The selected STL is empty" }
+            } ?: error("Unable to copy the selected model")
+            check(temporary.length() > 0L) { "The selected model is empty" }
             check(temporary.renameTo(target) || temporary.copyTo(target, overwrite = false).let { temporary.delete(); true }) {
-                "Unable to store the selected STL locally"
+                "Unable to store the selected model locally"
             }
             return target
         } catch (error: Throwable) {

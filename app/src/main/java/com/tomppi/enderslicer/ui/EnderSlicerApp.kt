@@ -825,7 +825,7 @@ fun EnderSlicerApp(
     }
 
     val stlPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::importStl)
+        uri?.let(viewModel::importModel)
     }
     val profilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(viewModel::importCuraProfile)
@@ -841,7 +841,7 @@ fun EnderSlicerApp(
     }
     val textureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            result.data?.data?.let(viewModel::importStl)
+            result.data?.data?.let(viewModel::importModel)
         }
     }
     val configExportPicker = rememberLauncherForActivityResult(
@@ -973,7 +973,7 @@ fun EnderSlicerApp(
                                     ) {
                                         MenuSectionLabel("Files")
                                         DropdownMenuItem(
-                                            text = { Text("Import STL") },
+                                            text = { Text("Import model") },
                                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
                                             onClick = {
                                                 importMenuExpanded = false
