@@ -47,7 +47,10 @@ adb -s <phone-tailscale-ip>:5555 shell su -c 'cat /data/user/0/com.tomppi.enders
 ```
 
 This reads the app's private file over the exposed 5555 shell, so anyone who reaches that port
-(see the exposure note in section 1) can read the token the same way.
+(see the exposure note in section 1) can read the token the same way. The shell must actually have
+`su`: on a build where root over adb is off the read fails with `su: inaccessible or not found`
+(or returns nothing), and every request then comes back `unauthorized` however the token field is
+set — check the length you read, not just that the command exited.
 
 An engine started by hand (`blender -b --python start_blender_mcp.py`) has no token file and **refuses to serve**, and the app likewise refuses to start the addon when it could not write one: without a token there is nothing to authorize a request against, so a tokenless server would let any co-installed app run Python as this app's uid. To use a hand-run engine, write `blender_mcp_token.txt` beside the script and send that token with every request.
 
