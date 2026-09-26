@@ -1113,6 +1113,36 @@ a print with a queue of moves behind it. The measurement that closes this proper
 the same numbers taken during a real print, which needs the printer attached - and the
 stats are on the screen and in klippy's log whenever it is.
 
+## Verifying the payload with no hardware at all
+
+klippy's batch mode takes a dictionary of the micro-controller's commands - the file a
+firmware build produces - in place of a serial port, and writes the step stream it
+would have sent to a file instead. That exercises the whole motion pipeline with
+nothing attached: config, kinematics, the C helper, step generation.
+
+    scripts/verify-klipper-batch.sh                     # on a host
+    # on the phone, with the dictionary and config pushed:
+    PYTHONHOME=<payload> LD_LIBRARY_PATH=<payload>/libexec:<nativeLibraryDir> \
+      <nativeLibraryDir>/libklipper_exec.so <payload>/klippy/klippy.py \
+      -i batch-motion.gcode -o /data/local/tmp/steps.bin \
+      -d /data/local/tmp/klipper.dict -l /data/local/tmp/batch.log /data/local/tmp/printer.cfg
+
+Both of the things it needs were learned the hard way. The dictionary has to be the
+*board's* build and not the host MCU's: the box's out/ had been overwritten by the
+build that klipper-mcu.service runs, whose pins are gpiochip0 and friends, and this
+config needs PC4. Rebuilding from the same source and options reproduces the flashed
+firmware byte for byte - sha256 eb1f57ae... on both - which is how you know the
+dictionary describes the machine on the other end of the cable.
+
+And the axes have to be told where they are. Batch mode has no endstops, so every move
+is refused with "Must home axis first" until SET_KINEMATIC_POSITION says otherwise -
+and that command only exists when [force_move] enable_force_move is set, which is why
+the script appends both to its own copy of the config rather than to the shipped one.
+
+    klippy exited with 0
+    step stream: 3924 bytes
+    refused moves: 0
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket
