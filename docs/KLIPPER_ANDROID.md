@@ -489,12 +489,23 @@ one was - the shape of what klippy's reactor does.
 
 **Three reasons these are upper bounds rather than a verdict:**
 
-1. **Correction: my first explanation was wrong.** I said run 1's lateness was
-   largely GIL contention from my own in-process load generator. Run 2 moved the load
-   outside the interpreter and produced the same median to two decimal places
-   (8.58 ms both times), so the lateness is not the probe's doing - it is how this
-   device schedules a process in this class. The remaining qualification is the
-   process class itself, below.
+1. **RESOLVED in rounds 76-78, and both earlier explanations were wrong.** The
+   8.58 ms median was my own probe's doing after all: it ran three spinning Python
+   threads inside the same process, contending for the GIL. Run 2 did *not* disprove
+   that - it added load externally but left the in-process spinners running, so my
+   "correction" was itself the error. A clean single-threaded probe - the shape
+   klippy actually has, its C helper being a separate thread that never touches the
+   GIL - gives:
+
+       baseline:     p50 0.12 | p90 0.25 | p99 0.78 | max 4.43 ms | >5ms 0.0%
+       nice -n -19:  p50 0.11 | p90 0.22 | p99 0.63 | max 6.08 ms | >5ms 0.0%
+       chrt -f 10:   p50 0.06 | p90 0.13 | p99 0.30 | max 1.42 ms | >5ms 0.0%
+
+   So: **Android's scheduling is not a problem for this workload.** Wakeups land in
+   a tenth of a millisecond typically and under a millisecond at p99, with no
+   priority tricks; real-time priority improves it further and is not needed, which
+   matters because an app cannot have it anyway. The remaining timing questions are
+   the USB link and the MCU queue, and those need a board.
 2. The probe ran over adb, not as a foreground service. Android's timer slack - the
    mechanism that would hurt here - is relaxed for ordinary processes and tight for a
    foreground service with a wake lock, which is what BlenderEngineService already is.
