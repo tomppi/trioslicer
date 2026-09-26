@@ -85,11 +85,14 @@ make libpython3.11.so
 make -j4
 make install
 ls -l "$PREFIX/lib/libpython3.11.so" "$PREFIX/include/python3.11/Python.h"
-# _ctypes is the canary for the libffi step above: if it is missing, the ordering
-# broke and ctypes-using code will fail on the device rather than here.
-"$HOST/bin/python3.11" - <<'PYCHECK'
-import pathlib, sys
-lib = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
-PYCHECK
-grep -q "_ctypes" "$WORK/Python-$VERSION/Modules/Setup.stdlib" 2>/dev/null || true
-echo "check the built interpreter for _ctypes before shipping it"
+# _ctypes is the canary for the libffi step above. It can be a shared module or a
+# builtin depending on how CPython was configured, so check for either - and fail
+# loudly here rather than letting it surface on the phone as a missing module.
+if ls "$PREFIX"/lib/python3.11/lib-dynload/_ctypes*.so >/dev/null 2>&1 \
+   || strings "$PREFIX/lib/libpython3.11.so" | grep -q PyInit__ctypes; then
+  echo "_ctypes: present"
+else
+  echo "WARNING: _ctypes is missing from this interpreter." >&2
+  echo "libffi must be built before CPython; see the libffi step above." >&2
+  exit 1
+fi
