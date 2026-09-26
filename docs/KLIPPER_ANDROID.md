@@ -271,6 +271,31 @@ Worth keeping: driving the engine socket is a reusable capability. It gives dire
 Python access inside the app for the rest of this port, with no app changes, no
 JNI shim and no rebuild.
 
+## Round 16: the helper loads in the app
+
+Rebuilt with pyhelper.c included and -Wl,--no-undefined (0 errors, 0 undefined
+symbols, 57,656 bytes, sha 5da5c73e...), staged, pushed to the phone and loaded
+through ctypes from inside the app's interpreter:
+
+    openpty=True | chelper LOADED | stepcompress_alloc=True |
+    itersolve_alloc=False | serialqueue_alloc=True
+
+Verified:
+
+- **Android's loader and ctypes accept the bionic helper.** This is the mechanism
+  Klipper's step generation depends on, and it works.
+- The errorf gap is closed, and --no-undefined now guarantees no other symbol is
+  missing the same way.
+- openpty is available, so the transport can hand chelper a pty.
+- The staging script was corrected to include pyhelper.c and to pass
+  -Wl,--no-undefined, so the mistake cannot recur.
+
+**One symbol still to explain:** itersolve_alloc reports absent through ctypes even
+though the name appears in the library's string table, so it is present as a name
+but not as an exported dynamic symbol. Next: check how 0.13's itersolve.c defines
+it, and whether klippy actually looks that name up. This is the last known gap
+between the app and Klipper's host code.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,

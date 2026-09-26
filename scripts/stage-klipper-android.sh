@@ -42,8 +42,8 @@ echo "source: $SRC at $(cd "$SRC" && git describe --tags --always 2>/dev/null ||
 # Build the C helper for bionic. -lpthread is deliberately absent: bionic keeps
 # pthreads inside libc and the link fails if it is named.
 cd "$SRC/klippy/chelper"
-SOURCES="$(ls *.c | grep -v pyhelper | tr '\n' ' ')"
-"$CLANG" -shared -fPIC -O2 -o c_helper.so $SOURCES -lm
+SOURCES="$(ls *.c | tr '\n' ' ')"
+"$CLANG" -shared -fPIC -O2 -Wl,--no-undefined -o c_helper.so $SOURCES -lm
 [ -s c_helper.so ] || { echo "chelper failed to build" >&2; exit 1; }
 echo "chelper: $(stat -c%s c_helper.so) bytes"
 
