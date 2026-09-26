@@ -161,7 +161,9 @@ internal enum class AppTab(
 ) {
     PLATE("Plate", "Plate", { state -> state.mesh?.displayName ?: "No model yet" }),
     SETTINGS("Print settings", "Settings", { "Apply immediately" }),
-    PRINT("Print", "Print", { "OctoPrint session" }),
+    // The destination offers both, and the built-in host is the default: it said
+    // "OctoPrint session" while showing a printer this device was driving itself.
+    PRINT("Print", "Print", { "This device, or OctoPrint" }),
     MORE("More", "More", { "Everything outside the plate" }),
 }
 
