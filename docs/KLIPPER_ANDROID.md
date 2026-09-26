@@ -474,6 +474,35 @@ unmodified, and the pump is the only new component.
 other way round, twice, and spent a round wondering why ttyname() said /dev/ptmx and
 nothing came out of the read.
 
+## Rounds 71-75: the first timing numbers, and what they do and do not mean
+
+A probe on the phone asked for 1 ms wakeups 20,000 times and recorded how late each
+one was - the shape of what klippy's reactor does.
+
+    run 1 (three spinning Python threads inside the same process):
+    samples 20000 over 20.04s
+    p50 8.58 ms | p90 28.85 ms | p99 58.91 ms | p99.9 74.13 ms | max 82.77 ms
+    later than 5 ms: 68.2%
+
+    run 2 (load moved outside the interpreter):
+    samples 20000 over 20.02s (asked for 1ms steps, 3 busy cores) / p50 8.58 ms | p90 27.78 ms | p99 53.73 ms | p99.9 73.66 ms | max 82.90 ms / wakeups later than 5 ms: 13538 (67.690%)
+
+**Three reasons these are upper bounds rather than a verdict:**
+
+1. Run 1's load generator lived inside the same Python process, so much of that
+   lateness is GIL contention I created, not the phone refusing to schedule the
+   process. That is a flaw in the probe.
+2. The probe ran over adb, not as a foreground service. Android's timer slack - the
+   mechanism that would hurt here - is relaxed for ordinary processes and tight for a
+   foreground service with a wake lock, which is what BlenderEngineService already is.
+3. Klippy does not need 1 ms punctuality. Its reactor uses coarser timeouts, and it
+   feeds the MCU ahead of the timestamps it stamps on commands, with a lookahead
+   buffer absorbing jitter.
+
+The real measurement is klippy in a foreground service, against a board, watching the
+actual margins between when commands arrive and when they are due. These numbers say
+the host is not obviously disqualified; they do not say it is safe.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
