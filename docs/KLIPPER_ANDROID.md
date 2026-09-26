@@ -16,6 +16,7 @@ without root. Verified on the device, from klippy's log and the app's:
 | link margins at the handshake | `srtt 0.004  rttvar 0.001  rto 0.025  bytes_retransmit 0` - 6.25 attempts of headroom |
 | temperatures through the app's client | `extruder=24.45C bed=24.28C` |
 | payload size, in the APK | 957 files, 27MB, all present under `assets/klipper/` |
+| identity of the built APK | `com.tomppi.enderslicercura` 1.4.0 (49), targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
 
 **A print's under-load margins are not measured yet**, and neither is the payload's own
 planning rate on the phone. The desktop reference for that rate is 27185 moves/s over
