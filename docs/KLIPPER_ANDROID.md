@@ -586,6 +586,46 @@ and the exact initialisation order. Both are in the same source.
 (required=false, so it still installs without OTG) and carries a device filter naming
 the CH340, with CP2102 and FTDI alongside it.
 
+## Round 85: the CH340 baud and init details, from the same kernel file
+
+Extracted from drivers/usb/serial/ch341.c, so the driver can be written against the
+kernel's own behaviour rather than a guess:
+
+    (baud function not matched)
+
+static int ch341_configure(struct usb_device *dev, struct ch341_private *priv)
+{
+	const unsigned int size = 2;
+	u8 buffer[2];
+	int r;
+
+	/* expect two bytes 0x27 0x00 */
+	r = ch341_control_in(dev, CH341_REQ_READ_VERSION, 0, 0, buffer, size);
+	if (r)
+		return r;
+
+	priv->version = buffer[0];
+	dev_dbg(&dev->dev, "Chip version: 0x%02x\n", priv->version);
+
+	r = ch341_control_out(dev, CH341_REQ_SERIAL_INIT, 0, 0);
+	if (r < 0)
+		return r;
+
+	r = ch341_set_baudrate_lcr(dev, priv, priv->baud_rate, priv->lcr);
+	if (r < 0)
+		return r;
+
+	r = ch341_set_handshake(dev, priv->mcr);
+	if (r < 0)
+		return r;
+
+	return 0;
+}
+
+With the register constants from round 84, that is everything the userspace driver
+needs: how to compute the prescaler and divisor for a given baud, and the order in
+which the version check, line control and flow control are applied.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
