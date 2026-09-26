@@ -119,6 +119,36 @@ ship our own CPython 3.11.4 for klippy and control the whole configuration. The
 second costs a few megabytes and removes the guesswork, and the app already
 proves the packaging works.
 
+## Round 4: how the app really runs Python, and what klippy should copy
+
+- libblender_exec.so is **not a standalone program**. Executing it from an adb shell
+  dies with "Illegal instruction", and the app never execs it.
+- It is a **library with a JNI shim, built in this repo**: native/blender/blender_exec.cpp,
+  native/blender/CMakeLists.txt, a patches directory and a creator copy. BlenderBridge.kt
+  calls System.loadLibrary("blender_exec") and then nativeBlenderStart,
+  nativeBlenderIsRunning and nativeBlenderStop.
+- SDL is vendored (org.libsdl.app, nativeRunMain), which is how Blender's main is
+  entered in-process.
+- The app already runs a Python script inside that embedded interpreter:
+  configDir/scripts/startup/start_blender_mcp.py.
+
+So the app has **two** native patterns, and the choice matters:
+
+1. The slicers use the executable trick - a lib*_exec.so run from
+   applicationInfo.nativeLibraryDir.
+2. Blender uses JNI into an embedded interpreter running a script.
+
+**Klippy should follow the second one**: a small JNI shim that starts the bundled
+CPython, puts a vendored klippy tree on sys.path, and runs it on a background
+thread, with the foreground service that already exists keeping it alive. That is
+the pattern this codebase has already proven for a long-running embedded engine.
+
+**And chelper gets simpler because of it.** Klippy loads its C helper through
+ctypes, and ctypes plus libffi are compiled into the interpreter (verified in round
+2). So chelper only has to be compiled as a shared library and be findable by
+ctypes - no Python.h and no pyconfig.h are involved in the helper at all. The
+pyconfig.h question from round 3 therefore only remains for cffi and greenlet.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
