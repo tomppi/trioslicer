@@ -412,14 +412,28 @@ the question in one command:
 - serialhdl.SerialReader takes two to three positional arguments (reactor, serial,
   name); my first attempt passed four and was told so.
 
-**So the Android transport is:**
+**Correction, round 64 - the shape above was still wrong.** SerialReader does not
+take a serial object: its signature is __init__(self, reactor, warn_prefix="") and it
+attaches its own transport. The transports it offers are the real interface:
 
-1. Kotlin: open the USB device, create a socketpair, run a pump thread copying
-   between one end and the board's bulk endpoints. The virtual-serial-port trick,
-   no kernel driver, no root.
-2. Python: hand the other end's fd to klippy as its serial port. Any object with a
-   working fileno() satisfies serialhdl, so a socket behaves as a tty does.
-3. Klipper: unchanged. Not serialqueue.c, not serialhdl.py.
+    connect_pipe(filename)              <- a unix socket. This is the Android route.
+    connect_uart(serialport, baud, rts=True)
+    connect_canbus(canbus_uuid, canbus_nodeid, canbus_iface)
+    connect_file(debugoutput, dictionary, pace=False)
+
+Klipper already routes a socket-path serial to connect_pipe: that is how the
+linux-process MCU works, with serial: /tmp/klipper_host_mcu. So the Android
+transport is:
+
+1. Kotlin: open a LocalServerSocket (Android's AF_UNIX) at a path in the app's files
+   directory, and run a pump thread between that socket and the board's bulk USB
+   endpoints. No root, no kernel driver, no fd passing from Java.
+2. klippy: [mcu] serial: <that path>, which routes to connect_pipe. Klipper opens the
+   socket and hands the resulting fd to chelper exactly as it does for a tty.
+3. Klipper: unchanged - confirmed now at the right layer rather than by inference.
+
+Next: a unix socket plus a correctly framed identify response, which is the same
+framing a real board produces, proves the whole path with no hardware.
 
 The half of this that needs no hardware - the Python side and a simulated MCU
 answering over a socketpair - can be built and verified on the device. Only the
