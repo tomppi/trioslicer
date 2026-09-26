@@ -128,7 +128,12 @@ import android.os.Build
 import android.os.PersistableBundle
 import androidx.compose.material.icons.filled.Lock
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
+import com.tomppi.enderslicer.viewer.TransformGizmoMode
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -195,6 +200,12 @@ fun EnderSlicerApp(
     // Dragging the model across the plate is a mode on the viewer, held here
     // because the Transform panel that turns it on is not the plate itself.
     var modelDragMove by rememberSaveable { mutableStateOf(false) }
+    // The on-model gizmo: which mode long-pressing the model put up, where it
+    // was asked for, the value it is reporting, and the scale the slider holds.
+    var gizmoMode by rememberSaveable { mutableStateOf(TransformGizmoMode.NONE) }
+    var gizmoScalePercent by rememberSaveable { mutableStateOf(100) }
+    var gizmoReadout by remember { mutableStateOf<String?>(null) }
+    var gizmoAnchor by remember { mutableStateOf<Offset?>(null) }
     var supportPaintUiOpen by rememberSaveable { mutableStateOf(false) }
     var annotationUiOpen by rememberSaveable { mutableStateOf(false) }
     // Hoisted out of the layout branches: the gesture help folds away for good
@@ -813,6 +824,9 @@ fun EnderSlicerApp(
         if (selectedTab != AppTab.PLATE) {
             modelToolsOpen = false
             modelDragMove = false
+            gizmoMode = TransformGizmoMode.NONE
+            gizmoScalePercent = 100
+            gizmoReadout = null
         }
     }
 
@@ -1207,6 +1221,26 @@ fun EnderSlicerApp(
                             dragMove = modelDragMove,
                             onModelDrag = { deltaX, deltaY ->
                                 viewModel.nudgeModel(deltaX.toDouble(), deltaY.toDouble())
+                                gizmoReadout = null
+                            },
+                            onModelDragPreview = { deltaX, deltaY ->
+                                gizmoReadout = "Move · X " + String.format(java.util.Locale.ROOT, "%.1f", deltaX) +
+                                    " mm, Y " + String.format(java.util.Locale.ROOT, "%.1f", deltaY) + " mm"
+                            },
+                            gizmoMode = gizmoMode,
+                            scalePreview = gizmoScalePercent / 100f,
+                            onTransformRequested = { x, y ->
+                                gizmoAnchor = Offset(x, y)
+                                gizmoMode = TransformGizmoMode.ROTATE
+                                gizmoScalePercent = 100
+                                gizmoReadout = null
+                            },
+                            onRotatePreview = { axis, degrees ->
+                                gizmoReadout = "Rotate " + axis.name + " · " + degrees.roundToInt() + "°"
+                            },
+                            onRotateCommitted = { axis, degrees ->
+                                gizmoReadout = null
+                                viewModel.rotateModel(axis, degrees.toDouble())
                             },
                             onPaintMode = viewModel::setPaintMode,
                             onCloseSupportPaintUi = {
@@ -1249,6 +1283,43 @@ fun EnderSlicerApp(
                         // the camera keeps orbiting, panning and zooming. The stack
                         // itself carries no pointer input either, so the cells only
                         // consume input inside a card's own bounds.
+                        if (gizmoMode != TransformGizmoMode.NONE) {
+                            TransformGizmoOverlay(
+                                mode = gizmoMode,
+                                readout = gizmoReadout,
+                                scalePercent = gizmoScalePercent,
+                                onMode = { mode ->
+                                    gizmoMode = mode
+                                    gizmoReadout = null
+                                    gizmoScalePercent = 100
+                                },
+                                onScalePercent = { gizmoScalePercent = it },
+                                onScaleFinished = {
+                                    if (gizmoScalePercent != 100) {
+                                        viewModel.scaleModel(gizmoScalePercent.toDouble())
+                                    }
+                                    gizmoScalePercent = 100
+                                    gizmoReadout = null
+                                },
+                                onDone = {
+                                    gizmoMode = TransformGizmoMode.NONE
+                                    gizmoScalePercent = 100
+                                    gizmoReadout = null
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .offset {
+                                        val anchor = gizmoAnchor
+                                        if (anchor == null) {
+                                            IntOffset(0, 0)
+                                        } else {
+                                            IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt())
+                                        }
+                                    }
+                                    .padding(8.dp),
+                            )
+                        }
+
                         Column(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -2120,6 +2191,14 @@ private fun ViewerPanel(
     dragMove: Boolean,
     /** A finished drag: the plate movement it asked for, in millimetres. */
     onModelDrag: (Float, Float) -> Unit,
+    /** Live plate movement while a drag is in progress, for the readout. */
+    onModelDragPreview: (Float, Float) -> Unit,
+    /** The on-model gizmo: which mode is up, and what it reports. */
+    gizmoMode: TransformGizmoMode,
+    scalePreview: Float,
+    onTransformRequested: (Float, Float) -> Unit,
+    onRotatePreview: (ModelPlacement.Axis, Float) -> Unit,
+    onRotateCommitted: (ModelPlacement.Axis, Float) -> Unit,
     onCloseSupportPaintUi: () -> Unit,
     onAnnotationTap: (AnnotationGesture) -> Unit,
     onAnnotationAdjust: (SegmentEnd, AnnotationGesture) -> Unit,
@@ -2222,6 +2301,13 @@ private fun ViewerPanel(
                         view.setPaintState(state.supportPaint)
                         view.dragMoveActive = dragMove
                         view.onModelDragCommitted = onModelDrag
+                        view.onModelDragPreview = onModelDragPreview
+                        view.gizmoMode = gizmoMode
+                        view.gizmoAxis = null
+                        view.scalePreview = scalePreview
+                        view.onTransformRequested = onTransformRequested
+                        view.onRotatePreview = onRotatePreview
+                        view.onRotateCommitted = onRotateCommitted
                         view.onPaintHit = onPaintHit
                         view.onSurfacePick = onSurfacePick
                         view.annotationActive = state.annotationActive

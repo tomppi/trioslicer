@@ -12,6 +12,7 @@ import android.view.SurfaceHolder
 import com.tomppi.enderslicer.annotation.AnnotationGesture
 import com.tomppi.enderslicer.annotation.Point3
 import com.tomppi.enderslicer.annotation.SegmentEnd
+import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
@@ -65,6 +66,58 @@ class ModelSurfaceView(
     private var dragTotalX = 0f
     private var dragTotalY = 0f
     private var draggingModel = false
+
+    /**
+     * What the on-model gizmo is doing. NONE hides it, and MOVE also lets a plain
+     * finger drag move the model, so the mode and the gesture agree.
+     */
+    var gizmoMode: TransformGizmoMode = TransformGizmoMode.NONE
+        set(value) {
+            if (field == value) return
+            field = value
+            draggingModel = false
+            draggingRotate = false
+            dragTotalX = 0f
+            dragTotalY = 0f
+            rotateDegrees = 0f
+            modelRenderer.setDragOffset(0f, 0f)
+            modelRenderer.setPreviewTransform(null, null, 0f, 1f)
+            modelRenderer.setGizmo(gizmoFor(value))
+            requestRender()
+        }
+
+    /** Forces a rotation axis; null takes it from the drag direction. */
+    var gizmoAxis: ModelPlacement.Axis? = null
+
+    /** A long press that landed on the model: the app puts the three modes up. */
+    var onTransformRequested: ((Float, Float) -> Unit)? = null
+
+    /** Live rotation while the finger is down, for the hovering readout. */
+    var onRotatePreview: ((ModelPlacement.Axis, Float) -> Unit)? = null
+
+    /** The snapped rotation the finger let go at; the app commits it. */
+    var onRotateCommitted: ((ModelPlacement.Axis, Float) -> Unit)? = null
+
+    /** Live plate movement while a drag is in progress, for the readout. */
+    var onModelDragPreview: ((Float, Float) -> Unit)? = null
+
+    /**
+     * Uniform scale preview while the slider moves; 1 means none. The commit goes
+     * through the view model once the finger lets go, exactly like a typed value.
+     */
+    var scalePreview: Float = 1f
+        set(value) {
+            val safe = if (value.isFinite() && value > 0f) value else 1f
+            if (field == safe) return
+            field = safe
+            modelRenderer.setPreviewTransform(pivotFor(), null, 0f, safe)
+            requestRender()
+        }
+
+    private var draggingRotate = false
+    private var rotateDegrees = 0f
+    private var rotateAxis: ModelPlacement.Axis = ModelPlacement.Axis.Z
+    private var currentMesh: StlMesh? = null
 
     /** Invoked on the UI thread with the model triangle hit by a paint stroke. */
     var onPaintHit: ((MeshPicker.Hit) -> Unit)? = null
@@ -173,7 +226,10 @@ class ModelSurfaceView(
     }
 
     fun setMesh(mesh: StlMesh?) {
+        currentMesh = mesh
         queueEvent { modelRenderer.setMesh(mesh) }
+        // The gizmo is sized from the model, so a new model gets a new one.
+        queueEvent { modelRenderer.setGizmo(gizmoFor(gizmoMode)) }
         // setMesh resets the camera on the GL thread for a new model.
         queueEvent { notifyOrientation() }
         requestRender()
@@ -255,10 +311,14 @@ class ModelSurfaceView(
                     annotationAccumDy = 0f
                     pendingAnnotationProbe.set(floatArrayOf(event.x, event.y))
                     scheduleAnnotationProbe()
-                } else if (dragMoveActive) {
+                } else if (dragMoveActive || gizmoMode == TransformGizmoMode.MOVE) {
                     draggingModel = true
                     dragTotalX = 0f
                     dragTotalY = 0f
+                } else if (gizmoMode == TransformGizmoMode.ROTATE) {
+                    draggingRotate = true
+                    rotateDegrees = 0f
+                    rotateAxis = gizmoAxis ?: ModelPlacement.Axis.Z
                 }
             }
 
@@ -305,6 +365,26 @@ class ModelSurfaceView(
                         previousY = event.y
                         pendingAnnotationCoordinates.set(floatArrayOf(event.x, event.y))
                         scheduleAnnotationGesture()
+                    } else if (draggingRotate) {
+                        val dx = event.x - previousX
+                        val dy = event.y - previousY
+                        val axis = gizmoAxis ?: if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
+                            ModelPlacement.Axis.Z
+                        } else {
+                            ModelPlacement.Axis.X
+                        }
+                        rotateAxis = axis
+                        rotateDegrees += when (axis) {
+                            ModelPlacement.Axis.Z -> dx * degreesPerPixel()
+                            ModelPlacement.Axis.X -> dy * degreesPerPixel()
+                            ModelPlacement.Axis.Y -> -dx * degreesPerPixel()
+                        }
+                        val snapped = snapDegrees(rotateDegrees)
+                        modelRenderer.setPreviewTransform(pivotFor(), axis, snapped, 1f)
+                        previousX = event.x
+                        previousY = event.y
+                        onRotatePreview?.invoke(axis, snapped)
+                        requestRender()
                     } else if (draggingModel) {
                         val dx = event.x - previousX
                         val dy = event.y - previousY
@@ -312,6 +392,7 @@ class ModelSurfaceView(
                         dragTotalX += delta[0]
                         dragTotalY += delta[1]
                         modelRenderer.setDragOffset(dragTotalX, dragTotalY)
+                        onModelDragPreview?.invoke(dragTotalX, dragTotalY)
                         previousX = event.x
                         previousY = event.y
                         requestRender()
@@ -360,6 +441,14 @@ class ModelSurfaceView(
                         schedulePaintPick()
                     }
                 }
+                if (draggingRotate) {
+                    draggingRotate = false
+                    val degrees = snapDegrees(rotateDegrees)
+                    rotateDegrees = 0f
+                    modelRenderer.setPreviewTransform(null, null, 0f, 1f)
+                    requestRender()
+                    if (degrees != 0f) onRotateCommitted?.invoke(rotateAxis, degrees)
+                }
                 if (draggingModel) {
                     draggingModel = false
                     modelRenderer.setDragOffset(0f, 0f)
@@ -383,6 +472,12 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_CANCEL -> {
                 panning = false
+                if (draggingRotate) {
+                    draggingRotate = false
+                    rotateDegrees = 0f
+                    modelRenderer.setPreviewTransform(null, null, 0f, 1f)
+                    requestRender()
+                }
                 if (draggingModel) {
                     draggingModel = false
                     dragTotalX = 0f
@@ -393,6 +488,51 @@ class ModelSurfaceView(
             }
         }
         return true
+    }
+
+    /** The gizmo geometry for a mode, sized from the model on screen. */
+    private fun gizmoFor(mode: TransformGizmoMode): GizmoOverlay? {
+        val bounds = currentMesh?.bounds ?: return null
+        val pivot = Point3(bounds.centerX, bounds.centerY, bounds.minZ)
+        return when (mode) {
+            TransformGizmoMode.ROTATE -> TransformGizmo.ringsOverlay(
+                TransformGizmo.rings(pivot, TransformGizmo.ringRadiusMm(bounds)),
+            )
+            TransformGizmoMode.MOVE -> TransformGizmo.arrowsOverlay(
+                TransformGizmo.arrows(pivot, TransformGizmo.arrowLengthMm(bounds)),
+            )
+            TransformGizmoMode.SCALE -> TransformGizmo.boxOutline(bounds)
+            TransformGizmoMode.NONE -> null
+        }
+    }
+
+    /** Rotation and scale turn about the model's base centre, as the placement does. */
+    private fun pivotFor(): Point3? {
+        val bounds = currentMesh?.bounds ?: return null
+        return Point3(bounds.centerX, bounds.centerY, bounds.minZ)
+    }
+
+    /** A half-screen drag is half a turn. */
+    private fun degreesPerPixel(): Float {
+        val extent = if (height > 0) height.toFloat() else FALLBACK_VIEWPORT_PX
+        return ROTATE_DEGREES_PER_SCREEN / extent
+    }
+
+    private fun snapDegrees(degrees: Float): Float =
+        Math.round(degrees / ROTATE_SNAP_DEGREES) * ROTATE_SNAP_DEGREES
+
+    /**
+     * Asks the model whether a long press landed on it.
+     *
+     * The pick runs off the UI thread, like the paint pick, and only a hit asks
+     * for the gizmo: long-pressing the plate is not a request to transform
+     * anything.
+     */
+    private fun scheduleTransformProbe(screenX: Float, screenY: Float) {
+        paintPickExecutor.execute {
+            val hit = modelRenderer.pickTriangle(screenX, screenY)
+            if (hit != null) post { onTransformRequested?.invoke(screenX, screenY) }
+        }
     }
 
     private fun notifyOrientation() {
@@ -563,6 +703,14 @@ class ModelSurfaceView(
     private inner class GestureListener : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(event: MotionEvent): Boolean = true
 
+        override fun onLongPress(event: MotionEvent) {
+            if (cameraInteractive && paintMode == SupportPaintMode.NONE &&
+                !annotationActive && gizmoMode == TransformGizmoMode.NONE
+            ) {
+                scheduleTransformProbe(event.x, event.y)
+            }
+        }
+
         override fun onDoubleTap(event: MotionEvent): Boolean {
             modelRenderer.resetCamera()
             notifyOrientation()
@@ -588,6 +736,15 @@ class ModelSurfaceView(
          * fire while the user is simply resting a finger before dragging.
          */
         const val HANDLE_LONG_PRESS_MILLIS = 2_000L
+
+        /** Cura's rotation snap, and the step the readout counts in. */
+        const val ROTATE_SNAP_DEGREES = 15f
+
+        /** A drag the height of the view is half a turn. */
+        const val ROTATE_DEGREES_PER_SCREEN = 180f
+
+        /** Used before the view has been measured. */
+        const val FALLBACK_VIEWPORT_PX = 1080f
     }
 }
 
@@ -601,6 +758,18 @@ private class ModelRenderer(
     private var paintColors: PaintColorBuffer? = null
     private var annotationOverlay: AnnotationOverlay? = null
     private var annotationBuffer: FloatBuffer? = null
+    private var gizmoOverlay: GizmoOverlay? = null
+    private var gizmoBuffers: List<Pair<FloatArray, FloatBuffer>> = emptyList()
+
+    // Preview of a transform being dragged. Rotation and scale happen about the
+    // pivot the committed placement uses - the model's base centre - so letting go
+    // does not shift the model the finger just positioned.
+    @Volatile private var previewPivotX = 0f
+    @Volatile private var previewPivotY = 0f
+    @Volatile private var previewPivotZ = 0f
+    @Volatile private var previewAxis: ModelPlacement.Axis? = null
+    @Volatile private var previewDegrees = 0f
+    @Volatile private var previewScale = 1f
     // GPU-side (VBO) copies of the mesh; the model renders from VRAM after a
     // single upload, like a game, instead of re-reading CPU memory per frame.
     private var meshVbo = 0
@@ -917,12 +1086,24 @@ private class ModelRenderer(
         Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
         // In plate coordinates, so the offset turns with the model it moves.
         Matrix.translateM(scene, 0, dragOffsetX, dragOffsetY, 0f)
+        // The dragged transform, previewed about the model's base centre.
+        Matrix.translateM(scene, 0, previewPivotX, previewPivotY, previewPivotZ)
+        previewAxis?.let { axis ->
+            when (axis) {
+                ModelPlacement.Axis.X -> Matrix.rotateM(scene, 0, previewDegrees, 1f, 0f, 0f)
+                ModelPlacement.Axis.Y -> Matrix.rotateM(scene, 0, previewDegrees, 0f, 1f, 0f)
+                ModelPlacement.Axis.Z -> Matrix.rotateM(scene, 0, previewDegrees, 0f, 0f, 1f)
+            }
+        }
+        if (previewScale != 1f) Matrix.scaleM(scene, 0, previewScale, previewScale, previewScale)
+        Matrix.translateM(scene, 0, -previewPivotX, -previewPivotY, -previewPivotZ)
         Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
 
         drawGrid()
         drawMesh()
         drawAxisTriad()
         drawAnnotation()
+        drawGizmo()
     }
 
     /**
@@ -1008,6 +1189,66 @@ private class ModelRenderer(
         direct.put(vertices)
         direct.position(0)
         annotationBuffer = direct
+    }
+
+    /** Replaces the transform gizmo geometry; null clears it. */
+    fun setGizmo(value: GizmoOverlay?) {
+        gizmoOverlay = value
+        gizmoBuffers = value?.groups.orEmpty().mapNotNull { group ->
+            if (group.vertices.isEmpty()) {
+                null
+            } else {
+                val direct = java.nio.ByteBuffer
+                    .allocateDirect(group.vertices.size * Float.SIZE_BYTES)
+                    .order(java.nio.ByteOrder.nativeOrder())
+                    .asFloatBuffer()
+                direct.put(group.vertices)
+                direct.position(0)
+                group.color to direct
+            }
+        }
+    }
+
+    /**
+     * The transform the finger is dragging, previewed without touching the model:
+     * [degrees] about [axis] and a uniform [scale], both about [pivot].
+     */
+    fun setPreviewTransform(pivot: Point3?, axis: ModelPlacement.Axis?, degrees: Float, scale: Float) {
+        previewPivotX = pivot?.x ?: 0f
+        previewPivotY = pivot?.y ?: 0f
+        previewPivotZ = pivot?.z ?: 0f
+        previewAxis = axis
+        previewDegrees = if (degrees.isFinite()) degrees else 0f
+        previewScale = if (scale.isFinite() && scale > 0f) scale else 1f
+    }
+
+    private fun drawGizmo() {
+        val overlay = gizmoOverlay ?: return
+        if (overlay.isEmpty || gizmoBuffers.isEmpty()) return
+
+        Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
+        Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
+
+        GLES20.glUseProgram(lineProgram)
+        val position = GLES20.glGetAttribLocation(lineProgram, "aPosition")
+        val matrix = GLES20.glGetUniformLocation(lineProgram, "uMvpMatrix")
+        val color = GLES20.glGetUniformLocation(lineProgram, "uColor")
+        GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
+
+        // Over the model, not inside it: a ring on the far side still has to be
+        // grabbable, and that is the whole point of showing it.
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glLineWidth(GIZMO_LINE_WIDTH_PX.coerceIn(1f, maxLineWidth))
+        GLES20.glEnableVertexAttribArray(position)
+        gizmoBuffers.forEach { (groupColor, buffer) ->
+            GLES20.glUniform4f(color, groupColor[0], groupColor[1], groupColor[2], 1f)
+            buffer.position(0)
+            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 3 * 4, buffer)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, buffer.capacity() / 3)
+        }
+        GLES20.glLineWidth(1f)
+        GLES20.glDisableVertexAttribArray(position)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
     private fun rebuildColorBuffer() {
@@ -1508,6 +1749,9 @@ private class ModelRenderer(
         const val MIN_ZOOM = 0.08f
         const val MAX_ZOOM = 40f
         const val FIELD_OF_VIEW_DEGREES = 42f
+
+        /** Thick enough to see over the shaded model, thin enough not to hide it. */
+        const val GIZMO_LINE_WIDTH_PX = 3f
         const val GRID_Z = -0.08f
 
         /** The plate marker: its arm on screen, in dp, and how thick it draws. */
