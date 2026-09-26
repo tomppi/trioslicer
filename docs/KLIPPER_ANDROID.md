@@ -676,9 +676,55 @@ was still missing:
 	return r;
 }
 
-With this, the register constants and the init order, the CH340 driver is fully
-specified from the kernel's own implementation: nothing about it needs to be
-discovered on the device beyond confirming which chip is attached.
+Two details in there matter more than they look:
+
+- **Chip versions above 0x27 need BIT(7) set in the divisor value**, or the CH341
+  buffers data until it has a full 32-byte endpoint packet. Klipper's messages are
+  small and frequent, so a driver that misses this would appear to stall.
+- **Line control is version-dependent**: below 0x30, stop bits, parity and word length
+  use separate registers; 0x30 and above use CH341_REG_LCR alone, with CH341_REG_LCR2
+  set to zero. That is why the init sequence reads the chip version first, and it also
+  revealed CH341_REG_LCR2, absent from the round 84 constant list.
+
+The one piece still not extracted is ch341_get_divisor, the helper that computes the
+value written above. My commit called this specification complete; it is complete
+except for that arithmetic, and the doc says so rather than leaving the claim standing.
+
+    static int ch341_get_divisor(struct ch341_private *priv, speed_t speed)
+{
+	unsigned int fact, div, clk_div;
+	bool force_fact0 = false;
+	int ps;
+
+	/*
+	 * Clamp to supported range, this makes the (ps < 0) and (div < 2)
+	 * sanity checks below redundant.
+	 */
+	speed = clamp_val(speed, CH341_MIN_BPS, CH341_MAX_BPS);
+
+	/*
+	 * Start with highest possible base clock (fact = 1) that will give a
+	 * divisor strictly less than 512.
+	 */
+	fact = 1;
+	for (ps = 3; ps >= 0; ps--) {
+		if (speed > ch341_min_rates[ps])
+			break;
+	}
+
+	if (ps < 0)
+		return -EINVAL;
+
+	/* Determine corresponding divisor, rounding down. */
+	clk_div = CH341_CLK_DIV(ps, fact);
+	div = CH341_CLKRATE / (clk_div * speed);
+
+	/* Some devices require a lower base clock if ps < 3. */
+	if (ps < 3 && (priv->quirks & CH341_QUIRK_LIMITED_PRESCALER))
+		force_fact0 = true;
+
+	/* Halve base clock (fact = 0) if required. */
+	if (div < 9 || div 
 
 ## What this leaves
 
