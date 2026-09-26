@@ -346,6 +346,57 @@ greenlet, jinja2 and MarkupSafe built against it. That removes the pyconfig.h
 guesswork entirely and it is a few megabytes beside a payload that is already 445 MB
 of native libraries. The Blender interpreter stays untouched for Blender.
 
+## Rounds 19-58: the port, end to end
+
+**Klippy runs on the Fold 5.** It boots, loads 127 MCU commands, configures the
+move queue, processes G-code in batch mode and writes MCU output:
+
+    Loaded MCU 'mcu' 127 commands (v0.13.0-0-g61c0c8d)
+    Configured MCU 'mcu' (500 moves)
+    Exiting (print time 0.251s)
+
+That is under root adb, using our own bionic interpreter and the payload in the
+app's files directory - not yet inside the app's process. The port itself:
+
+**The interpreter** (scripts/build-klipper-python-android.sh). CPython 3.11.4,
+three fights: configure refuses to cross-compile without --with-build-python (and
+the flag needs the *same* minor version, so the box's 3.13 was no substitute); the
+extension modules race the shared library they link against under a parallel make,
+so the library is built in its own pass first; and the core objects came out
+without -fPIC, which only showed as relocation errors at link time. Plus the
+Termux ac_cv answers, which stop configure guessing wrong about Android.
+
+**The extensions** (scripts/build-klipper-extensions-android.sh, committed with the
+reason for every flag). libffi 3.4.6 static - 3.4.4 does not build on Android
+because tramp.c calls open_temp_exec_file undeclared. cffi and greenlet linked
+against libpython, or greenlet fails at load on PyContext_Type. greenlet also needs
+-fno-emulated-tls (its default pulls in __emutls_get_address, which bionic lacks)
+and libc++_shared.so present at runtime. setuptools comes from an unpacked wheel,
+because the host interpreter has no ssl so pip cannot reach PyPI. Extensions must be
+named with the target's EXT_SUFFIX (.cpython-311.so), not the host platform tag.
+
+**How it runs on the device.** Push the interpreter and libpython to
+/data/local/tmp, unpack the payload into the app's files directory, then:
+
+    LD_LIBRARY_PATH=/data/local/tmp/kpy PYTHONHOME=<payload> \
+      ./python3.11 <payload>/klippy/klippy.py cfg -i gcode -o out -d klipper.dict -l log
+
+Batch mode needs -d, the MCU dictionary, or klippy dies on options.dictionary with
+"'NoneType' object is not iterable". Build it with the linux-process MCU config.
+
+**Learned the hard way, worth keeping.** Read the log rather than grep it for the
+error you expect - four wrong diagnoses came from assuming a shape. Check the
+binary, not the exit code: an .so named x86_64 held correct AArch64 code, and a
+"successful" cross build was byte-identical to the host one because make reused
+stale objects. And a shared library links happily with unresolved symbols, so
+-Wl,--no-undefined belongs in every cross build.
+
+**Dead end, recorded so it is not retried:** the linux-process MCU will not
+cross-compile by overriding CROSS_COMPILE (ignored for that target, which is meant
+to build for the machine running it) and not by overriding OBJCOPY either (llvm
+objcopy does not match the .ctr step's expectations). The simulated printer is a
+convenience; the timing numbers that matter should come from a real board.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
