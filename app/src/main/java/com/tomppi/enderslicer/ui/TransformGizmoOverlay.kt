@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,25 +50,25 @@ internal fun TransformGizmoOverlay(
     mode: TransformGizmoMode,
     readout: String?,
     scalePercent: Int,
+    compact: Boolean,
     onMode: (TransformGizmoMode) -> Unit,
     onScalePercent: (Int) -> Unit,
     onScaleFinished: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(modifier = modifier.widthIn(min = 250.dp, max = 320.dp)) {
+    // While a handle is held the menu steps aside and only the value being dialled
+    // in stays: a ring or an arrow needs aiming at, and the menu is in the way of
+    // the thing it belongs to.
+    if (compact && readout == null) return
+
+    Card(modifier = modifier.widthIn(max = 340.dp)) {
         Column(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ModeButton("Rotate", mode == TransformGizmoMode.ROTATE) { onMode(TransformGizmoMode.ROTATE) }
-                ModeButton("Move", mode == TransformGizmoMode.MOVE) { onMode(TransformGizmoMode.MOVE) }
-                ModeButton("Scale", mode == TransformGizmoMode.SCALE) { onMode(TransformGizmoMode.SCALE) }
-                TextButton(onClick = onDone) { Text("Done") }
+            if (!compact) {
+                GizmoModeRow(mode = mode, onMode = onMode, onDone = onDone)
             }
 
             Text(
@@ -80,7 +81,7 @@ internal fun TransformGizmoOverlay(
                 },
             )
 
-            if (mode == TransformGizmoMode.SCALE) {
+            if (!compact && mode == TransformGizmoMode.SCALE) {
                 // The slider snaps; the field is for a percentage someone already
                 // knows. They drive the same value, so neither can disagree.
                 var scaleText by rememberSaveable { mutableStateOf(scalePercent.toString()) }
@@ -142,12 +143,51 @@ internal fun TransformGizmoOverlay(
 }
 
 @Composable
-private fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    if (selected) {
-        Button(onClick = onClick) { Text(label) }
-    } else {
-        OutlinedButton(onClick = onClick) { Text(label) }
+private fun GizmoModeRow(
+    mode: TransformGizmoMode,
+    onMode: (TransformGizmoMode) -> Unit,
+    onDone: () -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ModeButton("Rotate", mode == TransformGizmoMode.ROTATE) { onMode(TransformGizmoMode.ROTATE) }
+        ModeButton("Move", mode == TransformGizmoMode.MOVE) { onMode(TransformGizmoMode.MOVE) }
+        ModeButton("Scale", mode == TransformGizmoMode.SCALE) { onMode(TransformGizmoMode.SCALE) }
+        TextButton(
+            onClick = onDone,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        ) {
+            SingleLineLabel("Done")
+        }
     }
+}
+
+/**
+ * A button that never wraps its label.
+ *
+ * Four of these share one narrow row, and a squeezed button used to break its word
+ * over several lines - "Done" reading downwards one letter at a time.
+ */
+@Composable
+private fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    val padding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    if (selected) {
+        Button(onClick = onClick, contentPadding = padding) { SingleLineLabel(label) }
+    } else {
+        OutlinedButton(onClick = onClick, contentPadding = padding) { SingleLineLabel(label) }
+    }
+}
+
+@Composable
+private fun SingleLineLabel(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        maxLines = 1,
+        softWrap = false,
+    )
 }
 
 private fun hintFor(mode: TransformGizmoMode): String = when (mode) {

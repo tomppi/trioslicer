@@ -10,7 +10,12 @@ import kotlin.math.sin
 enum class TransformGizmoMode { NONE, MOVE, ROTATE, SCALE }
 
 /** One coloured run of line segments: xyz pairs, ready for GL_LINES. */
-class GizmoGroup(val color: FloatArray, val vertices: FloatArray)
+class GizmoGroup(
+    val color: FloatArray,
+    val vertices: FloatArray,
+    /** The axis this run belongs to, so the renderer can mark the live one. */
+    val axis: ModelPlacement.Axis? = null,
+)
 
 /** The handle a touch landed on. */
 data class GizmoHit(val axis: ModelPlacement.Axis, val kind: GizmoHandleKind)
@@ -156,7 +161,7 @@ object TransformGizmo {
                     values[target++] = ring.points[next * 3 + component]
                 }
             }
-            GizmoGroup(colorFor(ring.axis), values)
+            GizmoGroup(colorFor(ring.axis), values, ring.axis)
         },
         handles = rings.map { ring ->
             GizmoHandle(ring.axis, GizmoHandleKind.RING, ring.points)
@@ -164,7 +169,7 @@ object TransformGizmo {
     )
 
     fun arrowsOverlay(arrows: List<GizmoArrow>): GizmoOverlay = GizmoOverlay(
-        arrows.map { arrow -> GizmoGroup(colorFor(arrow.axis), arrow.vertices) },
+        arrows.map { arrow -> GizmoGroup(colorFor(arrow.axis), arrow.vertices, arrow.axis) },
         handles = arrows.map { arrow ->
             GizmoHandle(arrow.axis, GizmoHandleKind.ARROW, arrow.samples)
         },
@@ -178,7 +183,11 @@ object TransformGizmo {
             val s = (sin(angle) * radiusMm).toFloat()
             val (x, y, z) = when (axis) {
                 ModelPlacement.Axis.X -> Triple(pivot.x, pivot.y + c, pivot.z + s)
-                ModelPlacement.Axis.Y -> Triple(pivot.x + c, pivot.y, pivot.z + s)
+                // Y runs the other way round the ring. The standard rotation about
+                // +Y takes +X towards -Z, so a ring wound like the other two would
+                // travel against its own positive turn and the drag would come out
+                // reversed - which is exactly what it did.
+                ModelPlacement.Axis.Y -> Triple(pivot.x + c, pivot.y, pivot.z - s)
                 ModelPlacement.Axis.Z -> Triple(pivot.x + c, pivot.y + s, pivot.z)
             }
             values[index * 3] = x

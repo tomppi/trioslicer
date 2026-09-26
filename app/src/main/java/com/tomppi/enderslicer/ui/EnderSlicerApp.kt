@@ -205,7 +205,7 @@ fun EnderSlicerApp(
     var gizmoMode by rememberSaveable { mutableStateOf(TransformGizmoMode.NONE) }
     var gizmoScalePercent by rememberSaveable { mutableStateOf(100) }
     var gizmoReadout by remember { mutableStateOf<String?>(null) }
-    var gizmoAnchor by remember { mutableStateOf<Offset?>(null) }
+    var gizmoHandleDrag by remember { mutableStateOf(false) }
     var supportPaintUiOpen by rememberSaveable { mutableStateOf(false) }
     var annotationUiOpen by rememberSaveable { mutableStateOf(false) }
     // Hoisted out of the layout branches: the gesture help folds away for good
@@ -1239,10 +1239,10 @@ fun EnderSlicerApp(
                                 gizmoReadout = "Move " + axis.name + " · " +
                                     String.format(java.util.Locale.ROOT, "%.1f", millimetres) + " mm"
                             },
+                            onHandleDragActive = { dragging -> gizmoHandleDrag = dragging },
                             gizmoMode = gizmoMode,
                             scalePreview = gizmoScalePercent / 100f,
-                            onTransformRequested = { x, y ->
-                                gizmoAnchor = Offset(x, y)
+                            onTransformRequested = { _, _ ->
                                 gizmoMode = TransformGizmoMode.ROTATE
                                 gizmoScalePercent = 100
                                 gizmoReadout = null
@@ -1300,6 +1300,7 @@ fun EnderSlicerApp(
                                 mode = gizmoMode,
                                 readout = gizmoReadout,
                                 scalePercent = gizmoScalePercent,
+                                compact = gizmoHandleDrag,
                                 onMode = { mode ->
                                     gizmoMode = mode
                                     gizmoReadout = null
@@ -1318,17 +1319,11 @@ fun EnderSlicerApp(
                                     gizmoScalePercent = 100
                                     gizmoReadout = null
                                 },
+                                // Above the model and to the right of it, where it
+                                // covers the plate rather than the part being moved.
                                 modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .offset {
-                                        val anchor = gizmoAnchor
-                                        if (anchor == null) {
-                                            IntOffset(0, 0)
-                                        } else {
-                                            IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt())
-                                        }
-                                    }
-                                    .padding(8.dp),
+                                    .align(Alignment.TopEnd)
+                                    .padding(12.dp),
                             )
                         }
 
@@ -2208,6 +2203,8 @@ private fun ViewerPanel(
     /** A drag on a gizmo arrow: millimetres along that axis, and the same while down. */
     onModelAxisMove: (ModelPlacement.Axis, Float) -> Unit,
     onModelAxisMovePreview: (ModelPlacement.Axis, Float) -> Unit,
+    /** True while a handle is held, so the menu can step aside. */
+    onHandleDragActive: (Boolean) -> Unit,
     /** The on-model gizmo: which mode is up, and what it reports. */
     gizmoMode: TransformGizmoMode,
     scalePreview: Float,
@@ -2324,6 +2321,7 @@ private fun ViewerPanel(
                         view.onModelDragPreview = onModelDragPreview
                         view.onModelAxisMove = onModelAxisMove
                         view.onModelAxisMovePreview = onModelAxisMovePreview
+                        view.onHandleDragActive = onHandleDragActive
                         view.gizmoMode = gizmoMode
                         view.scalePreview = scalePreview
                         view.onTransformRequested = onTransformRequested

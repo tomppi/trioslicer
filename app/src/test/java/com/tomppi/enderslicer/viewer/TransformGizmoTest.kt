@@ -44,6 +44,42 @@ class TransformGizmoTest {
     }
 
     @Test
+    fun eachRingRunsTheWayItsAxisTurns() {
+        // The next point along a ring has to be where a small positive rotation
+        // takes the current one. The renderer takes a ring's own direction as the
+        // direction of a positive turn, so a ring wound the other way turns
+        // against the finger - which is how the Y axis behaved.
+        val rings = TransformGizmo.rings(pivot, radiusMm = 40f)
+        rings.forEach { ring ->
+            val current = floatArrayOf(ring.points[0], ring.points[1], ring.points[2])
+            val next = floatArrayOf(ring.points[3], ring.points[4], ring.points[5])
+            val turned = rotateAbout(ring.axis, current, 0.05)
+            val step = dot(
+                next[0] - current[0], next[1] - current[1], next[2] - current[2],
+                turned[0] - current[0], turned[1] - current[1], turned[2] - current[2],
+            )
+            assertTrue("ring " + ring.axis + " runs against its own turn", step > 0f)
+        }
+    }
+
+    /** The same convention ModelPlacement.rotated uses, stated independently. */
+    private fun rotateAbout(axis: ModelPlacement.Axis, point: FloatArray, radians: Double): FloatArray {
+        val c = kotlin.math.cos(radians).toFloat()
+        val s = kotlin.math.sin(radians).toFloat()
+        val x = point[0]
+        val y = point[1]
+        val z = point[2]
+        return when (axis) {
+            ModelPlacement.Axis.X -> floatArrayOf(x, y * c - z * s, y * s + z * c)
+            ModelPlacement.Axis.Y -> floatArrayOf(x * c + z * s, y, -x * s + z * c)
+            ModelPlacement.Axis.Z -> floatArrayOf(x * c - y * s, x * s + y * c, z)
+        }
+    }
+
+    private fun dot(ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float): Float =
+        ax * bx + ay * by + az * bz
+
+    @Test
     fun ringsBecomePairedSegmentsInTheAxisColours() {
         val overlay = TransformGizmo.ringsOverlay(TransformGizmo.rings(pivot, radiusMm = 25f))
 

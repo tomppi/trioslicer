@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.viewer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,7 +25,6 @@ class GizmoDragTest {
 
     @Test
     fun draggingAcrossAnArrowMovesNothing() {
-        // Perpendicular to the arrow: no movement along its axis.
         val millimetres = GizmoDrag.axisMillimetres(
             deltaXPx = 0f,
             deltaYPx = 60f,
@@ -40,8 +40,8 @@ class GizmoDragTest {
 
     @Test
     fun aDiagonalArrowWorksOnBothScreenAxes() {
-        // 3-4-5 triangle: the arrow is 50 px long for 25 mm, and a drag of 30 px
-        // along it (18, 24) is 15 mm.
+        // 3-4-5 triangle: 50 px of arrow for 25 mm, so a drag of 30 px along it
+        // (18, 24) is 15 mm.
         val millimetres = GizmoDrag.axisMillimetres(
             deltaXPx = 18f,
             deltaYPx = 24f,
@@ -57,7 +57,6 @@ class GizmoDragTest {
 
     @Test
     fun anEndOnAxisFallsBackToVertical() {
-        // Projected to a point: the axis points at the viewer.
         val millimetres = GizmoDrag.axisMillimetres(
             deltaXPx = 40f,
             deltaYPx = -20f,
@@ -72,31 +71,36 @@ class GizmoDragTest {
     }
 
     @Test
-    fun aRingTurnsWithTheFingerAroundIt() {
-        // Grabbed at the top of the ring, dragged right: clockwise, and a drag the
+    fun aRingTurnsAlongItsOwnTangent() {
+        // Tangent pointing right: dragging right is a positive turn, and a drag the
         // length of the radius is the stated number of degrees.
-        val degrees = GizmoDrag.ringDegrees(
-            deltaXPx = 100f,
-            deltaYPx = 0f,
-            centreX = 300f,
-            centreY = 300f,
-            touchX = 300f,
-            touchY = 200f,
-            radiusPx = 100f,
-            degreesPerRadius = 60f,
-        )
-        assertEquals(60f, degrees, 1e-3f)
-        // The opposite drag turns the other way.
-        val back = GizmoDrag.ringDegrees(
-            deltaXPx = -100f,
-            deltaYPx = 0f,
-            centreX = 300f,
-            centreY = 300f,
-            touchX = 300f,
-            touchY = 200f,
-            radiusPx = 100f,
-        )
-        assertEquals(-60f, back, 1e-3f)
+        assertEquals(60f, GizmoDrag.ringDegrees(100f, 0f, 1f, 0f, 100f, 60f), 1e-3f)
+        assertEquals(-60f, GizmoDrag.ringDegrees(-100f, 0f, 1f, 0f, 100f, 60f), 1e-3f)
+        // Across the tangent: no turn.
+        assertEquals(0f, GizmoDrag.ringDegrees(0f, 80f, 1f, 0f, 100f), 1e-3f)
+    }
+
+    @Test
+    fun theTangentComesFromTheRingSoBothSidesTurnTheSameWay() {
+        // The ring as it looks on screen: twelve points around a circle of radius
+        // 50. The tangent at the top of the screen and the tangent at the bottom
+        // point opposite ways on screen, which is what makes the same finger
+        // movement turn the ring the same way whichever side was grabbed. Deriving
+        // the direction from the touch instead got this backwards on one side.
+        val points = FloatArray(24)
+        for (index in 0 until 12) {
+            val angle = 2.0 * Math.PI * index / 12.0
+            points[index * 2] = 100f + 50f * kotlin.math.cos(angle).toFloat()
+            points[index * 2 + 1] = 100f + 50f * kotlin.math.sin(angle).toFloat()
+        }
+
+        val top = GizmoDrag.ringReference(points, 100f, 50f)
+        val bottom = GizmoDrag.ringReference(points, 100f, 150f)
+
+        assertNotNull(top)
+        assertNotNull(bottom)
+        assertTrue("opposite sides travel opposite ways", top!![0] * bottom!![0] < 0f)
+        assertEquals("the ring's radius on screen", 50f, top[2], 1e-2f)
     }
 
     @Test
@@ -106,7 +110,8 @@ class GizmoDragTest {
             GizmoDrag.axisMillimetres(Float.NaN, 0f, 0f, 0f, 10f, 0f, 10f, 0.5f),
             0f,
         )
-        assertEquals(0f, GizmoDrag.ringDegrees(10f, 0f, 0f, 0f, 0f, 0f, 0f), 0f)
+        assertEquals(0f, GizmoDrag.ringDegrees(10f, 0f, 0f, 0f, 0f), 0f)
+        assertEquals(0f, GizmoDrag.ringDegrees(10f, 0f, 1f, 0f, Float.NaN), 0f)
         assertTrue(GizmoDrag.TOUCH_RADIUS_PX > 0f)
     }
 }
