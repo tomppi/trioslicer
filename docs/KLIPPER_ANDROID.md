@@ -149,6 +149,25 @@ ctypes, and ctypes plus libffi are compiled into the interpreter (verified in ro
 ctypes - no Python.h and no pyconfig.h are involved in the helper at all. The
 pyconfig.h question from round 3 therefore only remains for cffi and greenlet.
 
+## Round 5: chelper is compiled at import time, and the stable version
+
+- Klipper cloned to /root/klipper-port/klipper, deliberately outside this repo so
+  the GPLv3 sources stay separate. Master, commit ce7002b.
+- There is **no Makefile and no CMakeLists anywhere in klippy/chelper**, which is
+  why the first compile attempt failed with "no targets specified". Klippy
+  compiles its own helper **at import time**: klippy/chelper/__init__.py declares
+  DEST_LIB = "c_helper.so", checks whether it needs compiling, and invokes a
+  compiler in a subprocess.
+- That is the real porting task for chelper, and it is different from what I
+  assumed: on a phone there is no compiler at runtime, so c_helper.so must be
+  **pre-built for bionic and shipped with the app**, with klippy's
+  needs-compiling check either satisfied (a shipped .so newer than the sources) or
+  patched to accept the packaged one. It also explains the upstream pull request
+  seen in round 1 about validating c_helper.so's size.
+- **Current stable Klipper is v0.13.0** - upstream tags run v0.10.0, v0.11.0,
+  v0.12.0, v0.13.0. The working copy should be moved onto that tag rather than
+  master before anything is built against it.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
