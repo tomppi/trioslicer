@@ -4,9 +4,15 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-09-26
 
 ### Added
+
+- **Transform the model with the on-model gizmo.** Long-press the model and three modes float up above it: **Rotate**, **Move** and **Scale**. Rotate draws coloured rings around the model - red X, green Y, blue Z, Cura's colours - and dragging a ring turns the model about that axis, snapped to 15 degrees, with the angle in a hovering readout. Move draws an arrow per axis: drag one and the model slides along exactly that axis, the vertical one lifting it off the bed, with the distance read back in millimetres. The handle under your finger is drawn fatter and lighter, only a handle starts a transform - a drag anywhere else still orbits the camera - and the menu steps aside while you drag, leaving just the value you are dialling in.
+- **Scale has a slider that snaps in 5% steps and a percentage field beside it**, for a size you already know, both previewing the model as you go.
+- Long-pressing the model while the gizmo is up, or dragging anywhere on the plate, is still the camera's.
+
+### Added (1.4.0, earlier in this release)
 
 - **Drag the model across the plate with a finger.** *Model tools → Transform* has a **Move with finger** button: while it is on, one finger drags the model over the bed and two fingers still orbit, pan and zoom. The drag previews itself in the viewer and the placement is applied once, when the finger lifts, so a large model moves without re-transforming its mesh on every frame. The movement is projected onto the plate, so a drag cannot lift the model off the bed or sink it into it, and a move that would leave the build volume is refused by the same check the typed position goes through.
 
