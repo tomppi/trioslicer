@@ -16,7 +16,9 @@ import android.system.Os
 import android.util.Log
 import com.tomppi.enderslicer.MainActivity
 import com.tomppi.enderslicer.printer.KlipperClient
+import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperPty
+import com.tomppi.enderslicer.printer.withStatus
 import com.tomppi.enderslicer.printer.PrinterBridge
 import java.io.File
 import java.io.IOException
@@ -151,7 +153,7 @@ class KlipperEngineService : Service() {
             // klippy's API is what the app's front end talks to, so it is proved here
             // as soon as klippy opens it. This runs on its own thread because the one
             // below reads klippy's output until it exits.
-            Thread({ proveApi() }, "klipper-api").start()
+            Thread({ watchHost() }, "klipper-api").start()
             // Android's Process has no pid() (that is a JVM method), so the start
             // is logged without one. What klippy writes goes to its log file; what
             // reaches here is a startup failure or a traceback.
@@ -170,15 +172,21 @@ class KlipperEngineService : Service() {
     }
 
     /**
-     * First light on klippy's API, and the app's way in to it.
+     * Follow the host through klippy's API: first light, then the numbers that matter.
      *
      * The socket exists from the moment klippy starts, so the first answer is not the
      * interesting one - it is asked again until the micro-controller handshake is done
      * and the printer reports itself ready, or until it is clear it will not. A
      * failure here is not fatal to the host: it means there is nothing for a front end
      * to talk to yet.
+     *
+     * After that it keeps recording the timing margins. A print runs with the screen
+     * off, so no printer screen is open and these would otherwise never be written
+     * down: the lookahead against the one-to-two seconds klippy aims to keep queued,
+     * the stall count, the round trip and the retransmits. That is the measurement the
+     * feasibility question needs, taken from the machine doing the work.
      */
-    private fun proveApi() {
+    private fun watchHost() {
         val path = File(filesDir, "klippy.sock")
         val client = KlipperClient(path.absolutePath)
         try {
@@ -216,10 +224,43 @@ class KlipperEngineService : Service() {
                 "bed=${status.optJSONObject("heater_bed")?.optDouble("temperature")}C " +
                 "position=${status.optJSONObject("toolhead")?.optJSONArray("position")} " +
                 "homed='${status.optJSONObject("toolhead")?.optString("homed_axes")}'")
+            recordMargins(client)
         } catch (e: Exception) {
             Log.w(TAG, "klippy API not reachable: ${e.message}")
         } finally {
             client.close()
+        }
+    }
+
+    /**
+     * Write the host's timing margins down while it runs.
+     *
+     * Every [MARGIN_POLL_MS] at most, and immediately whenever something goes wrong
+     * with them, so a long print leaves a record without filling the log.
+     */
+    private fun recordMargins(client: KlipperClient) {
+        var state = KlipperPrinterState(connected = true)
+        var lastStalls = 0
+        var lastRetransmits = 0
+        var lastReport = System.currentTimeMillis()
+        while (process != null && client.isConnected) {
+            Thread.sleep(MARGIN_POLL_MS)
+            state = state.withStatus(client.query("mcu", "toolhead", "print_stats"))
+            val stalls = state.printStalls ?: 0
+            val retransmits = state.timing?.retransmittedBytes ?: 0
+            val now = System.currentTimeMillis()
+            if (stalls != lastStalls || retransmits != lastRetransmits
+                || now - lastReport >= MARGIN_LOG_MS
+            ) {
+                Log.i(TAG, "margins: lookahead=${state.lookaheadSeconds?.let { "%.2fs".format(it) } ?: "-"} " +
+                    "stalls=$stalls retransmits=$retransmits " +
+                    "srtt=${state.timing?.roundTripSeconds?.let { "%.1fms".format(it * 1000) } ?: "-"} " +
+                    "rto=${state.timing?.retransmitTimeoutSeconds?.let { "%.0fms".format(it * 1000) } ?: "-"} " +
+                    "print=${state.printState ?: state.state}")
+                lastStalls = stalls
+                lastRetransmits = retransmits
+                lastReport = now
+            }
         }
     }
 
@@ -409,6 +450,12 @@ class KlipperEngineService : Service() {
 
         /** How long to keep asking until the printer calls itself ready. */
         private const val API_READY_WAIT_MS = 90_000L
+
+        /** How often the margins are read while the host runs. */
+        private const val MARGIN_POLL_MS = 5_000L
+
+        /** How often they are written when nothing about them has changed. */
+        private const val MARGIN_LOG_MS = 60_000L
 
         /**
          * Files whose absence means the payload is not usable: the host itself,
