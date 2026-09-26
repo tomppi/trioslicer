@@ -63,6 +63,36 @@ out of the tree, not assumed.
    Klipper.
 4. Then the transport, then the timing measurements.
 
+## The bundled CPython, inspected
+
+- Version **3.11.4**, read from libcpython.so.
+- It is a **static-extension build**: there is no lib-dynload directory at all,
+  and the C modules live inside the library - PyInit__ctypes, PyInit__socket and
+  PyInit__array are all present as symbols.
+- **libffi is compiled in** (ffi_prep_cif, ffi_call), so ctypes works. This
+  matters more than anything else here: Klipper loads its C helper with ctypes,
+  so the one dependency that could have stopped the idea at this stage is
+  already satisfied.
+- The library exports Py_Initialize, Py_InitializeFromConfig and Py_Main, so it
+  can host an embedded interpreter or act as a python executable.
+- libblender_exec.so references libcpython.so and calls Py_Initialize: the app
+  already ships a program that hosts this interpreter, which is exactly the shape
+  klippy needs.
+- The launch pattern is in OrcaEngineRunner, CuraEngineRunner and PrusaEngineRunner:
+  nativeDirectory is applicationInfo.nativeLibraryDir, the executable is a
+  lib*_exec.so inside it, availability is a file check, and resources are
+  extracted into filesDir behind a .resources-version marker. A vendored klippy
+  tree would stage exactly that way.
+
+## What this leaves
+
+1. Confirm the handful of builtins klippy imports - _struct, _collections,
+   _queue, zlib, hashlib. Cheap, and by this pattern they will be present.
+2. chelper compiled for bionic. Plain C, and the NDK is pinned at 28.2.13676358.
+3. Check whether the Klipper version chosen still needs cffi and greenlet, or
+   whether ctypes plus the stdlib is enough. Fewer moving parts if it is.
+4. Then the trivial extension proof, then klippy in batch mode.
+
 ## What this changes
 
 Step 2 of the goal is smaller than it looked from outside: the Python runtime,
