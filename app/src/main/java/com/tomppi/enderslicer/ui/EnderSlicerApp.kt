@@ -1301,6 +1301,9 @@ fun EnderSlicerApp(
                                 readout = gizmoReadout,
                                 scalePercent = gizmoScalePercent,
                                 compact = gizmoHandleDrag,
+                                canUndo = state.canUndoPlacement,
+                                undoLabel = state.undoPlacementLabel,
+                                onUndo = viewModel::undoPlacement,
                                 onMode = { mode ->
                                     gizmoMode = mode
                                     gizmoReadout = null

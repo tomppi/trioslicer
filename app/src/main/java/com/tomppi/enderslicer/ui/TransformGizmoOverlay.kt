@@ -51,6 +51,9 @@ internal fun TransformGizmoOverlay(
     readout: String?,
     scalePercent: Int,
     compact: Boolean,
+    canUndo: Boolean,
+    undoLabel: String?,
+    onUndo: () -> Unit,
     onMode: (TransformGizmoMode) -> Unit,
     onScalePercent: (Int) -> Unit,
     onScaleFinished: () -> Unit,
@@ -80,6 +83,14 @@ internal fun TransformGizmoOverlay(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
+
+            // Only there when there is something to take back, so the menu stays
+            // as small as it was the rest of the time.
+            if (!compact && canUndo) {
+                OutlinedButton(onClick = onUndo, modifier = Modifier.fillMaxWidth()) {
+                    SingleLineLabel(undoLabel?.let { "Undo " + it } ?: "Undo")
+                }
+            }
 
             if (!compact && mode == TransformGizmoMode.SCALE) {
                 // The slider snaps; the field is for a percentage someone already
