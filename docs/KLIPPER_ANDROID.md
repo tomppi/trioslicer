@@ -397,6 +397,34 @@ to build for the machine running it) and not by overriding OBJCOPY either (llvm
 objcopy does not match the .ctr step's expectations). The simulated printer is a
 convenience; the timing numbers that matter should come from a real board.
 
+## Rounds 60-61: the transport seam is upstream, not a patch
+
+I had planned for thirty rounds to patch chelper's serial layer. Reading it settled
+the question in one command:
+
+- **serialqueue_alloc takes an int fd**, not a device path:
+  serialqueue_alloc(int serial_fd, char serial_fd_type, int client_id). klippy opens
+  the port in Python and passes serial_dev.fileno(); chelper never opens a device and
+  never touches termios.
+- chelper's module-level API is FFI_lib (the cffi handle on c_helper.so) plus
+  FFI_main and DEST_LIB. serialqueue_alloc lives on FFI_lib, alongside the
+  SerialReader and SerialQueue wrappers - not on the module itself.
+- serialhdl.SerialReader takes two to three positional arguments (reactor, serial,
+  name); my first attempt passed four and was told so.
+
+**So the Android transport is:**
+
+1. Kotlin: open the USB device, create a socketpair, run a pump thread copying
+   between one end and the board's bulk endpoints. The virtual-serial-port trick,
+   no kernel driver, no root.
+2. Python: hand the other end's fd to klippy as its serial port. Any object with a
+   working fileno() satisfies serialhdl, so a socket behaves as a tty does.
+3. Klipper: unchanged. Not serialqueue.c, not serialhdl.py.
+
+The half of this that needs no hardware - the Python side and a simulated MCU
+answering over a socketpair - can be built and verified on the device. Only the
+pump thread needs a real board, which is also where the timing numbers come from.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
