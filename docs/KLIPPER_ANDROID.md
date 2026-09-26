@@ -726,6 +726,41 @@ except for that arithmetic, and the doc says so rather than leaving the claim st
 	/* Halve base clock (fact = 0) if required. */
 	if (div < 9 || div 
 
+## The printer is on the bus (CH340 confirmed)
+
+The cable was the fault. With a data-capable one, the board enumerates:
+
+    usb 2-1: new full-speed USB device number 2 using xhci-hcd
+    usb 2-1: New USB device found, idVendor=1a86, idProduct=7523, bcdDevice= 2.64
+    usb 2-1: Product: USB Serial
+
+That is the CH340, exactly as expected on a Creality 4.2.x board, and it confirms
+three things at once:
+
+- **No /dev/ttyUSB appears, and never will.** The kernel reports CONFIG_USB_SERIAL is
+  not set, so there is no in-kernel driver for this chip. The port can only be claimed
+  in userspace, which is why usb-serial-for-android is in the app rather than a
+  hand-written kernel module being possible.
+- **The interface is vendor-specific** (class 0xff, one interface) rather than CDC-ACM,
+  so it is matched by VID/PID, not by interface type. 1a86:7523 is both in the
+  library's well-known table and in PrinterUsb's own ProbeTable.
+- **The endpoints are the CH340 layout**: bulk OUT (32 bytes), bulk IN (32 bytes) and
+  an interrupt IN (8 bytes) status pipe. Those two bulk pipes are what the pump moves
+  bytes through.
+
+The device node is /dev/bus/usb/002/002, owned by system. An app does not open it
+directly; it goes through UsbManager after requesting permission, which is the whole
+reason the library route exists.
+
+**Dead ends worth not repeating**, both of which cost time tonight:
+
+- Host mode stays false until an adapter that actually asserts OTG is used. A phone in
+  device mode will never see a printer, whatever else is correct.
+- A charge-only cable produces *total* silence: no attach event, no error, nothing in
+  the kernel log. Silence of that kind is a physical-layer symptom, not a driver one.
+- Baud rate is irrelevant to detection. It is a chip register set after enumeration,
+  and on a CH340 the USB side always runs at full speed regardless.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
