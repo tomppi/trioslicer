@@ -296,6 +296,26 @@ but not as an exported dynamic symbol. Next: check how 0.13's itersolve.c define
 it, and whether klippy actually looks that name up. This is the last known gap
 between the app and Klipper's host code.
 
+## Round 17: the helper is complete
+
+- itersolve_alloc was never a Klipper symbol. It appears nowhere in chelper's C
+  sources, and klippy never looks it up: the earlier probe checked a name I had
+  misremembered. The gap was mine, not Klipper's.
+- llvm-nm from the pinned NDK reports **105 exported dynamic symbols**.
+- A device sweep over every symbol klippy references, run through the engine socket:
+  **checked 37, missing only kin_rotary_delta** - a kinematics family name in
+  klippy's Python, not a ctypes attribute lookup. (The first attempt at this sweep
+  also reported the string c_helper.so as a symbol, which is how the regex mistake
+  was found.)
+- **So the helper is complete for klippy's use**, and every piece Klipper needs is
+  now proven present and loadable inside the app: interpreter 3.11.4, ctypes, libc,
+  openpty, and the C helper with all of its symbols.
+
+Next: get Klipper's own Python running against it - push the staged klippy tree to
+the app's files directory, import chelper through the engine socket, construct a
+step compressor and feed it a move. That is Klipper's motion pipeline executing on
+the phone, which is step 2 of the objective.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
