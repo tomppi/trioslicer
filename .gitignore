@@ -65,3 +65,6 @@ native/blender/blender-gensrc/
 keystore.properties
 *.jks
 *.keystore
+
+# Klipper host payload, staged by scripts/stage-klipper-android.sh
+app/src/main/assets/klipper/
