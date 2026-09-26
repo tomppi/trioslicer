@@ -148,15 +148,22 @@ class KlipperClient(private val socketPath: String) {
     }
 
     /**
-     * Ask klippy to push these objects as they change, rather than polling them.
+     * Ask klippy to push these objects as they change, and return their status now.
      *
-     * Updates arrive as notify_status_update on [onNotification], carrying
+     * The reply carries the full status of everything asked for, which is why callers
+     * should take this as their first snapshot rather than querying separately first:
+     * a query followed by a subscribe leaves a gap between them, and a value that
+     * changed in it would be neither in the snapshot nor pushed, so it would read
+     * stale until it happened to change again.
+     *
+     * Later updates arrive as notify_status_update on [onNotification], carrying
      * {eventtime, status} - see [KlipperProtocol.statusUpdate].
      */
-    fun subscribe(vararg objects: String) {
+    fun subscribe(vararg objects: String): JSONObject {
         val wanted = JSONObject()
         for (name in objects) wanted.put(name, JSONObject.NULL)
-        call("objects/subscribe", JSONObject().put("objects", wanted))
+        return call("objects/subscribe", JSONObject().put("objects", wanted))
+            .optJSONObject("status") ?: JSONObject()
     }
 
     /**

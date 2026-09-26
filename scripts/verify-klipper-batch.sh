@@ -12,7 +12,16 @@
 #   PYTHON:  interpreter that can run klippy. On the phone this is the payload's
 #            libklipper_exec.so; on a host it is a python with klippy's dependencies.
 #   KLIPPY:  path to klippy.py.
-#   DICT:    the micro-controller dictionary.
+#   DICT:    the micro-controller dictionary, which a firmware build produces. Build
+#            one for the board on the other end of the cable:
+#              cd .build/klipper-src
+#              make menuconfig      # the board's own options, e.g. STM32F103,
+#                                   # 28KiB bootloader, 8MHz crystal, USART1 PA10/PA9
+#              make                 # writes out/klipper.dict and out/klipper.bin
+#            The dictionary only describes the board if it is that board's build: the
+#            host MCU's (klipper-mcu.service) has gpiochip pins and no PC4. Rebuilding
+#            from the same source and options should reproduce the flashed image byte
+#            for byte, which is how you know it is the right one.
 #   CONFIG:  a printer config. Default: the app's asset, with the two placeholders
 #            substituted for scratch paths.
 #

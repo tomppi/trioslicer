@@ -16,6 +16,7 @@ import android.system.Os
 import android.util.Log
 import com.tomppi.enderslicer.MainActivity
 import com.tomppi.enderslicer.printer.KlipperClient
+import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperPty
 import com.tomppi.enderslicer.printer.withStatus
@@ -272,7 +273,10 @@ class KlipperEngineService : Service() {
      * same printer is set up with on a host.
      */
     private fun writePrinterConfig(root: File, serialPath: String): File {
-        val gcodes = File(filesDir, "gcodes").apply { mkdirs() }
+        // The same directory constant the print path copies files into: the config's
+        // virtual_sdcard and the code that hands it a file have to agree, and a second
+        // literal here is how they stop agreeing.
+        val gcodes = File(filesDir, KlipperPrint.GCODE_DIR).apply { mkdirs() }
         val template = assets.open("klipper-host/printer.cfg")
             .bufferedReader().use { it.readText() }
         val config = File(root, "printer.cfg")

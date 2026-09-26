@@ -77,7 +77,10 @@ class KlipperPrinterRepository(
         c.onNotification = ::applyNotification
         c.connect()
         val info = c.info()
-        val status = c.query(*WATCHED)
+        // Subscribed first, and its reply used as the snapshot: the alternative - query
+        // then subscribe - has a gap in which a change is neither seen nor pushed, and
+        // a value that only changes once would stay wrong on the screen.
+        val snapshot = c.subscribe(*WATCHED)
         client = c
         _state.update {
             it.copy(
@@ -85,9 +88,8 @@ class KlipperPrinterRepository(
                 state = info.optString("state", "unknown"),
                 stateMessage = info.optString("state_message"),
                 error = null,
-            ).withStatus(status)
+            ).withStatus(snapshot)
         }
-        c.subscribe(*WATCHED)
         Log.i(TAG, "watching ${c.toString().let { _ -> socketPath }} as ${info.optString("state")}")
         while (c.isConnected && currentCoroutineContext().isActive) delay(1000)
     }
