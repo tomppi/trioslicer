@@ -46,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.BuildConfig
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
+import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.smartinfill.FilaSimBoundaryCondition
 import com.tomppi.enderslicer.smartinfill.FilaSimEngine
 import com.tomppi.enderslicer.smartinfill.SmartInfillActivity
@@ -76,11 +77,13 @@ import kotlinx.coroutines.withContext
 fun IntegratedEnderSlicerApp(
     slicerViewModel: MainViewModel,
     octoPrintViewModel: OctoPrintViewModel,
+    klipperViewModel: KlipperViewModel,
     engine: SlicerEngine,
     onEngineChange: (SlicerEngine) -> Unit,
 ) {
     val slicerState by slicerViewModel.uiState.collectAsStateWithLifecycle()
     val octoPrintState by octoPrintViewModel.state.collectAsStateWithLifecycle()
+    val klipperState by klipperViewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val smartInfillStore = remember(context) { SmartInfillPackageStore(context.applicationContext) }
@@ -652,16 +655,16 @@ fun IntegratedEnderSlicerApp(
             )
         },
         printTabContent = {
-            HardenedOctoPrintSheet(
-                state = octoPrintState,
+            PrinterTabContent(
+                klipperState = klipperState,
+                klipperViewModel = klipperViewModel,
+                octoPrintState = octoPrintState,
+                octoPrintViewModel = octoPrintViewModel,
                 localGcodePath = slicerState.gcodePath.takeIf {
                     !slicerState.isBusy && slicerState.hasCurrentGcode()
                 },
                 suggestedFileName = suggestedOctoPrintName(slicerState),
-                viewModel = octoPrintViewModel,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding(),
+                modifier = Modifier.fillMaxSize(),
             )
         },
         plateOverlayContent = {

@@ -19,6 +19,7 @@ import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
+import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.IntegratedEnderSlicerApp
 import com.tomppi.enderslicer.ui.MainViewModel
@@ -29,6 +30,12 @@ import com.tomppi.enderslicer.ui.SlicerEngineStore
 class MainActivity : ComponentActivity() {
     private val slicerViewModel by viewModels<MainViewModel>()
     private val octoPrintViewModel by viewModels<OctoPrintViewModel>()
+
+    /**
+     * The printer this device drives itself. Held by the activity so the connection to
+     * the host survives the screen being left and comes back with it.
+     */
+    private val klipperViewModel by viewModels<KlipperViewModel>()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -77,6 +84,7 @@ class MainActivity : ComponentActivity() {
                     IntegratedEnderSlicerApp(
                         slicerViewModel = slicerViewModel,
                         octoPrintViewModel = octoPrintViewModel,
+                        klipperViewModel = klipperViewModel,
                         engine = engine,
                         onEngineChange = {
                             engineStore.save(it)
