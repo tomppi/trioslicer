@@ -63,7 +63,9 @@ class KlipperPrinterRepository(
             } catch (e: Exception) {
                 client?.close()
                 client = null
-                _state.update { it.copy(connected = false, error = e.message) }
+                _state.update {
+                    it.copy(connected = false, error = e.message, hostLogTail = readHostLogTail())
+                }
             }
             delay(RETRY_MS)
         }
@@ -89,6 +91,21 @@ class KlipperPrinterRepository(
         Log.i(TAG, "watching ${c.toString().let { _ -> socketPath }} as ${info.optString("state")}")
         while (c.isConnected && currentCoroutineContext().isActive) delay(1000)
     }
+
+    /**
+     * The last few lines klippy wrote before it stopped answering.
+     *
+     * An exited host cannot be asked anything, and its log is the only account of
+     * why - a shut-down micro-controller, a bad option, a missing file. Trimmed to
+     * something a screen can show.
+     */
+    private fun readHostLogTail(maxLines: Int = LOG_TAIL_LINES): String? = runCatching {
+        val log = File(application.filesDir, "klippy.log")
+        if (!log.isFile) return null
+        val lines = log.readLines().filter { it.isNotBlank() }
+        val interesting = lines.takeLast(maxLines)
+        interesting.takeIf { it.isNotEmpty() }?.joinToString("\n")
+    }.getOrNull()
 
     private fun applyNotification(message: JSONObject) {
         when (KlipperProtocol.lifecycle(message)) {
@@ -177,6 +194,9 @@ class KlipperPrinterRepository(
 
         /** How long to wait before trying the host again after a failure. */
         const val RETRY_MS = 3000L
+
+        /** How much of the host's log the screen is shown when it stops answering. */
+        const val LOG_TAIL_LINES = 6
 
         /** The objects the screen needs: the machine, and any print on it. */
         val WATCHED = arrayOf(

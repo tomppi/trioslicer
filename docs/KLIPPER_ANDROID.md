@@ -1055,11 +1055,39 @@ it is the thing that is wrong:
    in the klippy log.
 7. **The API answers.** `klippy is ready` from the app's own client.
 
+If step 6 reports "Can not update MCU 'mcu' config as it is shutdown", stop: turn the
+printer off and on, then start the host again. No amount of restarting the host clears
+it, for the reason in the section above.
+
 Two traps in the order of operations. The MUIC rebind only works with the printer
 already attached - do it before plugging in and nothing appears. And if klippy has
 already exited (it gives a missing MCU ninety seconds), plugging in afterwards needs
 the host started again: the bridge is attempted on every start request, but a host
 that has exited is not there to be asked.
+
+## Why a shut-down micro-controller needs the power switch
+
+A run that dies leaves the MCU shut down - klippy tells it to shut down as it goes.
+The next start cannot configure it, because klippy refuses to write a config to a
+micro-controller that says it is shut down (mcu.py):
+
+    if config_params['is_shutdown']:
+        raise error("Can not update MCU '%s' config as it is shutdown")
+
+Klipper does have an automated reset for this. _firmware_restart() dispatches on
+restart_method, and 'command' runs _restart_via_command(). But that only ever runs
+inside a klippy that is already up, during an in-process restart: start_args
+['start_reason'] is 'startup' for a fresh process and becomes 'firmware_restart' only
+when the reactor restarts the printer in place (klippy.py). A process launched after
+the fact is 'startup' again, hits the same refusal, and exits - so restarting the host
+in a loop cannot clear it, and neither can anything the app sends. The state lives in
+the micro-controller, and the only thing that clears it is a power cycle.
+
+What the app can do is say so. A host that has exited cannot be asked anything, and
+its log is the only account of why, so the printer screen now reads the tail of
+klippy.log when it cannot reach the host and shows it under the button that starts it.
+"Can not update MCU 'mcu' config as it is shutdown" is a message a user can act on;
+"host not reachable" is not.
 
 ## What this leaves
 

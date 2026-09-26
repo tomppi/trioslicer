@@ -26,6 +26,14 @@ data class KlipperPrinterState(
     val printDurationSeconds: Double? = null,
     /** The last thing that went wrong, cleared by the next successful call. */
     val error: String? = null,
+    /**
+     * What the host last said, when it is not reachable.
+     *
+     * klippy explains itself in its log and then may exit, and an exited host has no
+     * API to ask: without this the screen can only say "not reachable", which is the
+     * one thing the user already knows.
+     */
+    val hostLogTail: String? = null,
 ) {
     val isReady: Boolean get() = connected && state == "ready"
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")

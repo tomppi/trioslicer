@@ -96,6 +96,19 @@ private fun StatusCard(state: KlipperPrinterState, viewModel: KlipperViewModel) 
                 OutlinedButton(onClick = { viewModel.startHost() }) {
                     Text("Start the printer host")
                 }
+                state.hostLogTail?.let { tail ->
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "The host stopped with:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = tail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
     }
