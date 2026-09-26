@@ -200,7 +200,7 @@ class KlipperPrinterRepository(
 
         /** The objects the screen needs: the machine, and any print on it. */
         val WATCHED = arrayOf(
-            "extruder", "heater_bed", "toolhead", "print_stats", "virtual_sdcard",
+            "extruder", "heater_bed", "toolhead", "print_stats", "virtual_sdcard", "mcu",
         )
     }
 }

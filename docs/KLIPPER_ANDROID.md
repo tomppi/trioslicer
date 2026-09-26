@@ -1089,6 +1089,30 @@ klippy.log when it cannot reach the host and shows it under the button that star
 "Can not update MCU 'mcu' config as it is shutdown" is a message a user can act on;
 "host not reachable" is not.
 
+## The timing margins are klippy's own numbers
+
+The feasibility question - can this device drive the printer, or will the printer end
+up waiting on it - is answered by numbers klippy already keeps and already exposes.
+Its mcu object publishes the stats line it writes to its log:
+
+    self._get_status_info['last_stats'] = last_stats
+
+which carries srtt (smoothed round trip), rttvar (how much it moves), rto (the timeout
+at which a message counts as lost), bytes_retransmit, bytes_invalid, mcu_awake (the
+fraction of each micro-controller period spent working) and mcu_task_avg. The printer
+screen shows them, and headroom - rto over srtt - is the count of attempts the link
+has before it starts resending.
+
+From the handshake measured on the phone:
+
+    srtt 0.004   rttvar 0.001   rto 0.025   bytes_retransmit 0   bytes_invalid 0
+    headroom 6.25x
+
+That is the floor rather than the answer: it is a link with one command in flight, not
+a print with a queue of moves behind it. The measurement that closes this properly is
+the same numbers taken during a real print, which needs the printer attached - and the
+stats are on the screen and in klippy's log whenever it is.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket

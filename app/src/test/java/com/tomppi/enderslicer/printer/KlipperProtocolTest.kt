@@ -148,5 +148,35 @@ class KlipperProtocolTest {
         assertEquals(0.75, after.printProgress!!, 0.001)
     }
 
+    @Test
+    fun statusMergeReadsTheTimingMarginsKlippyKeeps() {
+        // The shape klippy actually keeps: mcu.last_stats is its stats line, split on
+        // spaces and parsed. Values here are from a real run on the phone.
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject(
+                """{"mcu":{"last_stats":{"mcu_awake":0.001,"mcu_task_avg":0.000014,
+                    "bytes_write":1223,"bytes_read":4655,"bytes_retransmit":0,
+                    "bytes_invalid":0,"srtt":0.004,"rttvar":0.001,"rto":0.025}}}""",
+            ),
+        )
+        val timing = state.timing!!
+        assertEquals(0.004, timing.roundTripSeconds!!, 1e-9)
+        assertEquals(0.001, timing.jitterSeconds!!, 1e-9)
+        assertEquals(0.025, timing.retransmitTimeoutSeconds!!, 1e-9)
+        assertEquals(0, timing.retransmittedBytes)
+        assertEquals(0.001, timing.mcuAwake!!, 1e-9)
+        // 25 ms of patience for a 4 ms round trip: six attempts before a resend.
+        assertEquals(6.25, timing.headroom!!, 0.01)
+    }
+
+    @Test
+    fun statusMergeKeepsTimingWhenAStatsLineHasNotArrived() {
+        val known = KlipperPrinterState(
+            connected = true, timing = KlipperTiming(roundTripSeconds = 0.004),
+        )
+        val after = known.withStatus(JSONObject("""{"mcu":{"last_stats":{}}}"""))
+        assertEquals(0.004, after.timing!!.roundTripSeconds!!, 1e-9)
+    }
+
     private fun frame(json: String) = json.toByteArray() + byteArrayOf(KlipperProtocol.ETX)
 }

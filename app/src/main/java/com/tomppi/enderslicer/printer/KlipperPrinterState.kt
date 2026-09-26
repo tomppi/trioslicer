@@ -24,6 +24,8 @@ data class KlipperPrinterState(
     /** 0..1 through the file, from the virtual SD card's own position in it. */
     val printProgress: Double? = null,
     val printDurationSeconds: Double? = null,
+    /** The link's timing margins, once klippy has reported a stats line. */
+    val timing: KlipperTiming? = null,
     /** The last thing that went wrong, cleared by the next successful call. */
     val error: String? = null,
     /**
@@ -39,6 +41,34 @@ data class KlipperPrinterState(
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")
     val isPrinting: Boolean get() = printState == "printing"
     val isPaused: Boolean get() = printState == "paused"
+}
+
+/**
+ * The host-to-micro-controller timing margins, as klippy measures them.
+ *
+ * These are the numbers the feasibility question turns on, and klippy already keeps
+ * them: mcu.last_stats is the serial and clock-sync half of the stats line it writes
+ * to its log. srtt is the smoothed round trip, rttvar how much it moves, and rto the
+ * timeout at which a message is considered lost - so rttvar against rto says how much
+ * room there is before the link starts retransmitting, and srtt against rto says how
+ * much there is on average.
+ *
+ * mcu_awake is the fraction of each micro-controller period spent doing work: the
+ * closer that gets to 1, the closer the board is to not keeping up.
+ */
+data class KlipperTiming(
+    val roundTripSeconds: Double? = null,
+    val jitterSeconds: Double? = null,
+    val retransmitTimeoutSeconds: Double? = null,
+    val retransmittedBytes: Int? = null,
+    val invalidBytes: Int? = null,
+    val mcuAwake: Double? = null,
+    val mcuTaskAverageSeconds: Double? = null,
+) {
+    /** How many times the round trip fits inside the timeout before a resend. */
+    val headroom: Double?
+        get() = roundTripSeconds?.takeIf { it > 0.0 }
+            ?.let { rtt -> retransmitTimeoutSeconds?.div(rtt) }
 }
 
 /**
@@ -66,8 +96,30 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
         printState = stats?.optString("state").orEmpty().ifEmpty { printState },
         printDurationSeconds = stats.number("print_duration") ?: printDurationSeconds,
         printProgress = sdcard.number("progress") ?: printProgress,
+        timing = status.optJSONObject("mcu")?.optJSONObject("last_stats")?.toTiming() ?: timing,
     )
 }
+
+/**
+ * One stats line, as a timing object.
+ *
+ * klippy's own field names, so a reader who has seen its log recognises these.
+ */
+private fun JSONObject.toTiming(): KlipperTiming? {
+    if (length() == 0) return null
+    return KlipperTiming(
+        roundTripSeconds = number("srtt"),
+        jitterSeconds = number("rttvar"),
+        retransmitTimeoutSeconds = number("rto"),
+        retransmittedBytes = int("bytes_retransmit"),
+        invalidBytes = int("bytes_invalid"),
+        mcuAwake = number("mcu_awake"),
+        mcuTaskAverageSeconds = number("mcu_task_avg"),
+    )
+}
+
+private fun JSONObject?.int(name: String): Int? =
+    if (this != null && has(name) && !isNull(name)) optInt(name) else null
 
 /** A numeric field, or null when klippy did not mention it this time. */
 private fun JSONObject?.number(name: String): Double? =

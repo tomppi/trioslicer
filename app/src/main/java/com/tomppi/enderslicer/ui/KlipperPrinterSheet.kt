@@ -47,6 +47,7 @@ internal fun KlipperPrinterSheet(
         PrintCard(state, viewModel, localGcodePath, suggestedFileName)
         TemperatureCard(state, viewModel)
         PositionCard(state)
+        TimingCard(state)
         ActionsCard(state, viewModel)
         state.error?.let { error ->
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -257,6 +258,48 @@ private fun PositionCard(state: KlipperPrinterState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * The host link's margins, which is what decides whether this device can drive the
+ * printer rather than the printer waiting on it.
+ *
+ * Shown only once klippy has written a stats line, which needs a micro-controller on
+ * the other end: before that there is nothing to report and a row of dashes would be
+ * worse than an absent card.
+ */
+@Composable
+private fun TimingCard(state: KlipperPrinterState) {
+    val timing = state.timing ?: return
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Host link", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            timing.roundTripSeconds?.let {
+                Text("Round trip %.1f ms".format(it * 1000), style = MaterialTheme.typography.bodyMedium)
+            }
+            timing.jitterSeconds?.let {
+                Text("Jitter ±%.1f ms".format(it * 1000), style = MaterialTheme.typography.bodyMedium)
+            }
+            timing.retransmitTimeoutSeconds?.let {
+                Text("Resend after %.0f ms".format(it * 1000), style = MaterialTheme.typography.bodyMedium)
+            }
+            timing.headroom?.let {
+                Text("Headroom %.0f×".format(it), style = MaterialTheme.typography.bodyMedium)
+            }
+            timing.mcuAwake?.let {
+                Text("Board busy %.0f%%".format(it * 100), style = MaterialTheme.typography.bodyMedium)
+            }
+            val retransmits = timing.retransmittedBytes ?: 0
+            if (retransmits > 0) {
+                Text(
+                    "Retransmitted $retransmits bytes",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
