@@ -1155,6 +1155,14 @@ the script appends both to its own copy of the config rather than to the shipped
     step stream: 3924 bytes
     refused moves: 0
 
+The same run belongs on the device, and that is what proves the payload rather than the
+host it was built on: scripts/verify-klipper-on-device.sh stages the dictionary, the
+G-code and a batch config, then runs klippy out of the app's own payload with the
+payload's interpreter and libraries. It needs a phone with the app installed and
+nothing else - no printer, no micro-controller. The config it stages is the same one
+the host script builds, and running that file through a host klippy is how its half was
+checked before adb was available again.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket
