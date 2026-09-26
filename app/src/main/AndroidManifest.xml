@@ -45,6 +45,19 @@
                 android:value="Embedded Blender MCP generation engine; keeps the socket server and STL handoff alive while the UI is not foregrounded." />
         </service>
 
+        <!-- Runs the Klipper host as its own process. Same reasoning as the Blender
+             engine above: without a foreground service the process is cached and
+             culled once the screen locks, which would stop feeding the printer
+             mid-print. -->
+        <service
+            android:name=".nativebridge.KlipperEngineService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Klipper printer host: drives a 3D printer over USB while the screen is off" />
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

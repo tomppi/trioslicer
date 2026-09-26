@@ -761,19 +761,148 @@ reason the library route exists.
 - Baud rate is irrelevant to detection. It is a chip register set after enumeration,
   and on a CH340 the USB side always runs at full speed regardless.
 
+## Rounds 86-88: the payload runs inside the app
+
+The service starts, extracts, and the interpreter runs it. From logcat, verbatim:
+
+    extracting klipper payload to /data/user/0/com.tomppi.enderslicercura/files/klipper
+    payload extracted: 1025 files
+    linked libpython3.11.so.1.0 to /data/app/.../lib/arm64/libpython3.11.so
+    exec /data/app/.../lib/arm64/libklipper_exec.so PYTHONHOME=/data/user/0/.../files/klipper
+    klipper: python 3.11.4
+
+and from the same payload, run against the phone's own interpreter:
+
+    python 3.11.4
+    cffi 1.14.6      greenlet 2.0.2      pyserial 3.5      jinja2 3.1.4
+    chelper ok .../files/klipper/klippy/chelper/__init__.py
+
+That last line is the one that matters: c_helper.so, compiled for bionic from
+Klipper's own C, loads through cffi on the phone.
+
+## The app may not execute anything in its own data directory
+
+This is the finding that reshaped the design, and it is worth stating plainly
+because the obvious implementation is wrong for a reason that never appears in
+the error message an app sees:
+
+    # system/sepolicy/private/app_neverallows.te
+    # This is a W^X violation (loading executable code from a writable
+    # home directory). For compatibility, allow for targetApi <= 28.
+    neverallow {
+      all_untrusted_apps
+      -untrusted_app_25
+      -untrusted_app_27
+      -runas_app
+    } { app_data_file privapp_data_file }:file execute_no_trans;
+
+    # system/sepolicy/private/app.te
+    allow appdomain apk_data_file:dir r_dir_perms;
+    allow appdomain apk_data_file:file rx_file_perms;      # x_file_perms => execute_no_trans
+
+    define(`x_file_perms', `{ getattr execute execute_no_trans map }')
+
+So: an app targeting API 29 or later cannot execve a file under filesDir, while
+executing one out of nativeLibraryDir is granted to every app, and the rule that
+forbids executing out of data_file_type names apk_data_file as an exception with
+the note "shared libs in apks". The app targets 36.
+
+The first version of the service copied the interpreter and libpython into
+filesDir and ran them there. That cannot work, and the failure it produces is
+EACCES on exec, which reads like a permission bug in the app rather than a
+policy one. It now runs the interpreter from nativeLibraryDir and copies nothing.
+
+Confirmed the negative the hard way as well: run-as is not a way to test this.
+It lands in runas_app, which the neverallow excludes by name, so an exec that
+succeeds under run-as proves nothing about the app. That detour is what led to
+reading the policy instead, which settled it in one pass.
+
+## libpython has to be reachable under the name the linker asks for
+
+jniLibs ships only files named lib*.so, so the interpreter's DT_NEEDED entry
+(libpython3.11.so.1.0, which is also libpython's SONAME) has no file to match:
+the staged file is libpython3.11.so. A symlink with the soname, in a directory
+on LD_LIBRARY_PATH, is the whole fix - and the symlink may point into
+nativeLibraryDir, because what the loader resolves is the target, which is
+executable, not the link, which lives in app data.
+
+    LD_LIBRARY_PATH=<payload>/libexec:<nativeLibraryDir>   # libexec holds the link
+
+Three outcomes, measured, with the interpreter started from the command line:
+
+| setup | result |
+| --- | --- |
+| exec from filesDir | loader ran under runas_app; not representative |
+| exec from nativeLibraryDir + soname symlink | Python 3.11.4 starts |
+| exec from nativeLibraryDir, no symlink | CANNOT LINK EXECUTABLE: library "libpython3.11.so.1.0" not found |
+
+## greenlet resolves Python symbols only when it names libpython
+
+greenlet imports PyContext_Type, a data symbol only libpython exports. An
+extension module normally resolves such symbols from the process's global scope,
+and this one does not: built without -lpython3.11 it fails at import with
+
+    ImportError: dlopen failed: cannot locate symbol "PyContext_Type"
+
+even though libpython3.11.so exports it, is loaded, and is in the same global
+group. With the dependency recorded it imports. That is why the extension script
+links it explicitly, and why both the extension script and the stager now read
+DT_NEEDED back out of the installed binary rather than trusting the build.
+
+Three separate ways the extension install produced a payload that looked right:
+
+- find -name "_*.so" | head -1 picks greenlet's _test_extension or
+  _test_extension_cpp as readily as _greenlet, so a test module was installed
+  and the package's real extension never was.
+- The same find also matches the copy under build/, which installs the extension
+  into site-packages/build/lib.linux-aarch64-cpython-311/greenlet/ - a path
+  nothing imports from.
+- Installing the .so is half a package. cffi and greenlet are Python packages;
+  without cffi/__init__.py and greenlet/__init__.py the extensions are
+  unreachable and the failure is "No module named 'cffi'" with cffi's files
+  sitting in the directory next to it.
+
+The stager now checks for all of it, on the staged tree, because every one of
+these fails on the phone and none of them fails on the build host.
+
+## A stamp is not evidence that the work happened
+
+The extraction wrote its stamp unconditionally, and copyAssetTree caught
+IOException to tell "this asset is a file" from "this asset is a directory" -
+which also swallowed EACCES on write. So an extraction into a directory the app
+could not write into (left over from an adb-push experiment, owned by root)
+copied nothing, logged success, and stamped itself done. The failure surfaced
+later and elsewhere: a FileNotFoundException from the library-placement step,
+naming a file whose directory did not exist.
+
+The fixes are the obvious ones and worth naming: the open is the only step
+allowed to fail quietly; the copy is not; the stamp is written after a check
+against sentinel files, and a stamp from a previous run is only trusted while
+that same check passes.
+
+Two smaller lies of the same kind, both fixed:
+
+- The CPython script's _ctypes canary was `ls .../lib-dynload/_ctypes*.so`,
+  which matches _ctypes_test. It reported _ctypes present in an interpreter that
+  does not have it (PyInit__ctypes appears nowhere in libpython either). klippy
+  does not use ctypes - chelper uses cffi - so this blocks nothing, but the check
+  said something untrue and would have said it again.
+- The asset staging was not reproducible at all: the script staged klippy/*.py
+  and the helper, while the standard library and the extensions in the payload
+  had been assembled by hand. A stale greenlet, built before the -lpython3.11
+  fix, lived in that hand-made tree and was the reason the payload failed on the
+  phone. stage-klipper-android.sh now builds the whole payload from the
+  interpreter prefix and refuses to stage one that is missing a package or whose
+  greenlet does not link libpython.
+
 ## What this leaves
 
-1. Confirm the handful of builtins klippy imports - _struct, _collections,
-   _queue, zlib, hashlib. Cheap, and by this pattern they will be present.
-2. chelper compiled for bionic. Plain C, and the NDK is pinned at 28.2.13676358.
-3. Check whether the Klipper version chosen still needs cffi and greenlet, or
-   whether ctypes plus the stdlib is enough. Fewer moving parts if it is.
-4. Then the trivial extension proof, then klippy in batch mode.
-
-## What this changes
-
-Step 2 of the goal is smaller than it looked from outside: the Python runtime,
-the keep-alive machinery, the executable-from-jniLibs trick and the native build
-pattern all exist and are proven in this codebase. The work is extensions,
-chelper, a transport, and then the timing question - which remains the only
-unknown that can end the project.
+1. The pty the transport needs cannot be created from Kotlin: android.system.Os
+   has no openpty and its ioctlInt is a hidden API, which is why terminal
+   emulators on Android ship a JNI library for exactly this. A small
+   libklipper_pty.so with openpty/ptsname is the next piece.
+2. The USB bridge (PrinterUsb/PrinterBridge) is written but has never run in the
+   app: it needs the pty master fd and a real printer.cfg naming the slave.
+3. klippy itself has not been started yet. What runs is the interpreter with the
+   payload on sys.path.
+4. Timing, end to end, is still unmeasured in the app.

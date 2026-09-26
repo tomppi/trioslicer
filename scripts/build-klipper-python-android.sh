@@ -88,11 +88,21 @@ ls -l "$PREFIX/lib/libpython3.11.so" "$PREFIX/include/python3.11/Python.h"
 # _ctypes is the canary for the libffi step above. It can be a shared module or a
 # builtin depending on how CPython was configured, so check for either - and fail
 # loudly here rather than letting it surface on the phone as a missing module.
-if ls "$PREFIX"/lib/python3.11/lib-dynload/_ctypes*.so >/dev/null 2>&1 \
+#
+# The module is named _ctypes exactly. A _ctypes*.so glob also matches
+# _ctypes_test, which CPython builds with or without libffi, so the check this
+# replaced passed on an interpreter that has no ctypes at all - and one of those
+# is installed here (.build/py311-android predates the libffi ordering below).
+# klippy itself does not use ctypes (chelper loads its helper through cffi), so
+# this fails a build over a defect in the interpreter rather than one in the
+# payload - which is the correct reason to fail it, but only worth acting on for
+# a rebuild, not for the payload that is already working.
+if ls "$PREFIX"/lib/python3.11/lib-dynload/_ctypes.cpython-*.so \
+      "$PREFIX"/lib/python3.11/lib-dynload/_ctypes.so >/dev/null 2>&1 \
    || strings "$PREFIX/lib/libpython3.11.so" | grep -q PyInit__ctypes; then
   echo "_ctypes: present"
 else
-  echo "WARNING: _ctypes is missing from this interpreter." >&2
+  echo "_ctypes is missing from this interpreter." >&2
   echo "libffi must be built before CPython; see the libffi step above." >&2
   exit 1
 fi
