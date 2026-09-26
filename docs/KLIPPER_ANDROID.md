@@ -517,6 +517,45 @@ The real measurement is klippy in a foreground service, against a board, watchin
 actual margins between when commands arrive and when they are due. These numbers say
 the host is not obviously disqualified; they do not say it is safe.
 
+## Rounds 79-81: the user's actual printer, and what it removes
+
+The user runs an **Ender 3 V2 with a CR-Touch on a Creality Sonic Pad**, and supplied
+Creality's own repository for it (github.com/CrealityOfficial/Creality_Sonic_Pad).
+That answers several questions at once.
+
+**Nothing needs building on the printer side.** The Sonic Pad *is* a Klipper host, and
+the Ender 3 V2 board it drives already runs Klipper firmware. The printer works today.
+What this project builds is a **replacement host** - the phone - talking to the same
+board, so the firmware, the flashing and the MCU toolchains are all out of scope.
+
+**The protocol matches.** Creality pins Klipper commit 520273e5; this port targets
+v0.13.0. Comparing msgproto.py at both:
+
+    v0.13.0  : MESSAGE_MIN = 5 | MESSAGE_MAX = 64 | header 2 | trailer 3
+    Creality : MESSAGE_MIN = 5 | MESSAGE_MAX = 64 | header 2 | trailer 3
+
+So the v0.13.0 host can speak to the flashed firmware. Optionally the host could be
+built at Creality's commit instead - the same scripts with a different tag - which
+would match the firmware's features exactly, but it is not required for compatibility.
+
+**The config exists, from Creality themselves** in printer_configrations/:
+
+    printer-Ender3V2-CRtouch-V4.2.2-V4.3.1.cfg
+    printer-Ender3V2-CRtouch-V4.2.7.cfg
+
+The board revision printed on the board picks which one. Any calibration the user has
+done (PID, e-steps, probe offsets) lives in the pad's own printer.cfg and should be
+merged over the template rather than replaced by it.
+
+**And no dictionary file is needed for a real board**: the MCU serves its own
+dictionary during the identify handshake, which is why -d only mattered for batch mode.
+
+**What is left, and it needs the printer plugged into the phone:** a userspace
+**CH340 USB-serial driver** in the app (Creality 4.2.x boards use a CH340; Android has
+no driver for it and it is not CDC-ACM). That is the pump between the pty and the USB
+bulk endpoints, and it is a few hundred lines of ordinary code rather than research.
+Everything else on the path is proven.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
