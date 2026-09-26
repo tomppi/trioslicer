@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -92,7 +91,7 @@ class KlipperPrinterRepository(
     }
 
     private fun applyNotification(message: JSONObject) {
-        when (message.optString("method")) {
+        when (KlipperProtocol.lifecycle(message)) {
             "notify_klippy_ready" -> _state.update {
                 it.copy(state = "ready", stateMessage = "", error = null)
             }
@@ -102,39 +101,10 @@ class KlipperPrinterRepository(
             "notify_klippy_disconnected" -> _state.update {
                 it.copy(connected = false, error = "klippy disconnected")
             }
-            // params is an object - {eventtime, status} - and not the [status,
-            // eventtime] array an older Klipper used. Reading it as the array meant
-            // every update was discarded, so the screen showed the first snapshot
-            // forever: the printer would home and the position would not move.
-            "notify_status_update" -> {
-                val status = message.optJSONObject("params")
-                    ?.optJSONObject("status") ?: return
-                _state.update { it.withStatus(status) }
-            }
         }
-    }
-
-    /** Merge one objects/query result or notification payload into the state. */
-    private fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterState {
-        val extruder = status.optJSONObject("extruder")
-        val bed = status.optJSONObject("heater_bed")
-        val toolhead = status.optJSONObject("toolhead")
-        return copy(
-            extruderTemperature = extruder?.optDoubleOrNull("temperature") ?: extruderTemperature,
-            extruderTarget = extruder?.optDoubleOrNull("target") ?: extruderTarget,
-            bedTemperature = bed?.optDoubleOrNull("temperature") ?: bedTemperature,
-            bedTarget = bed?.optDoubleOrNull("target") ?: bedTarget,
-            position = toolhead?.optJSONArray("position").toDoubleList().ifEmpty { position },
-            homedAxes = toolhead?.optString("homed_axes").orEmpty().ifEmpty { homedAxes },
-        )
-    }
-
-    private fun JSONObject.optDoubleOrNull(name: String): Double? =
-        if (has(name) && !isNull(name)) optDouble(name) else null
-
-    private fun JSONArray?.toDoubleList(): List<Double> {
-        if (this == null) return emptyList()
-        return (0 until length()).map { optDouble(it) }
+        KlipperProtocol.statusUpdate(message)?.let { status ->
+            _state.update { it.withStatus(status) }
+        }
     }
 
     // Actions. Each reports failure into the state rather than throwing at the UI.

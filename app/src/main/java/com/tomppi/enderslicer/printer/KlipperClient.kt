@@ -87,16 +87,7 @@ class KlipperClient(private val socketPath: String) {
         val queue = SynchronousQueue<JSONObject>()
         waiting[id] = queue
         try {
-            val request = JSONObject()
-                .put("id", id)
-                .put("method", method)
-                .put("params", params ?: JSONObject())
-            synchronized(writeLock) {
-                val out = output ?: throw IllegalStateException("not connected")
-                out.write(request.toString().toByteArray())
-                out.write(ETX.toInt())          // OutputStream takes an int
-                out.flush()
-            }
+            write(KlipperProtocol.encode(id, method, params))
             val reply = queue.poll(timeoutMs, TimeUnit.MILLISECONDS)
                 ?: throw IllegalStateException("no reply to $method")
             if (reply === ERROR_JSON) throw IllegalStateException("connection closed")
@@ -110,29 +101,38 @@ class KlipperClient(private val socketPath: String) {
     private fun readLoop() {
         try {
             while (true) {
-                val message = readMessage()
-                val queue = waiting[message.optInt("id", -1)]
-                if (queue != null) queue.offer(message) else onNotification?.invoke(message)
+                // Every message in the batch, not just the first: one read can carry
+                // several, and dropping the rest would lose an update silently.
+                for (message in readMessages()) {
+                    val queue = waiting[message.optInt("id", -1)]
+                    if (queue != null) queue.offer(message) else onNotification?.invoke(message)
+                }
             }
         } catch (e: Exception) {
             if (reader != null) Log.i(TAG, "read loop ended: ${e.message}")
         }
     }
 
-    /** Read one ETX-terminated message, filling from the socket as needed. */
-    private fun readMessage(): JSONObject {
+    /** Read until at least one complete message has arrived, and return them all. */
+    private fun readMessages(): List<JSONObject> {
         val stream = input ?: throw IllegalStateException("not connected")
         while (true) {
-            val end = pending.indexOf(ETX)
-            if (end >= 0) {
-                val message = pending.copyOfRange(0, end)
-                pending = pending.copyOfRange(end + 1, pending.size)
-                return JSONObject(String(message))
-            }
+            val (messages, rest) = KlipperProtocol.decode(pending)
+            pending = rest
+            if (messages.isNotEmpty()) return messages
             val chunk = ByteArray(4096)
             val read = stream.read(chunk)
             if (read < 0) throw IllegalStateException("klippy closed the connection")
             pending += chunk.copyOfRange(0, read)
+        }
+    }
+
+    /** Frame and send, on the one lock that keeps two callers' bytes apart. */
+    private fun write(bytes: ByteArray) {
+        synchronized(writeLock) {
+            val out = output ?: throw IllegalStateException("not connected")
+            out.write(bytes)
+            out.flush()
         }
     }
 
@@ -150,8 +150,8 @@ class KlipperClient(private val socketPath: String) {
     /**
      * Ask klippy to push these objects as they change, rather than polling them.
      *
-     * Updates arrive as notify_status_update on [onNotification]: the first parameter
-     * is the changed objects, the second the event time.
+     * Updates arrive as notify_status_update on [onNotification], carrying
+     * {eventtime, status} - see [KlipperProtocol.statusUpdate].
      */
     fun subscribe(vararg objects: String) {
         val wanted = JSONObject()
@@ -177,17 +177,8 @@ class KlipperClient(private val socketPath: String) {
      * progress anyway.
      */
     fun gcodeAsync(script: String) {
-        val id = ids.getAndIncrement()
-        val request = JSONObject()
-            .put("id", id)
-            .put("method", "gcode/script")
-            .put("params", JSONObject().put("script", script))
-        synchronized(writeLock) {
-            val out = output ?: throw IllegalStateException("not connected")
-            out.write(request.toString().toByteArray())
-            out.write(ETX.toInt())
-            out.flush()
-        }
+        write(KlipperProtocol.encode(ids.getAndIncrement(), "gcode/script",
+            JSONObject().put("script", script)))
     }
 
     /**
@@ -203,7 +194,6 @@ class KlipperClient(private val socketPath: String) {
 
     private companion object {
         const val TAG = "KlipperClient"
-        const val ETX: Byte = 0x03
         val ERROR_JSON = JSONObject().put("error", "closed")
     }
 }
