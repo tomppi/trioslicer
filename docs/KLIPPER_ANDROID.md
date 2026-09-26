@@ -194,6 +194,33 @@ pyconfig.h question from round 3 therefore only remains for cffi and greenlet.
   -lpthread would only matter if it were compiled on the device, which is exactly
   what this avoids. The transport patch stays the only planned source change.
 
+## Next step: the ctypes load test, as a recipe
+
+Prove Android can load the built helper into the bundled interpreter, before any
+Klipper code is exercised.
+
+1. Vendor klippy's tree behind a clear GPL boundary - for example
+   native/klipper/vendor/klippy at tag v0.13.0 - with the prebuilt helper at
+   native/klipper/vendor/klippy/chelper/c_helper.so. Klipper sources are already
+   cloned at /root/klipper-port/klipper and the built helper at
+   /root/klipper-port/out-arm64/c_helper.so.
+2. Follow BlenderBridge's shape: a JNI shim (native/klipper/klipper_exec.cpp plus a
+   CMakeLists.txt) exposing nativeKlipperStart, nativeKlipperIsRunning and
+   nativeKlipperStop, loaded with System.loadLibrary. It boots the bundled CPython,
+   puts the vendored klippy tree on sys.path, and runs a probe script on a
+   background thread.
+3. The probe script imports ctypes, loads c_helper.so, and reports the resolved
+   path, that it loaded, and one call into it.
+4. Verify by building the APK, installing over the existing package with the same
+   key, and reading the probe output from logcat.
+5. Only then klippy itself, batch mode, with no hardware.
+
+Two things to watch in that step: whether a packaged .so is loadable by absolute
+path from the native library directory (the three engine runners already rely on
+applicationInfo.nativeLibraryDir, so it should be), and whether klippy's
+needs-compiling check must be satisfied by shipping the helper with a timestamp
+newer than its sources.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
