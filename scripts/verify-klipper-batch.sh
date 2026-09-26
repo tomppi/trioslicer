@@ -60,15 +60,29 @@ echo "work:        $WORK"
 OUTPUT="$WORK/steps.bin"
 LOG="$WORK/klippy.log"
 set +e
+# Timed, because this is the feasibility question in miniature: how long the host
+# needs to plan a file and generate the steps for it. The same number from the phone
+# is the one that matters, and the same command produces it.
+STARTED=$(date +%s.%N)
 "$PYTHON" "$KLIPPY" -i "$GCODE" -o "$OUTPUT" -d "$DICT" -l "$LOG" "$CONFIG"
 STATUS=$?
+FINISHED=$(date +%s.%N)
 set -e
 
+ELAPSED=$(echo "$FINISHED - $STARTED" | bc)
+MOVES=$(grep -c "^G1" "$GCODE" || true)
 echo
 echo "klippy exited with $STATUS"
 STEPS=$(stat -c%s "$OUTPUT" 2>/dev/null || echo 0)
 echo "step stream: $STEPS bytes"
+# Wall clock for the whole run, which includes starting the interpreter and loading
+# klippy. It is a sanity figure rather than a rate: a meaningful rate needs a file the
+# size of a print, and the number that answers the feasibility question is the link's
+# own stats during a real one, which the app shows.
+echo "wall clock:  ${ELAPSED}s (${MOVES} moves, interpreter start included)"
 grep -c . "$LOG" | sed 's/^/log lines: /'
+echo "--- timed section of the log, if klippy reported one ---"
+grep -E "^Stats|print_time=" "$LOG" | tail -2 || true
 echo "--- what klippy said ---"
 grep -E "Loaded MCU|Configured MCU|shutdown|Error|error" "$LOG" | tail -8 || true
 
