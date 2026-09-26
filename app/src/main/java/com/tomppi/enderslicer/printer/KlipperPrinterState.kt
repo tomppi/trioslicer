@@ -26,6 +26,12 @@ data class KlipperPrinterState(
     val printDurationSeconds: Double? = null,
     /** The link's timing margins, once klippy has reported a stats line. */
     val timing: KlipperTiming? = null,
+    /** Where the host has queued moves to, in print time. */
+    val printTime: Double? = null,
+    /** Where the micro-controller has got to, on the same clock. */
+    val estimatedPrintTime: Double? = null,
+    /** How many times the micro-controller ran out of moves to execute. */
+    val printStalls: Int? = null,
     /** The last thing that went wrong, cleared by the next successful call. */
     val error: String? = null,
     /**
@@ -41,6 +47,35 @@ data class KlipperPrinterState(
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")
     val isPrinting: Boolean get() = printState == "printing"
     val isPaused: Boolean get() = printState == "paused"
+
+    /**
+     * How far ahead of the micro-controller the host has queued moves.
+     *
+     * This is klippy's own buffer_time, the same expression toolhead.py uses to decide
+     * whether it is starving or over-buffered: print_time is where the host has
+     * queued to, estimated_print_time is where the micro-controller has got to. Both
+     * come from the toolhead object, so this is the figure klippy itself acts on
+     * rather than an approximation of it.
+     *
+     * klippy aims to keep BUFFER_TIME_LOW (1s) to BUFFER_TIME_HIGH (2s) queued: below
+     * the low mark it enters its priming state, above the high mark it pauses. A
+     * printer being driven faster than it can be fed shows this heading for zero, and
+     * [printStalls] counting up is the same failure after the fact.
+     */
+    val lookaheadSeconds: Double?
+        get() = printTime?.let { queued -> estimatedPrintTime?.let { done -> queued - done } }
+
+    /** True while the host is keeping up the way klippy wants it to. */
+    val lookaheadIsHealthy: Boolean
+        get() = lookaheadSeconds?.let { it >= BUFFER_TIME_LOW } ?: true
+
+    companion object {
+        /** toolhead.py's BUFFER_TIME_LOW: below this, klippy is priming. */
+        const val BUFFER_TIME_LOW = 1.0
+
+        /** toolhead.py's BUFFER_TIME_HIGH: above this, klippy pauses to let the MCU catch up. */
+        const val BUFFER_TIME_HIGH = 2.0
+    }
 }
 
 /**
@@ -97,6 +132,9 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
         printDurationSeconds = stats.number("print_duration") ?: printDurationSeconds,
         printProgress = sdcard.number("progress") ?: printProgress,
         timing = status.optJSONObject("mcu")?.optJSONObject("last_stats")?.toTiming() ?: timing,
+        printTime = toolhead.number("print_time") ?: printTime,
+        estimatedPrintTime = toolhead.number("estimated_print_time") ?: estimatedPrintTime,
+        printStalls = toolhead.int("stalls") ?: printStalls,
     )
 }
 

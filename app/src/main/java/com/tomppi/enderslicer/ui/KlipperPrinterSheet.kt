@@ -277,6 +277,27 @@ private fun TimingCard(state: KlipperPrinterState) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Host link", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
+
+            // klippy's own buffer_time, against the marks it acts on.
+            state.lookaheadSeconds?.let { lookahead ->
+                Text(
+                    text = "Lookahead %.2f s".format(lookahead),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (lookahead >= KlipperPrinterState.BUFFER_TIME_LOW) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+            }
+            val stalls = state.printStalls ?: 0
+            if (stalls > 0) {
+                Text(
+                    "Stalled $stalls times",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             timing.roundTripSeconds?.let {
                 Text("Round trip %.1f ms".format(it * 1000), style = MaterialTheme.typography.bodyMedium)
             }

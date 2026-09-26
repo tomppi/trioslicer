@@ -1108,6 +1108,18 @@ From the handshake measured on the phone:
     srtt 0.004   rttvar 0.001   rto 0.025   bytes_retransmit 0   bytes_invalid 0
     headroom 6.25x
 
+The figure the objective actually names - when commands arrive versus when they are
+due - is the lookahead, and klippy computes it in toolhead.py:
+
+    est_print_time = self.mcu.estimated_print_time(eventtime)
+    buffer_time = self.print_time - est_print_time
+
+Both operands are in the toolhead object's status, so the app computes the same
+expression rather than approximating it, and shows it against the marks klippy acts
+on: BUFFER_TIME_LOW is 1.0 s, below which it goes into its priming state, and
+BUFFER_TIME_HIGH is 2.0 s, above which it pauses to let the micro-controller catch up.
+The toolhead also reports a stall count, which is the same failure after the fact.
+
 That is the floor rather than the answer: it is a link with one command in flight, not
 a print with a queue of moves behind it. The measurement that closes this properly is
 the same numbers taken during a real print, which needs the printer attached - and the

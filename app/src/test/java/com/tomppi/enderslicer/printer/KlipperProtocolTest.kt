@@ -178,5 +178,49 @@ class KlipperProtocolTest {
         assertEquals(0.004, after.timing!!.roundTripSeconds!!, 1e-9)
     }
 
+    @Test
+    fun lookaheadIsTheDifferenceKlippyItselfUses() {
+        // toolhead.py: buffer_time = print_time - estimated_print_time
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject(
+                """{"toolhead":{"print_time":101.5,"estimated_print_time":100.0,"stalls":0}}""",
+            ),
+        )
+        assertEquals(1.5, state.lookaheadSeconds!!, 1e-9)
+        // klippy's BUFFER_TIME_LOW is 1.0 s, so 1.5 s is the range it aims for.
+        assertTrue(state.lookaheadIsHealthy)
+        assertEquals(0, state.printStalls)
+    }
+
+    @Test
+    fun lookaheadBelowTheLowMarkIsNotHealthy() {
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject("""{"toolhead":{"print_time":100.4,"estimated_print_time":100.0}}"""),
+        )
+        assertEquals(0.4, state.lookaheadSeconds!!, 1e-9)
+        assertTrue(!state.lookaheadIsHealthy)
+    }
+
+    @Test
+    fun lookaheadIsUnknownUntilBothSidesHaveReported() {
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject("""{"toolhead":{"print_time":101.5}}"""),
+        )
+        assertNull(state.lookaheadSeconds)
+        // Nothing to judge yet, so nothing to complain about: a missing figure must not
+        // read as a starved printer on the screen.
+        assertTrue(state.lookaheadIsHealthy)
+    }
+
+    @Test
+    fun stallsAndTheClocksSurviveAMergeThatMentionsOnlyOne() {
+        val printing = KlipperPrinterState(
+            connected = true, printTime = 101.5, estimatedPrintTime = 100.0, printStalls = 0,
+        )
+        val after = printing.withStatus(JSONObject("""{"toolhead":{"stalls":3}}"""))
+        assertEquals(3, after.printStalls)
+        assertEquals(1.5, after.lookaheadSeconds!!, 1e-9)
+    }
+
     private fun frame(json: String) = json.toByteArray() + byteArrayOf(KlipperProtocol.ETX)
 }
