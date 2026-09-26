@@ -42,6 +42,11 @@ make install
 echo "=== cross build for aarch64-android ==="
 cd "$WORK/Python-$VERSION"
 export CC="$CC_DIR/aarch64-linux-android24-clang" CXX="$CC_DIR/aarch64-linux-android24-clang++"
+# -fPIC is forced rather than left to --enable-shared. Without it the core objects
+# come out non-position-independent and the shared library cannot be linked:
+#   ld.lld: error: relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against
+#   symbol '_Py_HashSecret'; recompile with -fPIC
+export CFLAGS="-fPIC -O2"
 export AR="$CC_DIR/llvm-ar" RANLIB="$CC_DIR/llvm-ranlib" STRIP="$CC_DIR/llvm-strip" READELF="$CC_DIR/llvm-readelf"
 make distclean >/dev/null 2>&1 || true
 ./configure --host=aarch64-linux-android --build=x86_64-pc-linux-gnu \
@@ -52,6 +57,11 @@ make distclean >/dev/null 2>&1 || true
   ac_cv_buggy_getaddrinfo=no ac_cv_little_endian_double=yes \
   ac_cv_posix_semaphores_enabled=yes ac_cv_func_sem_open=yes \
   ac_cv_func_sem_timedwait=yes ac_cv_func_sem_getvalue=yes
+# Two passes, in this order. The extension modules link against
+# libpython3.11.so, so that library has to exist before they are built; under a
+# parallel make they race and the modules fail with "unable to find library
+# -lpython3.11" - one problem reported dozens of times.
+make libpython3.11.so
 make -j4
 make install
 ls -l "$PREFIX/lib/libpython3.11.so" "$PREFIX/include/python3.11/Python.h"
