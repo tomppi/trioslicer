@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB-serial chips a Klipper printer board may present. Vendor and product IDs are
+  written in decimal because the platform requires it.
+
+  Creality 4.2.x boards, which is what the Ender 3 V2 uses, carry a CH340.
+
+  This file exists so the device filter can be attached to an intent filter when the
+  printer service lands; nothing references it yet, and it changes no behaviour.
+-->
+<resources>
+    <!-- 1a86:7523  CH340 (Creality Ender 3 V2 boards) -->
+    <usb-device vendor-id="6790" product-id="29987" />
+    <!-- 10c4:ea60  CP2102 -->
+    <usb-device vendor-id="4292" product-id="60000" />
+    <!-- 0403:6001  FTDI FT232 -->
+    <usb-device vendor-id="1027" product-id="24577" />
+</resources>
