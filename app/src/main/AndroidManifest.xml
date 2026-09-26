@@ -65,6 +65,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Plugging the printer in is the one event that both means there is a
+                 printer to drive and grants this app permission to open it: choosing
+                 the app in the dialog Android shows for a matching device is what
+                 authorises UsbManager.openDevice. Without this the host would run
+                 with nothing to talk to and no way to be given the port. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
         </activity>
 
         <provider

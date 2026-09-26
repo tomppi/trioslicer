@@ -1,7 +1,9 @@
 package com.tomppi.enderslicer
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
+import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.IntegratedEnderSlicerApp
@@ -27,11 +30,30 @@ class MainActivity : ComponentActivity() {
     private val slicerViewModel by viewModels<MainViewModel>()
     private val octoPrintViewModel by viewModels<OctoPrintViewModel>()
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        startKlipperHostIfPrinterAttached(intent)
+    }
+
+    /**
+     * Start the Klipper host when a printer has just been plugged in.
+     *
+     * This activity is the app's registered handler for that intent, so Android has
+     * also just granted permission for the device - the one moment the port can be
+     * opened without a dialog. Nothing else starts the host: with no printer there
+     * is nothing for it to drive.
+     */
+    private fun startKlipperHostIfPrinterAttached(intent: Intent?) {
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        KlipperEngineService.start(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MeshTriangleLimits.initialize(this)
         enableEdgeToEdge()
         requestNotificationPermission()
+        startKlipperHostIfPrinterAttached(intent)
         setContent {
             val engineStore = remember { SlicerEngineStore(applicationContext) }
             var engine by remember { mutableStateOf(engineStore.load()) }

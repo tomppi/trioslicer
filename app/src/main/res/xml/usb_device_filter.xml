@@ -5,8 +5,9 @@
 
   Creality 4.2.x boards, which is what the Ender 3 V2 uses, carry a CH340.
 
-  This file exists so the device filter can be attached to an intent filter when the
-  printer service lands; nothing references it yet, and it changes no behaviour.
+  It is attached to the USB_DEVICE_ATTACHED intent filter on MainActivity, which is
+  both how the app is offered when a printer is plugged in and how it is granted
+  permission to open that device.
 -->
 <resources>
     <!-- 1a86:7523  CH340 (Creality Ender 3 V2 boards) -->

@@ -53,13 +53,18 @@ SOURCES="$(ls *.c | tr '\n' ' ')"
 [ -s c_helper.so ] || { echo "chelper failed to build" >&2; exit 1; }
 echo "chelper: $(stat -c%s c_helper.so) bytes"
 
-# Stage the Python tree and the helper. The .c files are left behind on purpose:
-# klippy compiles the helper when its sources are newer than the library, and a
-# phone has no compiler, so the payload carries no sources to trigger that.
+# Stage the Python tree, the helper, and klippy's own .cfg data files. The latter
+# are not optional: the thermistor tables and the display menus live in them, so a
+# payload of pure Python starts and then dies reading the printer's configuration
+# with "Unable to open config file .../extras/temperature_sensors.cfg".
+#
+# The .c and .h files are left behind on purpose: klippy compiles the helper when
+# its sources are newer than the library, and a phone has no compiler, so the
+# payload carries no sources to trigger that.
 rm -rf "$ASSETS"
 mkdir -p "$ASSETS"
 cd "$SRC"
-find klippy -name "*.py" | while read -r f; do
+find klippy \( -name "*.py" -o -name "*.cfg" \) | while read -r f; do
   mkdir -p "$ASSETS/$(dirname "$f")"
   cp "$f" "$ASSETS/$f"
 done
@@ -112,14 +117,106 @@ done
 cat > "$ASSETS/MANIFEST.txt" <<TXT
 Klipper host payload for the Android app.
 Source: Klipper3d/klipper at $TAG
-Contents: the klippy Python tree (*.py only), a prebuilt bionic chelper, and the
-standard library and extensions of the interpreter built by
+Contents: the klippy Python tree with its .cfg data files, a prebuilt bionic
+chelper, and the standard library and extensions of the interpreter built by
 build-klipper-python-android.sh and build-klipper-extensions-android.sh.
 The chelper C sources are deliberately absent: klippy compiles the helper when the
 sources are newer than the library, and with no sources present there is nothing
 to trigger that on a phone that has no compiler. Klipper's own sources are
 available upstream and in the checkout this was staged from.
+
+One line of klippy/util.py is patched against this file's own copy: its
+create_pty() chmods a /dev/pts node, which Android does not allow an app to do.
+The patch is in scripts/stage-klipper-android.sh, which is the whole diff.
 TXT
+
+# One patch to klippy, applied here so that what ships is what this script built.
+#
+# util.create_pty() chmods the pty node it just made, so that a client running as
+# a different user (OctoPrint, say) can open it. Android does not allow that:
+# SELinux grants appdomain devpts:chr_file { getattr read write ioctl } and offers
+# no setattr, and the denial is dontaudited, so it reaches Python as a bare EACCES
+# and klippy exits during startup. Nothing else opens this pty - the app owns the
+# node and is its only reader - so skipping the chmod changes nothing but lets the
+# host run. klippy is otherwise exactly upstream's code.
+python3 - "$ASSETS/klippy/util.py" <<'PATCH'
+import sys
+path = sys.argv[1]
+source = open(path).read()
+old = "    os.chmod(filename, 0o660)\n"
+new = ("    try:\n"
+       "        os.chmod(filename, 0o660)\n"
+       "    except OSError:\n"
+       "        # Android: an app may not setattr a devpts node, and the denial is\n"
+       "        # dontaudited. No other user opens this pty.\n"
+       "        pass\n")
+if old not in source:
+    sys.exit("stage: util.py no longer chmods the pty; the patch needs rewriting")
+open(path, "w").write(source.replace(old, new, 1))
+PATCH
+grep -q "No other user opens this pty" "$ASSETS/klippy/util.py" \
+  || { echo "the util.py patch did not apply" >&2; exit 1; }
+
+# The second patch, and the more interesting one.
+#
+# mcu.py decides how to reach the micro-controller: with a baud rate it uses
+# connect_uart, which opens the port through pyserial with exclusive=True, and
+# pyserial's lock is flock. Without a baud rate it uses connect_pipe, a plain
+# os.open. Upstream already treats two kinds of path as "not a real UART" and
+# leaves the baud rate unset for them - /dev/rpmsg_ and /tmp/klipper_host_, the
+# Linux host MCU's pty. A pty is the same case and Android is where it matters:
+# there is no /tmp to put one in, and flock on a devpts node is denied to an app
+# (SELinux grants devpts:chr_file getattr read write ioctl and no lock, and
+# dontaudits the denial), so connect_uart fails as a bare EACCES forever.
+#
+# The condition is exact rather than Android-specific: a pty has no baud rate to
+# set on any platform, so a serial port that resolves into /dev/pts is a pipe
+# connection wherever this runs. /dev/ttyUSB0 and /dev/serial/by-id/... are
+# unaffected.
+python3 - "$ASSETS/klippy/mcu.py" <<'PATCH'
+import sys
+path = sys.argv[1]
+source = open(path).read()
+old = """            if not (self._serialport.startswith("/dev/rpmsg_")
+                    or self._serialport.startswith("/tmp/klipper_host_")):
+                self._baud = config.getint('baud', 250000, minval=2400)
+"""
+new = """            if not (self._serialport.startswith("/dev/rpmsg_")
+                    or self._serialport.startswith("/tmp/klipper_host_")
+                    or os.path.realpath(self._serialport).startswith("/dev/pts/")):
+                self._baud = config.getint('baud', 250000, minval=2400)
+"""
+if old not in source:
+    sys.exit("stage: mcu.py no longer treats paths this way; the patch needs rewriting")
+open(path, "w").write(source.replace(old, new, 1))
+PATCH
+grep -q 'realpath(self._serialport).startswith("/dev/pts/")' "$ASSETS/klippy/mcu.py" \
+  || { echo "the mcu.py patch did not apply" >&2; exit 1; }
+
+# The third patch, and the one that stops the printer.
+#
+# Android's libc has no getloadavg, so CPython was configured and built without
+# os.getloadavg. The statistics module calls it every stats interval and does not
+# catch it, so klippy reached "Loaded MCU" and "Configured MCU" and then died on
+# this line, taking the printer to shutdown with it. The load average is reported
+# in the log and read by nothing.
+python3 - "$ASSETS/klippy/extras/statistics.py" <<'PATCH'
+import sys
+path = sys.argv[1]
+source = open(path).read()
+old = "        self.last_load_avg = os.getloadavg()[0]\n"
+new = ("        try:\n"
+       "            self.last_load_avg = os.getloadavg()[0]\n"
+       "        except (AttributeError, OSError):\n"
+       "            # Android: bionic has no getloadavg and this interpreter was\n"
+       "            # built without it. Reported to the log and read by nothing.\n"
+       "            self.last_load_avg = 0.\n")
+if old not in source:
+    sys.exit("stage: statistics.py no longer reads the load average; patch needs rewriting")
+open(path, "w").write(source.replace(old, new, 1))
+PATCH
+grep -q "bionic has no getloadavg" "$ASSETS/klippy/extras/statistics.py" \
+  || { echo "the statistics.py patch did not apply" >&2; exit 1; }
 
 COUNT="$(find "$ASSETS" -name "*.py" | wc -l)"
 SIZE="$(du -sh "$ASSETS" | cut -f1)"

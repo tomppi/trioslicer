@@ -1,4 +1,4 @@
-package com.tomppi.enderslicercura.printer
+package com.tomppi.enderslicer.printer
 
 import android.hardware.usb.UsbManager
 import android.util.Log

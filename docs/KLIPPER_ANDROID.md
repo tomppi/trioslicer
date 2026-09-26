@@ -895,14 +895,72 @@ Two smaller lies of the same kind, both fixed:
   interpreter prefix and refuses to stage one that is missing a package or whose
   greenlet does not link libpython.
 
+## Round 89: klippy drives the printer from the phone
+
+The whole path runs. From the log on the device, with the printer on the other end
+of a USB cable into the phone:
+
+    printer pty /dev/pts/0, master fd 94
+    PrinterBridge: bridging /dev/bus/usb/002/002 at 250000 baud to pty fd 94
+    Loaded MCU 'mcu' 121 commands (v0.13.0-0-g61c0c8d / gcc 14.2.1)
+    Configured MCU 'mcu' (1024 moves)
+    Dumping serial stats: bytes_write=1223 bytes_read=4655 bytes_retransmit=0
+        bytes_invalid=0 send_seq=133 receive_seq=133 srtt=0.004 rttvar=0.001
+        rto=0.025
+
+srtt is 4 ms and nothing was retransmitted, which is the timing question this
+project was carrying: the host-to-MCU round trip through a pty, a Java USB pump
+and a CH340 costs a few milliseconds, not tens.
+
+## The pty has to be raw, and that was the whole problem
+
+The line discipline of a fresh pty echoes what is written to the master, translates
+CR and LF, and in canonical mode buffers until a newline. klippy sets the slave raw
+when it opens it, but the bridge is already moving bytes before that, and an echoed
+byte comes back to klippy as if the board had sent it. It looks exactly like a board
+that is not answering.
+
+The symptom before the fix was a single stray byte in each direction and then
+silence - "usb -> pty: 3b (1 bytes)" and "pty -> usb: 3b (1 bytes)" - with klippy
+reporting timeouts forever. cfmakeraw on the pty when it is created (in the JNI
+helper) turned that into the handshake above on the first attempt.
+
+## Three bugs in the bridge, each found by reading its own log
+
+- serial.write(buffer, read) is (bytes, timeout), not (bytes, length). It put 4 KiB
+  of stale buffer on the wire per chunk and used the chunk size as the timeout. The
+  log said so exactly: "Error writing 32 bytes at offset 384 of total 4096".
+- The ParcelFileDescriptor was local, so the streams kept the descriptor but not the
+  object that owns it. Once it was finalised the pty disappeared and every later
+  transfer failed with EBADF. It is a field now.
+- EIO and SerialTimeoutException are both normal here - klippy closes the slave
+  between its five-second connection attempts, and an idle printer sends nothing for
+  longer than a read timeout. Both were treated as fatal, which killed the direction
+  carrying klippy's requests, so the board could never have answered.
+
+## Three patches to klippy, all of them Android, all of them listed here
+
+Every one is applied by scripts/stage-klipper-android.sh, so what ships is what that
+script produced. Klipper is otherwise upstream's code.
+
+| file | why |
+| --- | --- |
+| util.py | create_pty chmods the pty node so another user can open it. SELinux grants appdomain devpts:chr_file { getattr read write ioctl } and no setattr, and dontaudits the denial, so it arrives as a bare EACCES and klippy exits. Nothing else opens that pty. |
+| mcu.py | A pty cannot be opened through connect_uart: that goes through pyserial with exclusive=True, and flock on a devpts node is denied to an app for the same reason. Upstream already treats /dev/rpmsg_ and /tmp/klipper_host_ as "not a real UART" and uses connect_pipe without a baud rate; a port that resolves into /dev/pts is the same case on any platform. |
+| extras/statistics.py | bionic has no getloadavg and this interpreter was built without os.getloadavg. The stats loop calls it every interval and does not catch it, so klippy reached "Configured MCU" and then died, taking the printer to shutdown. |
+
+A fourth issue is a consequence rather than a bug: a run that dies leaves the MCU in
+shutdown, and the next start reports "Can not update MCU 'mcu' config as it is
+shutdown" - a state Klipper recovers from with FIRMWARE_RESTART, over the same API
+socket the app's own front end will use.
+
 ## What this leaves
 
-1. The pty the transport needs cannot be created from Kotlin: android.system.Os
-   has no openpty and its ioctlInt is a hidden API, which is why terminal
-   emulators on Android ship a JNI library for exactly this. A small
-   libklipper_pty.so with openpty/ptsname is the next piece.
-2. The USB bridge (PrinterUsb/PrinterBridge) is written but has never run in the
-   app: it needs the pty master fd and a real printer.cfg naming the slave.
-3. klippy itself has not been started yet. What runs is the interpreter with the
-   payload on sys.path.
-4. Timing, end to end, is still unmeasured in the app.
+1. The app has no front end yet. klippy exposes its JSON API on a unix socket
+   (-a .../klippy.sock) and that is the interface to build against; a query of
+   printer.info and objects/query returns state, temperatures and position.
+2. Nothing in the app sends FIRMWARE_RESTART, so a crashed run needs one.
+3. The printer's own config still carries z_offset 0 and has never been probed from
+   this host: PROBE_CALIBRATE and BED_MESH_CALIBRATE come before any print.
+4. Timing under load - a real print, with the slicer running - is still unmeasured.
+   The handshake's 4 ms is the floor, not the answer.

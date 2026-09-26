@@ -8,12 +8,15 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.system.Os
 import android.util.Log
 import com.tomppi.enderslicer.MainActivity
+import com.tomppi.enderslicer.printer.KlipperPty
+import com.tomppi.enderslicer.printer.PrinterBridge
 import java.io.File
 import java.io.IOException
 
@@ -75,7 +78,7 @@ class KlipperEngineService : Service() {
         wakeLock?.acquire()
     }
 
-    /** Extract the payload, link the interpreter's soname, then run. */
+    /** Extract the payload, prepare a printer, then run klippy. */
     private fun launch() {
         try {
             val root = File(filesDir, "klipper")
@@ -88,40 +91,100 @@ class KlipperEngineService : Service() {
                 Log.e(TAG, "interpreter missing at ${exe.absolutePath}")
                 return
             }
-            // First light: prove the payload runs before wiring a printer to it.
-            // Every step prints as it goes, so a failure still shows how far the
-            // interpreter got.
-            val probe = """
-                import sys
-                print('python', sys.version.split()[0])
-                import cffi, greenlet, serial, jinja2
-                print('deps ok cffi', cffi.__version__, 'greenlet', greenlet.__version__,
-                      'pyserial', serial.__version__)
-                from klippy import chelper
-                print('chelper ok', chelper.__file__)
-            """.trimIndent()
-            val pb = ProcessBuilder(exe.absolutePath, "-c", probe)
+            // The printer is reached through a pty this process owns one end of:
+            // klippy opens a device node and applies termios to it, and there is no
+            // device node to give it.
+            val pty = KlipperPty.open()
+            if (pty == null) {
+                Log.e(TAG, "could not open a pty for the printer")
+                return
+            }
+            Log.i(TAG, "printer pty ${pty.slavePath}, master fd ${pty.masterFd}")
+            val config = writePrinterConfig(root, pty.slavePath)
+            bridgePrinter(pty.masterFd)
+
+            // Truncated first: klippy appends to the log it is given, so without
+            // this a run is read together with every run before it and the failures
+            // of an old one look like the failures of this one.
+            val klippyLog = File(filesDir, "klippy.log")
+            klippyLog.writeText("")
+
+            // -I is where klippy puts a pty of its own for legacy clients, and its
+            // default is /tmp/printer - there is no /tmp an app may write to. -l is
+            // not decoration either: without a log file klippy logs to stderr and
+            // warns that the timing it costs may be severe.
+            val pb = ProcessBuilder(
+                exe.absolutePath, File(root, "klippy/klippy.py").absolutePath,
+                "-I", File(root, "printer").absolutePath,
+                "-a", File(filesDir, "klippy.sock").absolutePath,
+                "-l", klippyLog.absolutePath,
+                config.absolutePath,
+            )
             pb.directory(root)
             pb.redirectErrorStream(true)
             val env = pb.environment()
             env["PYTHONHOME"] = root.absolutePath
             env["LD_LIBRARY_PATH"] = "${libexec.absolutePath}:${nativeDir.absolutePath}"
             env["PYTHONDONTWRITEBYTECODE"] = "1"
-            Log.i(TAG, "exec ${exe.absolutePath} PYTHONHOME=${root.absolutePath}")
+            Log.i(TAG, "starting klippy: ${pb.command().joinToString(" ")}")
             val proc = pb.start()
             process = proc
             // Android's Process has no pid() (that is a JVM method), so the start
-            // is logged without one.
-            Log.i(TAG, "klipper interpreter started")
+            // is logged without one. What klippy writes goes to its log file; what
+            // reaches here is a startup failure or a traceback.
             proc.inputStream.bufferedReader().forEachLine { line ->
-                Log.i(TAG, "klipper: $line")
+                Log.i(TAG, "klippy: $line")
             }
             val code = proc.waitFor()
-            Log.i(TAG, "klipper exited with $code")
-        } catch (e: Exception) {
-            Log.e(TAG, "could not start klipper", e)
+            Log.i(TAG, "klippy exited with $code")
+        } catch (error: Throwable) {
+            // Throwable, not Exception: a missing libklipper_pty.so surfaces as an
+            // UnsatisfiedLinkError, and an uncaught one takes the app's process down.
+            Log.e(TAG, "klipper host stopped", error)
         } finally {
             process = null
+        }
+    }
+
+    /**
+     * The board's own configuration, with the two paths this device has to supply.
+     *
+     * Pins, kinematics and probe offsets belong to the printer and are not touched
+     * here; only the serial port and the gcode directory differ from the file the
+     * same printer is set up with on a host.
+     */
+    private fun writePrinterConfig(root: File, serialPath: String): File {
+        val gcodes = File(filesDir, "gcodes").apply { mkdirs() }
+        val template = assets.open("klipper-host/printer.cfg")
+            .bufferedReader().use { it.readText() }
+        val config = File(root, "printer.cfg")
+        config.writeText(
+            template.replace("__SERIAL__", serialPath)
+                .replace("__GCODES__", gcodes.absolutePath),
+        )
+        Log.i(TAG, "printer config ${config.absolutePath}: serial $serialPath")
+        return config
+    }
+
+    /**
+     * Hand the other end of the pty to the printer, if one is attached and permitted.
+     *
+     * Nothing here is required for klippy to start: with no printer it simply keeps
+     * trying to reach the MCU, which is the state a user sees before plugging one in.
+     */
+    private fun bridgePrinter(masterFd: Int) {
+        val manager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val serial = PrinterBridge.findPrinter(manager)
+        if (serial == null) {
+            Log.i(TAG, "no printer on USB; klippy will wait for one")
+            return
+        }
+        if (!manager.hasPermission(serial.device)) {
+            Log.i(TAG, "printer ${serial.device.deviceName} is attached but not permitted")
+            return
+        }
+        if (!PrinterBridge.start(manager, serial, masterFd)) {
+            Log.w(TAG, "could not bridge ${serial.device.deviceName}")
         }
     }
 
