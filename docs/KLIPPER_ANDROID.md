@@ -234,6 +234,43 @@ applicationInfo.nativeLibraryDir, so it should be), and whether klippy's
 needs-compiling check must be satisfied by shipping the helper with a timestamp
 newer than its sources.
 
+## Round 13-14: the first measurement on the device
+
+Ran Python inside the app without writing any JNI code, by driving the Blender
+engine's own MCP socket: forward tcp:9876, read the token from the app's private
+storage, and send an execute_code request. The envelope is
+{"type": "execute_code", "token": "...", "params": {"code": "..."}} - the code
+goes under "params", and the token is required on every request.
+
+Measured on the Fold 5, inside the app's embedded interpreter:
+
+    python 3.11.4 | ctypes libc ok | openpty=True |
+    chelper FAILED: dlopen failed: cannot locate symbol "errorf" referenced by c_helper.so
+
+So, verified:
+
+- **ctypes works in the app**, loading libc.so through the normal loader.
+- **openpty exists on this device** - so the transport can hand chelper a pty and
+  the file-descriptor patch is a fallback rather than a requirement.
+- **The interpreter is 3.11.4**, matching the payload.
+- **The built helper does not load yet**: it references errorf, which bionic does
+  not provide. A shared library links with undefined symbols by default, so the
+  build succeeded while the symbol was missing - which is exactly the kind of gap
+  that only a device run finds.
+
+Fixes to make next, in order:
+
+1. Find which chelper source uses errorf and supply it (a small shim or a patch to
+   that call), then rebuild.
+2. **Rebuild with -Wl,--no-undefined**, so any future missing symbol fails at build
+   time instead of on the phone. The first build looked clean and was not.
+3. Re-run the same probe and expect a clean load with stepcompress_alloc,
+   itersolve_alloc and serialqueue_alloc all present.
+
+Worth keeping: driving the engine socket is a reusable capability. It gives direct
+Python access inside the app for the rest of this port, with no app changes, no
+JNI shim and no rebuild.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
