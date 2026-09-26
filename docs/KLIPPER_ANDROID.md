@@ -622,9 +622,16 @@ static int ch341_configure(struct usb_device *dev, struct ch341_private *priv)
 	return 0;
 }
 
-With the register constants from round 84, that is everything the userspace driver
-needs: how to compute the prescaler and divisor for a given baud, and the order in
-which the version check, line control and flow control are applied.
+That is the **order** the driver must follow: read the version (expect 0x27 0x00),
+send CH341_REQ_SERIAL_INIT, set baud and line control together, then set handshake.
+It also surfaced CH341_REQ_SERIAL_INIT, which the round 84 grep had missed.
+
+**Still not extracted:** the body of ch341_set_baudrate_lcr, which is where the
+prescaler and divisor are actually computed. My pattern capped the match at 900
+characters and the function is longer than that, so it fell through. One more read of
+the same file with a larger cap gets it - noted here rather than left implied, because
+the previous version of this paragraph claimed the divisor maths was already in hand
+when it was not.
 
 ## What this leaves
 
