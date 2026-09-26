@@ -194,6 +194,19 @@ pyconfig.h question from round 3 therefore only remains for cffi and greenlet.
   -lpthread would only matter if it were compiled on the device, which is exactly
   what this avoids. The transport patch stays the only planned source change.
 
+## Round 10: the helper exports what klippy looks up
+
+- klippy's Python references 37 chelper symbols across the stepcompress, itersolve,
+  trapq, serialqueue, msgblock and kinematics families.
+- **36 of the 37 are present** in the built c_helper.so. The one that is not,
+  kin_rotary_delta, is a kinematics family name rather than a C lookup - it carries
+  no verb suffix of the kind the real entry points have (itersolve_alloc,
+  stepcompress_alloc, trapq_alloc), so it is the search pattern matching a name in
+  Python rather than a missing function.
+- So the artifact matches klippy's expectations by inspection, before any device
+  run. What remains unproven is only whether Android's loader and ctypes accept it
+  at runtime, which is what the load test settles.
+
 ## Next step: the ctypes load test, as a recipe
 
 Prove Android can load the built helper into the bundled interpreter, before any
