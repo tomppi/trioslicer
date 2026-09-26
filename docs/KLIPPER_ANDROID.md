@@ -84,6 +84,41 @@ out of the tree, not assumed.
   extracted into filesDir behind a .resources-version marker. A vendored klippy
   tree would stage exactly that way.
 
+## Round 3: the builtins, and what upstream actually requires
+
+Every module klippy imports is compiled into libcpython.so, verified as symbols:
+_struct, _collections, _queue, zlib, _hashlib, select, _thread, math, fcntl,
+_socket, termios, posix. Note termios and fcntl in particular - both are what
+chelper's serial layer uses.
+
+**Upstream's real dependency list**, read from Klipper's own
+scripts/klippy-requirements.txt rather than from memory:
+
+- greenlet, pinned 2.0.2 for Python below 3.12 - used by the reactor. A C
+  extension, so it must be cross-compiled.
+- cffi, pinned 1.14.6 below 3.12 - used by chelper and by greenlet. Also a C
+  extension. libffi is already inside libcpython.so, but cffi needs its own
+  backend extension built against it.
+- jinja2 (pure Python), and MarkupSafe, which falls back to pure Python when its
+  speedups are absent.
+- pyserial is pure Python, and may not be needed at all if the transport is ours.
+
+So cffi and greenlet cannot be avoided; both are ordinary cross-compilation work,
+but they are the real content of "build klippy's dependencies for bionic".
+
+The installer script also shows what stays a desktop step: the AVR and ARM
+toolchains, dfu-util and stm32flash are for building and flashing MCU firmware,
+which never needs to happen on the phone.
+
+## The one thing that could bite: pyconfig.h
+
+Greenlet and cffi need Python.h, and a Python.h is only safe with the pyconfig.h
+the interpreter was actually built with. The Blender asset ships no headers, so
+there are two honest routes: reconstruct a matching pyconfig.h for that build, or
+ship our own CPython 3.11.4 for klippy and control the whole configuration. The
+second costs a few megabytes and removes the guesswork, and the app already
+proves the packaging works.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
