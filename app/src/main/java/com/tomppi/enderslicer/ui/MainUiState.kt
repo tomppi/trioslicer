@@ -42,6 +42,10 @@ data class MainUiState(
     val mesh: StlMesh? = null,
     val modelPath: String? = null,
     val modelPlacement: ModelPlacement? = null,
+    /** True while there is a placement change to take back. */
+    val canUndoPlacement: Boolean = false,
+    /** What undoing would take back, for the button's own label. */
+    val undoPlacementLabel: String? = null,
     val supportPaint: SupportPaintState = SupportPaintState(),
     val paintMode: SupportPaintMode = SupportPaintMode.NONE,
 

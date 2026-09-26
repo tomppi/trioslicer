@@ -1111,28 +1111,72 @@ private class ModelRenderer(
         val currentMesh = mesh ?: return null
         if (overlay.handles.isEmpty()) return null
         val camera = cameraSnapshot(currentMesh)
-        var best: GizmoHit? = null
-        var bestDistance = tolerancePx
+        val probe = DepthProbe()
+        val hits = ArrayList<GizmoHit>(overlay.handles.size * 8)
+        val candidates = ArrayList<GizmoDrag.HandleCandidate>(overlay.handles.size * 8)
         overlay.handles.forEach { handle ->
             val points = handle.points.size / 3
             for (index in 0 until points) {
-                val screen = MeshPicker.project(
-                    printer,
-                    camera,
-                    handle.points[index * 3],
-                    handle.points[index * 3 + 1],
-                    handle.points[index * 3 + 2],
-                ) ?: continue
+                val x = handle.points[index * 3]
+                val y = handle.points[index * 3 + 1]
+                val z = handle.points[index * 3 + 2]
+                val screen = MeshPicker.project(printer, camera, x, y, z) ?: continue
                 val dx = screen[0] - screenX
                 val dy = screen[1] - screenY
-                val distance = kotlin.math.sqrt(dx * dx + dy * dy)
-                if (distance <= bestDistance) {
-                    bestDistance = distance
-                    best = GizmoHit(handle.axis, handle.kind)
-                }
+                hits.add(GizmoHit(handle.axis, handle.kind))
+                candidates.add(
+                    GizmoDrag.HandleCandidate(
+                        screenDistancePx = kotlin.math.sqrt(dx * dx + dy * dy),
+                        depthMm = probe.of(x, y, z),
+                    ),
+                )
             }
         }
-        return best
+        // What the model is doing under the finger: a handle further away than
+        // that surface is behind the model, and reaching through the part to grab a
+        // ring on its far side is exactly what felt wrong.
+        val surface = MeshPicker.pick(currentMesh, printer, camera, screenX, screenY)
+        val surfaceDepth = surface?.let { probe.of(it.x, it.y, it.z) }
+        val chosen = GizmoDrag.chooseHandle(candidates, tolerancePx, surfaceDepth)
+        return if (chosen >= 0) hits[chosen] else null
+    }
+
+    /**
+     * How far a plate point is from the camera, for judging what is in front.
+     *
+     * Built from the camera snapshot rather than read from the matrices the GL
+     * thread is using, so a touch cannot catch one of them half-written.
+     */
+    private inner class DepthProbe {
+        private val combined = FloatArray(16)
+        private val point = FloatArray(4)
+        private val projected = FloatArray(4)
+        private val view = FloatArray(16)
+        private val scene = FloatArray(16)
+
+        init {
+            val aspect = viewportWidth.toFloat() / max(viewportHeight, 1).toFloat()
+            val fit = sceneFit(aspect)
+            Matrix.setLookAtM(view, 0, 0f, -fit.distance, fit.distance * 0.62f, 0f, 0f, 0f, 0f, 0f, 1f)
+            Matrix.translateM(view, 0, panX, panY, 0f)
+            Matrix.setIdentityM(scene, 0)
+            Matrix.rotateM(scene, 0, pitch, 1f, 0f, 0f)
+            Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
+            Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
+            Matrix.multiplyMM(combined, 0, view, 0, scene, 0)
+        }
+
+        /** Bigger is further from the eye. */
+        fun of(x: Float, y: Float, z: Float): Float {
+            point[0] = x
+            point[1] = y
+            point[2] = z
+            point[3] = 1f
+            Matrix.multiplyMV(projected, 0, combined, 0, point, 0)
+            return kotlin.math.sqrt(
+                projected[0] * projected[0] + projected[1] * projected[1] + projected[2] * projected[2],
+            )
+        }
     }
 
     /** Millimetres along [axis] for a screen drag on its arrow. */

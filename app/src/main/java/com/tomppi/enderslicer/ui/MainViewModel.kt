@@ -40,6 +40,7 @@ import com.tomppi.enderslicer.model.ExtraSettingSpec
 import com.tomppi.enderslicer.model.ExtraSettingValidation
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.OrcaBasePreset
+import com.tomppi.enderslicer.model.PlacementHistory
 import com.tomppi.enderslicer.model.OrcaPresetCatalog
 import com.tomppi.enderslicer.model.OrcaProfileImporter
 import com.tomppi.enderslicer.model.OrcaSliceSettings
@@ -2249,8 +2250,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         withContext(Dispatchers.IO) { persistCurrentWorkspace(_uiState.value) }
     }
 
+    /** Placement changes this session, newest last, for taking one back. */
+    private val placementHistory = PlacementHistory()
+
+    /**
+     * Puts the model back where it was before the last placement change.
+     *
+     * Covers everything that moves the model, because they all come through
+     * changePlacement: the gizmo's drags and arrows, the typed fields, drop, lay
+     * flat, reset and an imported scene transform.
+     */
+    fun undoPlacement() {
+        val step = placementHistory.undo() ?: return
+        changePlacement("Undid " + step.label, recordHistory = false) { _, _ -> step.placement }
+    }
+
     private fun changePlacement(
         message: String,
+        recordHistory: Boolean = true,
         transform: (ModelPlacement, StlMesh) -> ModelPlacement,
     ) {
         val original = sourceMesh
@@ -2287,10 +2304,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 prepared
             }.onSuccess { (changed, transformed) ->
+                if (recordHistory) placementHistory.record(message, current)
                 _uiState.update { state ->
                     state.withoutPublishedSlice().copy(
                         mesh = transformed,
                         modelPlacement = changed,
+                        canUndoPlacement = placementHistory.canUndo,
+                        undoPlacementLabel = placementHistory.nextLabel,
                         isBusy = false,
                         statusMessage = "$message; slice again to export G-code",
                     )

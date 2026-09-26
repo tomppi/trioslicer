@@ -18,6 +18,56 @@ internal object GizmoDrag {
     /** Degrees a drag the length of the ring's radius is worth. */
     const val DEGREES_PER_RADIUS = 60f
 
+    /** Slack on the depth test, so a handle sitting on the surface is not judged hidden. */
+    const val DEPTH_TOLERANCE_MM = 1.5f
+
+    /** Two candidates this close on screen are decided by which is nearer instead. */
+    private const val SCREEN_TIE_PX = 6f
+
+    /** A point the touch might be grabbing, and what the choice needs to judge it. */
+    data class HandleCandidate(val screenDistancePx: Float, val depthMm: Float)
+
+    /**
+     * Which candidate the finger grabbed, or -1 for none.
+     *
+     * A candidate has to be within touchRadiusPx of the touch on screen, and not
+     * hidden behind the model: surfaceDepthMm is how far away the model is under
+     * the finger, and a handle further than that, beyond the tolerance, is behind
+     * it. The nearest on screen wins; when two land within a few pixels of each
+     * other - the two sides of a ring seen almost edge-on - the nearer one does.
+     */
+    fun chooseHandle(
+        candidates: List<HandleCandidate>,
+        touchRadiusPx: Float,
+        surfaceDepthMm: Float?,
+        depthToleranceMm: Float = DEPTH_TOLERANCE_MM,
+    ): Int {
+        if (!touchRadiusPx.isFinite() || touchRadiusPx <= 0f) return -1
+        var best = -1
+        var bestScreen = Float.MAX_VALUE
+        var bestDepth = Float.MAX_VALUE
+        candidates.forEachIndexed { index, candidate ->
+            if (!candidate.screenDistancePx.isFinite() || !candidate.depthMm.isFinite()) {
+                return@forEachIndexed
+            }
+            if (candidate.screenDistancePx > touchRadiusPx) return@forEachIndexed
+            if (surfaceDepthMm != null && surfaceDepthMm.isFinite() &&
+                candidate.depthMm > surfaceDepthMm + depthToleranceMm
+            ) {
+                return@forEachIndexed
+            }
+            val closer = candidate.screenDistancePx < bestScreen - SCREEN_TIE_PX
+            val tiedButNearer = kotlin.math.abs(candidate.screenDistancePx - bestScreen) <= SCREEN_TIE_PX &&
+                candidate.depthMm < bestDepth
+            if (best < 0 || closer || tiedButNearer) {
+                best = index
+                bestScreen = candidate.screenDistancePx
+                bestDepth = candidate.depthMm
+            }
+        }
+        return best
+    }
+
     /**
      * Millimetres along an axis for a screen drag, from the axis' own projection.
      *

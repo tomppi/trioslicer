@@ -1352,6 +1352,9 @@ fun EnderSlicerApp(
                                     onClearPaint = viewModel::clearSupportPaint,
                                     dragMove = modelDragMove,
                                     onToggleDragMove = { modelDragMove = !modelDragMove },
+                                    canUndoPlacement = state.canUndoPlacement,
+                                    undoPlacementLabel = state.undoPlacementLabel,
+                                    onUndoPlacement = viewModel::undoPlacement,
                                     onClose = { modelToolsOpen = false },
                                     modifier = Modifier
                                         .fillMaxWidth()

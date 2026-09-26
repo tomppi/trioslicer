@@ -97,6 +97,9 @@ fun ModelToolsOverlay(
     onClearPaint: () -> Unit,
     dragMove: Boolean,
     onToggleDragMove: () -> Unit,
+    canUndoPlacement: Boolean,
+    undoPlacementLabel: String?,
+    onUndoPlacement: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -124,6 +127,9 @@ fun ModelToolsOverlay(
                 onClearPaint = onClearPaint,
                 dragMove = dragMove,
                 onToggleDragMove = onToggleDragMove,
+                canUndoPlacement = canUndoPlacement,
+                undoPlacementLabel = undoPlacementLabel,
+                onUndoPlacement = onUndoPlacement,
             )
         }
         ModelToolsBar(
@@ -204,6 +210,9 @@ private fun ModelToolsGroupPanel(
     onClearPaint: () -> Unit,
     dragMove: Boolean,
     onToggleDragMove: () -> Unit,
+    canUndoPlacement: Boolean,
+    undoPlacementLabel: String?,
+    onUndoPlacement: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -226,6 +235,9 @@ private fun ModelToolsGroupPanel(
                     onApplyImportedTransform = onApplyImportedTransform,
                     dragMove = dragMove,
                     onToggleDragMove = onToggleDragMove,
+                    canUndoPlacement = canUndoPlacement,
+                    undoPlacementLabel = undoPlacementLabel,
+                    onUndoPlacement = onUndoPlacement,
                 )
 
                 ModelToolsGroup.ACTIONS -> ModelActionTools(
@@ -260,6 +272,9 @@ private fun ModelTransformTools(
     onApplyImportedTransform: () -> Unit,
     dragMove: Boolean,
     onToggleDragMove: () -> Unit,
+    canUndoPlacement: Boolean,
+    undoPlacementLabel: String?,
+    onUndoPlacement: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val placement = state.modelPlacement
@@ -322,6 +337,16 @@ private fun ModelTransformTools(
             OutlinedButton(onClick = onToggleDragMove, modifier = Modifier.fillMaxWidth()) {
                 Text("Move with finger")
             }
+        }
+
+        // One button for every way the model can move, because they all come
+        // through the same placement path.
+        OutlinedButton(
+            onClick = onUndoPlacement,
+            enabled = canUndoPlacement,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(undoPlacementLabel?.let { "Undo $it" } ?: "Undo")
         }
 
         fun toggle(section: TransformSection) {

@@ -104,6 +104,53 @@ class GizmoDragTest {
     }
 
     @Test
+    fun aHandleBehindTheModelIsNotGrabbable() {
+        val candidates = listOf(
+            GizmoDrag.HandleCandidate(screenDistancePx = 20f, depthMm = 140f),
+            GizmoDrag.HandleCandidate(screenDistancePx = 30f, depthMm = 60f),
+        )
+        // The finger is on the model at 100 mm, so the far side of the ring at
+        // 140 mm is behind it: the slightly further but visible handle wins.
+        assertEquals(1, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = 100f))
+        // Off the model nothing is in the way, so the nearest on screen wins.
+        assertEquals(0, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = null))
+    }
+
+    @Test
+    fun aHandleOnTheSurfaceIsStillGrabbable() {
+        val candidates = listOf(GizmoDrag.HandleCandidate(5f, 100.5f))
+        assertEquals(0, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = 100f))
+    }
+
+    @Test
+    fun aTouchAwayFromEveryHandleGrabsNothing() {
+        val candidates = listOf(GizmoDrag.HandleCandidate(90f, 10f))
+        assertEquals(-1, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = null))
+        assertEquals(-1, GizmoDrag.chooseHandle(emptyList(), 40f, surfaceDepthMm = 100f))
+    }
+
+    @Test
+    fun theTwoSidesOfAnEdgeOnRingAreDecidedByDepth() {
+        // Both land within a couple of pixels of the touch; the near one is the
+        // one being aimed at.
+        val candidates = listOf(
+            GizmoDrag.HandleCandidate(18f, 150f),
+            GizmoDrag.HandleCandidate(19f, 50f),
+        )
+        assertEquals(1, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = null))
+    }
+
+    @Test
+    fun nonsenseCandidatesGrabNothing() {
+        val candidates = listOf(
+            GizmoDrag.HandleCandidate(Float.NaN, 10f),
+            GizmoDrag.HandleCandidate(5f, Float.NaN),
+        )
+        assertEquals(-1, GizmoDrag.chooseHandle(candidates, 40f, surfaceDepthMm = null))
+        assertEquals(-1, GizmoDrag.chooseHandle(listOf(GizmoDrag.HandleCandidate(5f, 10f)), 0f, null))
+    }
+
+    @Test
     fun nonsenseInputsTurnNothing() {
         assertEquals(
             0f,
