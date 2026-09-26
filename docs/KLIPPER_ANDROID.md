@@ -626,12 +626,59 @@ That is the **order** the driver must follow: read the version (expect 0x27 0x00
 send CH341_REQ_SERIAL_INIT, set baud and line control together, then set handshake.
 It also surfaced CH341_REQ_SERIAL_INIT, which the round 84 grep had missed.
 
-**Still not extracted:** the body of ch341_set_baudrate_lcr, which is where the
-prescaler and divisor are actually computed. My pattern capped the match at 900
-characters and the function is longer than that, so it fell through. One more read of
-the same file with a larger cap gets it - noted here rather than left implied, because
-the previous version of this paragraph claimed the divisor maths was already in hand
-when it was not.
+**The baud calculation, extracted in round 86** - the piece the paragraph above said
+was still missing:
+
+    ch341_set_baudrate_lcr(struct usb_device *dev,
+				  struct ch341_private *priv,
+				  speed_t baud_rate, u8 lcr)
+{
+	int val;
+	int r;
+
+	if (!baud_rate)
+		return -EINVAL;
+
+	val = ch341_get_divisor(priv, baud_rate);
+	if (val < 0)
+		return -EINVAL;
+
+	/*
+	 * CH341A buffers data until a full endpoint-size packet (32 bytes)
+	 * has been received unless bit 7 is set.
+	 *
+	 * At least one device with version 0x27 appears to have this bit
+	 * inverted.
+	 */
+	if (priv->version > 0x27)
+		val |= BIT(7);
+
+	r = ch341_control_out(dev, CH341_REQ_WRITE_REG,
+			      CH341_REG_DIVISOR << 8 | CH341_REG_PRESCALER,
+			      val);
+	if (r)
+		return r;
+
+	/*
+	 * Chip versions before version 0x30 as read using
+	 * CH341_REQ_READ_VERSION used separate registers for line control
+	 * (stop bits, parity and word length). Version 0x30 and above use
+	 * CH341_REG_LCR only and CH341_REG_LCR2 is always set to zero.
+	 */
+	if (priv->version < 0x30)
+		return 0;
+
+	r = ch341_control_out(dev, CH341_REQ_WRITE_REG,
+			      CH341_REG_LCR2 << 8 | CH341_REG_LCR, lcr);
+	if (r)
+		return r;
+
+	return r;
+}
+
+With this, the register constants and the init order, the CH340 driver is fully
+specified from the kernel's own implementation: nothing about it needs to be
+discovered on the device beyond confirming which chip is attached.
 
 ## What this leaves
 
