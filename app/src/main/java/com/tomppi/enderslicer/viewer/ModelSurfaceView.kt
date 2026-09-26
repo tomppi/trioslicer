@@ -804,8 +804,6 @@ private class ModelRenderer(
     // aim at has to be geometry. One scratch buffer is reused for every group.
     private var gizmoRibbon: FloatBuffer? = null
     private val identityMatrix = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
-    private val ndcStart = FloatArray(3)
-    private val ndcEnd = FloatArray(3)
 
     // Preview of a transform being dragged. Rotation and scale happen about the
     // pivot the committed placement uses - the model's base centre - so letting go
@@ -1347,11 +1345,12 @@ private class ModelRenderer(
     fun setGizmo(value: GizmoOverlay?) {
         gizmoOverlay = value
         val longest = value?.groups.orEmpty().maxOfOrNull { it.vertices.size } ?: 0
-        gizmoRibbon = if (longest == 0) {
+        val bytes = GizmoRibbon.capacityBytes(longest)
+        gizmoRibbon = if (bytes <= 0) {
             null
         } else {
             java.nio.ByteBuffer
-                .allocateDirect(longest * 2 * Float.SIZE_BYTES)
+                .allocateDirect(bytes)
                 .order(java.nio.ByteOrder.nativeOrder())
                 .asFloatBuffer()
         }
@@ -1390,7 +1389,14 @@ private class ModelRenderer(
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glEnableVertexAttribArray(position)
         overlay.groups.forEach { group ->
-            val written = expandRibbon(group.vertices, ribbon)
+            val written = GizmoRibbon.expand(
+                vertices = group.vertices,
+                mvp = mvp,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                halfWidthPx = GIZMO_LINE_WIDTH_PX / 2f,
+                target = ribbon,
+            )
             if (written == 0) return@forEach
             GLES20.glUniform4f(color, group.color[0], group.color[1], group.color[2], 1f)
             ribbon.position(0)
@@ -1399,56 +1405,6 @@ private class ModelRenderer(
         }
         GLES20.glDisableVertexAttribArray(position)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-    }
-
-    /**
-     * Turns a group's line pairs into quads of a fixed pixel width.
-     *
-     * Widths are measured in pixels and the terms are built in NDC, so a handle
-     * looks the same width on any screen and at any zoom. Returns the vertex
-     * count written, or 0 when nothing was in front of the camera.
-     */
-    private fun expandRibbon(vertices: FloatArray, target: FloatBuffer): Int {
-        val halfWidthPx = GIZMO_LINE_WIDTH_PX / 2f
-        val halfWidthNdcX = halfWidthPx / (viewportWidth / 2f)
-        val halfWidthNdcY = halfWidthPx / (viewportHeight / 2f)
-        target.clear()
-        var written = 0
-        var index = 0
-        while (index + 5 < vertices.size) {
-            val hasStart = projectInto(vertices[index], vertices[index + 1], vertices[index + 2], ndcStart)
-            val hasEnd = projectInto(vertices[index + 3], vertices[index + 4], vertices[index + 5], ndcEnd)
-            index += 6
-            if (!hasStart || !hasEnd) continue
-            // Direction in pixels, so the ribbon is square whatever the aspect is.
-            val directionX = (ndcEnd[0] - ndcStart[0]) * viewportWidth / 2f
-            val directionY = (ndcEnd[1] - ndcStart[1]) * viewportHeight / 2f
-            val length = kotlin.math.sqrt(directionX * directionX + directionY * directionY)
-            if (!length.isFinite() || length < 1e-3f) continue
-            val offsetX = -directionY / length * halfWidthNdcX
-            val offsetY = directionX / length * halfWidthNdcY
-            target.put(ndcStart[0] + offsetX); target.put(ndcStart[1] + offsetY); target.put(ndcStart[2])
-            target.put(ndcEnd[0] + offsetX); target.put(ndcEnd[1] + offsetY); target.put(ndcEnd[2])
-            target.put(ndcEnd[0] - offsetX); target.put(ndcEnd[1] - offsetY); target.put(ndcEnd[2])
-            target.put(ndcStart[0] + offsetX); target.put(ndcStart[1] + offsetY); target.put(ndcStart[2])
-            target.put(ndcEnd[0] - offsetX); target.put(ndcEnd[1] - offsetY); target.put(ndcEnd[2])
-            target.put(ndcStart[0] - offsetX); target.put(ndcStart[1] - offsetY); target.put(ndcStart[2])
-            written += 6
-        }
-        return written
-    }
-
-    /** Plate point to NDC through the current matrix; false when behind the eye. */
-    private fun projectInto(x: Float, y: Float, z: Float, out: FloatArray): Boolean {
-        val clipX = mvp[0] * x + mvp[4] * y + mvp[8] * z + mvp[12]
-        val clipY = mvp[1] * x + mvp[5] * y + mvp[9] * z + mvp[13]
-        val clipZ = mvp[2] * x + mvp[6] * y + mvp[10] * z + mvp[14]
-        val clipW = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15]
-        if (!clipW.isFinite() || clipW <= 1e-4f) return false
-        out[0] = clipX / clipW
-        out[1] = clipY / clipW
-        out[2] = clipZ / clipW
-        return true
     }
 
     private fun rebuildColorBuffer() {
