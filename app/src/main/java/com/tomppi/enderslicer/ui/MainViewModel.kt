@@ -1161,6 +1161,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Lifts or lowers the model, from a drag on the gizmo's vertical arrow. The
+     * build-volume check refuses a lift that would leave the printer, exactly as
+     * a typed value does.
+     */
+    fun liftModel(deltaZmm: Double) {
+        if (!deltaZmm.isFinite() || deltaZmm == 0.0) return
+        changePlacement("Model lifted") { placement, _ ->
+            placement.moved(baseZmm = placement.baseZmm + deltaZmm)
+        }
+    }
+
     fun rotateModel(axis: ModelPlacement.Axis, degrees: Double) {
         changePlacement("Model rotated ${degrees.toInt()}° around ${axis.name}") { placement, _ ->
             placement.rotated(axis, degrees)

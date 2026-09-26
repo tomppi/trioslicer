@@ -12,8 +12,25 @@ enum class TransformGizmoMode { NONE, MOVE, ROTATE, SCALE }
 /** One coloured run of line segments: xyz pairs, ready for GL_LINES. */
 class GizmoGroup(val color: FloatArray, val vertices: FloatArray)
 
+/** The handle a touch landed on. */
+data class GizmoHit(val axis: ModelPlacement.Axis, val kind: GizmoHandleKind)
+
+/** What a grab target is: a ring turns its axis, an arrow slides along it. */
+enum class GizmoHandleKind { RING, ARROW }
+
+/**
+ * A grab target: the axis it acts on and the points a touch is measured against,
+ * in plate coordinates. Points rather than an analytic form, because the test is
+ * "how close did the finger land on screen", and projecting a handful of points
+ * is how the annotation handles already answer that.
+ */
+class GizmoHandle(val axis: ModelPlacement.Axis, val kind: GizmoHandleKind, val points: FloatArray)
+
 /** Line geometry drawn over the model, in plate coordinates. */
-class GizmoOverlay(val groups: List<GizmoGroup>) {
+class GizmoOverlay(
+    val groups: List<GizmoGroup>,
+    val handles: List<GizmoHandle> = emptyList(),
+) {
     val isEmpty: Boolean get() = groups.all { it.vertices.isEmpty() }
     val totalVertexCount: Int get() = groups.sumOf { it.vertices.size / 3 }
 }
@@ -21,8 +38,16 @@ class GizmoOverlay(val groups: List<GizmoGroup>) {
 /** A rotation ring: the closed loop the finger grabs, and the axis it turns. */
 class GizmoRing(val axis: ModelPlacement.Axis, val points: FloatArray)
 
-/** A translation arrow: a shaft with a head, and the axis it moves along. */
-class GizmoArrow(val axis: ModelPlacement.Axis, val vertices: FloatArray)
+/**
+ * A translation arrow: the axis it moves along, the lines that draw it, and the
+ * shaft points a finger is measured against.
+ */
+class GizmoArrow(
+    val axis: ModelPlacement.Axis,
+    val vertices: FloatArray,
+    val samples: FloatArray,
+    val lengthMm: Float,
+)
 
 /**
  * The geometry of the on-model transform gizmo.
@@ -75,7 +100,12 @@ object TransformGizmo {
         val headLength = (lengthMm * 0.18f).coerceAtLeast(1.5f)
         val headRadius = headLength * 0.45f
         return ModelPlacement.Axis.entries.map { axis ->
-            GizmoArrow(axis, arrowVertices(axis, pivot, lengthMm, headLength, headRadius))
+            GizmoArrow(
+                axis = axis,
+                vertices = arrowVertices(axis, pivot, lengthMm, headLength, headRadius),
+                samples = shaftSamples(axis, pivot, lengthMm),
+                lengthMm = lengthMm,
+            )
         }
     }
 
@@ -128,10 +158,16 @@ object TransformGizmo {
             }
             GizmoGroup(colorFor(ring.axis), values)
         },
+        handles = rings.map { ring ->
+            GizmoHandle(ring.axis, GizmoHandleKind.RING, ring.points)
+        },
     )
 
     fun arrowsOverlay(arrows: List<GizmoArrow>): GizmoOverlay = GizmoOverlay(
         arrows.map { arrow -> GizmoGroup(colorFor(arrow.axis), arrow.vertices) },
+        handles = arrows.map { arrow ->
+            GizmoHandle(arrow.axis, GizmoHandleKind.ARROW, arrow.samples)
+        },
     )
 
     private fun loopPoints(axis: ModelPlacement.Axis, pivot: Point3, radiusMm: Float): FloatArray {
@@ -151,6 +187,30 @@ object TransformGizmo {
         }
         return values
     }
+
+    /** Points along the shaft, so the whole arrow is grabbable, not just its tip. */
+    private fun shaftSamples(axis: ModelPlacement.Axis, pivot: Point3, lengthMm: Float): FloatArray {
+        val steps = SHAFT_SAMPLES
+        val values = FloatArray((steps + 1) * 3)
+        for (index in 0..steps) {
+            val along = lengthMm * index / steps
+            values[index * 3] = when (axis) {
+                ModelPlacement.Axis.X -> pivot.x + along
+                else -> pivot.x
+            }
+            values[index * 3 + 1] = when (axis) {
+                ModelPlacement.Axis.Y -> pivot.y + along
+                else -> pivot.y
+            }
+            values[index * 3 + 2] = when (axis) {
+                ModelPlacement.Axis.Z -> pivot.z + along
+                else -> pivot.z
+            }
+        }
+        return values
+    }
+
+    private const val SHAFT_SAMPLES = 8
 
     private fun arrowVertices(
         axis: ModelPlacement.Axis,

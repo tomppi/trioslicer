@@ -1227,6 +1227,18 @@ fun EnderSlicerApp(
                                 gizmoReadout = "Move · X " + String.format(java.util.Locale.ROOT, "%.1f", deltaX) +
                                     " mm, Y " + String.format(java.util.Locale.ROOT, "%.1f", deltaY) + " mm"
                             },
+                            onModelAxisMove = { axis, millimetres ->
+                                gizmoReadout = null
+                                when (axis) {
+                                    ModelPlacement.Axis.X -> viewModel.nudgeModel(millimetres.toDouble(), 0.0)
+                                    ModelPlacement.Axis.Y -> viewModel.nudgeModel(0.0, millimetres.toDouble())
+                                    ModelPlacement.Axis.Z -> viewModel.liftModel(millimetres.toDouble())
+                                }
+                            },
+                            onModelAxisMovePreview = { axis, millimetres ->
+                                gizmoReadout = "Move " + axis.name + " · " +
+                                    String.format(java.util.Locale.ROOT, "%.1f", millimetres) + " mm"
+                            },
                             gizmoMode = gizmoMode,
                             scalePreview = gizmoScalePercent / 100f,
                             onTransformRequested = { x, y ->
@@ -2193,6 +2205,9 @@ private fun ViewerPanel(
     onModelDrag: (Float, Float) -> Unit,
     /** Live plate movement while a drag is in progress, for the readout. */
     onModelDragPreview: (Float, Float) -> Unit,
+    /** A drag on a gizmo arrow: millimetres along that axis, and the same while down. */
+    onModelAxisMove: (ModelPlacement.Axis, Float) -> Unit,
+    onModelAxisMovePreview: (ModelPlacement.Axis, Float) -> Unit,
     /** The on-model gizmo: which mode is up, and what it reports. */
     gizmoMode: TransformGizmoMode,
     scalePreview: Float,
@@ -2302,8 +2317,9 @@ private fun ViewerPanel(
                         view.dragMoveActive = dragMove
                         view.onModelDragCommitted = onModelDrag
                         view.onModelDragPreview = onModelDragPreview
+                        view.onModelAxisMove = onModelAxisMove
+                        view.onModelAxisMovePreview = onModelAxisMovePreview
                         view.gizmoMode = gizmoMode
-                        view.gizmoAxis = null
                         view.scalePreview = scalePreview
                         view.onTransformRequested = onTransformRequested
                         view.onRotatePreview = onRotatePreview

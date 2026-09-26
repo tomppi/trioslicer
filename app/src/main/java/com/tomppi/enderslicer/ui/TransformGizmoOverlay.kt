@@ -152,10 +152,10 @@ private fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
 
 private fun hintFor(mode: TransformGizmoMode): String = when (mode) {
     TransformGizmoMode.ROTATE ->
-        "Drag sideways to turn the model, up and down to tip it. Snaps to 15 degrees."
+        "Drag a ring to turn the model about that axis. Snaps to 15 degrees."
     TransformGizmoMode.MOVE ->
-        "Drag the model across the plate. Two fingers still orbit and zoom."
+        "Drag an arrow to slide the model along that axis. Two fingers still orbit and zoom."
     TransformGizmoMode.SCALE ->
-        "Slide to resize the model."
+        "Slide or type to resize the model."
     TransformGizmoMode.NONE -> ""
 }
