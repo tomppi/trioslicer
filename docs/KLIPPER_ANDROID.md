@@ -1,7 +1,53 @@
 # Klipper on Android - what this app already gives us
 
 Investigation notes for the goal "get the app to run Klipper". Facts here were read
-out of the tree, not assumed.
+out of the tree, not assumed. It is a record in the order things were learned, so this
+is the summary; below it, the sections are dated by the round that produced them.
+
+## Where this stands
+
+A Klipper host runs inside the app on the Fold 5 and drives the printer from the phone,
+without root. Verified on the device, from klippy's log and the app's:
+
+| what | value |
+| --- | --- |
+| payload extracts and starts | `Loaded MCU 'mcu' 121 commands (v0.13.0-0-g61c0c8d)`, `Configured MCU 'mcu' (1024 moves)` |
+| the app's Home button homes it | `homed_axes='xyz'`, position `[160.0, 120.0, 0.0]` - the config's `safe_z_home` point |
+| link margins at the handshake | `srtt 0.004  rttvar 0.001  rto 0.025  bytes_retransmit 0` - 6.25 attempts of headroom |
+| temperatures through the app's client | `extruder=24.45C bed=24.28C` |
+| payload size, in the APK | 957 files, 27MB, all present under `assets/klipper/` |
+
+**A print's under-load margins are not measured yet**, and neither is the payload's own
+planning rate on the phone. The desktop reference for that rate is 27185 moves/s over
+40000 moves. Both measurements have a command waiting below.
+
+What remains, in the order it can be done:
+
+1. `scripts/verify-klipper-on-device.sh` - the payload planning motion **on the phone**,
+   no printer needed.
+2. `MOVES=40000` on the device - its planning rate.
+3. The runbook below, then calibration (`z_offset` is still 0), then a small print with
+   the margin recorder watching. It logs lookahead, stalls, round trip and retransmits
+   once a minute, and immediately when one of them goes wrong.
+
+Licensing is a separate open question with its own note:
+[KLIPPER_VENDORING.md](KLIPPER_VENDORING.md).
+
+## The short version of what was learned
+
+- The payload is klippy plus a CPython built for bionic, staged into a gitignored asset
+  and executed from the native library directory, because **an app targeting API 29+
+  may not execute anything in its own data directory**.
+- klippy talks to the micro-controller over a **pty**, because Android has no public
+  pty API and the app has no `CONFIG_USB_SERIAL`. The pty has to be raw, which was the
+  single biggest fix in the port.
+- Three patches to klippy, all Android, all listed below with their reasons.
+- The API is JSON over a unix socket, **ETX-terminated, not newline-terminated**, and
+  the methods are the socket's own rather than Moonraker's HTTP paths.
+- Printing needs no upload: the virtual SD card points into the app's own storage, so a
+  print is a file copy and `SDCARD_PRINT_FILE`.
+- The client is now tested against a real klippy rather than against a mock, which is
+  what turned the protocol mistakes into failures that appear in seconds.
 
 ## How the native payload is produced
 
