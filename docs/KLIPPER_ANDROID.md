@@ -954,6 +954,45 @@ shutdown, and the next start reports "Can not update MCU 'mcu' config as it is
 shutdown" - a state Klipper recovers from with FIRMWARE_RESTART, over the same API
 socket the app's own front end will use.
 
+## After a phone reboot: the USB port comes back dead
+
+Measured, twice, and worth writing down because nothing in the app can cause or fix
+it. After the phone rebooted, host mode never came up again on its own:
+
+    /sys/class/usb_role/a600000.ssusb-role-switch/role = none
+    dmesg: max77705_chg_monitor_work: [CHG] MODE(0xf), B2SOVRC(0x0), otg_on(0)
+    /sys/class/typec/port0/power_role = sink
+
+Exactly as the notes above predict, nothing enumerated at all. Forcing the data role
+is not enough on its own:
+
+    echo host > /sys/class/usb_role/a600000.ssusb-role-switch/role
+
+That brings up the host controllers and is enough for a self-powered device - a dock
+with a hub, Ethernet and storage appeared immediately - but a device that depends on
+the host for VBUS still cannot signal attach, and the printer's CH340 is one of those.
+otg_on stayed 0 and the bus stayed empty.
+
+What clears it is rebinding the charger/MUIC driver, which owns the OTG boost and the
+CC detection behind it:
+
+    echo max77705-usbc > /sys/bus/platform/drivers/max77705-usbc/unbind
+    echo max77705-usbc > /sys/bus/platform/drivers/max77705-usbc/bind
+    echo host > /sys/class/usb_role/a600000.ssusb-role-switch/role
+
+With the printer already attached, 1a86:7523 appeared in the same second. The order
+matters: do it while the printer is plugged in, not before.
+
+All of this is diagnosis on a rooted development phone. None of it is in the app's
+path and none of it is needed on a phone whose port negotiates OTG normally.
+
+## Never assume a start request bridged the printer
+
+The service bridges the pty to USB only when it starts klippy, so a printer plugged
+in afterwards is on the bus, permitted, and connected to nothing: the pty exists and
+klippy waits forever. This cost a restart cycle more than once tonight. Restarting the
+service is the workaround; re-attempting the bridge on every start request is the fix.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket
