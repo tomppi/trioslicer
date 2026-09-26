@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Drag the model across the plate with a finger.** *Model tools → Transform* has a **Move with finger** button: while it is on, one finger drags the model over the bed and two fingers still orbit, pan and zoom. The drag previews itself in the viewer and the placement is applied once, when the finger lifts, so a large model moves without re-transforming its mesh on every frame. The movement is projected onto the plate, so a drag cannot lift the model off the bed or sink it into it, and a move that would leave the build volume is refused by the same check the typed position goes through.
+
 ### Fixed
 
 - **The modelling preview follows the engine's own model.** The preview rendered only when the camera moved, the view was resized or a gesture settled, and nothing told it that the agent had published a new model: the picture kept showing the previous one until something unrelated forced a render — in practice, collapsing the chat, which resizes the box. It now watches the STL the engine rewrites for each finished iteration and renders again when that revision changes, which is also the moment the app imports the model.

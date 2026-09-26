@@ -192,6 +192,9 @@ fun EnderSlicerApp(
     val printerChecklistStore = remember(context) { PrinterChecklistStore(context.applicationContext) }
     var printerChecklistDone by remember(printerChecklistStore) { mutableStateOf(printerChecklistStore.load()) }
     var modelToolsOpen by rememberSaveable { mutableStateOf(false) }
+    // Dragging the model across the plate is a mode on the viewer, held here
+    // because the Transform panel that turns it on is not the plate itself.
+    var modelDragMove by rememberSaveable { mutableStateOf(false) }
     var supportPaintUiOpen by rememberSaveable { mutableStateOf(false) }
     var annotationUiOpen by rememberSaveable { mutableStateOf(false) }
     // Hoisted out of the layout branches: the gesture help folds away for good
@@ -807,7 +810,10 @@ fun EnderSlicerApp(
     LaunchedEffect(selectedTab) {
         if (selectedTab != AppTab.MORE) printerScreenOpen = false
         if (selectedTab != AppTab.SETTINGS) allSettingsOpen = false
-        if (selectedTab != AppTab.PLATE) modelToolsOpen = false
+        if (selectedTab != AppTab.PLATE) {
+            modelToolsOpen = false
+            modelDragMove = false
+        }
     }
 
     LaunchedEffect(state.sliceResultId, state.layerPreview, nonPlanarSettings, conicalSettings) {
@@ -1198,6 +1204,10 @@ fun EnderSlicerApp(
                             onEditLayerEvents = { layerEventsOpen = true },
                             onPaintHit = viewModel::paintAt,
                             onSurfacePick = viewModel::pickSurfaceAt,
+                            dragMove = modelDragMove,
+                            onModelDrag = { deltaX, deltaY ->
+                                viewModel.nudgeModel(deltaX.toDouble(), deltaY.toDouble())
+                            },
                             onPaintMode = viewModel::setPaintMode,
                             onCloseSupportPaintUi = {
                                 viewModel.setPaintMode(SupportPaintMode.NONE)
@@ -1262,6 +1272,8 @@ fun EnderSlicerApp(
                                     },
                                     onBrushRadius = viewModel::setBrushRadius,
                                     onClearPaint = viewModel::clearSupportPaint,
+                                    dragMove = modelDragMove,
+                                    onToggleDragMove = { modelDragMove = !modelDragMove },
                                     onClose = { modelToolsOpen = false },
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -2104,6 +2116,10 @@ private fun ViewerPanel(
     onPaintHit: (MeshPicker.Hit) -> Unit,
     onSurfacePick: (MeshPicker.Hit) -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
+    /** True while a finger drag moves the model across the plate instead of orbiting. */
+    dragMove: Boolean,
+    /** A finished drag: the plate movement it asked for, in millimetres. */
+    onModelDrag: (Float, Float) -> Unit,
     onCloseSupportPaintUi: () -> Unit,
     onAnnotationTap: (AnnotationGesture) -> Unit,
     onAnnotationAdjust: (SegmentEnd, AnnotationGesture) -> Unit,
@@ -2204,6 +2220,8 @@ private fun ViewerPanel(
                         view.surfacePickActive = state.smartInfillPicking
                         view.setSmartInfillOverlay(state.smartInfillOverlay)
                         view.setPaintState(state.supportPaint)
+                        view.dragMoveActive = dragMove
+                        view.onModelDragCommitted = onModelDrag
                         view.onPaintHit = onPaintHit
                         view.onSurfacePick = onSurfacePick
                         view.annotationActive = state.annotationActive

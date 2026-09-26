@@ -95,6 +95,8 @@ fun ModelToolsOverlay(
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
+    dragMove: Boolean,
+    onToggleDragMove: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -120,6 +122,8 @@ fun ModelToolsOverlay(
                 onOpenSupportPaintUi = onOpenSupportPaintUi,
                 onBrushRadius = onBrushRadius,
                 onClearPaint = onClearPaint,
+                dragMove = dragMove,
+                onToggleDragMove = onToggleDragMove,
             )
         }
         ModelToolsBar(
@@ -198,6 +202,8 @@ private fun ModelToolsGroupPanel(
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
+    dragMove: Boolean,
+    onToggleDragMove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -218,6 +224,8 @@ private fun ModelToolsGroupPanel(
                     onRotate = onRotate,
                     onScale = onScale,
                     onApplyImportedTransform = onApplyImportedTransform,
+                    dragMove = dragMove,
+                    onToggleDragMove = onToggleDragMove,
                 )
 
                 ModelToolsGroup.ACTIONS -> ModelActionTools(
@@ -250,6 +258,8 @@ private fun ModelTransformTools(
     onRotate: (ModelPlacement.Axis, Double) -> Unit,
     onScale: (Double) -> Unit,
     onApplyImportedTransform: () -> Unit,
+    dragMove: Boolean,
+    onToggleDragMove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val placement = state.modelPlacement
@@ -293,6 +303,25 @@ private fun ModelTransformTools(
         if (placement == null || state.mesh == null) {
             Text("Import an STL before changing model placement.")
             return@Column
+        }
+
+        // Dragging is the one placement gesture that wants the plate itself, so
+        // it is a mode rather than a field: while it is on, a single finger moves
+        // the model and two fingers still work the camera.
+        if (dragMove) {
+            Button(onClick = onToggleDragMove, modifier = Modifier.fillMaxWidth()) {
+                Text("Moving with finger - tap to stop")
+            }
+            Text(
+                "One finger drags the model across the plate. Two fingers still orbit, pan and zoom, " +
+                    "and the move is applied when you let go.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            OutlinedButton(onClick = onToggleDragMove, modifier = Modifier.fillMaxWidth()) {
+                Text("Move with finger")
+            }
         }
 
         fun toggle(section: TransformSection) {

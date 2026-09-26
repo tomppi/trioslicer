@@ -1144,6 +1144,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Moves the model by a plate-space delta, the way a finger drag on the plate
+     * asks for it. One call per finished drag rather than per frame: the drag
+     * previews itself in the viewer, while a real move re-transforms the mesh,
+     * checks the build volume and writes the workspace snapshot.
+     */
+    fun nudgeModel(deltaXmm: Double, deltaYmm: Double) {
+        if (!deltaXmm.isFinite() || !deltaYmm.isFinite()) return
+        if (deltaXmm == 0.0 && deltaYmm == 0.0) return
+        changePlacement("Model moved") { placement, _ ->
+            placement.moved(
+                centerXmm = placement.centerXmm + deltaXmm,
+                centerYmm = placement.centerYmm + deltaYmm,
+            )
+        }
+    }
+
     fun rotateModel(axis: ModelPlacement.Axis, degrees: Double) {
         changePlacement("Model rotated ${degrees.toInt()}° around ${axis.name}") { placement, _ ->
             placement.rotated(axis, degrees)

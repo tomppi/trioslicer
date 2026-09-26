@@ -51,6 +51,21 @@ class ModelSurfaceView(
             requestRender()
         }
 
+    /**
+     * When true, a single-finger drag moves the model across the build plate
+     * instead of orbiting the camera. Two fingers still zoom and pan, and paint
+     * mode still wins when it is on.
+     */
+    var dragMoveActive: Boolean = false
+
+    /** Invoked on the UI thread with the plate movement in mm a finished drag asked for. */
+    var onModelDragCommitted: ((Float, Float) -> Unit)? = null
+
+    /** Accumulated plate movement of the drag in progress, in mm. */
+    private var dragTotalX = 0f
+    private var dragTotalY = 0f
+    private var draggingModel = false
+
     /** Invoked on the UI thread with the model triangle hit by a paint stroke. */
     var onPaintHit: ((MeshPicker.Hit) -> Unit)? = null
 
@@ -240,6 +255,10 @@ class ModelSurfaceView(
                     annotationAccumDy = 0f
                     pendingAnnotationProbe.set(floatArrayOf(event.x, event.y))
                     scheduleAnnotationProbe()
+                } else if (dragMoveActive) {
+                    draggingModel = true
+                    dragTotalX = 0f
+                    dragTotalY = 0f
                 }
             }
 
@@ -286,6 +305,16 @@ class ModelSurfaceView(
                         previousY = event.y
                         pendingAnnotationCoordinates.set(floatArrayOf(event.x, event.y))
                         scheduleAnnotationGesture()
+                    } else if (draggingModel) {
+                        val dx = event.x - previousX
+                        val dy = event.y - previousY
+                        val delta = modelRenderer.dragDeltaMm(dx, dy)
+                        dragTotalX += delta[0]
+                        dragTotalY += delta[1]
+                        modelRenderer.setDragOffset(dragTotalX, dragTotalY)
+                        previousX = event.x
+                        previousY = event.y
+                        requestRender()
                     } else {
                         val dx = event.x - previousX
                         val dy = event.y - previousY
@@ -331,6 +360,18 @@ class ModelSurfaceView(
                         schedulePaintPick()
                     }
                 }
+                if (draggingModel) {
+                    draggingModel = false
+                    modelRenderer.setDragOffset(0f, 0f)
+                    requestRender()
+                    val committedX = dragTotalX
+                    val committedY = dragTotalY
+                    dragTotalX = 0f
+                    dragTotalY = 0f
+                    if (committedX != 0f || committedY != 0f) {
+                        onModelDragCommitted?.invoke(committedX, committedY)
+                    }
+                }
                 removeCallbacks(annotationHold)
                 if (annotationZMode) {
                     annotationZMode = false
@@ -340,7 +381,16 @@ class ModelSurfaceView(
                 annotationGrabbed = null
             }
 
-            MotionEvent.ACTION_CANCEL -> panning = false
+            MotionEvent.ACTION_CANCEL -> {
+                panning = false
+                if (draggingModel) {
+                    draggingModel = false
+                    dragTotalX = 0f
+                    dragTotalY = 0f
+                    modelRenderer.setDragOffset(0f, 0f)
+                    requestRender()
+                }
+            }
         }
         return true
     }
@@ -597,6 +647,12 @@ private class ModelRenderer(
     @Volatile private var panX = 0f
     @Volatile private var panY = 0f
 
+    // Plate-space preview offset while a finger drags the model: the placement
+    // itself is only changed once, when the finger lifts, because a real move
+    // re-transforms the whole mesh and writes the workspace snapshot.
+    @Volatile private var dragOffsetX = 0f
+    @Volatile private var dragOffsetY = 0f
+
     private val projection = FloatArray(16)
     private val view = FloatArray(16)
     private val scene = FloatArray(16)
@@ -750,6 +806,34 @@ private class ModelRenderer(
         panY -= deltaY * worldPerPixel
     }
 
+    /**
+     * The plate movement a screen drag is asking for, in millimetres.
+     *
+     * Read from the touch handler, like [panPixels], so it converts against the
+     * camera that is on screen.
+     */
+    fun dragDeltaMm(deltaXPx: Float, deltaYPx: Float): FloatArray {
+        val millimetresPerPixel = BedPlaneDrag.millimetresPerPixel(
+            distanceMm = cameraDistance(),
+            viewportHeightPx = viewportHeight,
+            fieldOfViewDegrees = FIELD_OF_VIEW_DEGREES,
+            eyeDistanceScale = CAMERA_EYE_DISTANCE_SCALE,
+        )
+        return BedPlaneDrag.plateDeltaMm(
+            deltaXPx = deltaXPx,
+            deltaYPx = deltaYPx,
+            millimetresPerPixel = millimetresPerPixel,
+            yawDegrees = yaw,
+            pitchDegrees = pitch,
+        )
+    }
+
+    /** Moves the drawn model without touching the placement; zeroed when a drag ends. */
+    fun setDragOffset(xMm: Float, yMm: Float) {
+        dragOffsetX = xMm
+        dragOffsetY = yMm
+    }
+
     fun resetCamera() {
         yaw = DEFAULT_YAW
         pitch = DEFAULT_PITCH
@@ -831,6 +915,8 @@ private class ModelRenderer(
         Matrix.setIdentityM(scene, 0)
         Matrix.rotateM(scene, 0, pitch, 1f, 0f, 0f)
         Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
+        // In plate coordinates, so the offset turns with the model it moves.
+        Matrix.translateM(scene, 0, dragOffsetX, dragOffsetY, 0f)
         Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
 
         drawGrid()
