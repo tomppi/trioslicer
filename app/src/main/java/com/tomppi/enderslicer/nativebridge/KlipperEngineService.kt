@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.system.Os
 import android.util.Log
 import com.tomppi.enderslicer.MainActivity
+import com.tomppi.enderslicer.printer.KlipperClient
 import com.tomppi.enderslicer.printer.KlipperPty
 import com.tomppi.enderslicer.printer.PrinterBridge
 import java.io.File
@@ -49,6 +50,16 @@ class KlipperEngineService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var process: Process? = null
 
+    /**
+     * The master end of the printer's pty, or -1 before one exists.
+     *
+     * Kept because a start request that arrives while klippy is already running is
+     * about the printer rather than the host - it has just been plugged in, or
+     * permission for it has just been granted - and this is the descriptor the bridge
+     * needs to act on that.
+     */
+    private var ptyMasterFd = -1
+
     override fun onCreate() {
         super.onCreate()
         ensureChannel(this)
@@ -64,6 +75,13 @@ class KlipperEngineService : Service() {
         if (process == null) {
             acquireWakeLock()
             Thread({ launch() }, "klipper-launch").start()
+        } else {
+            // klippy is already up, so this request is about the printer. It has just
+            // been plugged in, or permission for it has just been granted, and the pty
+            // has been sitting unbridged since the host started. Without this the
+            // printer is on the bus, permitted and connected to nothing, which looks
+            // from every log exactly like a printer that is not there.
+            Thread({ bridgePrinterIfNeeded() }, "klipper-bridge").start()
         }
         return START_STICKY
     }
@@ -100,6 +118,7 @@ class KlipperEngineService : Service() {
                 return
             }
             Log.i(TAG, "printer pty ${pty.slavePath}, master fd ${pty.masterFd}")
+            ptyMasterFd = pty.masterFd
             val config = writePrinterConfig(root, pty.slavePath)
             bridgePrinter(pty.masterFd)
 
@@ -129,6 +148,10 @@ class KlipperEngineService : Service() {
             Log.i(TAG, "starting klippy: ${pb.command().joinToString(" ")}")
             val proc = pb.start()
             process = proc
+            // klippy's API is what the app's front end talks to, so it is proved here
+            // as soon as klippy opens it. This runs on its own thread because the one
+            // below reads klippy's output until it exits.
+            Thread({ proveApi() }, "klipper-api").start()
             // Android's Process has no pid() (that is a JVM method), so the start
             // is logged without one. What klippy writes goes to its log file; what
             // reaches here is a startup failure or a traceback.
@@ -143,6 +166,60 @@ class KlipperEngineService : Service() {
             Log.e(TAG, "klipper host stopped", error)
         } finally {
             process = null
+        }
+    }
+
+    /**
+     * First light on klippy's API, and the app's way in to it.
+     *
+     * The socket exists from the moment klippy starts, so the first answer is not the
+     * interesting one - it is asked again until the micro-controller handshake is done
+     * and the printer reports itself ready, or until it is clear it will not. A
+     * failure here is not fatal to the host: it means there is nothing for a front end
+     * to talk to yet.
+     */
+    private fun proveApi() {
+        val path = File(filesDir, "klippy.sock")
+        val client = KlipperClient(path.absolutePath)
+        try {
+            // Retried until it connects, not until the path exists: klippy removes and
+            // recreates that file, and the one a previous run left behind is a socket
+            // nobody is listening on. Waiting for the name and connecting once got
+            // "Connection refused" three milliseconds after klippy started.
+            val waitUntil = System.currentTimeMillis() + API_WAIT_MS
+            while (true) {
+                try {
+                    client.connect(readTimeoutMs = 10000)
+                    break
+                } catch (e: Exception) {
+                    if (System.currentTimeMillis() > waitUntil) throw e
+                    Thread.sleep(500)
+                }
+            }
+            var info = client.info()
+            val readyUntil = System.currentTimeMillis() + API_READY_WAIT_MS
+            while (info.optString("state") != "ready"
+                && System.currentTimeMillis() < readyUntil
+                && process != null
+            ) {
+                Thread.sleep(2000)
+                info = client.info()
+            }
+            Log.i(TAG, "klippy is ${info.optString("state")} " +
+                "(${info.optString("software_version")}, mcu ${info.optString("mcu_version")})")
+            if (info.optString("state") != "ready") {
+                Log.w(TAG, "printer not ready: ${info.optString("state_message")}")
+                return
+            }
+            val status = client.query("extruder", "heater_bed", "toolhead")
+            Log.i(TAG, "printer: extruder=${status.optJSONObject("extruder")?.optDouble("temperature")}C " +
+                "bed=${status.optJSONObject("heater_bed")?.optDouble("temperature")}C " +
+                "position=${status.optJSONObject("toolhead")?.optJSONArray("position")} " +
+                "homed='${status.optJSONObject("toolhead")?.optString("homed_axes")}'")
+        } catch (e: Exception) {
+            Log.w(TAG, "klippy API not reachable: ${e.message}")
+        } finally {
+            client.close()
         }
     }
 
@@ -172,6 +249,19 @@ class KlipperEngineService : Service() {
      * Nothing here is required for klippy to start: with no printer it simply keeps
      * trying to reach the MCU, which is the state a user sees before plugging one in.
      */
+    /** Bridge now, if there is a printer to bridge and it is not bridged already. */
+    private fun bridgePrinterIfNeeded() {
+        if (PrinterBridge.isRunning) {
+            Log.i(TAG, "printer already bridged")
+            return
+        }
+        if (ptyMasterFd < 0) {
+            Log.w(TAG, "no pty to bridge the printer to")
+            return
+        }
+        bridgePrinter(ptyMasterFd)
+    }
+
     private fun bridgePrinter(masterFd: Int) {
         val manager = getSystemService(Context.USB_SERVICE) as UsbManager
         val serial = PrinterBridge.findPrinter(manager)
@@ -302,6 +392,10 @@ class KlipperEngineService : Service() {
     private fun stopEngine() {
         process?.let { if (it.isAlive) it.destroy() }
         process = null
+        // The bridge holds the USB port and the pty master: leaving it running would
+        // keep both claimed by a host that is no longer there.
+        PrinterBridge.stop()
+        ptyMasterFd = -1
         wakeLock?.let { if (it.isHeld) it.release() }
     }
 
@@ -309,6 +403,12 @@ class KlipperEngineService : Service() {
         private const val TAG = "KlipperEngine"
         private const val NOTIF_ID = 4711
         private const val CHANNEL_ID = "klipper_host"
+
+        /** How long to wait for klippy to create its API socket. */
+        private const val API_WAIT_MS = 30_000L
+
+        /** How long to keep asking until the printer calls itself ready. */
+        private const val API_READY_WAIT_MS = 90_000L
 
         /**
          * Files whose absence means the payload is not usable: the host itself,
