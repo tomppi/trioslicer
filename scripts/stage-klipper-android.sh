@@ -61,6 +61,17 @@ echo "chelper: $(stat -c%s c_helper.so) bytes"
 # The .c and .h files are left behind on purpose: klippy compiles the helper when
 # its sources are newer than the library, and a phone has no compiler, so the
 # payload carries no sources to trigger that.
+# Checked before anything is removed. This deletes the staged payload and rebuilds it,
+# and running it without the interpreter that supplies the standard library used to
+# destroy a working payload and then fail - leaving a tree of pure klippy that builds,
+# installs, and starts on the phone only to die importing encodings.
+PY_LIB="$PY_PREFIX/lib/python3.11"
+[ -d "$PY_LIB" ] || {
+  echo "no interpreter under $PY_PREFIX: run build-klipper-python-android.sh first" >&2
+  echo "(the default is .build/py311-android; set PY_PREFIX if it is elsewhere)" >&2
+  exit 1
+}
+
 rm -rf "$ASSETS"
 mkdir -p "$ASSETS"
 cd "$SRC"
@@ -70,6 +81,12 @@ find klippy \( -name "*.py" -o -name "*.cfg" \) | while read -r f; do
 done
 cp "$SRC/klippy/chelper/c_helper.so" "$ASSETS/klippy/chelper/c_helper.so"
 
+# Klipper's own license, with Klipper's own code: the terms travel with the thing they
+# cover. Nothing else in this repository is under them, and staging this file is not a
+# statement about the rest - see docs/KLIPPER_VENDORING.md for what the boundary is and
+# what publishing would involve.
+cp "$SRC/COPYING" "$ASSETS/COPYING"
+
 # The standard library and the extensions, taken from the interpreter built for the
 # phone. PYTHONHOME points at the payload root on the device, so the tree has to
 # keep the layout that interpreter was installed with.
@@ -78,11 +95,6 @@ cp "$SRC/klippy/chelper/c_helper.so" "$ASSETS/klippy/chelper/c_helper.so"
 # the development headers, IDLE, tkinter and the 2to3 tools are never imported.
 # __pycache__ is this machine's bytecode - the phone would at best ignore it, and
 # it doubles the payload.
-PY_LIB="$PY_PREFIX/lib/python3.11"
-[ -d "$PY_LIB" ] || {
-  echo "no interpreter under $PY_PREFIX: run build-klipper-python-android.sh first" >&2
-  exit 1
-}
 mkdir -p "$ASSETS/lib"
 tar -C "$(dirname "$PY_LIB")" -cf - \
   --exclude=test --exclude=tkinter --exclude=idlelib --exclude=lib2to3 \
