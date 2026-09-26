@@ -993,6 +993,26 @@ in afterwards is on the bus, permitted, and connected to nothing: the pty exists
 klippy waits forever. This cost a restart cycle more than once tonight. Restarting the
 service is the workaround; re-attempting the bridge on every start request is the fix.
 
+## The API, checked against the reference instead of against the phone
+
+Two mistakes in the app's client cost a build-install cycle each, and neither needed
+one. The box next to the phone runs the same Klipper and serves the same socket, so
+the protocol can be read and exercised there in seconds:
+
+    python3 -c "... connect('/home/tomppi/printer_data/comms/klippy.sock') ..."
+
+What that settled, and what Moonraker's own client confirms:
+
+| | |
+| --- | --- |
+| framing | ETX (0x03) both ways, not newlines. Moonraker: readuntil(b'\x03') and dumps(...) + b'\x03' |
+| methods | the socket's own names - info, objects/query, objects/subscribe, gcode/script - not the HTTP paths Moonraker translates |
+| updates | notify_status_update carries params as an *object*: {eventtime, status}. Reading it as the [status, eventtime] array an older Klipper used discards every update |
+| script replies | a script is answered when it finishes. G28 on this printer takes 14.6 seconds, so a 15-second timeout reports failure on a command that worked |
+
+That last one is worth stating plainly because of how it looked: the button appeared
+broken, and the machine had already homed.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket

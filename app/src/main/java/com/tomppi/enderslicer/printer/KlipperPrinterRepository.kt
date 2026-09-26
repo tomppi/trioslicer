@@ -102,9 +102,13 @@ class KlipperPrinterRepository(
             "notify_klippy_disconnected" -> _state.update {
                 it.copy(connected = false, error = "klippy disconnected")
             }
+            // params is an object - {eventtime, status} - and not the [status,
+            // eventtime] array an older Klipper used. Reading it as the array meant
+            // every update was discarded, so the screen showed the first snapshot
+            // forever: the printer would home and the position would not move.
             "notify_status_update" -> {
-                val params = message.optJSONArray("params") ?: return
-                val status = params.optJSONObject(0) ?: return
+                val status = message.optJSONObject("params")
+                    ?.optJSONObject("status") ?: return
                 _state.update { it.withStatus(status) }
             }
         }

@@ -159,8 +159,36 @@ class KlipperClient(private val socketPath: String) {
         call("objects/subscribe", JSONObject().put("objects", wanted))
     }
 
-    /** Run G-code. */
-    fun gcode(script: String) = call("gcode/script", JSONObject().put("script", script))
+    /**
+     * Run G-code and wait for it to finish.
+     *
+     * klippy answers a script when the script completes, not when it is accepted, and
+     * a G28 on this printer takes fifteen seconds - which is why the default request
+     * timeout is wrong here and was the first thing to look like a failure.
+     */
+    fun gcode(script: String, timeoutMs: Long = 120000) =
+        call("gcode/script", JSONObject().put("script", script), timeoutMs)
+
+    /**
+     * Run G-code without waiting for it to finish.
+     *
+     * For anything long - a print, a mesh calibration - where waiting would block a
+     * caller for minutes or hours and the printer's own status is what reports
+     * progress anyway.
+     */
+    fun gcodeAsync(script: String) {
+        val id = ids.getAndIncrement()
+        val request = JSONObject()
+            .put("id", id)
+            .put("method", "gcode/script")
+            .put("params", JSONObject().put("script", script))
+        synchronized(writeLock) {
+            val out = output ?: throw IllegalStateException("not connected")
+            out.write(request.toString().toByteArray())
+            out.write(ETX.toInt())
+            out.flush()
+        }
+    }
 
     /**
      * Reset the firmware, reload the config and restart the host software.
