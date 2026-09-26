@@ -316,6 +316,36 @@ the app's files directory, import chelper through the engine socket, construct a
 step compressor and feed it a move. That is Klipper's motion pipeline executing on
 the phone, which is step 2 of the objective.
 
+## Round 18: klippy's Python runs, and stops on cffi
+
+The staged klippy tree was pushed into the app and imported through the engine
+socket, on the phone:
+
+    KLIPPERPROBE FAILED ModuleNotFoundError("No module named 'cffi'")
+
+That is the dependency question answering itself, and it corrects an earlier
+conclusion of mine: **chelper uses cffi, not ctypes.** Its __init__.py does
+"import cffi", builds cffi.FFI(), and loads the helper with FFI_main.dlopen(). It
+is ABI mode, so no compiler is needed at use time - but the _cffi_backend C
+extension must exist, and it does not.
+
+Checked before assuming work was needed: the Blender payload's site-packages holds
+autopep8, certifi, Cython, numpy, MaterialX, meson and OpenImageIO, but **no cffi,
+no greenlet, no jinja2**.
+
+So the decision from round 3 is no longer a preference, it is forced:
+
+- cffi needs _cffi_backend, a C extension built against Python.h and a matching
+  pyconfig.h.
+- greenlet, which klippy's reactor requires, is also a C extension.
+- The bundled interpreter ships no headers, and no amount of ctypes cleverness
+  removes greenlet.
+
+**Plan: build our own CPython 3.11.4 for Android and use it for klippy**, with cffi,
+greenlet, jinja2 and MarkupSafe built against it. That removes the pyconfig.h
+guesswork entirely and it is a few megabytes beside a payload that is already 445 MB
+of native libraries. The Blender interpreter stays untouched for Blender.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
