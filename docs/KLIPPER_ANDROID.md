@@ -489,9 +489,12 @@ one was - the shape of what klippy's reactor does.
 
 **Three reasons these are upper bounds rather than a verdict:**
 
-1. Run 1's load generator lived inside the same Python process, so much of that
-   lateness is GIL contention I created, not the phone refusing to schedule the
-   process. That is a flaw in the probe.
+1. **Correction: my first explanation was wrong.** I said run 1's lateness was
+   largely GIL contention from my own in-process load generator. Run 2 moved the load
+   outside the interpreter and produced the same median to two decimal places
+   (8.58 ms both times), so the lateness is not the probe's doing - it is how this
+   device schedules a process in this class. The remaining qualification is the
+   process class itself, below.
 2. The probe ran over adb, not as a foreground service. Android's timer slack - the
    mechanism that would hurt here - is relaxed for ordinary processes and tight for a
    foreground service with a wake lock, which is what BlenderEngineService already is.
