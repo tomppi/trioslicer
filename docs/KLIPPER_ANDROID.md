@@ -1121,7 +1121,15 @@ BUFFER_TIME_HIGH is 2.0 s, above which it pauses to let the micro-controller cat
 The toolhead also reports a stall count, which is the same failure after the fact.
 
 That is the floor rather than the answer: it is a link with one command in flight, not
-a print with a queue of moves behind it. The measurement that closes this properly is
+a print with a queue of moves behind it.
+
+What *is* verified is that the figures can be read at all, against a real klippy rather
+than against this file's reading of its source: the integration tests ask a running
+klippy for toolhead and mcu, merge the answers through the same code the screen uses,
+and check that both clocks are there so the lookahead is computable, and that every
+field name the timing card reads - srtt, rttvar, rto, bytes_retransmit, bytes_invalid,
+mcu_awake - is what klippy actually reports. A rename upstream would otherwise leave
+that card quietly empty. The measurement that closes this properly is
 the same numbers taken during a real print, which needs the printer attached - and the
 stats are on the screen and in klippy's log whenever it is.
 

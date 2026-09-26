@@ -135,6 +135,43 @@ class KlipperClientIntegrationTest {
     }
 
     @Test
+    fun theTimingFieldsTheScreenReadsAreTheOnesKlippyReports() {
+        val client = connect()
+        try {
+            val timing = KlipperPrinterState(connected = true)
+                .withStatus(client.query("mcu")).timing
+            assumeTrue("this klippy has not reported a stats line", timing != null)
+            // Read by name, every one of them: a rename upstream would leave the timing
+            // card quietly empty rather than failing anywhere.
+            assertNotNull("mcu.last_stats.srtt", timing!!.roundTripSeconds)
+            assertNotNull("mcu.last_stats.rttvar", timing.jitterSeconds)
+            assertNotNull("mcu.last_stats.rto", timing.retransmitTimeoutSeconds)
+            assertNotNull("mcu.last_stats.bytes_retransmit", timing.retransmittedBytes)
+            assertNotNull("mcu.last_stats.bytes_invalid", timing.invalidBytes)
+            assertNotNull("mcu.last_stats.mcu_awake", timing.mcuAwake)
+            assertNotNull("headroom, which is rto over srtt", timing.headroom)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun theLookaheadIsComputableFromWhatKlippyReports() {
+        val client = connect()
+        try {
+            val state = KlipperPrinterState(connected = true)
+                .withStatus(client.query("toolhead"))
+            // The objective's own quantity: where the host has queued to against where
+            // the micro-controller has got to, both reported by klippy.
+            assertNotNull("toolhead.print_time", state.printTime)
+            assertNotNull("toolhead.estimated_print_time", state.estimatedPrintTime)
+            assertNotNull("the lookahead between them", state.lookaheadSeconds)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun anUnknownMethodComesBackAsAnError() {
         val client = connect()
         try {
