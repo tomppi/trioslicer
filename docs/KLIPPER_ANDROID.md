@@ -1180,6 +1180,33 @@ nothing else - no printer, no micro-controller. The config it stages is the same
 the host script builds, and running that file through a host klippy is how its half was
 checked before adb was available again.
 
+## The client is tested against a real klippy, not against a mock
+
+Every mistake this client has made was a protocol detail - the ETX framing, a method
+name belonging to the HTTP interface, the shape of a status update - and every one was
+found by running it against something. That used to mean a build, an install and a
+phone. It does not have to: the transport is now an interface, the app supplies one
+backed by android.net.LocalSocket, and a test supplies one backed by the JVM's own unix
+sockets.
+
+    ./gradlew :app:testDebugUnitTest --tests '*KlipperClientIntegrationTest*'
+
+    tests="4" skipped="0" failures="0"
+      asksARealKlippyWhatItIs            0.002s
+      theSubscribeReplyIsTheFirstSnapshot 0.255s
+      aQueryAnswersWithWhatWasAsked       0.247s
+      anUnknownMethodComesBackAsAnError   0.02s
+
+It runs the same client and the same protocol code the app ships, against whatever
+klippy is listening - skipped where there is none, so it neither fails nor pretends on
+a machine without one. KLIPPY_SOCKET points it elsewhere.
+
+Two details make it work. The test helper calls SocketChannel.open reflectively: this
+compiles against Android's stub jar, which has no ProtocolFamily overload and no
+UnixDomainSocketAddress, while at run time it is a real JVM that has both. And unit
+tests now return default values for Android framework calls instead of throwing, which
+is what lets real code that logs run under them.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket

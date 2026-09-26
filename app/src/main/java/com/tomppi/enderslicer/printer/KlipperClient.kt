@@ -1,11 +1,7 @@
 package com.tomppi.enderslicer.printer
 
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import android.util.Log
 import org.json.JSONObject
-import java.io.InputStream
-import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.TimeUnit
@@ -31,13 +27,16 @@ import java.util.concurrent.atomic.AtomicInteger
  *  - A notification can arrive at any time, not only while a request is outstanding,
  *    so one thread reads and dispatches while callers wait on their own reply.
  */
-class KlipperClient(private val socketPath: String) {
+class KlipperClient internal constructor(
+    private val transport: KlipperTransport,
+    private val label: String,
+) {
+    /** The app's client, over a filesystem unix socket. */
+    constructor(socketPath: String) : this(LocalSocketTransport(socketPath), socketPath)
+
     private val writeLock = Any()
     private val ids = AtomicInteger(1)
     private val waiting = ConcurrentHashMap<Int, SynchronousQueue<JSONObject>>()
-    private var socket: LocalSocket? = null
-    private var input: InputStream? = null
-    private var output: OutputStream? = null
     private var reader: Thread? = null
     private var pending = ByteArray(0)
 
@@ -50,28 +49,16 @@ class KlipperClient(private val socketPath: String) {
     /** Connect and start reading. Throws if the socket is not there to be connected to. */
     fun connect(readTimeoutMs: Int = 15000) {
         close()
-        val s = LocalSocket()
-        s.connect(LocalSocketAddress(socketPath, LocalSocketAddress.Namespace.FILESYSTEM))
-        s.soTimeout = readTimeoutMs
-        socket = s
-        input = s.inputStream
-        output = s.outputStream
+        transport.connect(readTimeoutMs)
         pending = ByteArray(0)
         reader = Thread({ readLoop() }, "klipper-api-reader").apply { isDaemon = true; start() }
-        Log.i(TAG, "connected to $socketPath")
+        Log.i(TAG, "connected to $label")
     }
 
     fun close() {
         reader?.interrupt()
         reader = null
-        try {
-            socket?.close()
-        } catch (e: Exception) {
-            Log.w(TAG, "close: ${e.message}")
-        }
-        socket = null
-        input = null
-        output = null
+        transport.close()
         for (queue in waiting.values) queue.offer(ERROR_JSON)
         waiting.clear()
     }
@@ -115,13 +102,13 @@ class KlipperClient(private val socketPath: String) {
 
     /** Read until at least one complete message has arrived, and return them all. */
     private fun readMessages(): List<JSONObject> {
-        val stream = input ?: throw IllegalStateException("not connected")
+        // Blocking reads, which is why this runs on its own thread.
         while (true) {
             val (messages, rest) = KlipperProtocol.decode(pending)
             pending = rest
             if (messages.isNotEmpty()) return messages
             val chunk = ByteArray(4096)
-            val read = stream.read(chunk)
+            val read = transport.read(chunk)
             if (read < 0) throw IllegalStateException("klippy closed the connection")
             pending += chunk.copyOfRange(0, read)
         }
@@ -130,9 +117,7 @@ class KlipperClient(private val socketPath: String) {
     /** Frame and send, on the one lock that keeps two callers' bytes apart. */
     private fun write(bytes: ByteArray) {
         synchronized(writeLock) {
-            val out = output ?: throw IllegalStateException("not connected")
-            out.write(bytes)
-            out.flush()
+            transport.write(bytes)
         }
     }
 

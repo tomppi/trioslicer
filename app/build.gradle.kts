@@ -104,6 +104,10 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+            // Android framework calls are not present on the JVM these run on. Returning
+            // defaults rather than throwing is what lets a test exercise real code that
+            // logs - the klippy client, for instance, against a klippy that is running.
+            isReturnDefaultValues = true
         }
     }
 
