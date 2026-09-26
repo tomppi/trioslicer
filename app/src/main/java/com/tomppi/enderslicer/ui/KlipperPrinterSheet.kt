@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
 
@@ -33,6 +35,8 @@ import com.tomppi.enderslicer.printer.KlipperViewModel
 internal fun KlipperPrinterSheet(
     state: KlipperPrinterState,
     viewModel: KlipperViewModel,
+    localGcodePath: String?,
+    suggestedFileName: String,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -40,6 +44,7 @@ internal fun KlipperPrinterSheet(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         StatusCard(state, viewModel)
+        PrintCard(state, viewModel, localGcodePath, suggestedFileName)
         TemperatureCard(state, viewModel)
         PositionCard(state)
         ActionsCard(state, viewModel)
@@ -90,6 +95,87 @@ private fun StatusCard(state: KlipperPrinterState, viewModel: KlipperViewModel) 
                 // is for when it is already plugged in, or was started before the app.
                 OutlinedButton(onClick = { viewModel.startHost() }) {
                     Text("Start the printer host")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The print the printer is running, or the one it could run.
+ *
+ * A sliced file is handed over by copying it into the directory the host's virtual SD
+ * card reads, which is inside this app's own storage - there is no upload step and
+ * nothing to configure.
+ */
+@Composable
+private fun PrintCard(
+    state: KlipperPrinterState,
+    viewModel: KlipperViewModel,
+    localGcodePath: String?,
+    suggestedFileName: String,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Print", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            val printing = state.printFileName != null &&
+                (state.isPrinting || state.isPaused)
+            if (printing) {
+                Text(state.printFileName!!, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = state.printState.orEmpty().replaceFirstChar { it.uppercase() } +
+                        (state.printDurationSeconds?.let { d -> " · %.0f min".format(d / 60) } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                state.printProgress?.let { progress ->
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0.0, 1.0).toFloat() },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "%.0f%%".format(progress * 100),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.isPaused) {
+                        OutlinedButton(onClick = { viewModel.resumePrint() }) { Text("Resume") }
+                    } else {
+                        OutlinedButton(onClick = { viewModel.pausePrint() }) { Text("Pause") }
+                    }
+                    OutlinedButton(onClick = { viewModel.cancelPrint() }) { Text("Cancel") }
+                }
+            } else {
+                val path = localGcodePath
+                if (path == null) {
+                    Text(
+                        "Nothing sliced yet. Slice a model and it appears here.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        KlipperPrint.fileName(suggestedFileName),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.printFile(path, suggestedFileName) },
+                        enabled = state.isReady,
+                    ) { Text("Print this file") }
+                }
+                state.printState?.takeIf { it.isNotBlank() }?.let { last ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Last print: $last",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

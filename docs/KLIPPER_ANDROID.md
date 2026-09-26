@@ -1013,12 +1013,61 @@ What that settled, and what Moonraker's own client confirms:
 That last one is worth stating plainly because of how it looked: the button appeared
 broken, and the machine had already homed.
 
+## Printing: there is no upload step
+
+[virtual_sdcard] is pointed at a directory inside the app's own storage, so starting a
+print is a file copy and a command:
+
+    copy the sliced file to <filesDir>/gcodes/<name>
+    SDCARD_PRINT_FILE FILENAME=<name>
+
+No upload protocol, no API key, no server in between - which is why the config points
+that path where it does. The screen sends every command without waiting for a reply
+and lets the status subscription report the outcome, because klippy answers a script
+when it *finishes*, and a print finishes hours later. A UI that waited would report a
+timeout on a print that was working, which is exactly what the Home button did before
+it was changed to a one-way command.
+
+The file name is not cosmetic: it is handed to the virtual SD card as a name inside a
+directory, so a slash would be read as a subdirectory and a leading dot would make the
+file invisible to the printer's own listing. KlipperPrint.fileName is where those rules
+live, with seven tests over it.
+
+## Bringing the printer up on the phone, in order
+
+Every step here has failed at least once, and each one has a check that says whether
+it is the thing that is wrong:
+
+1. **The port is in host mode.**
+   `cat /sys/class/usb_role/a600000.ssusb-role-switch/role` -> `host`.
+   `none` after a reboot means the port is dead to all devices; see the MUIC section.
+2. **The board is on the bus.** The device list must show `1a86:7523`. Nothing further
+   can work without it, and no app change will bring it back - it is cable, power, or
+   the port.
+3. **The app holds permission for it.** Android asks when the device is attached, and
+   a phone reboot clears the answer, so the dialog has to be accepted again.
+4. **The host is running** - started by the attach intent, or by the button on the
+   printer screen when the device is already plugged in.
+5. **The bridge is up.** `PrinterBridge: bridging /dev/bus/usb/... at 250000 baud to
+   pty fd N`. A printer that is attached, permitted and unbridged looks identical to
+   one that is not there.
+6. **klippy configured the board.** `Loaded MCU 'mcu' ...` and `Configured MCU 'mcu'`
+   in the klippy log.
+7. **The API answers.** `klippy is ready` from the app's own client.
+
+Two traps in the order of operations. The MUIC rebind only works with the printer
+already attached - do it before plugging in and nothing appears. And if klippy has
+already exited (it gives a missing MCU ninety seconds), plugging in afterwards needs
+the host started again: the bridge is attempted on every start request, but a host
+that has exited is not there to be asked.
+
 ## What this leaves
 
 1. The app has no front end yet. klippy exposes its JSON API on a unix socket
    (-a .../klippy.sock) and that is the interface to build against; a query of
    printer.info and objects/query returns state, temperatures and position.
-2. Nothing in the app sends FIRMWARE_RESTART, so a crashed run needs one.
+2. The app can send FIRMWARE_RESTART, but nothing does it automatically: a run that
+   dies still leaves the micro-controller shut down until someone asks.
 3. The printer's own config still carries z_offset 0 and has never been probed from
    this host: PROBE_CALIBRATE and BED_MESH_CALIBRATE come before any print.
 4. Timing under load - a real print, with the slicer running - is still unmeasured.

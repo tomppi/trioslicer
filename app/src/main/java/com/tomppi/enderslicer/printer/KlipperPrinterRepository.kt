@@ -107,11 +107,54 @@ class KlipperPrinterRepository(
         }
     }
 
-    // Actions. Each reports failure into the state rather than throwing at the UI.
+    // Actions.
+    //
+    // Every one of them is sent without waiting for its reply, and the state is what
+    // reports the result. klippy answers a script when it finishes, and "when it
+    // finishes" for a print is hours: a UI that waited would show a timeout on a
+    // command that worked, which is exactly what the Home button did.
 
-    fun home() = gcode("G28")
-    fun setExtruderTemperature(celsius: Int) = gcode("M104 S$celsius")
-    fun setBedTemperature(celsius: Int) = gcode("M140 S$celsius")
+    /** Send G-code and let the status subscription report what happened. */
+    fun command(script: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                client?.gcodeAsync(script) ?: throw IllegalStateException("not connected")
+                _state.update { it.copy(error = null) }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun home() = command("G28")
+    fun setExtruderTemperature(celsius: Int) = command("M104 S$celsius")
+    fun setBedTemperature(celsius: Int) = command("M140 S$celsius")
+
+    // The config's own macros rather than the bare pause_resume commands: they are
+    // what park the head and lift it before a pause on this printer.
+    fun pausePrint() = command("PAUSE")
+    fun resumePrint() = command("RESUME")
+    fun cancelPrint() = command("CANCEL_PRINT")
+
+    /**
+     * Copy a sliced file into the host's virtual SD card and start it printing.
+     *
+     * No upload protocol is needed and none is used: [virtual_sdcard] reads from a
+     * directory inside this app's own storage, so starting a print is a file copy and
+     * a command. That is the whole reason the config points it there.
+     */
+    suspend fun printFile(sourcePath: String, name: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val directory = File(application.filesDir, KlipperPrint.GCODE_DIR)
+                    .apply { mkdirs() }
+                val fileName = KlipperPrint.fileName(name)
+                File(sourcePath).copyTo(File(directory, fileName), overwrite = true)
+                client?.gcodeAsync("SDCARD_PRINT_FILE FILENAME=$fileName")
+                    ?: throw IllegalStateException("not connected")
+                fileName
+            }.onFailure { e -> _state.update { it.copy(error = e.message) } }
+        }
 
     /**
      * Reset the firmware and reload the configuration.
@@ -120,29 +163,9 @@ class KlipperPrinterRepository(
      * micro-controller stays shut down until it is reset, and the next start of the
      * host cannot configure it while it is.
      */
-    fun firmwareRestart() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                client?.firmwareRestart() ?: throw IllegalStateException("not connected")
-                _state.update { it.copy(error = null) }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
-            }
-        }
-    }
+    fun firmwareRestart() = command("FIRMWARE_RESTART")
 
-    fun gcode(script: String) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                client?.gcode(script) ?: throw IllegalStateException("not connected")
-                _state.update { it.copy(error = null) }
-            } catch (e: Exception) {
-                _state.update { it.copy(error = e.message) }
-            }
-        }
-    }
-
-    /** Send G-code and wait for it, for callers that show the result. */
+    /** Send G-code and wait for it, for callers that show the result themselves. */
     suspend fun gcodeNow(script: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching { client?.gcode(script) ?: throw IllegalStateException("not connected") }
             .onFailure { e -> _state.update { it.copy(error = e.message) } }
@@ -155,7 +178,9 @@ class KlipperPrinterRepository(
         /** How long to wait before trying the host again after a failure. */
         const val RETRY_MS = 3000L
 
-        /** The objects the screen needs. */
-        val WATCHED = arrayOf("extruder", "heater_bed", "toolhead")
+        /** The objects the screen needs: the machine, and any print on it. */
+        val WATCHED = arrayOf(
+            "extruder", "heater_bed", "toolhead", "print_stats", "virtual_sdcard",
+        )
     }
 }

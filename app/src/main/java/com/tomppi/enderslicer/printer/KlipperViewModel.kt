@@ -3,6 +3,7 @@ package com.tomppi.enderslicer.printer
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import kotlinx.coroutines.flow.StateFlow
 
@@ -27,6 +28,15 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun setExtruderTemperature(celsius: Int) = repository.setExtruderTemperature(celsius)
     fun setBedTemperature(celsius: Int) = repository.setBedTemperature(celsius)
     fun firmwareRestart() = repository.firmwareRestart()
+
+    /** Hand a sliced file to the printer and start it. */
+    fun printFile(sourcePath: String, name: String) {
+        viewModelScope.launch { repository.printFile(sourcePath, name) }
+    }
+
+    fun pausePrint() = repository.pausePrint()
+    fun resumePrint() = repository.resumePrint()
+    fun cancelPrint() = repository.cancelPrint()
 
     override fun onCleared() {
         repository.stop()

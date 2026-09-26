@@ -119,5 +119,34 @@ class KlipperProtocolTest {
         assertTrue(!state.isHomed)
     }
 
+    @Test
+    fun statusMergeFollowsAPrint() {
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject(
+                """{"print_stats":{"filename":"benchy.gcode","state":"printing",
+                    "print_duration":90.0},
+                   "virtual_sdcard":{"progress":0.25}}""",
+            ),
+        )
+        assertEquals("benchy.gcode", state.printFileName)
+        assertEquals("printing", state.printState)
+        assertEquals(90.0, state.printDurationSeconds!!, 0.001)
+        assertEquals(0.25, state.printProgress!!, 0.001)
+        assertEquals(true, state.isPrinting)
+        assertEquals(false, state.isPaused)
+    }
+
+    @Test
+    fun statusMergeKeepsThePrintWhenOnlyProgressArrives() {
+        val printing = KlipperPrinterState(
+            connected = true, printFileName = "benchy.gcode", printState = "printing",
+        )
+        // What the virtual SD card sends while a print runs: progress, nothing else.
+        val after = printing.withStatus(JSONObject("""{"virtual_sdcard":{"progress":0.75}}"""))
+        assertEquals("benchy.gcode", after.printFileName)
+        assertEquals("printing", after.printState)
+        assertEquals(0.75, after.printProgress!!, 0.001)
+    }
+
     private fun frame(json: String) = json.toByteArray() + byteArrayOf(KlipperProtocol.ETX)
 }

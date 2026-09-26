@@ -56,6 +56,8 @@ internal fun PrinterTabContent(
             KlipperPrinterSheet(
                 state = klipperState,
                 viewModel = klipperViewModel,
+                localGcodePath = localGcodePath,
+                suggestedFileName = suggestedFileName,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {

@@ -17,11 +17,20 @@ data class KlipperPrinterState(
     val bedTarget: Double? = null,
     val position: List<Double> = emptyList(),
     val homedAxes: String = "",
+    /** The file the printer is working on, as the virtual SD card names it. */
+    val printFileName: String? = null,
+    /** printing, paused, complete, cancelled or error - klippy's own words. */
+    val printState: String? = null,
+    /** 0..1 through the file, from the virtual SD card's own position in it. */
+    val printProgress: Double? = null,
+    val printDurationSeconds: Double? = null,
     /** The last thing that went wrong, cleared by the next successful call. */
     val error: String? = null,
 ) {
     val isReady: Boolean get() = connected && state == "ready"
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")
+    val isPrinting: Boolean get() = printState == "printing"
+    val isPaused: Boolean get() = printState == "paused"
 }
 
 /**
@@ -36,18 +45,24 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
     val extruder = status.optJSONObject("extruder")
     val bed = status.optJSONObject("heater_bed")
     val toolhead = status.optJSONObject("toolhead")
+    val stats = status.optJSONObject("print_stats")
+    val sdcard = status.optJSONObject("virtual_sdcard")
     return copy(
-        extruderTemperature = extruder.temperature("temperature") ?: extruderTemperature,
-        extruderTarget = extruder.temperature("target") ?: extruderTarget,
-        bedTemperature = bed.temperature("temperature") ?: bedTemperature,
-        bedTarget = bed.temperature("target") ?: bedTarget,
+        extruderTemperature = extruder.number("temperature") ?: extruderTemperature,
+        extruderTarget = extruder.number("target") ?: extruderTarget,
+        bedTemperature = bed.number("temperature") ?: bedTemperature,
+        bedTarget = bed.number("target") ?: bedTarget,
         position = toolhead?.optJSONArray("position")?.toDoubleList().orEmpty().ifEmpty { position },
         homedAxes = toolhead?.optString("homed_axes").orEmpty().ifEmpty { homedAxes },
+        printFileName = stats?.optString("filename").orEmpty().ifEmpty { printFileName },
+        printState = stats?.optString("state").orEmpty().ifEmpty { printState },
+        printDurationSeconds = stats.number("print_duration") ?: printDurationSeconds,
+        printProgress = sdcard.number("progress") ?: printProgress,
     )
 }
 
-/** A temperature field, or null when klippy did not mention it this time. */
-private fun JSONObject?.temperature(name: String): Double? =
+/** A numeric field, or null when klippy did not mention it this time. */
+private fun JSONObject?.number(name: String): Double? =
     if (this != null && has(name) && !isNull(name)) optDouble(name) else null
 
 private fun JSONArray.toDoubleList(): List<Double> = (0 until length()).map { optDouble(it) }
