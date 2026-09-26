@@ -18,6 +18,19 @@ The app's own code stays separate in the ways that matter: separate source, sepa
 build, separate directory, and a process boundary that is a unix socket and a file
 descriptor.
 
+## How much of it ships
+
+The staged payload is 957 files, 27 MB, and all 957 land in the release APK under
+`assets/klipper/` - klippy, the standard library, the extensions, the prebuilt helper,
+the manifest and `COPYING`. That count matching the staged tree is how the staging is
+verified end to end:
+
+    ./gradlew :app:assembleRelease
+    unzip -l app-release.apk | grep -c assets/klipper/     # 957
+
+So the GPLv3 code in a published build is 27 MB of an APK that is 295 MB - a third of
+which is the slicer engines and Blender, none of which are Klipper's.
+
 ## What was changed
 
 Three patches, each applied and verified by the staging script, each with a comment
