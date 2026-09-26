@@ -238,6 +238,11 @@ class ModelSurfaceView(
 
     fun setMesh(mesh: StlMesh?) {
         currentMesh = mesh
+        // The committed transform is in the new vertices, so the preview standing
+        // in for it ends here - exactly when the geometry arrives. That timing is
+        // what keeps the model from snapping back under the finger on release.
+        modelRenderer.setDragOffset(0f, 0f, 0f)
+        modelRenderer.setPreviewTransform(null, null, 0f, 1f)
         queueEvent { modelRenderer.setMesh(mesh) }
         // The gizmo is sized from the model, so a new model gets a new one.
         queueEvent { modelRenderer.setGizmo(gizmoFor(gizmoMode)) }
@@ -477,26 +482,24 @@ class ModelSurfaceView(
                         schedulePaintPick()
                     }
                 }
+                // The preview is deliberately left standing: the commit lands a
+                // moment later, and dropping it here would snap the model back to
+                // where it started in between. It goes when the new geometry
+                // arrives, or through clearDragPreview when nothing arrives.
                 if (draggingRotate) {
                     draggingRotate = false
                     val degrees = snapDegrees(rotateDegrees)
                     rotateDegrees = 0f
-                    modelRenderer.setPreviewTransform(null, null, 0f, 1f)
-                    requestRender()
                     if (degrees != 0f) onRotateCommitted?.invoke(rotateAxis, degrees)
                 }
                 if (draggingAxisMove) {
                     draggingAxisMove = false
                     val millimetres = axisMoveMillimetres
                     axisMoveMillimetres = 0f
-                    modelRenderer.setDragOffset(0f, 0f, 0f)
-                    requestRender()
                     if (millimetres != 0f) onModelAxisMove?.invoke(axisMoveAxis, millimetres)
                 }
                 if (draggingModel) {
                     draggingModel = false
-                    modelRenderer.setDragOffset(0f, 0f)
-                    requestRender()
                     val committedX = dragTotalX
                     val committedY = dragTotalY
                     dragTotalX = 0f
@@ -761,6 +764,17 @@ class ModelSurfaceView(
             requestRender()
             return true
         }
+    }
+
+    /** Drops a preview the committed transform never replaced, such as a refused move. */
+    fun clearDragPreview() {
+        dragTotalX = 0f
+        dragTotalY = 0f
+        axisMoveMillimetres = 0f
+        rotateDegrees = 0f
+        modelRenderer.setDragOffset(0f, 0f, 0f)
+        modelRenderer.setPreviewTransform(null, null, 0f, 1f)
+        requestRender()
     }
 
     private companion object {
@@ -1235,19 +1249,25 @@ private class ModelRenderer(
         Matrix.rotateM(scene, 0, pitch, 1f, 0f, 0f)
         Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
         // In plate coordinates, so the offset turns with the model it moves.
-        Matrix.translateM(scene, 0, dragOffsetX, dragOffsetY, dragOffsetZ)
-        // The dragged transform, previewed about the model's base centre.
-        Matrix.translateM(scene, 0, previewPivotX, previewPivotY, previewPivotZ)
+        Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
+
+        // The drag preview belongs to the model alone. Putting it in the scene
+        // moved the grid, the bed and the axis triad along with the model, which
+        // reads as moving the camera and then having the model catch up when the
+        // finger lifts. Everything the model owns - mesh, gizmo, annotations -
+        // goes through this matrix; the plate does not.
+        Matrix.setIdentityM(modelLocal, 0)
+        Matrix.translateM(modelLocal, 0, dragOffsetX, dragOffsetY, dragOffsetZ)
+        Matrix.translateM(modelLocal, 0, previewPivotX, previewPivotY, previewPivotZ)
         previewAxis?.let { axis ->
             when (axis) {
-                ModelPlacement.Axis.X -> Matrix.rotateM(scene, 0, previewDegrees, 1f, 0f, 0f)
-                ModelPlacement.Axis.Y -> Matrix.rotateM(scene, 0, previewDegrees, 0f, 1f, 0f)
-                ModelPlacement.Axis.Z -> Matrix.rotateM(scene, 0, previewDegrees, 0f, 0f, 1f)
+                ModelPlacement.Axis.X -> Matrix.rotateM(modelLocal, 0, previewDegrees, 1f, 0f, 0f)
+                ModelPlacement.Axis.Y -> Matrix.rotateM(modelLocal, 0, previewDegrees, 0f, 1f, 0f)
+                ModelPlacement.Axis.Z -> Matrix.rotateM(modelLocal, 0, previewDegrees, 0f, 0f, 1f)
             }
         }
-        if (previewScale != 1f) Matrix.scaleM(scene, 0, previewScale, previewScale, previewScale)
-        Matrix.translateM(scene, 0, -previewPivotX, -previewPivotY, -previewPivotZ)
-        Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
+        if (previewScale != 1f) Matrix.scaleM(modelLocal, 0, previewScale, previewScale, previewScale)
+        Matrix.translateM(modelLocal, 0, -previewPivotX, -previewPivotY, -previewPivotZ)
 
         drawGrid()
         drawMesh()
@@ -1268,7 +1288,9 @@ private class ModelRenderer(
         val buffer = annotationBuffer ?: return
         if (overlay.isEmpty) return
 
-        Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
+        // Annotations are placed on the model's surface, so they ride with it.
+        Matrix.multiplyMM(modelMatrix, 0, scene, 0, modelLocal, 0)
+        Matrix.multiplyMM(modelView, 0, view, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
 
         GLES20.glUseProgram(lineProgram)
@@ -1374,7 +1396,9 @@ private class ModelRenderer(
         val ribbon = gizmoRibbon ?: return
         if (overlay.isEmpty) return
 
-        Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
+        // The gizmo rides with the model it moves.
+        Matrix.multiplyMM(modelMatrix, 0, scene, 0, modelLocal, 0)
+        Matrix.multiplyMM(modelView, 0, view, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
 
         GLES20.glUseProgram(lineProgram)
@@ -1592,9 +1616,8 @@ private class ModelRenderer(
         val buffer = meshBuffer ?: return
 
         // ModelPlacement has already written the mesh vertices into final
-        // build-plate coordinates. Preserve those coordinates so the viewer,
-        // CuraEngine input and exported G-code all show the same placement.
-        Matrix.setIdentityM(modelLocal, 0)
+        // build-plate coordinates; modelLocal carries only the transform being
+        // previewed under the finger, so the plate stays where it is.
         Matrix.multiplyMM(modelMatrix, 0, scene, 0, modelLocal, 0)
         Matrix.multiplyMM(modelView, 0, view, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)

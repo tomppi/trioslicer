@@ -2277,6 +2277,11 @@ private fun ViewerPanel(
                         onOrientationChanged(view.currentOrientation())
                     }
                 }
+                // A refused move never replaces the geometry, so its preview has to
+                // be dropped when the operation ends without one.
+                LaunchedEffect(state.isBusy, modelView) {
+                    if (!state.isBusy) modelView?.clearDragPreview()
+                }
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner, modelView) {
                     val view = modelView
