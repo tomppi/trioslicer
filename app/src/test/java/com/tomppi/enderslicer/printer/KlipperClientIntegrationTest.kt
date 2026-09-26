@@ -172,6 +172,24 @@ class KlipperClientIntegrationTest {
     }
 
     @Test
+    fun thePrintFieldsTheCardReadsAreTheOnesKlippyReports() {
+        val client = connect()
+        try {
+            val status = client.query("print_stats", "virtual_sdcard")
+            val state = KlipperPrinterState(connected = true).withStatus(status)
+            // The card decides what to show from these: a print in progress, its file,
+            // its duration and how far through it is. Names again, and again the only
+            // thing that would go wrong quietly.
+            assertTrue("print_stats.state missing", state.printState != null || status.optJSONObject("print_stats")?.has("state") == true)
+            assertTrue("virtual_sdcard.progress missing", status.optJSONObject("virtual_sdcard")?.has("progress") == true)
+            assertTrue("print_stats.print_duration missing", status.optJSONObject("print_stats")?.has("print_duration") == true)
+            assertTrue("print_stats.filename missing", status.optJSONObject("print_stats")?.has("filename") == true)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun anUnknownMethodComesBackAsAnError() {
         val client = connect()
         try {
