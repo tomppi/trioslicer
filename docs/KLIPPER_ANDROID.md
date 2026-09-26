@@ -168,6 +168,32 @@ pyconfig.h question from round 3 therefore only remains for cffi and greenlet.
   v0.12.0, v0.13.0. The working copy should be moved onto that tag rather than
   master before anything is built against it.
 
+## Rounds 6-7: chelper builds for bionic
+
+- The working copy is on the stable tag **v0.13.0**.
+- Klippy's own build step, from its source: GCC_CMD = "gcc", DEST_LIB =
+  "c_helper.so", a needs-compiling check, and an option probe whose SSE flags are
+  x86-only - so arm64 takes the plain path.
+- chelper is 18 C sources, plus pyhelper.c which only the debug variant uses.
+- **It builds.** From klippy/chelper on v0.13.0, with the NDK pinned at
+  28.2.13676358:
+
+      aarch64-linux-android24-clang -shared -fPIC -O2 -o c_helper.so <18 sources> -lm
+
+  Result: **c_helper.so, 55,296 bytes**, referencing libc.so and no glibc loader,
+  with 96 Klipper symbols present (stepcompress_, itersolve_, trapq_,
+  serialqueue_). Kept at /root/klipper-port/out-arm64/c_helper.so, outside this
+  repo.
+- The **only** change needed was dropping -lpthread: bionic keeps pthreads inside
+  libc, so the glibc-era link line fails with "unable to find library -lpthread".
+  -lm is fine as it stands.
+- 95 warnings and no errors. The one worth knowing is chelper's compiler.h
+  redefining __noreturn over Android's sys/cdefs.h.
+- Because a prebuilt c_helper.so is what ships, klippy's own compile step never
+  runs on the phone, so **Klipper needs no patch for the build at all** - its
+  -lpthread would only matter if it were compiled on the device, which is exactly
+  what this avoids. The transport patch stays the only planned source change.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
