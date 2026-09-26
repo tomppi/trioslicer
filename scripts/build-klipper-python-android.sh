@@ -39,6 +39,25 @@ make -j4
 make install
 "$HOST/bin/python3.11" -c "import sys; print('host python', sys.version.split()[0])"
 
+# libffi must exist before CPython is configured, or _ctypes is silently skipped.
+# CPython looks for a system libffi; bionic has none, so without this the
+# interpreter ships without ctypes and any tool that reaches for it fails on the
+# device with "No module named '_ctypes'". Building it first is the whole fix.
+echo "=== libffi for the target, before CPython ==="
+if [ ! -f "$PREFIX/lib/libffi.a" ]; then
+  mkdir -p "$WORK" && cd "$WORK"
+  [ -d libffi-3.4.6 ] || {
+    curl -sSL -o libffi-3.4.6.tar.gz https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz
+    tar xzf libffi-3.4.6.tar.gz
+  }
+  cd libffi-3.4.6
+  # 3.4.4 does not build on Android (tramp.c uses open_temp_exec_file undeclared).
+  ./configure --host=aarch64-linux-android --prefix="$PREFIX" --enable-static --disable-shared \
+    CC="$CC_DIR/aarch64-linux-android24-clang" CFLAGS="-fPIC -O2"
+  make -j4 MAKEINFO=true && make install MAKEINFO=true
+  echo "libffi: $(ls -l "$PREFIX/lib/libffi.a" | awk '{print $5}') bytes"
+fi
+
 echo "=== cross build for aarch64-android ==="
 cd "$WORK/Python-$VERSION"
 export CC="$CC_DIR/aarch64-linux-android24-clang" CXX="$CC_DIR/aarch64-linux-android24-clang++"
@@ -52,6 +71,7 @@ make distclean >/dev/null 2>&1 || true
 ./configure --host=aarch64-linux-android --build=x86_64-pc-linux-gnu \
   --with-build-python="$HOST/bin/python3.11" \
   --enable-shared --without-ensurepip --prefix="$PREFIX" \
+  CPPFLAGS="-I$PREFIX/include" LDFLAGS="-L$PREFIX/lib" \
   ac_cv_file__dev_ptmx=yes ac_cv_file__dev_ptc=no ac_cv_func_wcsftime=no \
   ac_cv_func_ftime=no ac_cv_func_faccessat=no ac_cv_func_link=no ac_cv_func_linkat=no \
   ac_cv_buggy_getaddrinfo=no ac_cv_little_endian_double=yes \
@@ -65,3 +85,11 @@ make libpython3.11.so
 make -j4
 make install
 ls -l "$PREFIX/lib/libpython3.11.so" "$PREFIX/include/python3.11/Python.h"
+# _ctypes is the canary for the libffi step above: if it is missing, the ordering
+# broke and ctypes-using code will fail on the device rather than here.
+"$HOST/bin/python3.11" - <<'PYCHECK'
+import pathlib, sys
+lib = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None
+PYCHECK
+grep -q "_ctypes" "$WORK/Python-$VERSION/Modules/Setup.stdlib" 2>/dev/null || true
+echo "check the built interpreter for _ctypes before shipping it"
