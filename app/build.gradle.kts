@@ -982,6 +982,11 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 }
 
 dependencies {
+    // USB serial in userspace (MIT). Drives CH340/CH341A, which is what Creality
+    // 4.2.x boards carry, without any kernel driver - the phone's kernel has
+    // CONFIG_USB_SERIAL unset, so this is the only route to a printer.
+    implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
+
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
 
     implementation(composeBom)
