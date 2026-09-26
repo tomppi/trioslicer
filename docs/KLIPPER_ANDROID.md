@@ -556,6 +556,36 @@ no driver for it and it is not CDC-ACM). That is the pump between the pty and th
 bulk endpoints, and it is a few hundred lines of ordinary code rather than research.
 Everything else on the path is proven.
 
+## Round 84: the CH340 protocol, from the Linux kernel
+
+Creality 4.2.x boards carry a CH340, which is not CDC-ACM and has no Android driver,
+so the app needs a userspace one. Rather than write it from memory, the protocol comes
+from the kernel's own driver, drivers/usb/serial/ch341.c:
+
+    CH341_REQ_READ_VERSION  0x5      control request: read chip version
+    CH341_REQ_WRITE_REG     0x9      write a register
+    CH341_REQ_READ_REG      0x95     read a register
+    CH341_REG_BREAK         0x05
+    CH341_REG_PRESCALER     0x12     baud rate, prescaler
+    CH341_REG_DIVISOR       0x13     baud rate, divisor
+    CH341_REG_LCR           0x18     line control: data bits, parity, stop
+    CH341_REG_FLOW_CTL      0x27
+    CH341_LCR_ENABLE_RX     0x80
+    CH341_LCR_ENABLE_TX     0x40
+
+So the shape of the driver is: open the device, claim the interface, send the vendor
+control requests that select baud (prescaler and divisor) and line format (LCR), then
+move bulk data. That is a few hundred lines of ordinary code against documented
+behaviour, not protocol archaeology.
+
+Still to extract from the same file when the driver is written: the baud divisor
+calculation itself (this pass matched the register constants but not that function)
+and the exact initialisation order. Both are in the same source.
+
+**Prerequisite in place:** the app now declares android.hardware.usb.host
+(required=false, so it still installs without OTG) and carries a device filter naming
+the CH340, with CP2102 and FTDI alongside it.
+
 ## What this leaves
 
 1. Confirm the handful of builtins klippy imports - _struct, _collections,
