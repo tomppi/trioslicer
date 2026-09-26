@@ -1,3 +1,7 @@
+> **Historical record.** The native Smart Infill workflow this describes is
+> committed and was confirmed working end to end on the device (round 38). This
+> file is kept for the debugging record, not as a plan of record.
+
 # Native Smart Infill - handover
 
 **Status: done.** The native engine, its build/CI plumbing and the Plate workflow
