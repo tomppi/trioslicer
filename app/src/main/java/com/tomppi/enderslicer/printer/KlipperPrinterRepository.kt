@@ -191,7 +191,10 @@ class KlipperPrinterRepository(
             .map { }
     }
 
-    private companion object {
+    // Internal rather than private so a test can subscribe to exactly what the app
+    // subscribes to: the list drifting from what the screen reads is a bug that no
+    // fixture in this repository would catch.
+    internal companion object {
         const val TAG = "KlipperPrinter"
 
         /** How long to wait before trying the host again after a failure. */

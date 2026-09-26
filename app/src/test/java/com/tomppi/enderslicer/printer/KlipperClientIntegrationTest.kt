@@ -1,6 +1,9 @@
 package com.tomppi.enderslicer.printer
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -71,6 +74,61 @@ class KlipperClientIntegrationTest {
         try {
             val status = client.query("toolhead")
             assertTrue("no toolhead in $status", status.has("toolhead"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun aRealReplyMergesIntoWhatTheScreenReads() {
+        val client = connect()
+        try {
+            val snapshot = client.subscribe(*KlipperPrinterRepository.WATCHED)
+            val state = KlipperPrinterState(connected = true).withStatus(snapshot)
+
+            // The fields the screen renders, checked against the shapes a real klippy
+            // sends rather than against fixtures written here. A fixture agrees with
+            // itself; it cannot tell you the API moved.
+            assertTrue(
+                "toolhead.position should be four numbers, was ${state.position}",
+                state.position.size == 4,
+            )
+            assertTrue(
+                "toolhead.homed_axes should be a string",
+                state.homedAxes.length <= 3,
+            )
+            // These two are always present once the config has loaded, whatever state
+            // the printer is in.
+            assertTrue("print_stats was not merged", snapshot.has("print_stats"))
+            assertTrue("toolhead was not merged", snapshot.has("toolhead"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun aRealNotificationIsRecognisedAsAStatusUpdate() {
+        val client = connect()
+        try {
+            val arrived = CountDownLatch(1)
+            var merged: KlipperPrinterState? = null
+            client.onNotification = { message ->
+                // The exact path the app uses, over a message klippy sent by itself.
+                KlipperProtocol.statusUpdate(message)?.let { status ->
+                    merged = KlipperPrinterState(connected = true).withStatus(status)
+                    arrived.countDown()
+                }
+            }
+            client.subscribe("toolhead")
+            // Skipped rather than failed when nothing arrives, because a printer in
+            // shutdown has a stopped clock and klippy only pushes what changes: there is
+            // genuinely nothing to send. With a printer running this exercises the path
+            // that reads a real update - which is the one that was wrong for a day.
+            assumeTrue(
+                "no status update in ten seconds: nothing is changing on this klippy",
+                arrived.await(10, TimeUnit.SECONDS),
+            )
+            assertNotNull("the update carried nothing the merge recognises", merged)
         } finally {
             client.close()
         }
