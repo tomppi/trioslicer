@@ -36,9 +36,26 @@ KLIPPY="${KLIPPY:-$ROOT/.build/klipper-src/klippy/klippy.py}"
 DICT="${DICT:-$ROOT/.build/klipper-src/out/klipper.dict}"
 CONFIG="${CONFIG:-}"
 GCODE="${GCODE:-$ROOT/native/klipper-pty/batch-motion.gcode}"
+# MOVES: generate a file of that many moves instead of using the small fixture. The
+# planning rate is what decides whether a host can keep up with a printer, and it only
+# means anything over a print's worth of moves - tens of thousands, not fifteen.
+MOVES="${MOVES:-0}"
 
 WORK="${WORK:-$(mktemp -d)}"
 mkdir -p "$WORK/gcodes"
+
+if [ "$MOVES" -gt 0 ]; then
+  GCODE="$WORK/generated.gcode"
+  awk -v n="$MOVES" 'BEGIN {
+    print "G90"; print "G21"; print "M107"
+    print "SET_KINEMATIC_POSITION X=0 Y=0 Z=10"
+    for (i = 0; i < n; i++) {
+      x = 10 + (i % 50) * 2
+      y = 10 + int(i / 50) % 50
+      printf "G1 X%d Y%d.%d E0.05 F3600\n", x, y, i % 10
+    }
+  }' > "$GCODE"
+fi
 
 for f in "$PYTHON" "$KLIPPY" "$DICT" "$GCODE"; do
   [ -e "$f" ] || { echo "missing $f (set PYTHON/KLIPPY/DICT/GCODE)" >&2; exit 2; }
@@ -88,7 +105,11 @@ echo "step stream: $STEPS bytes"
 # klippy. It is a sanity figure rather than a rate: a meaningful rate needs a file the
 # size of a print, and the number that answers the feasibility question is the link's
 # own stats during a real one, which the app shows.
-echo "wall clock:  ${ELAPSED}s (${MOVES} moves, interpreter start included)"
+MOVECOUNT=$(grep -c "^G1" "$GCODE" || true)
+echo "wall clock:  ${ELAPSED}s for ${MOVECOUNT} moves (interpreter start included)"
+if [ "${MOVECOUNT:-0}" -ge 1000 ]; then
+  echo "planning:    $(echo "scale=0; $MOVECOUNT / $ELAPSED" | bc) moves/s"
+fi
 grep -c . "$LOG" | sed 's/^/log lines: /'
 echo "--- timed section of the log, if klippy reported one ---"
 grep -E "^Stats|print_time=" "$LOG" | tail -2 || true

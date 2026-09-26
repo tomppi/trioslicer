@@ -1155,6 +1155,23 @@ the script appends both to its own copy of the config rather than to the shipped
     step stream: 3924 bytes
     refused moves: 0
 
+### The rate, which is half the feasibility answer
+
+The other half is how fast the host plans. A print consumes moves at whatever rate its
+segments and speed imply - a few hundred a second for coarse segments at printing
+speed, a few thousand for fine ones - so a host has to plan faster than that with room
+to spare. MOVES generates a file of that size and the run reports the rate:
+
+    MOVES=40000 scripts/verify-klipper-batch.sh
+    step stream: 1254547 bytes
+    wall clock:  1.471s for 40000 moves (interpreter start included)
+    planning:    27185 moves/s
+
+That is this host, a desktop, as a reference point and as proof the measurement works.
+**The phone's number is the one that matters and it is not measured yet** - the same
+command with the payload's interpreter produces it, and that comparison is the
+feasibility question answered with figures instead of an argument.
+
 The same run belongs on the device, and that is what proves the payload rather than the
 host it was built on: scripts/verify-klipper-on-device.sh stages the dictionary, the
 G-code and a batch config, then runs klippy out of the app's own payload with the
