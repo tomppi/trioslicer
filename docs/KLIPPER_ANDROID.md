@@ -391,11 +391,23 @@ binary, not the exit code: an .so named x86_64 held correct AArch64 code, and a
 stale objects. And a shared library links happily with unresolved symbols, so
 -Wl,--no-undefined belongs in every cross build.
 
-**Dead end, recorded so it is not retried:** the linux-process MCU will not
-cross-compile by overriding CROSS_COMPILE (ignored for that target, which is meant
-to build for the machine running it) and not by overriding OBJCOPY either (llvm
-objcopy does not match the .ctr step's expectations). The simulated printer is a
-convenience; the timing numbers that matter should come from a real board.
+**Dead end, recorded so it is not retried - abandoned after six attempts.** The
+linux-process MCU does not cross-compile from this box:
+
+- CROSS_COMPILE is ignored for that target: it is designed to build for the machine
+  running it, so make reaches for the host compiler. The "cross build" was
+  byte-identical to the host one.
+- Overriding CC/LD alone gets further, then dies in the .ctr step: make runs
+  "objcopy -j '.compile_time_request' -O binary" over each object, which is a
+  section extraction with no architecture flags at all - and llvm-objcopy reports
+  the MCU objects as "not recognized as a valid object file" (most likely LTO
+  bitcode, which objcopy cannot read sections from).
+
+It is a convenience, not a requirement, and it fought back every time. The timing
+numbers that decide this project should come from a real Klipper-flashed board over
+the USB bridge: same transport work, real move queue, real latencies. If a simulated
+printer is wanted later, the sane route is to build it on a Linux box with GNU
+objcopy and copy the binary over - not to keep bending this toolchain.
 
 ## Rounds 60-61: the transport seam is upstream, not a patch
 
