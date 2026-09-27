@@ -141,6 +141,37 @@ The phone goes on the printer's base, never on the toolhead or the bed: it weigh
 and on the moving mass that would change the machine being measured. What it hears from the
 base is the frame's response, which is the same path the ringing is audible through.
 
+### Where the phone goes, and what that costs
+
+The shaper for each axis corrects the resonance of the mass that axis moves: for X on a bed
+slinger that is the toolhead on its belts, for Y it is the bed. Klipper's own instructions
+follow the same logic — the accelerometer goes on the toolhead for X and on the bed for Y —
+so the sensor belongs on the moving part, and the phone cannot go there.
+
+It weighs 253 g. An accelerometer weighs about one. On an Ender-class toolhead, whose
+carriage, hotend and extruder come to something like 500 g, that is a 50% increase in the
+moving mass, and `f ∝ √(k/m)` puts the mode about 23% lower: a true 90 Hz would be measured
+as roughly 73 Hz. On the bed — a few hundred grams of plate, carriage and springs — a
+bed-mounted phone reads low by around 15%, which is why a bed reading of 30 Hz and a
+toolhead-mounted 35 Hz are the same machine rather than two different ones.
+
+What the phone gets from the printer's base instead is the frame's response to the moving
+mass. The frame is connected to the gantry and the belts, so the toolhead's ringing at 90 Hz
+shakes the whole machine — audibly, which is why the ringing test works by ear at all. The
+cost is that the frame has modes of its own, loud in some places and quiet in others, so a
+reading depends on where the phone is standing.
+
+That is what the agreement across several measurements is for, and it is worth being clear
+about the order of trust:
+
+1. **An accelerometer on the moving mass** — what a printer's own calibration is, and what
+   the numbers already in `[input_shaper]` usually came from.
+2. **The phone on the base** — a proxy. It found 88–90 Hz against a calibrated 89.8, which
+   makes it good for confirming a value and for noticing that one has gone stale after a
+   mechanical change.
+3. **The phone on the toolhead or the bed** — worse than useless, because it measures the
+   machine plus a phone.
+
 ## Input shaping
 
 Two numbers per axis - a shaper type and the frequency it is tuned to - decide the pattern
