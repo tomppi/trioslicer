@@ -1,5 +1,7 @@
 package com.tomppi.enderslicer.ui.klipper
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -22,7 +24,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.BuildConfig
+import com.tomppi.enderslicer.printer.KlipperImportResult
 import com.tomppi.enderslicer.printer.KlipperMcu
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
@@ -50,8 +54,37 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
     var showObjects by remember { mutableStateOf(false) }
     var configDiffers by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf(false) }
+    var importResult by remember { mutableStateOf<KlipperImportResult?>(null) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    val configSource by viewModel.configSource.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { configDiffers = viewModel.configDiffersFromShipped() }
+
+    // More than one file, because a printer.cfg that includes others needs them beside
+    // it: they are written into the same directory, where klippy resolves them from.
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            viewModel.importConfig(uris)
+                .onSuccess { result ->
+                    importResult = result
+                    config = viewModel.readConfig()
+                    configDiffers = viewModel.configDiffersFromShipped()
+                    // klippy reads its configuration once, at the start: a new one means
+                    // a new host, which is also what applies the paths this app wrote in.
+                    viewModel.restartHost()
+                }
+                .onFailure { error -> importError = error.message ?: "the import failed" }
+        }
+    }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch { viewModel.exportConfig(uri) }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -150,25 +183,56 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             }
         }
 
+        if (!configSource.imported) {
+            KlipperCard(title = "Klipper setup", subtitle = "What this app is driving") {
+                KlipperNote(
+                    "This app runs Klipper itself, so it has to be told what printer it is " +
+                        "driving. It ships with the configuration of the machine it was " +
+                        "developed on - an Ender-3 V2 with a CR-Touch and an Orbiter extruder.",
+                )
+                Spacer(Modifier.height(8.dp))
+                KlipperNote(
+                    "If your printer is a different machine, import its printer.cfg before " +
+                        "printing. The app points the serial port and the file list at itself " +
+                        "and leaves everything else - pins, steps, probe offsets, macros - " +
+                        "exactly as your file has it. If it includes other files, choose them " +
+                        "in the same step.",
+                )
+                Spacer(Modifier.height(8.dp))
+                KlipperNote(
+                    "Once you import a configuration it is yours: this app will not change " +
+                        "it again, not even when it ships a fix to its own. You can export it " +
+                        "or put the app's configuration back from this screen whenever you " +
+                        "want.",
+                )
+                Spacer(Modifier.height(8.dp))
+                KlipperButtons {
+                    KlipperButton("Import a configuration") { importLauncher.launch(arrayOf("*/*")) }
+                    KlipperButton("Export the running one") { exportLauncher.launch("printer.cfg") }
+                }
+            }
+        }
+
         TextFileCard(
             title = "Configuration",
-            subtitle = "printer.cfg, as the host is running it",
+            subtitle = configSource.describe(),
             text = config,
             onLoad = { scope.launch { config = viewModel.readConfig() } },
             onHide = { config = null },
             actions = {
-                // Said rather than changed silently: the file is the user's, and what
-                // the app ships is only a starting point for it.
                 if (configDiffers) {
                     KlipperNote(
                         "This is not the configuration this version of the app ships. " +
-                            "Restoring it keeps the values klippy has saved.",
+                            "Restoring it keeps the values klippy has saved, and replaces " +
+                            "everything else in the file.",
                         color = MaterialTheme.colorScheme.error,
                     )
                     Spacer(Modifier.height(8.dp))
-                    KlipperButtons {
-                        KlipperButton("Restore the shipped default") { confirmRestore = true }
-                    }
+                }
+                KlipperButtons {
+                    KlipperButton("Import") { importLauncher.launch(arrayOf("*/*")) }
+                    KlipperButton("Export") { exportLauncher.launch("printer.cfg") }
+                    KlipperButton("Restore the app's configuration") { confirmRestore = true }
                 }
             },
         )
@@ -206,11 +270,24 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
         }
     }
 
+    importResult?.let { result ->
+        ImportedDialog(result) { importResult = null }
+    }
+    importError?.let { message ->
+        KlipperConfirmDialog(
+            title = "That configuration could not be imported",
+            text = message + "\n\nThe configuration that was running is untouched.",
+            confirmLabel = "Close",
+            onConfirm = { importError = null },
+            onDismiss = { importError = null },
+        )
+    }
     if (confirmRestore) {
         KlipperConfirmDialog(
-            title = "Restore the shipped configuration?",
-            text = "The app's own printer.cfg replaces this one. A PID calibration, a Z " +
-                "offset and saved mesh profiles are kept; anything edited by hand is not. " +
+            title = "Restore the configuration this app ships?",
+            text = "The app's own printer.cfg replaces the one that is running. A PID " +
+                "calibration, a Z offset and saved mesh profiles are kept, and everything " +
+                "else in the file is replaced - including a configuration you imported. " +
                 "The host restarts to apply it.",
             confirmLabel = "Restore",
             destructive = true,
@@ -236,6 +313,40 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             onDismiss = { confirmRestart = false },
         )
     }
+}
+
+/**
+ * What happened to the configuration that was imported.
+ *
+ * Told rather than assumed: an imported file is edited on the way in - the serial port,
+ * the file list - and what it asks for that this device cannot supply is the difference
+ * between a button that does not work and a user knowing why.
+ */
+@Composable
+private fun ImportedDialog(result: KlipperImportResult, onDismiss: () -> Unit) {
+    KlipperConfirmDialog(
+        title = result.fileName.ifBlank { "Configuration" } + " is now running",
+        text = buildString {
+            if (result.companions.isNotEmpty()) {
+                append("Also imported: ")
+                append(result.companions.joinToString(", "))
+                append("\n\n")
+            }
+            if (result.changes.isNotEmpty()) {
+                append("Changed so this device can run it:\n")
+                result.changes.forEach { append("• ").append(it).append('\n') }
+                append('\n')
+            }
+            if (result.warnings.isNotEmpty()) {
+                append("Worth knowing:\n")
+                result.warnings.forEach { append("• ").append(it).append('\n') }
+            }
+            append("The host has been restarted.")
+        },
+        confirmLabel = "Close",
+        onConfirm = onDismiss,
+        onDismiss = onDismiss,
+    )
 }
 
 /** One board, with the timing klippy measures against it. */

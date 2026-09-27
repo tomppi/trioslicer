@@ -87,6 +87,38 @@ empty:
   is the only moment those numbers exist: klippy's `print_stats` describes the print that
   is happening and then the next one.
 
+## Bringing your own printer
+
+The app runs Klipper itself, so it has to be told what printer it is driving. It ships
+with the configuration of the machine it was developed on - an Ender-3 V2 with a
+CR-Touch and an Orbiter extruder - and that is what a fresh install uses.
+
+For any other printer, import its `printer.cfg` from **Machine -> Klipper setup**. Choose
+the file, and any files it includes, in one go. Everything in it that describes the
+printer is left exactly as written - pins, kinematics, rotation distances and directions,
+probe offsets, bed size, limits, macros, and the values klippy had already saved into it.
+The app changes only the parts that are the phone rather than the printer:
+
+| What | Why |
+| --- | --- |
+| `[mcu] serial:` | there is no `/dev/serial/by-id` on a phone; klippy is given the pty the app bridges the printer through |
+| `[virtual_sdcard] path:` | the files this app slices are in its own storage, and that is where the printer reads them from (added if the file has no such section) |
+| `restart_method` | it describes a real serial port, and klippy refuses the option on a pipe connection |
+| `[mcu <name>]` sections | there is no second board for the app to reach, and klippy will not start while a section names one |
+| an `[include ...]` that was not imported | commented out and named, rather than left to stop the printer from starting |
+
+Each change is listed when the import finishes, along with anything the file asks for
+that this device cannot supply - a missing `[pause_resume]`, no `PAUSE` macro, a board
+reached over CAN - because a button that silently does nothing is worse than one that is
+not there.
+
+**Once a configuration is imported it belongs to the user.** The app will not rewrite it
+again, not even when it ships a fix to its own default: the app's own configuration is
+refreshed on an update, and an imported one never is. The screen says which of the two is
+running. **Export** writes the running file out where the user asks for it, and
+**Restore the app's configuration** puts the shipped default back, keeping klippy's saved
+values - the way back from an import the printer will not start with.
+
 ## The configuration file, and what survives a restart
 
 `PID_CALIBRATE`, `BED_MESH_CALIBRATE` and a Z offset all end in values that live in

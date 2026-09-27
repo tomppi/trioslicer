@@ -1,8 +1,11 @@
 package com.tomppi.enderslicer.printer
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -60,6 +63,11 @@ class KlipperPrinterRepository(
      */
     val commands: StateFlow<Map<String, String>> = _commands.asStateFlow()
 
+    private val _configSource = MutableStateFlow(KlipperConfigSource())
+
+    /** Where the running configuration came from: this app, or the person using it. */
+    val configSource: StateFlow<KlipperConfigSource> = _configSource.asStateFlow()
+
     private val temperatureLog = KlipperTemperatureLog()
     private val _temperatures = MutableStateFlow<List<KlipperTemperatureSample>>(emptyList())
 
@@ -87,6 +95,7 @@ class KlipperPrinterRepository(
         // Read once, at construction: it is a few kilobytes of JSON, and the screen
         // that shows it should not have to wait for a disk read to render.
         _history.value = printHistory.load()
+        _configSource.value = readConfigSource()
     }
 
     /** Start watching, and keep watching across restarts of the host. Idempotent. */
@@ -106,6 +115,10 @@ class KlipperPrinterRepository(
     private suspend fun watch() {
         while (currentCoroutineContext().isActive) {
             try {
+                // Before watching: a configuration this app seeded and has since improved
+                // is the app's to keep current, and klippy picks it up at its next start
+                // rather than being rewritten under a running host.
+                refreshShippedConfigIfUntouched()
                 follow()
             } catch (e: Exception) {
                 client?.close()
@@ -490,20 +503,33 @@ class KlipperPrinterRepository(
     }
 
     /** The directory [virtual_sdcard] reads, created if it is not there yet. */
-    private fun gcodeDirectory(): File =
-        File(application.filesDir, KlipperPrint.GCODE_DIR).apply { mkdirs() }
+    private fun gcodeDirectory(): File = KlipperHostFiles.gcodes(application.filesDir).apply { mkdirs() }
 
     /**
      * The configuration the host is running with, as text.
      *
      * Read from the file rather than asked of klippy, which publishes the settings it
-     * parsed and not the file they came from - comments and all, which is what a user
+     * parsed and not the file they came from - comments and all, which is what a person
      * editing it is looking at.
      */
     suspend fun readConfigFile(): String? = withContext(Dispatchers.IO) {
         runCatching {
-            File(application.filesDir, CONFIG_PATH).takeIf { it.isFile }?.readText()
+            KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
         }.getOrNull()
+    }
+
+    /** Where the running configuration came from, as the service left it. */
+    private fun readConfigSource(): KlipperConfigSource = runCatching {
+        KlipperHostFiles.source(application.filesDir).takeIf { it.isFile }?.readText()
+            ?.let(KlipperConfigSource::from) ?: KlipperConfigSource.SHIPPED
+    }.getOrDefault(KlipperConfigSource.SHIPPED)
+
+    private fun writeConfigSource(source: KlipperConfigSource) {
+        runCatching {
+            KlipperHostFiles.directory(application.filesDir).mkdirs()
+            KlipperHostFiles.source(application.filesDir).writeText(source.toText())
+        }
+        _configSource.value = source
     }
 
     /**
@@ -511,37 +537,149 @@ class KlipperPrinterRepository(
      *
      * Compared without klippy's own saved block, which is meant to differ: what is being
      * asked is whether the hand-written part - pins, kinematics, limits - has moved on
-     * from the version the app carries, which is what happens when an update changes it.
+     * from the version the app carries. It is what the Configuration card shows a restore
+     * button for, and it stays true for as long as a configuration somebody brought is
+     * the one running.
      */
     suspend fun configDiffersFromShipped(): Boolean = withContext(Dispatchers.IO) {
         runCatching {
-            val running = File(application.filesDir, CONFIG_PATH).takeIf { it.isFile }
+            val running = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }
                 ?.readText() ?: return@runCatching false
-            val shipped = File(application.filesDir, CONFIG_DEFAULT_PATH).takeIf { it.isFile }
+            val shipped = KlipperHostFiles.shipped(application.filesDir).takeIf { it.isFile }
                 ?.readText() ?: return@runCatching false
             KlipperConfigFile.differsFromShipped(running, shipped)
         }.getOrDefault(false)
     }
 
     /**
-     * Put the shipped configuration back, keeping what the printer has already saved.
+     * Bring a configuration of the user's own: their printer, as their printer is set up.
      *
-     * The way out of a configuration that has been edited into something the printer will
-     * not start with - and the way an update's changes reach a printer whose file was
-     * written before them. The saved block is carried over, because losing a PID
-     * calibration or a mesh profile to a button that said "restore the default" would be
-     * the opposite of what it promised.
+     * The app's own parts of it are put in on the way - the serial port it can actually
+     * open, the gcode directory it actually writes - because a configuration written for
+     * a host names paths that do not exist on a phone, and dropping it in unchanged looks
+     * exactly like a printer that is not there.
+     *
+     * What the file already had saved comes with it, so importing the configuration that
+     * has been running a printer does not cost a PID calibration or a mesh profile. The
+     * file that was running before is kept beside it, and the app records that the
+     * configuration is now the user's: it will not be rewritten again.
      */
-    suspend fun restoreShippedConfig(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun importConfig(uris: List<Uri>): Result<KlipperImportResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val config = File(application.filesDir, CONFIG_PATH)
-            val shipped = File(application.filesDir, CONFIG_DEFAULT_PATH)
-            if (!shipped.isFile) return@runCatching false
-            val existing = config.takeIf { it.isFile }?.readText().orEmpty()
-            config.writeText(KlipperConfigFile.withSavedValues(shipped.readText(), existing))
+            if (uris.isEmpty()) throw IllegalArgumentException("no file was chosen")
+            val files = uris.map { uri ->
+                val name = fileNameOf(uri)
+                name to (readText(uri) ?: throw IllegalStateException("could not read $name"))
+            }
+            // printer.cfg is the configuration; anything else came along to satisfy its
+            // includes and is written beside it, where klippy resolves them from.
+            val mainIndex = files.indexOfFirst { it.first.equals(KlipperHostFiles.CONFIG, true) }
+                .takeIf { it >= 0 } ?: 0
+            val main = files[mainIndex]
+            val companions = files.filterIndexed { index, _ -> index != mainIndex }
+
+            val directory = KlipperHostFiles.directory(application.filesDir).apply { mkdirs() }
+            companions.forEach { (name, text) -> File(directory, safeFileName(name)).writeText(text) }
+
+            val rewrite = KlipperConfigFile.forDevice(
+                text = main.second,
+                serialPath = KlipperHostFiles.pty(application.filesDir).absolutePath,
+                gcodeDirectory = gcodeDirectory().absolutePath,
+                availableFiles = companions.map { it.first }.toSet(),
+            )
+            val config = KlipperHostFiles.config(application.filesDir)
+            if (config.isFile) config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+            config.writeText(KlipperConfigFile.withSavedValues(rewrite.text, main.second))
+            writeConfigSource(
+                KlipperConfigSource(imported = true, name = main.first, atMillis = System.currentTimeMillis()),
+            )
+            KlipperImportResult(
+                fileName = main.first,
+                changes = rewrite.changes,
+                warnings = rewrite.warnings,
+                companions = companions.map { it.first },
+            )
+        }.onFailure { error -> _state.update { it.copy(error = error.message) } }
+    }
+
+    /** Write the running configuration out where the user asked for it. */
+    suspend fun exportConfig(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val text = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }
+                ?.readText() ?: return@runCatching false
+            application.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+                writer.write(text)
+            } ?: return@runCatching false
             true
         }.getOrDefault(false)
     }
+
+    /**
+     * Put the shipped configuration back, keeping what the printer has already saved.
+     *
+     * The way an update's fixes reach a printer whose configuration was seeded before
+     * them, and the way back from a configuration - imported or edited - that the printer
+     * will not start with. The saved block is carried over, because losing a PID
+     * calibration or a mesh profile to a button that promised a way back would be the
+     * opposite of what it promised. It does not change where the configuration came from:
+     * a user who brought their own and restored the app's has the app's again.
+     */
+    suspend fun restoreShippedConfig(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val config = KlipperHostFiles.config(application.filesDir)
+            val shipped = KlipperHostFiles.shipped(application.filesDir)
+            if (!shipped.isFile) return@runCatching false
+            val existing = config.takeIf { it.isFile }?.readText().orEmpty()
+            if (config.isFile) config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+            config.writeText(KlipperConfigFile.withSavedValues(shipped.readText(), existing))
+            writeConfigSource(KlipperConfigSource.SHIPPED)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Keep a configuration this app seeded current with the one it ships.
+     *
+     * Runs once per start, and only while the configuration is still the app's own: a
+     * configuration somebody brought is theirs, and this is the difference between an app
+     * that fixes its own defaults and one that quietly edits a user's printer. The saved
+     * block comes across, so this cannot cost a calibration.
+     */
+    private suspend fun refreshShippedConfigIfUntouched() {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (_configSource.value.imported) return@runCatching
+                val config = KlipperHostFiles.config(application.filesDir)
+                if (!config.isFile) return@runCatching
+                val shipped = KlipperHostFiles.shipped(application.filesDir).takeIf { it.isFile }
+                    ?: return@runCatching
+                val running = config.readText()
+                if (!KlipperConfigFile.differsFromShipped(running, shipped.readText())) return@runCatching
+                config.writeText(KlipperConfigFile.withSavedValues(shipped.readText(), running))
+                Log.i(TAG, "refreshed the printer configuration this app seeds")
+            }
+        }
+    }
+
+    /** The name a file has on the device it was picked from. */
+    private fun fileNameOf(uri: Uri): String = runCatching {
+        application.contentResolver
+            .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+        ?: uri.lastPathSegment?.substringAfterLast('/').orEmpty()
+
+    /** A file name that can only name a file: what is picked is not always named nicely. */
+    private fun safeFileName(name: String): String =
+        name.substringAfterLast('/').substringAfterLast('\\').filter { character ->
+            character.isLetterOrDigit() || character in "-_. "
+        }.takeIf { it.isNotBlank() } ?: "include.cfg"
+
+    private fun readText(uri: Uri): String? = runCatching {
+        application.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+    }.getOrNull()
 
     /** The last [lines] lines of klippy's own log, oldest first. */
     suspend fun readHostLog(lines: Int = LOG_LINES): String? = withContext(Dispatchers.IO) {
@@ -580,11 +718,6 @@ class KlipperPrinterRepository(
         /** Where the prints this app has run are written down. */
         const val HISTORY_FILE = "print-history.json"
 
-        /** The printer's own configuration, which klippy also writes saved values to. */
-        const val CONFIG_PATH = "klipper-host/printer.cfg"
-
-        /** The app's shipped configuration, resolved the same way, for comparison. */
-        const val CONFIG_DEFAULT_PATH = "klipper-host/printer.cfg.default"
 
         /** How much of klippy's log the Machine screen shows. */
         const val LOG_LINES = 200

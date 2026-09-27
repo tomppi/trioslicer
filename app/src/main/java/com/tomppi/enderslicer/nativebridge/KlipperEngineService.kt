@@ -17,6 +17,7 @@ import android.util.Log
 import com.tomppi.enderslicer.MainActivity
 import com.tomppi.enderslicer.printer.KlipperClient
 import com.tomppi.enderslicer.printer.KlipperConfigFile
+import com.tomppi.enderslicer.printer.KlipperHostFiles
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperPty
@@ -343,7 +344,7 @@ class KlipperEngineService : Service() {
      * either way, and what the config file holds is a name that does not move.
      */
     private fun serialPath(slavePath: String): String {
-        val link = File(filesDir, PTY_LINK_NAME)
+        val link = KlipperHostFiles.pty(filesDir)
         // Unconditionally: the link is only ever a name for this run's pty.
         if (!link.delete() && link.exists()) {
             Log.w(TAG, "could not replace ${link.absolutePath}")
@@ -366,16 +367,16 @@ class KlipperEngineService : Service() {
      * without losing what the printer has learned.
      */
     private fun printerConfig(serialPath: String): File {
-        val directory = File(filesDir, CONFIG_DIRECTORY).apply { mkdirs() }
+        val directory = KlipperHostFiles.directory(filesDir).apply { mkdirs() }
         // The same directory constant the print path copies files into: the config's
         // virtual_sdcard and the code that hands it a file have to agree, and a second
         // literal here is how they stop agreeing.
-        val gcodes = File(filesDir, KlipperPrint.GCODE_DIR).apply { mkdirs() }
+        val gcodes = KlipperHostFiles.gcodes(filesDir).apply { mkdirs() }
         val shipped = assets.open("klipper-host/printer.cfg")
             .bufferedReader().use { it.readText() }
         val resolved = KlipperConfigFile.resolve(shipped, serialPath, gcodes.absolutePath)
-        File(directory, CONFIG_DEFAULT_NAME).writeText(resolved)
-        val config = File(directory, CONFIG_NAME)
+        File(directory, KlipperHostFiles.SHIPPED).writeText(resolved)
+        val config = File(directory, KlipperHostFiles.CONFIG)
         if (!config.isFile || config.readText().isBlank()) {
             config.writeText(resolved)
             Log.i(TAG, "seeded ${config.absolutePath}")
@@ -591,13 +592,6 @@ class KlipperEngineService : Service() {
         private const val EXTRA_ACTION = "klipper_action"
         private const val ACTION_RESTART = "restart"
 
-        /** The name the printer's pty is given, which is what the config file holds. */
-        private const val PTY_LINK_NAME = "printer-pty"
-
-        /** Where the printer's configuration lives: outside the extracted payload. */
-        private const val CONFIG_DIRECTORY = "klipper-host"
-        private const val CONFIG_NAME = "printer.cfg"
-        private const val CONFIG_DEFAULT_NAME = "printer.cfg.default"
 
         /** How long to wait for klippy to create its API socket. */
         private const val API_WAIT_MS = 30_000L

@@ -12,8 +12,19 @@ or to set anything. It has ten screens now, and they are the part to be careful 
 the host itself has printed, but a long unattended print has not yet finished on it,
 and the two calibrations below are still outstanding.
 
-### Added
+- **The printer's own configuration can be imported.** The app ships with the
+  configuration of the machine it was developed on, which is the right starting point and
+  the wrong one for any other printer. Machine -> Klipper setup takes a `printer.cfg` -
+  and any files it includes - and puts in only the parts that are the phone rather than
+  the printer: the serial port it can actually open, the file list it actually writes.
+  Pins, steps, directions, probe offsets, macros and saved values are carried through
+  untouched, and each change is listed when the import finishes. Once a configuration is
+  imported it belongs to its owner: the app will not rewrite it again, not even to apply a
+  fix to its own, and the screen says which of the two is running.
+- **Export the configuration**, so a calibration can be taken back to a host install or
+  sent on when something is wrong.
 
+### Added
 - **Ten screens for the printer, inside the app.** Dashboard, Temperatures, Move,
   Extrude, Macros, Files, Console, Mesh, History, Machine - the tabs someone who has
   used Mainsail already knows where to find, arranged for a phone. The app is its own

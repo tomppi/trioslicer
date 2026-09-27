@@ -87,4 +87,122 @@ class KlipperConfigFileTest {
         val shippedResolved = KlipperConfigFile.resolve(shipped, "/data/pty", "/data/gcodes")
         assertTrue(KlipperConfigFile.differsFromShipped(running, shippedResolved))
     }
+
+    @Test
+    fun aHostConfigurationIsMadeToRunOnThisDevice() {
+        val host = """
+            [mcu]
+            serial: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+            restart_method: command
+
+            [virtual_sdcard]
+            path: /home/pi/printer_data/gcodes
+
+            [extruder]
+            rotation_distance: 4.69
+            dir_pin: !PB3
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(host, "/data/pty", "/data/gcodes")
+        assertTrue(rewrite.text.contains("serial: /data/pty"))
+        assertTrue(rewrite.text.contains("path: /data/gcodes"))
+        // klippy rejects this option outright for the pty connection the app gives it.
+        assertFalse(rewrite.text.contains("restart_method"))
+        // And the printer's own settings are none of the app's business.
+        assertTrue(rewrite.text.contains("rotation_distance: 4.69"))
+        assertTrue(rewrite.text.contains("dir_pin: !PB3"))
+        assertEquals(3, rewrite.changes.size)
+        assertTrue(rewrite.changes.any { it.contains("restart_method") })
+    }
+
+    @Test
+    fun aConfigurationWithNoVirtualSdCardGetsOne() {
+        val rewrite = KlipperConfigFile.forDevice("[mcu]\nserial: /dev/ttyUSB0\n", "/data/pty", "/data/gcodes")
+        assertTrue(rewrite.text.contains("[virtual_sdcard]"))
+        assertTrue(rewrite.text.contains("path: /data/gcodes"))
+        assertTrue(rewrite.changes.any { it.contains("[virtual_sdcard]") })
+    }
+
+    @Test
+    fun aPathInAnotherSectionIsNotTheVirtualSdCard() {
+        val config = """
+            [mcu]
+            serial: /dev/ttyUSB0
+
+            [virtual_sdcard]
+            path: /home/pi/gcodes
+
+            [save_variables]
+            filename: /home/pi/variables.cfg
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(config, "/data/pty", "/data/gcodes")
+        assertTrue(rewrite.text.contains("path: /data/gcodes"))
+        // Only the option inside [virtual_sdcard]: another section's path is its own.
+        assertTrue(rewrite.text.contains("filename: /home/pi/variables.cfg"))
+    }
+
+    @Test
+    fun aSecondMicroControllerIsRemovedAndSaid() {
+        val config = """
+            [mcu]
+            serial: /dev/ttyUSB0
+
+            [mcu rpi]
+            serial: /tmp/klipper_host_mcu
+
+            [fan]
+            pin: PA0
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(config, "/data/pty", "/data/gcodes")
+        assertFalse("the host board section should be gone", rewrite.text.contains("[mcu rpi]"))
+        assertFalse(rewrite.text.contains("klipper_host_mcu"))
+        // What comes after it is not: removing a section must not remove the file.
+        assertTrue(rewrite.text.contains("[fan]"))
+        assertTrue(rewrite.text.contains("pin: PA0"))
+        assertTrue(rewrite.changes.any { it.contains("[mcu rpi]") })
+        assertTrue(rewrite.text.contains("serial: /data/pty"))
+    }
+
+    @Test
+    fun anIncludeThatWasNotBroughtIsCommentedOutAndNamed() {
+        val config = """
+            [include mainsail.cfg]
+            [include macros/*.cfg]
+            [mcu]
+            serial: /dev/ttyUSB0
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(
+            config, "/data/pty", "/data/gcodes", availableFiles = setOf("MAINSAIL.CFG"),
+        )
+        // One came along, so it stays; the other would stop klippy from starting.
+        assertTrue(rewrite.text.contains("[include mainsail.cfg]"))
+        assertTrue(rewrite.text.contains("# [include macros/*.cfg]"))
+        assertEquals(listOf("mainsail.cfg", "macros/*.cfg"), KlipperConfigFile.includesOf(config))
+        assertTrue(rewrite.warnings.any { it.contains("macros/*.cfg") })
+    }
+
+    @Test
+    fun whatThisDeviceCannotSupplyIsNamed() {
+        val bare = "[mcu]\nserial: /dev/ttyUSB0\n"
+        val rewrite = KlipperConfigFile.forDevice(bare, "/data/pty", "/data/gcodes")
+        val warnings = rewrite.warnings.joinToString("\n")
+        assertTrue(warnings.contains("[pause_resume]"))
+        assertTrue(warnings.contains("[exclude_object]"))
+        assertTrue(warnings.contains("PAUSE"))
+    }
+
+    @Test
+    fun aCanBusConfigurationIsRefusedWithTheReason() {
+        val canbus = "[mcu]\ncanbus_uuid: 11aa22bb33cc\n"
+        val rewrite = KlipperConfigFile.forDevice(canbus, "/data/pty", "/data/gcodes")
+        assertTrue(rewrite.warnings.any { it.contains("CAN") })
+    }
+
+    @Test
+    fun whateverWasSavedIsKept() {
+        val brought = "[mcu]\nserial: /dev/ttyUSB0\n" + "\n" + saved + "\n"
+        val rewrite = KlipperConfigFile.forDevice(brought, "/data/pty", "/data/gcodes")
+        // The saved block is klippy's; it is dropped here because the caller puts the
+        // printer's own saved values back over whatever it writes.
+        assertFalse(rewrite.text.contains(KlipperConfigFile.SAVED_MARKER))
+    }
 }

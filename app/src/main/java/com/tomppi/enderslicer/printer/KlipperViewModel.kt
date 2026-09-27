@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.printer
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
@@ -32,6 +33,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
 
     /** One temperature reading a second for the last five minutes. */
     val temperatures: StateFlow<List<KlipperTemperatureSample>> = repository.temperatures
+
+    /** Where the running configuration came from: this app, or the person using it. */
+    val configSource: StateFlow<KlipperConfigSource> = repository.configSource
 
     /** Prints this app has run, newest first. */
     val history: StateFlow<List<KlipperPrintRecord>> = repository.history
@@ -107,6 +111,17 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
 
     /** The configuration the host is running with, for the Machine screen. */
     suspend fun readConfig(): String? = repository.readConfigFile()
+
+    /**
+     * Bring a printer.cfg of the user's own: their printer, as their printer is set up.
+     *
+     * More than one file may be chosen, because a configuration that includes others
+     * needs them beside it - the app writes them where klippy will look for them.
+     */
+    suspend fun importConfig(uris: List<Uri>): Result<KlipperImportResult> = repository.importConfig(uris)
+
+    /** Write the running configuration out where the user asked for it. */
+    suspend fun exportConfig(uri: Uri): Boolean = repository.exportConfig(uri)
 
     /** True when the running configuration is not the one this app ships. */
     suspend fun configDiffersFromShipped(): Boolean = repository.configDiffersFromShipped()
