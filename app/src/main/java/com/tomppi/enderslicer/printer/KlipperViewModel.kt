@@ -6,12 +6,15 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -119,12 +122,61 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
      * phone's clock and the printer's have nothing to do with each other, and a free
      * measurement must not need them to.
      */
-    suspend fun measureResonances(
+    private val _measurement = MutableStateFlow<KlipperMeasurementState>(KlipperMeasurementState.Idle)
+
+    /**
+     * What the measurement is doing, held here rather than on the screen.
+     *
+     * A sweep takes a minute. A screen that started it would cancel it by being left, and a
+     * screen that kept the result would lose it the same way - so the run belongs to the view
+     * model, and the Shaping screen only shows it.
+     */
+    val measurement: StateFlow<KlipperMeasurementState> = _measurement.asStateFlow()
+
+    /**
+     * Measure one axis with the phone's own accelerometer, in the background.
+     *
+     * The recording starts before the sweep is asked for and runs past its end, because the
+     * analysis works out when the machine started moving from the recording itself - the
+     * phone's clock and the printer's have nothing to do with each other, and a measurement
+     * must not need them to.
+     */
+    fun measureResonances(axis: String, freqStart: Double, freqEnd: Double, hzPerSec: Double) {
+        if (_measurement.value is KlipperMeasurementState.Measuring) return
+        val total = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec) + RECORDING_MARGIN
+        _measurement.value = KlipperMeasurementState.Measuring(axis.uppercase(), 0.0, total)
+        viewModelScope.launch {
+            // A clock the user can see, because the alternative is a button that appears to do
+            // nothing for the better part of a minute.
+            val clock = launch {
+                while (isActive) {
+                    delay(250)
+                    val current = _measurement.value
+                    if (current is KlipperMeasurementState.Measuring) {
+                        _measurement.value = current.copy(elapsedSeconds = current.elapsedSeconds + 0.25)
+                    }
+                }
+            }
+            val result = runCatching { measureAxis(axis, freqStart, freqEnd, hzPerSec) }
+            clock.cancel()
+            _measurement.value = result.fold(
+                onSuccess = { KlipperMeasurementState.Done(it) },
+                onFailure = { error ->
+                    KlipperMeasurementState.Failed(
+                        axis.uppercase(),
+                        error.message ?: "the measurement failed",
+                    )
+                },
+            )
+        }
+    }
+
+    private suspend fun measureAxis(
         axis: String,
         freqStart: Double,
         freqEnd: Double,
         hzPerSec: Double,
-    ): Result<KlipperResonanceMeasurement> = withContext(Dispatchers.IO) {
+    ): KlipperResonanceMeasurement = withContext(Dispatchers.IO) {
         val accelerometer = PhoneAccelerometer(getApplication())
         val duration = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec)
         val recording = coroutineScope {
@@ -134,16 +186,12 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             delay(700)
             repository.playResonances(axis, freqStart, freqEnd, hzPerSec)
             recorder.await()
-        } ?: return@withContext Result.failure(
-            IllegalStateException("this phone would not give its accelerometer"),
-        )
+        } ?: throw IllegalStateException("this phone would not give its accelerometer")
         val clean = ResonanceAnalysis.detrend(recording.samples, recording.sampleRateHz)
         val start = ResonanceAnalysis.motionStart(clean, recording.sampleRateHz)
-            ?: return@withContext Result.failure(
-                IllegalStateException(
-                    "the machine was not heard moving: check it is homed, and that the axis " +
-                        "chosen is the one that moved",
-                ),
+            ?: throw IllegalStateException(
+                "the machine was not heard moving: check it is homed, and that the axis " +
+                    "chosen is the one that moved",
             )
         val movedAt = start / recording.sampleRateHz
         val curve = ResonanceAnalysis.response(
@@ -155,20 +203,21 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             hzPerSec = hzPerSec,
         )
         if (curve.magnitudes.isEmpty()) {
-            return@withContext Result.failure(
-                IllegalStateException("the sweep was too short to measure"),
-            )
+            throw IllegalStateException("the sweep was too short to measure")
         }
-        Result.success(
-            KlipperResonanceMeasurement(
-                axis = axis.uppercase(),
-                sensorName = recording.sensorName,
-                sampleRateHz = recording.sampleRateHz,
-                movedAt = movedAt,
-                curve = curve,
-                peaks = curve.peaks(),
-            ),
+        KlipperResonanceMeasurement(
+            axis = axis.uppercase(),
+            sensorName = recording.sensorName,
+            sampleRateHz = recording.sampleRateHz,
+            movedAt = movedAt,
+            curve = curve,
+            peaks = curve.peaks(),
         )
+    }
+
+    private companion object {
+        /** Seconds to record before the sweep, so there is a quiet stretch to compare with. */
+        const val RECORDING_MARGIN = 3.0
     }
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         repository.saveShapers(settings)

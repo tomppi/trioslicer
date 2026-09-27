@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -19,7 +21,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.printer.KlipperConfigFile
+import com.tomppi.enderslicer.printer.KlipperMeasurementState
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperResonanceMeasurement
 import com.tomppi.enderslicer.printer.KlipperShaper
@@ -51,14 +55,20 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     var y by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "y" })) }
     var confirmSave by remember { mutableStateOf(false) }
     var measureAxis by remember { mutableStateOf("x") }
-    var measuring by remember { mutableStateOf(false) }
-    var measurement by remember { mutableStateOf<KlipperResonanceMeasurement?>(null) }
-    var measureError by remember { mutableStateOf<String?>(null) }
+    // From the view model rather than from here: a sweep takes a minute, and a result held by
+    // the screen is a result that disappears when the screen does.
+    val measurementState by viewModel.measurement.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        MeasurementCard(measurementState) { frequency ->
+            val axis = (measurementState as? KlipperMeasurementState.Done)?.measurement?.axis
+            val text = "%.1f".format(frequency)
+            if (axis == "Y") y = y.copy(frequencyText = text) else x = x.copy(frequencyText = text)
+        }
+
         KlipperCard(title = "Input shaping", subtitle = "Why the printer is set up this way") {
             KlipperNote(
                 "A move that stops at a corner rings, and the ringing prints as ripples beside " +
@@ -139,43 +149,28 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             Spacer(Modifier.height(4.dp))
             KlipperButtons {
                 KlipperButton(
-                    text = if (measuring) "Measuring…" else "Measure axis " + measureAxis.uppercase(),
-                    enabled = state.isReady && state.isHomed && !measuring,
+                    text = if (measurementState is KlipperMeasurementState.Measuring) {
+                        "Measuring…"
+                    } else {
+                        "Measure axis " + measureAxis.uppercase()
+                    },
+                    enabled = state.isReady &&
+                        state.isHomed &&
+                        measurementState !is KlipperMeasurementState.Measuring,
                     onClick = {
-                        scope.launch {
-                            measuring = true
-                            measurement = null
-                            measureError = null
-                            viewModel
-                                .measureResonances(measureAxis, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_HZ_PER_SEC)
-                                .onSuccess { result -> measurement = result }
-                                .onFailure { error -> measureError = error.message }
-                            measuring = false
-                        }
+                        // The run belongs to the view model: leaving this screen does not
+                        // cancel it, and coming back finds it where it got to.
+                        viewModel.measureResonances(
+                            measureAxis, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_HZ_PER_SEC,
+                        )
                     },
                 )
             }
-            if (measuring) {
-                Spacer(Modifier.height(8.dp))
-                KlipperNote(
-                    "Recording for about " + SWEEP_SECONDS + " seconds. Leave the phone " +
-                        "where it is: the sweep starts slow and ends as a buzz.",
-                )
-            }
-            measureError?.let { message ->
-                Spacer(Modifier.height(8.dp))
-                KlipperNote(message, color = MaterialTheme.colorScheme.error)
-            }
-            measurement?.let { result ->
-                MeasurementResult(result, onUse = { frequency ->
-                    val text = "%.1f".format(frequency)
-                    if (result.axis == "Y") {
-                        y = y.copy(frequencyText = text)
-                    } else {
-                        x = x.copy(frequencyText = text)
-                    }
-                })
-            }
+            KlipperNote(
+                "About " + SWEEP_SECONDS + " seconds, and the numbers appear at the top of " +
+                    "this screen when they are ready - they stay there, so you can go and " +
+                    "watch the sweep from another tab while it runs.",
+            )
         }
 
         if (!state.canMeasureResonances) {
@@ -281,17 +276,57 @@ private fun ShaperCard(
     }
 }
 
+/**
+ * The measurement, wherever it has got to.
+ *
+ * At the top of the screen rather than inside the card that starts it: the run takes a minute,
+ * and the answer to "where do the numbers appear" has to be somewhere a user will look without
+ * being told.
+ */
+@Composable
+private fun MeasurementCard(
+    state: KlipperMeasurementState,
+    onUse: (Double) -> Unit,
+) {
+    when (state) {
+        is KlipperMeasurementState.Idle -> Unit
+        is KlipperMeasurementState.Measuring -> KlipperCard(
+            title = "Measuring axis " + state.axis,
+            subtitle = "%.0f of %.0f seconds".format(state.elapsedSeconds, state.totalSeconds),
+        ) {
+            LinearProgressIndicator(
+                progress = { state.progress.toFloat() },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            KlipperNote(
+                "Leave the phone where it is: the sweep starts as a slow sway and ends as a " +
+                    "buzz, and the recording is what is being measured.",
+            )
+        }
+        is KlipperMeasurementState.Failed -> KlipperCard(
+            title = "Measuring axis " + state.axis,
+            subtitle = "Nothing was measured",
+        ) {
+            KlipperNote(state.message, color = MaterialTheme.colorScheme.error)
+        }
+        is KlipperMeasurementState.Done -> KlipperCard(
+            title = "What axis " + state.measurement.axis + " answered at",
+            subtitle = "Measured with " + state.measurement.sensorName,
+        ) {
+            MeasurementResult(state.measurement, onUse)
+        }
+    }
+}
+
 /** What the phone heard, and the frequencies it is offering to try. */
 @Composable
 private fun MeasurementResult(
     measurement: KlipperResonanceMeasurement,
     onUse: (Double) -> Unit,
 ) {
-    Spacer(Modifier.height(12.dp))
-    KlipperValue("Axis", measurement.axis)
-    KlipperValue("Sensor", measurement.sensorName)
     KlipperValue("Sampled at", "%.0f Hz".format(measurement.sampleRateHz))
-    KlipperValue("Machine heard at", "%.1f s".format(measurement.movedAt))
+    KlipperValue("Machine heard at", "%.1f s into the recording".format(measurement.movedAt))
     if (measurement.peaks.isEmpty()) {
         Spacer(Modifier.height(8.dp))
         KlipperNote(

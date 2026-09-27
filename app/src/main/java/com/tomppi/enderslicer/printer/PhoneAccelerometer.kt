@@ -92,6 +92,30 @@ class PhoneAccelerometer(private val context: Context) {
     }
 }
 
+/**
+ * What the measurement is doing, kept where the screen cannot lose it.
+ *
+ * A sweep takes about a minute, and a screen that holds the result in its own state loses it
+ * the moment the user looks at something else - or cancels the measurement outright, since a
+ * coroutine started by a tab dies with the tab. Both happened, so the state lives here and the
+ * run is started from the view model.
+ */
+sealed interface KlipperMeasurementState {
+    /** Nothing measured since the app started. */
+    data object Idle : KlipperMeasurementState
+
+    data class Measuring(
+        val axis: String,
+        val elapsedSeconds: Double,
+        val totalSeconds: Double,
+    ) : KlipperMeasurementState {
+        val progress: Double get() = if (totalSeconds > 0) (elapsedSeconds / totalSeconds).coerceIn(0.0, 1.0) else 0.0
+    }
+
+    data class Done(val measurement: KlipperResonanceMeasurement) : KlipperMeasurementState
+
+    data class Failed(val axis: String, val message: String) : KlipperMeasurementState
+}
 /** One axis, measured: the curve, the peaks, and what they were measured with. */
 data class KlipperResonanceMeasurement(
     val axis: String,
