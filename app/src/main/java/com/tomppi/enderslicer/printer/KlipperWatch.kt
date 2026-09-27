@@ -25,7 +25,7 @@ internal object KlipperWatch {
         // The machine and the print on it: the dashboard's own fields.
         "extruder", "heater_bed", "toolhead", "print_stats", "virtual_sdcard", "mcu",
         // Everything else a tab reads.
-        "gcode_move", "fan", "idle_timeout", "pause_resume", "display_status",
+        "gcode_move", "motion_report", "fan", "idle_timeout", "pause_resume", "display_status",
         "bed_mesh", "exclude_object", "configfile", "system_stats", "query_endstops",
         // The probe and the calibration that is waiting for a piece of paper under it.
         "probe", "manual_probe",

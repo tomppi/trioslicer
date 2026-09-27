@@ -32,7 +32,9 @@ import com.tomppi.enderslicer.printer.heaters
 import com.tomppi.enderslicer.printer.plateObjects
 import com.tomppi.enderslicer.printer.printFilamentUsed
 import com.tomppi.enderslicer.printer.printLayers
+import com.tomppi.enderslicer.printer.orDash
 import com.tomppi.enderslicer.printer.speedFactor
+import com.tomppi.enderslicer.printer.speeds
 import com.tomppi.enderslicer.printer.zOffset
 import com.tomppi.enderslicer.ui.formatPrintTime
 import kotlin.math.roundToInt
@@ -266,6 +268,48 @@ private fun JobCard(
     }
 }
 
+/**
+ * The speeds in play, under the slider that only asks for them.
+ *
+ * A percentage is not a speed, and the number wanted when a print looks slow is in
+ * millimetres per second: what the file asked for, what the override makes of it, and what the
+ * toolhead is measured to be doing. The limits sit underneath, because they are the reason the
+ * third is often below the second - a printer at 200% stops getting faster once its own
+ * max_velocity is reached.
+ */
+@Composable
+private fun SpeedReadings(state: KlipperPrinterState) {
+    val speeds = state.speeds
+    KlipperValue(
+        label = "Doing now",
+        value = speeds.live.orDash() + " mm/s" +
+            (speeds.filament?.takeIf { it > 0.01 }
+                ?.let { " · " + it.orDash(2) + " mm/s of filament" } ?: ""),
+    )
+    KlipperValue(
+        label = "The file asks for",
+        value = speeds.askedFor.orDash() + " mm/s · " +
+            speeds.askedFor?.times(60.0).orDash(0) + " mm/min",
+    )
+    KlipperValue(
+        label = "With the override",
+        value = speeds.effective.orDash() + " mm/s · " + speeds.effectivePerMinute.orDash(0) +
+            " mm/min",
+    )
+    if (speeds.clamped) {
+        KlipperNote(
+            "That is past this printer's own limit of " + speeds.maxVelocity.orDash() +
+                " mm/s, so the moves are clamped to it - which is why more override stops " +
+                "making the print faster.",
+        )
+    }
+    KlipperValue(
+        label = "Its limits",
+        value = speeds.maxVelocity.orDash() + " mm/s · " + speeds.maxAccel.orDash(0) +
+            " mm/s² · corners " + speeds.cornerVelocity.orDash() + " mm/s",
+    )
+}
+
 /** The three factors a print is adjusted by while it runs. */
 @Composable
 private fun AdjustmentsCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
@@ -285,6 +329,7 @@ private fun AdjustmentsCard(state: KlipperPrinterState, viewModel: KlipperViewMo
             steps = 17,
             onSet = { viewModel.setSpeedFactor(it.roundToInt()) },
         )
+        SpeedReadings(state)
         KlipperSlider(
             label = "Flow",
             value = ((state.extrudeFactor ?: 1.0) * 100).toFloat().coerceIn(FLOW_RANGE),
