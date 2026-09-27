@@ -17,7 +17,8 @@ without root. Verified on the device, from klippy's log and the app's:
 | temperatures through the app's client | `extruder=24.45C bed=24.28C` |
 | payload size, in the APK | 957 files, 27MB, all present under `assets/klipper/` |
 | the screen updates | after the notification fix: klippy sends `{"params":{"eventtime":…,"status":{…}}}` with **no method name**, and the client had required one, so every screen kept its first snapshot |
-| identity of the built APK | `com.tomppi.enderslicercura` 1.4.0 (49), targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
+| identity of the built APK | `com.tomppi.enderslicercura`, targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
+| **a print, start to finish** | the first completed print driven end to end by the app's host, on the printer, sliced by this app and streamed from its own storage - reported by the user on 27 September 2026. Small: it settles that the chain works, not that it holds for hours |
 
 **The printer's front end is the app's own ten screens**: dashboard, temperatures,
 move, extrude, macros, files, console, mesh, history and machine - see
@@ -33,10 +34,24 @@ ten to a hundred times what a print needs. Measured with
 `MOVES=40000 scripts/verify-klipper-on-device.sh`, which needs no printer - batch mode
 takes a dictionary in place of a serial port.
 
-**A print's under-load margins are still not measured.** That is the one thing left, and
-it needs the printer: the runbook below, then calibration (`z_offset` is still 0), then a
-small print with the margin recorder watching. It logs lookahead, stalls, round trip and
-retransmits once a minute, and immediately when one of them goes wrong.
+**A print has completed**, which was the last thing the chain was missing: sliced in the
+app, handed to its own virtual SD card, planned by the host running inside it, and
+streamed to the board over the app's USB bridge. What that print does not settle is
+duration - it was a small one - and the USB link is the part with a history: earlier host
+runs wedged after five to fifteen minutes, and a restart does not save a print that is
+already running. A long unattended print is the test that answers it, with the margin
+recorder watching.
+
+**What is still open.** The first print was small, so duration is untested; `z_offset` was
+0 in the configuration at that point, so the first layer came from the geometry of the
+mount rather than from a calibration; and the hotend is still on the printer's original PID
+values. None of those stop a print, and all three are now settable from the app -
+[KLIPPER_UI.md](KLIPPER_UI.md) has the Z probe screen and the temperature screen - so they
+are chores rather than blockers. The USB link is the one with a history: earlier host runs
+wedged after five to fifteen minutes, the host now restarts itself when it notices, and a
+print that is running does not survive that. A long unattended print is what answers it,
+with the margin recorder logging lookahead, stalls, round trip and retransmits while it
+runs.
 
 Licensing is a separate open question with its own note:
 [KLIPPER_VENDORING.md](KLIPPER_VENDORING.md).
