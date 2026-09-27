@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.printer.KlipperConfigFile
+import com.tomppi.enderslicer.printer.formatDecimal
+import com.tomppi.enderslicer.printer.parseDecimal
 import com.tomppi.enderslicer.printer.KlipperMeasurementState
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperResonanceMeasurement
@@ -68,7 +70,9 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         MeasurementCard(measurementState, measurementHistory, viewModel) { axis, frequency ->
-            val text = "%.1f".format(frequency)
+            // Written with a dot so the app can read its own value back; shown to a Finnish
+            // user as 89,8, the field would have parsed as nothing and Apply stayed disabled.
+            val text = formatDecimal(frequency, 1)
             if (axis == "Y") y = y.copy(frequencyText = text) else x = x.copy(frequencyText = text)
         }
 
@@ -204,7 +208,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                             freqEnd = SWEEP_END_HZ,
                             hzPerSec = SWEEP_HZ_PER_SEC,
                             onToolhead = onToolhead,
-                            movingMassGrams = movingMass.toDoubleOrNull() ?: 350.0,
+                            movingMassGrams = parseDecimal(movingMass) ?: 350.0,
                         )
                     },
                 )
@@ -287,14 +291,30 @@ private fun ShaperCard(
             KlipperNumberField(
                 label = "Frequency",
                 value = edit.frequencyText,
-                onValueChange = { typed -> onEdit(edit.copy(frequencyText = typed.filter { it.isDigit() || it == '.' }.take(6))) },
+                onValueChange = { typed ->
+                            onEdit(
+                                edit.copy(
+                                    frequencyText = typed
+                                        .filter { it.isDigit() || it == '.' || it == ',' }
+                                        .take(6),
+                                ),
+                            )
+                        },
                 suffix = "Hz",
                 enabled = enabled,
             )
             KlipperNumberField(
                 label = "Damping",
                 value = edit.dampingText,
-                onValueChange = { typed -> onEdit(edit.copy(dampingText = typed.filter { it.isDigit() || it == '.' }.take(6))) },
+                onValueChange = { typed ->
+                            onEdit(
+                                edit.copy(
+                                    dampingText = typed
+                                        .filter { it.isDigit() || it == '.' || it == ',' }
+                                        .take(6),
+                                ),
+                            )
+                        },
                 enabled = enabled,
             )
         }
@@ -467,15 +487,15 @@ private data class ShaperEdit(
     val frequencyText: String,
     val dampingText: String,
 ) {
-    fun frequency(): Double? = frequencyText.toDoubleOrNull()?.takeIf { it > 0.0 }
+    fun frequency(): Double? = parseDecimal(frequencyText)?.takeIf { it > 0.0 }
 
-    fun damping(): Double? = dampingText.toDoubleOrNull()?.takeIf { it > 0.0 }
+    fun damping(): Double? = parseDecimal(dampingText)?.takeIf { it > 0.0 }
 
     companion object {
         fun of(shaper: KlipperShaper?): ShaperEdit = ShaperEdit(
             type = shaper?.type?.takeIf { it.isNotBlank() } ?: "mzv",
-            frequencyText = shaper?.frequency?.let { "%.1f".format(it) }.orEmpty(),
-            dampingText = shaper?.dampingRatio?.let { "%.3f".format(it) }.orEmpty(),
+            frequencyText = shaper?.frequency?.let { formatDecimal(it, 1) }.orEmpty(),
+            dampingText = shaper?.dampingRatio?.let { formatDecimal(it, 3) }.orEmpty(),
         )
     }
 }

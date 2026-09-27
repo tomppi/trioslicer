@@ -24,6 +24,7 @@ import com.tomppi.enderslicer.printer.configSections
 import com.tomppi.enderslicer.printer.heaters
 import com.tomppi.enderslicer.printer.macros
 import com.tomppi.enderslicer.printer.obj
+import com.tomppi.enderslicer.printer.parseDecimal
 
 /**
  * Feeding filament: by hand, and the two settings that change how it is fed.
@@ -72,7 +73,7 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
             }
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
-                val amount = length.toDoubleOrNull() ?: 0.0
+                val amount = parseDecimal(length) ?: 0.0
                 KlipperButton("Extrude", enabled = state.isReady && amount > 0) {
                     viewModel.extrude(amount)
                 }
@@ -109,8 +110,8 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 )
                 KlipperButton(
                     text = "Set",
-                    enabled = state.isReady && advance.toDoubleOrNull() != null,
-                    onClick = { advance.toDoubleOrNull()?.let { viewModel.setPressureAdvance(it) } },
+                    enabled = state.isReady && parseDecimal(advance) != null,
+                    onClick = { parseDecimal(advance)?.let { viewModel.setPressureAdvance(it) } },
                 )
             }
             val own = state.macros.filter { it.name.contains("Press_Advance", ignoreCase = true) }
@@ -160,8 +161,8 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 Spacer(Modifier.height(8.dp))
                 KlipperButtons {
                     KlipperButton("Apply", enabled = state.isReady) {
-                        val mm = retractLength.toDoubleOrNull()
-                        val speed = retractSpeed.toDoubleOrNull()
+                        val mm = parseDecimal(retractLength)
+                        val speed = parseDecimal(retractSpeed)
                         if (mm != null && speed != null) viewModel.setRetraction(mm, speed)
                     }
                 }
