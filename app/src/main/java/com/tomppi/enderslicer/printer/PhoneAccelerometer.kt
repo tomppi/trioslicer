@@ -7,6 +7,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -21,6 +22,14 @@ data class PhoneRecording(
     val sensorName: String,
     /** True when a sample reached the sensor's own limit, so the recording is clipped. */
     val saturated: Boolean,
+    /**
+     * When the first sample was taken, on the same wall clock the console stamps lines with.
+     *
+     * Sensor samples are timed on the monotonic clock and console lines on the wall clock, so
+     * the recording carries the bridge between them: the printer says when the sweep started,
+     * and this says where that is in the samples.
+     */
+    val startedAtMillis: Double,
 )
 
 /**
@@ -62,6 +71,11 @@ class PhoneAccelerometer(private val context: Context) {
      */
     suspend fun record(seconds: Double): PhoneRecording? = withContext(Dispatchers.IO) {
         val accelerometer = sensor ?: return@withContext null
+        // Both clocks, read together: the sensor times its samples against the monotonic clock
+        // and the console times its lines against the wall clock, and the sweep has to be
+        // placed in the recording by one of them.
+        val registeredAtMillis = System.currentTimeMillis()
+        val registeredAtNanos = SystemClock.elapsedRealtimeNanos()
         val magnitudes = ArrayList<Double>((seconds * 400).toInt())
         val timestamps = ArrayList<Long>((seconds * 400).toInt())
         val listener = object : SensorEventListener {
@@ -101,7 +115,14 @@ class PhoneAccelerometer(private val context: Context) {
         // the commanded motion alone reaches three quarters of a g at the top of the band.
         val limit = accelerometer.maximumRange * SATURATION_FRACTION
         val saturated = magnitudes.any { it >= limit }
-        PhoneRecording(magnitudes.toDoubleArray(), rate, accelerometer.name, saturated)
+        val startedAtMillis = registeredAtMillis + (timestamps.first() - registeredAtNanos) / 1e6
+        PhoneRecording(
+            magnitudes.toDoubleArray(),
+            rate,
+            accelerometer.name,
+            saturated,
+            startedAtMillis,
+        )
     }
 }
 
@@ -145,6 +166,16 @@ data class KlipperResonanceMeasurement(
     val massCorrection: Double = 1.0,
     /** The moving mass the correction was worked out from, in grams. */
     val movingMassGrams: Double = 0.0,
+    /**
+     * Where the sweep's start was taken from.
+     *
+     * The printer tells the console when it begins, which is worth about a tenth of a second;
+     * failing that, the recording's own vibration is used, which is worth as many seconds as
+     * the machine takes to shake harder than its own noise - at two hertz per second, a second
+     * of that is two hertz of error in every frequency below it.
+     */
+    val startFrom: String = "",
+
     /** True when the sensor reached its own limit, which makes the numbers unusable. */
     val saturated: Boolean = false,
 )

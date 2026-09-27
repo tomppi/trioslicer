@@ -228,12 +228,25 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             recorder.await()
         } ?: throw IllegalStateException("this phone would not give its accelerometer")
         val clean = ResonanceAnalysis.detrend(recording.samples, recording.sampleRateHz)
-        val start = ResonanceAnalysis.motionStart(clean, recording.sampleRateHz)
-            ?: throw IllegalStateException(
-                "the machine was not heard moving: check it is homed, and that the axis " +
-                    "chosen is the one that moved",
-            )
-        val movedAt = start / recording.sampleRateHz
+        // The printer's own account of when the sweep started, if the console caught it: it
+        // is stamped on the wall clock, and the recording carries the wall clock of its first
+        // sample. Failing that, the machine is heard rather than asked, which is less exact.
+        val announced = repository.sweepStartMillis(recording.startedAtMillis.toLong())
+        val movedAt: Double
+        val startFrom: String
+        if (announced != null) {
+            movedAt = (announced - recording.startedAtMillis) / 1000.0
+            startFrom = "the printer's own sweep messages"
+        } else {
+            val start = ResonanceAnalysis.motionStart(clean, recording.sampleRateHz)
+                ?: throw IllegalStateException(
+                    "the machine was not heard moving, and the printer said nothing about " +
+                        "the sweep: check it is homed, and that the axis chosen is the one " +
+                        "that moved",
+                )
+            movedAt = start / recording.sampleRateHz
+            startFrom = "the vibration itself, which is less exact"
+        }
         val curve = ResonanceAnalysis.response(
             samples = clean,
             sampleRateHz = recording.sampleRateHz,
@@ -269,6 +282,7 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             massCorrection = correction,
             movingMassGrams = movingMassGrams,
             saturated = recording.saturated,
+            startFrom = startFrom,
         )
     }
 

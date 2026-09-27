@@ -47,7 +47,24 @@ class KlipperPrinterRepository(
     val state: StateFlow<KlipperPrinterState> = _state.asStateFlow()
 
     private val console = KlipperConsole()
+
+    /** What the playback module prints as it sweeps. */
+    private val SWEEP_LINE = Regex("Testing frequency\\s+\\d+\\s*Hz")
     private val _consoleLines = MutableStateFlow<List<KlipperConsoleLine>>(emptyList())
+
+    /**
+     * When the printer announced the start of a resonance sweep, or null if it has not.
+     *
+     * The playback module prints "Testing frequency N Hz" as it sweeps, and the first of
+     * those is the moment the sweep began - on the same wall clock the console stamps every
+     * line with. That makes it a far better anchor than listening for the machine to shake:
+     * the first seconds of a gentle sweep are close to the noise floor, and a start detected
+     * late moves every frequency in the result down by that lateness times the sweep rate -
+     * which was measured at seven seconds, and fourteen hertz, on a real run.
+     */
+    fun sweepStartMillis(sinceMillis: Long): Long? = _consoleLines.value
+        .firstOrNull { line -> line.atMillis >= sinceMillis && SWEEP_LINE.containsMatchIn(line.text) }
+        ?.atMillis
 
     /** The console's scrollback, oldest first, ready to render. */
     val consoleLines: StateFlow<List<KlipperConsoleLine>> = _consoleLines.asStateFlow()

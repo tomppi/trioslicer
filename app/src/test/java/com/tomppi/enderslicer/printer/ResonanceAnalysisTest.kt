@@ -218,5 +218,38 @@ class ResonanceAnalysisTest {
         assertEquals(1.23, ResonanceAnalysis.massCorrection(500.0, 253.0), 0.01)
         assertEquals(356.0, ResonanceAnalysis.impliedMovingMass(89.0, 68.0, 253.0), 5.0)
     }
+
+    @Test
+    fun aSweepStartDetectedLateMovesEveryFrequencyDown() {
+        // Why the printer's own announcement is worth having: the amplitude of a gentle sweep is
+        // close to the noise at first, so a start found by vibration can be seconds late - and
+        // every frequency is then read at the wrong moment. At two hertz per second, six seconds
+        // late is twelve hertz low, which is the difference between one shaper and another.
+        val fStart = 20.0
+        val fEnd = 120.0
+        val hzPerSec = 2.0
+        val resonance = 60.0
+        val duration = ResonanceAnalysis.sweepDuration(fStart, fEnd, hzPerSec)
+        val samples = DoubleArray(((duration + 0.2) * sampleRate).toInt())
+        var phase = 0.0
+        for (index in samples.indices) {
+            val t = index / sampleRate
+            val f = ResonanceAnalysis.sweepFrequency(fStart, hzPerSec, t)
+            phase += 2 * PI * f / sampleRate
+            val response = 1.0 + 8.0 / (1.0 + ((f - resonance) / 2.0) * ((f - resonance) / 2.0))
+            samples[index] = response * sin(phase)
+        }
+
+        val exact = ResonanceAnalysis.response(samples, sampleRate, 0.0, fStart, fEnd, hzPerSec)
+        val late = ResonanceAnalysis.response(samples, sampleRate, 6.0, fStart, fEnd, hzPerSec)
+        val exactPeak = exact.peaks(minimumSnr = 1.5).first().frequencyHz
+        val latePeak = late.peaks(minimumSnr = 1.5).first().frequencyHz
+        assertEquals(resonance, exactPeak, 2.0)
+        assertTrue(
+            "a late start should read the resonance low, by seconds times hertz per second",
+            latePeak < exactPeak - 8.0,
+        )
+    }
 }
+
 

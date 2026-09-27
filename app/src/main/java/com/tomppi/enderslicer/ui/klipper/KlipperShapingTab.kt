@@ -442,6 +442,7 @@ private fun MeasurementResult(
 ) {
     KlipperValue("Sampled at", "%.0f Hz".format(measurement.sampleRateHz))
     KlipperValue("Machine heard at", "%.1f s into the recording".format(measurement.movedAt))
+    KlipperValue("Sweep start from", measurement.startFrom)
     if (measurement.onToolhead) {
         KlipperValue(
             label = "Phone on the toolhead",
