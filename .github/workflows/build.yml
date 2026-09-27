@@ -330,6 +330,23 @@ jobs:
           PY
           python3 scripts/test-blender-mcp-slim.py
 
+      - name: Fetch and validate the Klipper host payload
+        run: |
+          chmod +x scripts/fetch-klipper-android.sh
+          scripts/fetch-klipper-android.sh 2>&1 | tee klipper-host-fetch.log
+          # The app cannot start its host without these three, and the service checks
+          # the same ones before it tries: a payload that arrives incomplete has to
+          # fail the build rather than the printer.
+          for f in \
+            app/src/main/assets/klipper/klippy/klippy.py \
+            app/src/main/assets/klipper/klippy/chelper/c_helper.so \
+            app/src/main/assets/klipper/lib/python3.11/encodings/__init__.py; do
+            [ -s "$f" ] || { echo "Klipper payload missing: $f" >&2; exit 1; }
+          done
+          count=$(find app/src/main/assets/klipper -type f | wc -l)
+          [ "$count" -ge 950 ] || { echo "expected ~957 payload files, found $count" >&2; exit 1; }
+          echo "Klipper host payload staged: $count files"
+
       - name: Build pinned host CuraEngine fixture binary
         run: |
           chmod +x scripts/build-curaengine-host-tests.sh

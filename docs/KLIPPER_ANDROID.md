@@ -65,6 +65,13 @@ Licensing is a separate open question with its own note:
   fetch-prusa-engine-android.sh, fetch-blender-engine-android.sh
   (blender-engine-arm64-v1.2.0.zip, about 185 MB: engine, runtime libs, assets),
   fetch-cura-resources.sh.
+- The Klipper host payload joins them: fetch-klipper-android.sh stages
+  klipper-host-arm64-v0.13.0.zip (about 8 MB, 957 files: klippy, the Android CPython
+  standard library, the compiled C helper and the extensions). It is a release asset
+  for the same reason the engines are - a clone and CI cannot otherwise produce an app
+  with a host in it, because building the payload needs an interpreter cross-compiled
+  for bionic. KLIPPER_HOST_DIR stages a locally built tree instead, and the digest is
+  pinned, so the payload a build runs is the payload that was published.
 - CuraEngine is cross-compiled in-repo by build-curaengine-android.sh with the NDK
   pinned in the docs: ANDROID_NDK_HOME=ndk/28.2.13676358.
 - filaSim is built in-repo too (Rust plus a JNI crate at native/filasim/jni) by
