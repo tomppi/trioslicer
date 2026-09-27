@@ -163,11 +163,6 @@ class KlipperEngineService : Service() {
 
     private fun launchLocked() {
         stopping = false
-        // Held for the life of a run, and taken here rather than by the caller: a restart
-        // releases it on the way out, so a lock taken only on the plain start path was gone
-        // for good after the first restart - and with it the guarantee that a long print
-        // survives the screen going off.
-        acquireWakeLock()
         // Held so that the finally below can tell this run apart from the next one:
         // a restart starts the new host before this one has finished unwinding.
         var started: Process? = null
@@ -180,6 +175,7 @@ class KlipperEngineService : Service() {
             val exe = File(nativeDir, "libklipper_exec.so")
             if (!exe.isFile) {
                 Log.e(TAG, "interpreter missing at ${exe.absolutePath}")
+                reportHostNotRunning("the interpreter for the host is missing from this build")
                 return
             }
             // The printer is reached through a pty this process owns one end of:
@@ -198,12 +194,18 @@ class KlipperEngineService : Service() {
             val pty = KlipperPty.open()
             if (pty == null) {
                 Log.e(TAG, "could not open a pty for the printer")
+                reportHostNotRunning("the app could not open a connection for the printer")
                 return
             }
             Log.i(TAG, "printer pty ${pty.slavePath}, master fd ${pty.masterFd}")
             ptyMasterFd = pty.masterFd
             val config = printerConfig(serialPath(pty.slavePath))
             bridgePrinter(pty.masterFd)
+            // Held for the life of a run, and taken only now that there is a run to hold: a
+            // restart releases it on the way out, so a lock taken by the caller was gone for
+            // good after the first restart - and taken before these checks, it was held by a
+            // launch that had already given up, pinning the phone awake with no host.
+            acquireWakeLock()
 
             // Truncated first: klippy appends to the log it is given, so without
             // this a run is read together with every run before it and the failures
@@ -670,6 +672,20 @@ class KlipperEngineService : Service() {
         manager.requestPermission(device, granted)
     }
 
+    /**
+     * Say in the notification that the host is not running, and why.
+     *
+     * The notification is the one surface that is always visible - it is what a user sees on a
+     * lock screen an hour into a print - and it was built once, when the service started, so it
+     * went on saying "Klipper host running" after a launch had failed or klippy had exited.
+     */
+    private fun reportHostNotRunning(reason: String) {
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.notify(NOTIF_ID, buildNotification(this, "The Klipper host is not running: $reason"))
+        }
+    }
+
     private fun stopEngine() {
         // Before the process is destroyed, so that the thread watching it does not
         // start it again on the way out.
@@ -791,7 +807,11 @@ class KlipperEngineService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        private fun buildNotification(context: Context): Notification {
+        private fun buildNotification(
+            context: Context,
+            text: String = "The printer is being driven by this device",
+            title: String = "Klipper host running",
+        ): Notification {
             val open = PendingIntent.getActivity(
                 context, 0, Intent(context, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE,
@@ -802,8 +822,8 @@ class KlipperEngineService : Service() {
                 @Suppress("DEPRECATION") Notification.Builder(context)
             }
             return builder
-                .setContentTitle("Klipper host running")
-                .setContentText("The printer is being driven by this device")
+                .setContentTitle(title)
+                .setContentText(text)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setContentIntent(open)
                 .setOngoing(true)

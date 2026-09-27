@@ -395,8 +395,13 @@ class AppStateStore(context: Context) {
             val values = root.getJSONObject("settings")
             SnapshotBaseline(
                 settings = SlicerSettingsJson.apply(SlicerSettings(), values, SlicerSettingsJson.allKeys),
-                startGcode = root.optString("startGcode", ""),
-                endGcode = root.optString("endGcode", ""),
+                // A profile stored before the defaults became Klipper's still holds the
+                // Marlin text - G29 L0 and G29 A included - and on this printer G29 is a
+                // macro that homes and probes, so those two lines were costing three homes
+                // and two mesh probes before every print. Only an untouched default is
+                // replaced; anything edited by hand is left exactly as it is.
+                startGcode = BuiltInGcode.migrateStart(root.optString("startGcode", "")),
+                endGcode = BuiltInGcode.migrateEnd(root.optString("endGcode", "")),
                 profileName = root.optString("profileName", ""),
                 profileSource = root.optString("profileSource", ""),
             )

@@ -149,7 +149,15 @@ object PrinterBridge {
                     pause()
                     continue
                 }
-                if (running) Log.w(TAG, "usb read ended: ${e.message}")
+                if (running) {
+                    Log.w(TAG, "usb read ended: ${e.message}")
+                    // The link is gone, and stop() is what says so: it clears the flag, drops
+                    // the device name and closes the pty, which is also what unblocks the
+                    // other pump. A bridge that outlived its device kept answering "already
+                    // bridging" to a replug that came back on the same bus address, so
+                    // nothing short of a host restart recovered the printer.
+                    stop()
+                }
                 break
             }
         }
@@ -183,7 +191,10 @@ object PrinterBridge {
                     pause()
                     continue
                 }
-                if (running) Log.w(TAG, "pty read ended: ${e.message}")
+                if (running) {
+                    Log.w(TAG, "pty read ended: ${e.message}")
+                    stop()
+                }
                 break
             }
         }
