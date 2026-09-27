@@ -160,7 +160,14 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
      * phone's clock and the printer's have nothing to do with each other, and a measurement
      * must not need them to.
      */
-    fun measureResonances(axis: String, freqStart: Double, freqEnd: Double, hzPerSec: Double) {
+    fun measureResonances(
+        axis: String,
+        freqStart: Double,
+        freqEnd: Double,
+        hzPerSec: Double,
+        onToolhead: Boolean = false,
+        movingMassGrams: Double = DEFAULT_MOVING_MASS_GRAMS,
+    ) {
         if (_measurement.value is KlipperMeasurementState.Measuring) return
         val total = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec) + RECORDING_MARGIN
         _measurement.value = KlipperMeasurementState.Measuring(axis.uppercase(), 0.0, total)
@@ -176,7 +183,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             }
-            val result = runCatching { measureAxis(axis, freqStart, freqEnd, hzPerSec) }
+            val result = runCatching {
+                measureAxis(axis, freqStart, freqEnd, hzPerSec, onToolhead, movingMassGrams)
+            }
             clock.cancel()
             _measurement.value = result.fold(
                 onSuccess = { measurement ->
@@ -199,6 +208,8 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         freqStart: Double,
         freqEnd: Double,
         hzPerSec: Double,
+        onToolhead: Boolean,
+        movingMassGrams: Double,
     ): KlipperResonanceMeasurement = withContext(Dispatchers.IO) {
         val accelerometer = PhoneAccelerometer(getApplication())
         val duration = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec)
@@ -207,7 +218,13 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             // A beat of quiet first, which is what the analysis uses as the machine's own
             // noise floor, and what it compares the sweep against to find where it began.
             delay(700)
-            repository.playResonances(axis, freqStart, freqEnd, hzPerSec)
+            repository.playResonances(
+                axis,
+                freqStart,
+                freqEnd,
+                hzPerSec,
+                if (onToolhead) KlipperScripts.GENTLE_ACCEL_PER_HZ else KlipperScripts.STANDARD_ACCEL_PER_HZ,
+            )
             recorder.await()
         } ?: throw IllegalStateException("this phone would not give its accelerometer")
         val clean = ResonanceAnalysis.detrend(recording.samples, recording.sampleRateHz)
@@ -224,9 +241,20 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             fStart = freqStart,
             fEnd = freqEnd,
             hzPerSec = hzPerSec,
+            // On the toolhead the sensor rides the drive as well as the machine, and the
+            // drive's own acceleration climbs with frequency: it has to be divided out or the
+            // curve is mostly the sweep rather than the machine.
+            ridingTheDrive = onToolhead,
         )
         if (curve.magnitudes.isEmpty()) {
             throw IllegalStateException("the sweep was too short to measure")
+        }
+        // The phone's weight is riding on the toolhead, which lowers the frequency it is
+        // measuring; the correction is an estimate, and the card says so.
+        val correction = if (onToolhead) {
+            ResonanceAnalysis.massCorrection(movingMassGrams, PHONE_GRAMS)
+        } else {
+            1.0
         }
         KlipperResonanceMeasurement(
             axis = axis.uppercase(),
@@ -234,7 +262,13 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             sampleRateHz = recording.sampleRateHz,
             movedAt = movedAt,
             curve = curve,
-            peaks = curve.peaks(),
+            peaks = curve.peaks().map { peak ->
+                peak.copy(frequencyHz = peak.frequencyHz * correction)
+            },
+            onToolhead = onToolhead,
+            massCorrection = correction,
+            movingMassGrams = movingMassGrams,
+            saturated = recording.saturated,
         )
     }
 
@@ -244,6 +278,25 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
 
         /** How many measurements stay on screen to be compared with each other. */
         const val MAX_REMEMBERED_RUNS = 8
+
+        /**
+         * What the phone weighs, which is what the toolhead measurement has to correct for.
+         *
+         * A Galaxy Z Fold5 is 253 grams. It is the one number in the correction that does not
+         * depend on the printer, which is why it is a constant and the moving mass is not.
+         */
+        const val PHONE_GRAMS = 253.0
+
+        /**
+         * A starting figure for the moving mass: carriage, hotend, extruder, duct and probe.
+         *
+         * An Orbiter v2 direct drive is light for what it is, but it puts the motor on the
+         * carriage where a stock Ender-3 V2 had nothing at all, so the assembly comes to
+         * something like 350 grams against the stock machine's 210. The screen lets it be
+         * corrected, and two measurements from two places can work it out from the machine
+         * itself.
+         */
+        const val DEFAULT_MOVING_MASS_GRAMS = 350.0
     }
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         repository.saveShapers(settings)

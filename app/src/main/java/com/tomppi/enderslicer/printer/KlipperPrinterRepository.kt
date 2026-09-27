@@ -391,8 +391,13 @@ class KlipperPrinterRepository(
         send(KlipperScripts.inputShaper(axis, type, frequency, dampingRatio))
 
     /** Play the resonance sweep on one axis, for the phone's own sensor to measure. */
-    fun playResonances(axis: String, freqStart: Double, freqEnd: Double, hzPerSec: Double) =
-        send(KlipperScripts.playResonances(axis, freqStart, freqEnd, hzPerSec))
+    fun playResonances(
+        axis: String,
+        freqStart: Double,
+        freqEnd: Double,
+        hzPerSec: Double,
+        accelPerHz: Double = KlipperScripts.STANDARD_ACCEL_PER_HZ,
+    ) = send(KlipperScripts.playResonances(axis, freqStart, freqEnd, hzPerSec, accelPerHz))
 
     /** Ask the printer what shaping it is using; it answers in the console. */
     fun reportShapers() = send("SET_INPUT_SHAPER")

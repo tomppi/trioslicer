@@ -189,6 +189,39 @@ about the order of trust:
 3. **The phone on the toolhead or the bed** — worse than useless, because it measures the
    machine plus a phone.
 
+### Measuring from the toolhead
+
+The X mode is the toolhead's mass on the belts, so the toolhead is where it lives - and a
+phone is a poor accelerometer to put there. An Orbiter v2 direct drive is light for what it is,
+but it puts the motor on the carriage where a stock Ender-3 V2 had nothing, so the assembly
+comes to roughly 350 g against the stock machine's 210. A 253 g phone on top of that is a 72%
+increase in the moving mass, and `f ∝ √(k/m)` therefore reads about 24% low: a true 90 Hz
+would be measured near 68.
+
+The screen has a **Phone on the toolhead** mode for this, and it does three things:
+
+- **Half the excitation** (`ACCEL_PER_HZ=30`). The sweep asks for `accel_per_hz * f`, which is
+  7200 mm/s² at the top of the band; with 253 g added to the carriage that is more force than
+  the belts were ever asked for, and a skipped step during a sweep would be silent and would
+  corrupt the measurement.
+- **The drive divided out.** On the frame a sensor feels only what the structure transmits. On
+  the toolhead it also feels the commanded motion, whose acceleration climbs with frequency -
+  a ramp under everything, which would make a peak read against the middle of the curve a
+  comparison with the drive rather than with the machine.
+- **The phone's weight corrected for**, from a moving mass the screen lets you set, and a note
+  saying the correction is a single-mass estimate rather than a calibration.
+
+It also refuses a clipped recording: the commanded motion alone reaches three quarters of a g
+at the top of the band, against a sensor that rails at its own limit, and a saturated
+recording would otherwise have produced confident nonsense.
+
+**The useful experiment is to measure from both places.** The ratio of the two frequencies
+gives the moving mass the phone was sitting on: `m = m_phone / ((f_free / f_loaded)² − 1)`.
+A few hundred grams says the two readings are of the same mode - which is how a measurement
+taken from the gantry can be shown to be tracking the toolhead rather than something else that
+happens to be loud there. An implausible answer says they are not, and that the gantry reading
+was a frame mode.
+
 ## Input shaping
 
 Two numbers per axis - a shaper type and the frequency it is tuned to - decide the pattern

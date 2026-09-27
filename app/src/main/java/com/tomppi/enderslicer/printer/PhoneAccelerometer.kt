@@ -19,6 +19,8 @@ data class PhoneRecording(
     /** Measured from the samples' own timestamps, not from what was asked for. */
     val sampleRateHz: Double,
     val sensorName: String,
+    /** True when a sample reached the sensor's own limit, so the recording is clipped. */
+    val saturated: Boolean,
 )
 
 /**
@@ -36,6 +38,11 @@ data class PhoneRecording(
  * removes it, while the shaking is what is left.
  */
 class PhoneAccelerometer(private val context: Context) {
+    private companion object {
+        /** How close to the sensor's own limit counts as having reached it. */
+        const val SATURATION_FRACTION = 0.98
+    }
+
     private val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
     /** The sensor itself, or null on a phone without one. */
@@ -88,7 +95,13 @@ class PhoneAccelerometer(private val context: Context) {
         val span = (timestamps.last() - timestamps.first()) / 1_000_000_000.0
         val rate = if (span > 0.0) (magnitudes.size - 1) / span else 0.0
         if (rate <= 0.0) return@withContext null
-        PhoneRecording(magnitudes.toDoubleArray(), rate, accelerometer.name)
+        // The magnitude carries gravity, so a phone at rest already reads about 9.81 before
+        // the machine moves at all. The limit that matters is the sensor's own, and reaching
+        // it means the sweep was clipped - which on the toolhead is a real possibility, since
+        // the commanded motion alone reaches three quarters of a g at the top of the band.
+        val limit = accelerometer.maximumRange * SATURATION_FRACTION
+        val saturated = magnitudes.any { it >= limit }
+        PhoneRecording(magnitudes.toDoubleArray(), rate, accelerometer.name, saturated)
     }
 }
 
@@ -124,5 +137,14 @@ data class KlipperResonanceMeasurement(
     /** When the machine was heard to start moving, in seconds into the recording. */
     val movedAt: Double,
     val curve: ResonanceCurve,
+    /** The frequencies, corrected for the phone's own weight where that applied. */
     val peaks: List<ResonancePeak>,
+    /** True when the phone was riding the toolhead rather than lying on the frame. */
+    val onToolhead: Boolean = false,
+    /** What the phone's weight is thought to have lowered the frequencies by; 1 if none. */
+    val massCorrection: Double = 1.0,
+    /** The moving mass the correction was worked out from, in grams. */
+    val movingMassGrams: Double = 0.0,
+    /** True when the sensor reached its own limit, which makes the numbers unusable. */
+    val saturated: Boolean = false,
 )

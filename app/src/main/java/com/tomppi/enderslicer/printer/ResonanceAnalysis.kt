@@ -99,6 +99,35 @@ object ResonanceAnalysis {
         sweepTime(fStart, hzPerSec, fEnd)
 
     /**
+     * What a phone on the moving mass does to the frequency it is measuring.
+     *
+     * Adding mass to a spring lowers its frequency by the square root of the mass ratio, so
+     * the true frequency is the measured one times this. A first-order model - the mode is
+     * not only the toolhead on the belt - and to be presented as an estimate, not a
+     * measurement.
+     */
+    fun massCorrection(movingMassGrams: Double, addedGrams: Double): Double =
+        sqrt((movingMassGrams + addedGrams) / movingMassGrams)
+
+    /**
+     * The moving mass implied by measuring the same mode with the phone on it and off it.
+     *
+     * m = m_phone / ((f_free / f_loaded)^2 - 1). A plausible answer - a few hundred grams for
+     * a toolhead - says the two readings are of the same mode, which is the thing worth
+     * knowing: it is how a measurement taken from the frame can be shown to be tracking the
+     * toolhead rather than something else that happens to be loud.
+     */
+    fun impliedMovingMass(
+        freeFrequency: Double,
+        loadedFrequency: Double,
+        addedGrams: Double,
+    ): Double {
+        if (loadedFrequency <= 0.0 || freeFrequency <= loadedFrequency) return 0.0
+        val ratio = freeFrequency / loadedFrequency
+        return addedGrams / (ratio * ratio - 1.0)
+    }
+
+    /**
      * The frequencies that came back across several measurements.
      *
      * One measurement is a picture of where the phone was standing as much as of the
@@ -209,6 +238,17 @@ object ResonanceAnalysis {
      * [motionStartSeconds] is when the sweep began in this recording, from [motionStart].
      * Frequencies are stepped by [stepHz] across the band; each is measured over
      * [windowSeconds] of the recording that followed its moment in the sweep.
+     *
+     * [ridingTheDrive] says the sensor is on the moving mass, which changes what it can see.
+     *
+     * On the frame, a sensor feels only what the structure transmits, so the curve is the
+     * machine's own response. On the toolhead it feels the commanded motion as well - the
+     * sweep itself, whose acceleration is `accel_per_hz * f` and so climbs with frequency.
+     * That is a ramp under everything, and it is why a peak read against the middle of the
+     * curve would be a comparison with the drive rather than with the machine. Dividing by
+     * the frequency removes the ramp; the constant factors (accel_per_hz, and the sensor's
+     * own units, which are metres where Klipper's are millimetres) do not matter, because
+     * what is being found is a shape and not an absolute number.
      */
     fun response(
         samples: DoubleArray,
@@ -219,6 +259,7 @@ object ResonanceAnalysis {
         hzPerSec: Double,
         stepHz: Double = 1.0,
         windowSeconds: Double = 1.0,
+        ridingTheDrive: Boolean = false,
     ): ResonanceCurve {
         val frequencies = mutableListOf<Double>()
         val magnitudes = mutableListOf<Double>()
@@ -227,8 +268,9 @@ object ResonanceAnalysis {
         while (frequency <= fEnd + 1e-9) {
             val at = ((motionStartSeconds + sweepTime(fStart, hzPerSec, frequency)) * sampleRateHz).toInt()
             if (at < 0 || at + windowSamples > samples.size) break
+            val measured = goertzel(samples, at, windowSamples, frequency, sampleRateHz)
             frequencies += frequency
-            magnitudes += goertzel(samples, at, windowSamples, frequency, sampleRateHz)
+            magnitudes += if (ridingTheDrive) measured / frequency else measured
             frequency += stepHz
         }
         return ResonanceCurve(frequencies.toDoubleArray(), magnitudes.toDoubleArray())

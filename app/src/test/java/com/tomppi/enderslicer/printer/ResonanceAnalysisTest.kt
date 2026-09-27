@@ -162,4 +162,61 @@ class ResonanceAnalysisTest {
         val second = listOf(ResonancePeak(88.0, 10.0, 1.0))
         assertTrue(ResonanceAnalysis.agreeing(listOf(first, second)).isEmpty())
     }
+
+    @Test
+    fun aSensorRidingTheToolheadIsReadAsATransferFunction() {
+        // The toolhead case: the phone is on the moving mass, so it reads the sweep that is
+        // being played with the machine's answer added around it. The resonance is a bump on
+        // that baseline, not a peak above a floor - and without dividing the drive out, the
+        // loudest thing in the band is simply where the drive is strongest.
+        val fStart = 20.0
+        val fEnd = 120.0
+        val hzPerSec = 2.0
+        val accelPerHz = 30.0
+        val resonance = 68.0
+        val duration = ResonanceAnalysis.sweepDuration(fStart, fEnd, hzPerSec)
+        val samples = DoubleArray(((duration + 0.2) * sampleRate).toInt())
+        var phase = 0.0
+        for (index in samples.indices) {
+            val t = index / sampleRate
+            val f = ResonanceAnalysis.sweepFrequency(fStart, hzPerSec, t)
+            phase += 2 * PI * f / sampleRate
+            val amplification = 6.0 / (1.0 + ((f - resonance) / 2.0) * ((f - resonance) / 2.0))
+            samples[index] = accelPerHz * f * (1.0 + amplification) * sin(phase) / 1000.0
+        }
+
+        fun at(curve: ResonanceCurve, frequency: Double): Double =
+            curve.magnitudes[curve.frequencies.indexOfFirst { it >= frequency }]
+
+        val raw = ResonanceAnalysis.response(samples, sampleRate, 0.0, fStart, fEnd, hzPerSec)
+        // The drive is not flat: its acceleration is accel_per_hz * f, so the raw curve climbs
+        // with frequency whatever the machine is doing - three times as high at the top of the
+        // band as at a third of the way up. A peak read against the middle of that is a
+        // comparison with the drive, not with the machine.
+        assertTrue(
+            "the raw baseline should tilt with the drive",
+            at(raw, 110.0) > 2.5 * at(raw, 40.0),
+        )
+
+        val normalised = ResonanceAnalysis.response(
+            samples, sampleRate, 0.0, fStart, fEnd, hzPerSec, ridingTheDrive = true,
+        )
+        // Divided out, the machine's answer is what is left, and the baseline no longer tilts:
+        // the same value a third of the way up the band and near the top of it, so that the
+        // middle of the curve means something to compare a peak against.
+        assertEquals("the tilt is gone", at(normalised, 40.0), at(normalised, 110.0), 0.2 * at(normalised, 40.0))
+        val peaks = normalised.peaks(minimumSnr = 1.5)
+        assertTrue("no peak found", peaks.isNotEmpty())
+        assertEquals("and the machine answers at its resonance", resonance, peaks.first().frequencyHz, 3.0)
+    }
+
+    @Test
+    fun aLighterToolheadIsShiftedFurtherByTheSamePhone() {
+        // What the phone's own weight does to the frequency underneath it, and what a pair of
+        // measurements says about the mass it was sitting on.
+        assertEquals(1.32, ResonanceAnalysis.massCorrection(350.0, 253.0), 0.01)
+        assertEquals(1.23, ResonanceAnalysis.massCorrection(500.0, 253.0), 0.01)
+        assertEquals(356.0, ResonanceAnalysis.impliedMovingMass(89.0, 68.0, 253.0), 5.0)
+    }
 }
+

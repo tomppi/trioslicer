@@ -56,6 +56,8 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     var y by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "y" })) }
     var confirmSave by remember { mutableStateOf(false) }
     var measureAxis by remember { mutableStateOf("x") }
+    var onToolhead by remember { mutableStateOf(false) }
+    var movingMass by remember { mutableStateOf("350") }
     // From the view model rather than from here: a sweep takes a minute, and a result held by
     // the screen is a result that disappears when the screen does.
     val measurementState by viewModel.measurement.collectAsStateWithLifecycle()
@@ -156,6 +158,35 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             Spacer(Modifier.height(4.dp))
             KlipperButtons {
                 KlipperButton(
+                    text = if (onToolhead) "• Phone on the toolhead" else "Phone on the toolhead",
+                    onClick = { onToolhead = !onToolhead },
+                )
+            }
+            if (onToolhead) {
+                KlipperNote(
+                    "The phone rides the carriage, so its weight lowers the frequency it is " +
+                        "measuring, and the sweep is run at half strength so that the belts are " +
+                        "not asked for more force than they have ever carried. Both are " +
+                        "corrected for below, from the moving mass.",
+                )
+                KlipperNumberField(
+                    label = "Moving mass",
+                    value = movingMass,
+                    onValueChange = { typed ->
+                        movingMass = typed.filter { it.isDigit() }.take(4)
+                    },
+                    suffix = "g",
+                )
+                KlipperNote(
+                    "Carriage, hotend, extruder, duct and probe: about 350 g with an Orbiter " +
+                        "v2, against roughly 210 on a stock Ender-3 V2, which had no motor on " +
+                        "the carriage at all. Weigh the parts if you can - the correction is " +
+                        "only as good as this number.",
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            KlipperButtons {
+                KlipperButton(
                     text = if (measurementState is KlipperMeasurementState.Measuring) {
                         "Measuring…"
                     } else {
@@ -168,7 +199,12 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                         // The run belongs to the view model: leaving this screen does not
                         // cancel it, and coming back finds it where it got to.
                         viewModel.measureResonances(
-                            measureAxis, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_HZ_PER_SEC,
+                            axis = measureAxis,
+                            freqStart = SWEEP_START_HZ,
+                            freqEnd = SWEEP_END_HZ,
+                            hzPerSec = SWEEP_HZ_PER_SEC,
+                            onToolhead = onToolhead,
+                            movingMassGrams = movingMass.toDoubleOrNull() ?: 350.0,
                         )
                     },
                 )
@@ -373,6 +409,28 @@ private fun MeasurementResult(
 ) {
     KlipperValue("Sampled at", "%.0f Hz".format(measurement.sampleRateHz))
     KlipperValue("Machine heard at", "%.1f s into the recording".format(measurement.movedAt))
+    if (measurement.onToolhead) {
+        KlipperValue(
+            label = "Phone on the toolhead",
+            value = "%.0f g on %.0f g moves each frequency up by %.0f%%".format(
+                253.0, measurement.movingMassGrams,
+                (measurement.massCorrection - 1.0) * 100.0,
+            ),
+        )
+        KlipperNote(
+            "The frequencies below have been corrected for the phone's own weight, which is " +
+                "an estimate from a single-mass model - the mode is not only the toolhead on " +
+                "the belt. Treat it as a place to start, not as a calibration.",
+        )
+    }
+    if (measurement.saturated) {
+        KlipperNote(
+            "The phone's sensor reached its own limit during this recording, so the numbers " +
+                "are clipped and should not be used: run the sweep with the phone lower down " +
+                "the machine.",
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
     if (measurement.peaks.isEmpty()) {
         Spacer(Modifier.height(8.dp))
         KlipperNote(

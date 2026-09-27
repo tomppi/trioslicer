@@ -87,11 +87,31 @@ internal object KlipperScripts {
      * own resonance test: the same generator, the same moves. The frequencies and the rate
      * are passed back to the analysis, which has to know what was played when.
      */
-    fun playResonances(axis: String, freqStart: Double, freqEnd: Double, hzPerSec: Double): String =
+    fun playResonances(
+        axis: String,
+        freqStart: Double,
+        freqEnd: Double,
+        hzPerSec: Double,
+        accelPerHz: Double,
+    ): String =
         "PLAY_RESONANCES AXIS=" + axis.uppercase() +
             " FREQ_START=" + number(freqStart, 1) +
             " FREQ_END=" + number(freqEnd, 1) +
-            " HZ_PER_SEC=" + number(hzPerSec, 2)
+            " HZ_PER_SEC=" + number(hzPerSec, 2) +
+            " ACCEL_PER_HZ=" + number(accelPerHz, 1)
+
+    /**
+     * The sweep run gently, for when the phone is riding the toolhead.
+     *
+     * The excitation is `accel_per_hz * f` - 7200 mm/s^2 at the top of the band, three
+     * quarters of a g. Without the phone that is what the machine was designed to survive;
+     * with 253 grams added to the carriage it is a quarter more force than the belts and
+     * the motor were ever asked for, and a skipped step during a sweep would be silent and
+     * would corrupt the measurement. Half the excitation is still far above the sensor's
+     * own noise.
+     */
+    const val GENTLE_ACCEL_PER_HZ = 30.0
+    const val STANDARD_ACCEL_PER_HZ = 60.0
 
     fun pressureAdvance(advance: Double): String =
         "SET_PRESSURE_ADVANCE ADVANCE=${number(advance, 4)}"
