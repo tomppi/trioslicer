@@ -136,4 +136,30 @@ class ResonanceAnalysisTest {
         val flat = ResonanceCurve(frequencies, DoubleArray(100) { 1.0 })
         assertTrue(flat.peaks().isEmpty())
     }
+
+    @Test
+    fun theFrequencyThatComesBackIsTheOneWorthHaving() {
+        // Two runs from two places on the machine: both hear 88, one of them also hears
+        // something at 42 that the other does not - which is where the phone was standing.
+        val first = listOf(ResonancePeak(88.1, 10.0, 1.0), ResonancePeak(42.0, 9.0, 1.0))
+        val second = listOf(ResonancePeak(88.6, 8.0, 1.0), ResonancePeak(101.0, 7.0, 1.0))
+        val agreed = ResonanceAnalysis.agreeing(listOf(first, second))
+        assertEquals(1, agreed.size)
+        assertEquals(88.1, agreed.first().frequencyHz, 0.5)
+        assertEquals(2, agreed.first().seenIn)
+        assertEquals(2, agreed.first().ofRuns)
+    }
+
+    @Test
+    fun oneMeasurementAgreesWithNothing() {
+        val only = listOf(listOf(ResonancePeak(88.1, 10.0, 1.0)))
+        assertTrue(ResonanceAnalysis.agreeing(only).isEmpty())
+    }
+
+    @Test
+    fun peaksFarApartAreNotTheSamePeak() {
+        val first = listOf(ResonancePeak(35.0, 10.0, 1.0))
+        val second = listOf(ResonancePeak(88.0, 10.0, 1.0))
+        assertTrue(ResonanceAnalysis.agreeing(listOf(first, second)).isEmpty())
+    }
 }

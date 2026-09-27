@@ -27,6 +27,7 @@ import com.tomppi.enderslicer.printer.KlipperMeasurementState
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperResonanceMeasurement
 import com.tomppi.enderslicer.printer.KlipperShaper
+import com.tomppi.enderslicer.printer.ResonanceAnalysis
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.canMeasureResonances
 import com.tomppi.enderslicer.printer.shapers
@@ -58,13 +59,13 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     // From the view model rather than from here: a sweep takes a minute, and a result held by
     // the screen is a result that disappears when the screen does.
     val measurementState by viewModel.measurement.collectAsStateWithLifecycle()
+    val measurementHistory by viewModel.measurementHistory.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        MeasurementCard(measurementState) { frequency ->
-            val axis = (measurementState as? KlipperMeasurementState.Done)?.measurement?.axis
+        MeasurementCard(measurementState, measurementHistory, viewModel) { axis, frequency ->
             val text = "%.1f".format(frequency)
             if (axis == "Y") y = y.copy(frequencyText = text) else x = x.copy(frequencyText = text)
         }
@@ -286,7 +287,9 @@ private fun ShaperCard(
 @Composable
 private fun MeasurementCard(
     state: KlipperMeasurementState,
-    onUse: (Double) -> Unit,
+    history: List<KlipperResonanceMeasurement>,
+    viewModel: KlipperViewModel,
+    onUse: (String, Double) -> Unit,
 ) {
     when (state) {
         is KlipperMeasurementState.Idle -> Unit
@@ -310,11 +313,48 @@ private fun MeasurementCard(
         ) {
             KlipperNote(state.message, color = MaterialTheme.colorScheme.error)
         }
-        is KlipperMeasurementState.Done -> KlipperCard(
-            title = "What axis " + state.measurement.axis + " answered at",
-            subtitle = "Measured with " + state.measurement.sensorName,
-        ) {
-            MeasurementResult(state.measurement, onUse)
+        is KlipperMeasurementState.Done -> {
+            val axis = state.measurement.axis
+            val runs = history.filter { it.axis == axis }
+            val agreed = ResonanceAnalysis.agreeing(runs.map { it.peaks })
+            KlipperCard(
+                title = "What axis " + axis + " answered at",
+                subtitle = "Measured with " + state.measurement.sensorName,
+            ) {
+                MeasurementResult(state.measurement) { frequency -> onUse(axis, frequency) }
+                if (runs.size > 1) {
+                    Spacer(Modifier.height(12.dp))
+                    KlipperNote(
+                        "Across " + runs.size + " measurements, newest last: where the phone " +
+                            "is standing decides which peaks are loud, so what matters is the " +
+                            "frequency that keeps coming back.",
+                    )
+                    if (agreed.isEmpty()) {
+                        KlipperNote(
+                            "Nothing has come back yet: move the phone somewhere else on the " +
+                                "base and measure again.",
+                        )
+                    } else {
+                        agreed.forEach { peak ->
+                            KlipperValue(
+                                label = "%.1f Hz".format(peak.frequencyHz),
+                                value = "in " + peak.seenIn + " of " + peak.ofRuns,
+                            )
+                        }
+                        KlipperButtons {
+                            agreed.forEach { peak ->
+                                KlipperButton("Use %.1f Hz".format(peak.frequencyHz)) {
+                                    onUse(axis, peak.frequencyHz)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    KlipperButtons {
+                        KlipperButton("Forget these measurements") { viewModel.clearMeasurements() }
+                    }
+                }
+            }
         }
     }
 }

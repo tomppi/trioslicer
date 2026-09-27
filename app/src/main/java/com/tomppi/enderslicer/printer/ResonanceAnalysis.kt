@@ -15,6 +15,17 @@ data class ResonancePeak(
     val signalToNoise: Double get() = if (noise > 0.0) magnitude / noise else 0.0
 }
 
+/** A frequency the machine answered at more than once, and how often. */
+data class AgreedPeak(
+    val frequencyHz: Double,
+    /** How many measurements answered here. */
+    val seenIn: Int,
+    /** How many measurements there were to answer in. */
+    val ofRuns: Int,
+    /** The middle of the responses here, for ranking one agreement over another. */
+    val typicalMagnitude: Double,
+)
+
 /** The machine's response across the swept band: one magnitude per frequency. */
 data class ResonanceCurve(
     val frequencies: DoubleArray,
@@ -86,6 +97,57 @@ object ResonanceAnalysis {
      */
     fun sweepDuration(fStart: Double, fEnd: Double, hzPerSec: Double): Double =
         sweepTime(fStart, hzPerSec, fEnd)
+
+    /**
+     * The frequencies that came back across several measurements.
+     *
+     * One measurement is a picture of where the phone was standing as much as of the
+     * machine: a frame's modes are loud at some places and quiet at others, so a peak that
+     * appears in one run and nowhere else is mostly a fact about the phone. What a shaper
+     * wants is the frequency that returns wherever the phone is put - and, in practice, the
+     * one that agrees with whatever the printer was calibrated with.
+     *
+     * Peaks within [toleranceHz] of each other are treated as the same frequency. The
+     * tolerance is deliberately loose: the analysis resolves hertz, but a machine under a
+     * hand and a phone on a plastic base do not repeat to better than a couple.
+     */
+    fun agreeing(
+        measurements: List<List<ResonancePeak>>,
+        toleranceHz: Double = 3.0,
+        minimumRuns: Int = 2,
+    ): List<AgreedPeak> {
+        if (measurements.size < minimumRuns) return emptyList()
+        data class Cluster(val frequencies: MutableList<Double>, val runs: MutableSet<Int>, val magnitudes: MutableList<Double>)
+        val clusters = mutableListOf<Cluster>()
+        measurements.forEachIndexed { run, peaks ->
+            peaks.forEach { peak ->
+                val cluster = clusters.firstOrNull { candidate ->
+                    val centre = candidate.frequencies.sorted()[candidate.frequencies.size / 2]
+                    abs(centre - peak.frequencyHz) <= toleranceHz
+                }
+                if (cluster == null) {
+                    clusters += Cluster(mutableListOf(peak.frequencyHz), mutableSetOf(run), mutableListOf(peak.magnitude))
+                } else {
+                    cluster.frequencies += peak.frequencyHz
+                    cluster.runs += run
+                    cluster.magnitudes += peak.magnitude
+                }
+            }
+        }
+        return clusters
+            .filter { it.runs.size >= minimumRuns }
+            .map { cluster ->
+                val sorted = cluster.frequencies.sorted()
+                val magnitudes = cluster.magnitudes.sorted()
+                AgreedPeak(
+                    frequencyHz = sorted[sorted.size / 2],
+                    seenIn = cluster.runs.size,
+                    ofRuns = measurements.size,
+                    typicalMagnitude = magnitudes[magnitudes.size / 2],
+                )
+            }
+            .sortedWith(compareByDescending<AgreedPeak> { it.seenIn }.thenByDescending { it.typicalMagnitude })
+    }
 
     /**
      * The recording with its slow parts removed: gravity, and the drift of however the phone

@@ -133,6 +133,25 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
      */
     val measurement: StateFlow<KlipperMeasurementState> = _measurement.asStateFlow()
 
+    private val _measurementHistory = MutableStateFlow<List<KlipperResonanceMeasurement>>(emptyList())
+
+    /**
+     * The measurements so far, newest last.
+     *
+     * Kept because one measurement is as much a picture of where the phone was standing as of
+     * the machine: a peak that appears in one run and nowhere else is mostly a fact about the
+     * phone's position, while the frequency that comes back wherever it is put is the
+     * machine's. Both are on screen, and the difference between them is the point.
+     */
+    val measurementHistory: StateFlow<List<KlipperResonanceMeasurement>> =
+        _measurementHistory.asStateFlow()
+
+    /** Forget the runs so far, for a new axis or a machine that has been changed. */
+    fun clearMeasurements() {
+        _measurementHistory.value = emptyList()
+        _measurement.value = KlipperMeasurementState.Idle
+    }
+
     /**
      * Measure one axis with the phone's own accelerometer, in the background.
      *
@@ -160,7 +179,11 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             val result = runCatching { measureAxis(axis, freqStart, freqEnd, hzPerSec) }
             clock.cancel()
             _measurement.value = result.fold(
-                onSuccess = { KlipperMeasurementState.Done(it) },
+                onSuccess = { measurement ->
+                    _measurementHistory.value =
+                        (_measurementHistory.value + measurement).takeLast(MAX_REMEMBERED_RUNS)
+                    KlipperMeasurementState.Done(measurement)
+                },
                 onFailure = { error ->
                     KlipperMeasurementState.Failed(
                         axis.uppercase(),
@@ -218,6 +241,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     private companion object {
         /** Seconds to record before the sweep, so there is a quiet stretch to compare with. */
         const val RECORDING_MARGIN = 3.0
+
+        /** How many measurements stay on screen to be compared with each other. */
+        const val MAX_REMEMBERED_RUNS = 8
     }
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         repository.saveShapers(settings)
