@@ -18,6 +18,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   timestamps rather than assumed, because a sensor delivering slower than it promised would
   put every frequency in the wrong place.
 
+### Fixed
+
+An audit of the new front end - five agents, one per area, every finding checked against the
+code by hand before it was fixed - turned up the following. They are grouped, not ordered:
+the first three cost a print or a printer, and the rest cost trust in a screen.
+
+- **A file name with a space made every print button do nothing.** klippy re-parses a
+  non-traditional command with shlex, so `FILENAME=Phone Stand.gcode` is two words to it and
+  the answer is "Malformed command" - after the file had been copied in and listed. Names are
+  quoted wherever one is interpolated into a command.
+- **A saved shaper value could be lost by looking at another tab.** Only one tab is composed
+  at a time, and a composable that leaves composition is forgotten rather than saved, so the
+  Shaping fields were re-derived from the configuration the moment the screen was left - and
+  the save that followed wrote the configured value, not the frequency that had just been
+  measured. The sub-tabs keep their state now, as the destination above them always claimed to.
+- **A damping ratio of 1.0 could stop the printer.** Every shaper klippy has divides by
+  `sqrt(1 - zeta^2)`: sent, it shuts the printer down; saved, it leaves a configuration the
+  host will not start from. It is refused at the screen and again where the file is written.
+- **The measurement stopped short of the band** on the first measurement after homing - the
+  recording allowed three seconds beyond the sweep and the module spends three seconds driving
+  to the test point first, so every frequency above ~116 Hz was silently absent. The recording
+  allows fifteen now.
+- **Low resonances were being dropped.** The drive's own acceleration climbs with the
+  frequency, so a peak graded against the middle of a tilted curve needed four or five times
+  its neighbourhood instead of two. The ramp is divided out of every curve, not only the one
+  measured from the toolhead.
+- A host restart dropped the wake lock and never took it again; a relaunch after a crash left
+  the bridge pumping the previous pty while the new host was pointed at another one, leaking a
+  descriptor per relaunch; and a start arriving during a restart could put two klippy processes
+  on one socket. The lock is taken by every launch, the bridge is stopped and the old
+  descriptor closed before a new pty is opened, and launches are serialised.
+- An imported configuration that names a `baud:` rate is accepted: klippy does not read it on a
+  pty, and then refused to start over the option it never used.
+- Saving shaper values appended a second copy of every key, because the option lookup
+  understood `name:` and the configuration ships `name = `.
+- The Files screen can read the app's own G-code: OrcaSlicer keeps the printing time, the
+  filament used, the layer height and the thumbnail in a trailing block below the G-code, which
+  was never read, so only the slicer's name was shown.
+- The mesh reads its saved profiles as the dictionary klippy sends rather than as an array, so
+  profiles on the printer appear and can be loaded or removed; a bed that has never been probed
+  is no longer a loaded mesh of one row by no points; probing waits for the machine to be homed;
+  and removing a profile asks first.
+- A `[temperature_fan]` is given the command it has a handler for rather than the heater one,
+  PID calibration addresses the heater by the short name, the micro-controller timing is asked
+  for again once the printer is up, and a board the app can drive can be granted USB permission
+  instead of being found, recognised and left on the bus.
+- Jogging asks whether the axis is homed rather than the whole machine, the feedrate and extrude
+  speed fields reach the printer instead of being dropped, and the cancel dialog no longer
+  promises that the heaters are left on - this printer's own `CANCEL_PRINT` turns them off.
+
 ### Notes
 
 - The recording and the printer share no clock. The analysis finds the moment the machine
