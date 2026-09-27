@@ -66,7 +66,7 @@ Licensing is a separate open question with its own note:
   (blender-engine-arm64-v1.2.0.zip, about 185 MB: engine, runtime libs, assets),
   fetch-cura-resources.sh.
 - The Klipper host payload joins them: fetch-klipper-android.sh stages
-  klipper-host-arm64-v0.13.0.zip (about 8 MB, 957 files: klippy, the Android CPython
+  klipper-host-arm64-v0.13.0.zip (about 14 MB: 957 payload files - klippy, the Android CPython
   standard library, the compiled C helper and the extensions). It is a release asset
   for the same reason the engines are - a clone and CI cannot otherwise produce an app
   with a host in it, because building the payload needs an interpreter cross-compiled

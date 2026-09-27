@@ -334,18 +334,22 @@ jobs:
         run: |
           chmod +x scripts/fetch-klipper-android.sh
           scripts/fetch-klipper-android.sh 2>&1 | tee klipper-host-fetch.log
-          # The app cannot start its host without these three, and the service checks
+          # The app cannot start its host without all of these, and the service checks
           # the same ones before it tries: a payload that arrives incomplete has to
-          # fail the build rather than the printer.
+          # fail the build rather than the printer. The libraries are the half that is
+          # easy to forget - without them the payload is Python that nothing can run.
           for f in \
             app/src/main/assets/klipper/klippy/klippy.py \
             app/src/main/assets/klipper/klippy/chelper/c_helper.so \
-            app/src/main/assets/klipper/lib/python3.11/encodings/__init__.py; do
-            [ -s "$f" ] || { echo "Klipper payload missing: $f" >&2; exit 1; }
+            app/src/main/assets/klipper/lib/python3.11/encodings/__init__.py \
+            app/src/main/jniLibs/arm64-v8a/libklipper_exec.so \
+            app/src/main/jniLibs/arm64-v8a/libklipper_pty.so \
+            app/src/main/jniLibs/arm64-v8a/libpython3.11.so; do
+            [ -s "$f" ] || { echo "Klipper host missing: $f" >&2; exit 1; }
           done
           count=$(find app/src/main/assets/klipper -type f | wc -l)
           [ "$count" -ge 950 ] || { echo "expected ~957 payload files, found $count" >&2; exit 1; }
-          echo "Klipper host payload staged: $count files"
+          echo "Klipper host staged: $count payload files and 3 libraries"
 
       - name: Build pinned host CuraEngine fixture binary
         run: |
@@ -459,6 +463,18 @@ jobs:
           grep -q 'lib/arm64-v8a/libopenvdb.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libavcodec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libOpenImageDenoise_core.so' apk-contents.log
+          # The built-in printer host is two halves, and it needs both: the libraries
+          # that run klippy and give it a port to talk to, and the payload it runs.
+          # A build with the payload and no interpreter installs, opens, slices, and
+          # can only report that the host would not start - which is what this check
+          # exists to catch, after a release very nearly went out that way.
+          grep -q 'lib/arm64-v8a/libklipper_exec.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libklipper_pty.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libpython3.11.so' apk-contents.log
+          grep -q 'assets/klipper/klippy/klippy.py' apk-contents.log
+          grep -q 'assets/klipper/klippy/chelper/c_helper.so' apk-contents.log
+          grep -q 'assets/klipper/lib/python3.11/encodings/__init__.py' apk-contents.log
+          grep -q 'assets/klipper/COPYING' apk-contents.log
           grep -q 'assets/blender/scripts/startup/blender_mcp_slim.py' apk-contents.log
           grep -q 'assets/blender/licenses/blender/GPL-license.txt' apk-contents.log
           grep -q 'assets/cura/definitions/version.txt' apk-contents.log

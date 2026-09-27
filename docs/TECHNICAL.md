@@ -25,7 +25,7 @@ scripts/fetch-cura-resources.sh
 scripts/fetch-orca-engine-android.sh      # ~34 MB release asset; ORCA_ENGINE_DIR for a local build
 scripts/fetch-prusa-engine-android.sh
 scripts/fetch-blender-engine-android.sh   # ~185 MB release asset: engine, runtime libs, assets
-scripts/fetch-klipper-android.sh          # ~8 MB release asset: klippy, the Android CPython stdlib, its C helper
+scripts/fetch-klipper-android.sh          # ~14 MB release asset: klippy, the Android CPython stdlib, its C helper, and the interpreter that runs it
 
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
 export APP_JNILIBS_DIR="$PWD/app/src/main/jniLibs"
