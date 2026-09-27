@@ -461,7 +461,7 @@ class KlipperPrinterRepository(
     fun enableMotors() = send("M17")
 
     /** Leave one of the file's objects out of the print that is running. */
-    fun excludeObject(name: String) = send("EXCLUDE_OBJECT NAME=$name")
+    fun excludeObject(name: String) = send("EXCLUDE_OBJECT NAME=" + KlipperScripts.quoted(name))
 
     /** Write klippy's saved values into the config file; it restarts to apply them. */
     fun saveConfig() = send("SAVE_CONFIG")
@@ -520,8 +520,9 @@ class KlipperPrinterRepository(
                 val directory = gcodeDirectory()
                 val fileName = KlipperPrint.fileName(name)
                 File(sourcePath).copyTo(File(directory, fileName), overwrite = true)
-                append("SDCARD_PRINT_FILE FILENAME=$fileName", KlipperConsoleLine.Source.SENT)
-                client?.gcodeAsync("SDCARD_PRINT_FILE FILENAME=$fileName")
+                val command = "SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName)
+                append(command, KlipperConsoleLine.Source.SENT)
+                client?.gcodeAsync(command)
                     ?: throw IllegalStateException("not connected")
                 fileName
             }.onFailure { e -> _state.update { it.copy(error = e.message) } }
@@ -541,10 +542,10 @@ class KlipperPrinterRepository(
     /** Start one of those files printing, by the name the printer knows it by. */
     suspend fun printGcodeFile(name: String) {
         val fileName = KlipperPrint.fileName(name)
-        append("SDCARD_PRINT_FILE FILENAME=$fileName", KlipperConsoleLine.Source.SENT)
+        append("SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName), KlipperConsoleLine.Source.SENT)
         withContext(Dispatchers.IO) {
             runCatching {
-                client?.gcodeAsync("SDCARD_PRINT_FILE FILENAME=$fileName")
+                client?.gcodeAsync("SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName))
                     ?: throw IllegalStateException("not connected")
             }.onFailure { e -> _state.update { it.copy(error = e.message) } }
         }

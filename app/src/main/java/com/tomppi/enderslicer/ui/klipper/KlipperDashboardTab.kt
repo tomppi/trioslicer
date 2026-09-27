@@ -93,7 +93,12 @@ internal fun KlipperDashboardTab(
         KlipperConfirmDialog(
             title = "Stop this print?",
             text = "The printer stops where it is and the print cannot be resumed. " +
-                "The head is parked and the heaters are left as they are.",
+                // This printer's own CANCEL_PRINT turns the heaters off and parks the head,
+                // and an imported configuration may do anything - so the app states what it
+                // knows: the printer decides.
+                "The printer's own CANCEL_PRINT decides what happens next. The " +
+                    "configuration this app ships turns the heaters off, re-homes and parks " +
+                    "the head.",
             confirmLabel = "Stop the print",
             destructive = true,
             onConfirm = { viewModel.cancelPrint() },

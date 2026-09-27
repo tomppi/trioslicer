@@ -274,4 +274,37 @@ class KlipperConfigFileTest {
         val config = "[include app.cfg]\n[mcu]\nserial: /dev/ttyUSB0\n"
         assertEquals(config, KlipperConfigFile.withAppInclude(config))
     }
+
+    @Test
+    fun theAppsOwnIncludeIsNotAnEdit() {
+        // The Machine screen asks whether the configuration is still the one this version
+        // ships. The printer's file carries the app's include and the reference copy does not,
+        // so comparing them raw answered "yes, it has been edited" for every printer.
+        val shipped = "[mcu]\nserial: /dev/ttyUSB0\n"
+        val running = KlipperConfigFile.withAppInclude(shipped)
+        assertFalse(KlipperConfigFile.differsFromShipped(running, shipped))
+        // An edit is still an edit.
+        val edited = running.replace("serial: /dev/ttyUSB0", "serial: /dev/ttyACM0")
+        assertTrue(KlipperConfigFile.differsFromShipped(edited, shipped))
+    }
+
+    @Test
+    fun anImportedConfigurationLosesTheBaudRateItCannotUse() {
+        val brought = """
+            [mcu]
+            serial: /dev/ttyUSB0
+            baud: 250000
+            restart_method: command
+
+            [printer]
+            kinematics: cartesian
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(brought, "/data/pty", "/data/gcodes")
+        // klippy does not read baud on a pty, and then refuses to start over the option it
+        // never used - so a configuration brought from a printer on USB has to lose it.
+        assertFalse("baud is not read on a pty and then rejected", rewrite.text.contains("baud:"))
+        assertFalse(rewrite.text.contains("restart_method"))
+        assertTrue(rewrite.text.contains("serial: /data/pty"))
+    }
 }
+

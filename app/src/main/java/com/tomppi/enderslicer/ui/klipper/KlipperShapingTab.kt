@@ -93,7 +93,10 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
         ShaperCard(
             axis = "X",
             edit = x,
-            enabled = state.isReady,
+            // Not while a sweep is running: the sweep disables shaping and restores what it
+            // stashed when it finishes, so an apply now would be undone a minute later with
+            // nothing on screen to say so.
+            enabled = state.isReady && measurementState !is KlipperMeasurementState.Measuring,
             onEdit = { x = it },
             onApply = { edit ->
                 edit.frequency()?.let { frequency ->
@@ -104,7 +107,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
         ShaperCard(
             axis = "Y",
             edit = y,
-            enabled = state.isReady,
+            enabled = state.isReady && measurementState !is KlipperMeasurementState.Measuring,
             onEdit = { y = it },
             onApply = { edit ->
                 edit.frequency()?.let { frequency ->
@@ -209,8 +212,12 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                     } else {
                         "Measure axis " + measureAxis.uppercase()
                     },
+                    // Not while a print is running: the sweep drives the toolhead to the middle
+                    // of the travel and holds ACCEL at the sweep maximum for a minute, so it
+                    // has no business interleaving with a print that is under way.
                     enabled = state.isReady &&
                         state.isHomed &&
+                        !state.isPrinting &&
                         measurementState !is KlipperMeasurementState.Measuring,
                     onClick = {
                         // The run belongs to the view model: leaving this screen does not
@@ -221,7 +228,12 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                             freqEnd = SWEEP_END_HZ,
                             hzPerSec = SWEEP_HZ_PER_SEC,
                             onToolhead = onToolhead,
-                            movingMassGrams = parseDecimal(movingMass) ?: 350.0,
+                            // Bounded, because 0 g means the correction divides by zero:
+                            // every frequency came back infinite, "Use ..." wrote the word
+                            // "Infinity" into the field, and that field cannot be parsed.
+                            movingMassGrams = parseDecimal(movingMass)
+                                ?.takeIf { it in 50.0..5000.0 }
+                                ?: 350.0,
                         )
                     },
                 )
@@ -504,7 +516,17 @@ private data class ShaperEdit(
 ) {
     fun frequency(): Double? = parseDecimal(frequencyText)?.takeIf { it > 0.0 }
 
-    fun damping(): Double? = parseDecimal(dampingText)?.takeIf { it > 0.0 }
+    /**
+     * The damping ratio, which is bounded above by arithmetic rather than by taste.
+     *
+     * klippy accepts up to and including 1.0, and every shaper it has divides by
+     * sqrt(1 - zeta^2) - so 1.0 is a division by zero. Sent, it runs inside a G-code handler
+     * and klippy shuts the printer down ("Internal error on command"); written into the
+     * configuration, it stops the host from starting at all, and the file has to be edited by
+     * hand before the printer works again. 0.9 is the highest value that means anything and
+     * it is the highest this will send.
+     */
+    fun damping(): Double? = parseDecimal(dampingText)?.takeIf { it > 0.0 && it <= MAX_DAMPING_RATIO }
 
     companion object {
         fun of(shaper: KlipperShaper?): ShaperEdit = ShaperEdit(
@@ -523,6 +545,8 @@ private data class ShaperEdit(
  * into 50. The analysis is handed the same three numbers, and gets its frequency axis from
  * them rather than from anything the printer told it.
  */
+private const val MAX_DAMPING_RATIO = 0.9
+
 private const val SWEEP_START_HZ = 20.0
 private const val SWEEP_END_HZ = 120.0
 private const val SWEEP_HZ_PER_SEC = 2.0

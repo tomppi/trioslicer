@@ -188,23 +188,13 @@ class ResonanceAnalysisTest {
         fun at(curve: ResonanceCurve, frequency: Double): Double =
             curve.magnitudes[curve.frequencies.indexOfFirst { it >= frequency }]
 
-        val raw = ResonanceAnalysis.response(samples, sampleRate, 0.0, fStart, fEnd, hzPerSec)
-        // The drive is not flat: its acceleration is accel_per_hz * f, so the raw curve climbs
-        // with frequency whatever the machine is doing - three times as high at the top of the
-        // band as at a third of the way up. A peak read against the middle of that is a
-        // comparison with the drive, not with the machine.
-        assertTrue(
-            "the raw baseline should tilt with the drive",
-            at(raw, 110.0) > 2.5 * at(raw, 40.0),
-        )
-
-        val normalised = ResonanceAnalysis.response(
-            samples, sampleRate, 0.0, fStart, fEnd, hzPerSec, ridingTheDrive = true,
-        )
-        // Divided out, the machine's answer is what is left, and the baseline no longer tilts:
-        // the same value a third of the way up the band and near the top of it, so that the
-        // middle of the curve means something to compare a peak against.
-        assertEquals("the tilt is gone", at(normalised, 40.0), at(normalised, 110.0), 0.2 * at(normalised, 40.0))
+        val normalised = ResonanceAnalysis.response(samples, sampleRate, 0.0, fStart, fEnd, hzPerSec)
+        // The drive's own acceleration is accel_per_hz * f, so it climbs with frequency and
+        // tilts everything it is fed into - which is why the division is not optional: on a
+        // curve that rises threefold across the band, the middle of it is no yardstick, and a
+        // low resonance (a bed at 35 Hz) needs several times its neighbourhood to be seen.
+        // Divided out, the same value a third of the way up the band and near the top of it.
+        assertEquals("the baseline is flat", at(normalised, 40.0), at(normalised, 110.0), 0.2 * at(normalised, 40.0))
         val peaks = normalised.peaks(minimumSnr = 1.5)
         assertTrue("no peak found", peaks.isNotEmpty())
         assertEquals("and the machine answers at its resonance", resonance, peaks.first().frequencyHz, 3.0)

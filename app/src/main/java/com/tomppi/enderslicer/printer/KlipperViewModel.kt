@@ -63,11 +63,30 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
      * Not a G-code restart: klippy's own restart makes it exit, and the process it
      * exits from is the one this app started and would have to start again.
      */
-    fun restartHost() = KlipperEngineService.restart(getApplication())
+    /**
+     * Restart the host, saving anything klippy is holding first.
+     *
+     * A calibration that has been accepted but not saved - a probe offset, a PID, a mesh
+     * profile - lives only in klippy's memory, and klippy writes it when SAVE_CONFIG is run
+     * and at no other time: not on a signal, not on the way out. Restarting without this
+     * discarded the lot, and the dialog that promised only that a print would be lost said
+     * nothing about it.
+     */
+    fun restartHost() {
+        viewModelScope.launch {
+            if (state.value.saveConfigPending) {
+                repository.saveConfig()
+                // klippy answers when it has written the file; a moment is enough, and
+                // restarting into a half-written config would be worse than waiting.
+                delay(SAVE_CONFIG_SETTLE_MS)
+            }
+            KlipperEngineService.restart(getApplication())
+        }
+    }
 
     // The machine.
     fun home(axes: String = "") = repository.home(axes)
-    fun jog(axis: String, distance: Double) = repository.jog(axis, distance)
+    fun jog(axis: String, distance: Double, feedrate: Int) = repository.jog(axis, distance, feedrate)
     fun adjustZOffset(delta: Double, move: Boolean = true) = repository.adjustZOffset(delta, move)
     fun resetZOffset() = repository.resetZOffset()
     fun disableMotors() = repository.disableMotors()
@@ -95,7 +114,7 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun cancelPrint() = repository.cancelPrint()
 
     // Extrusion and the print's own adjustments.
-    fun extrude(lengthMm: Double) = repository.extrude(lengthMm)
+    fun extrude(lengthMm: Double, feedrate: Int) = repository.extrude(lengthMm, feedrate)
     fun setPressureAdvance(advance: Double) = repository.setPressureAdvance(advance)
     fun setRetraction(length: Double, speed: Double) = repository.setRetraction(length, speed)
     fun setFan(percent: Int) = repository.setFan(percent)
@@ -212,9 +231,21 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         movingMassGrams: Double,
     ): KlipperResonanceMeasurement = withContext(Dispatchers.IO) {
         val accelerometer = PhoneAccelerometer(getApplication())
+        // Before the printer is asked to do anything: a phone without an accelerometer used to
+        // be discovered after the sweep had already been commanded, so the machine ran for a
+        // minute to measure nothing at all.
+        if (accelerometer.sensor == null) {
+            throw IllegalStateException("this phone has no accelerometer to measure with")
+        }
         val duration = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec)
         val recording = coroutineScope {
-            val recorder = async { accelerometer.record(duration + 3.0) }
+            // Long enough to include the journey as well as the sweep: the module drives to
+            // the middle of the travel before it starts - three seconds on this printer, more
+            // on a bigger one - and the analysis drops every frequency whose window runs past
+            // the end of the recording. With three seconds of margin the curve simply stopped
+            // near 116 Hz on the first measurement after homing, and a machine ringing above
+            // that was reported as having nothing to say.
+            val recorder = async { accelerometer.record(duration + RECORDING_MARGIN) }
             // A beat of quiet first, which is what the analysis uses as the machine's own
             // noise floor, and what it compares the sweep against to find where it began.
             delay(700)
@@ -257,7 +288,6 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
             // On the toolhead the sensor rides the drive as well as the machine, and the
             // drive's own acceleration climbs with frequency: it has to be divided out or the
             // curve is mostly the sweep rather than the machine.
-            ridingTheDrive = onToolhead,
         )
         if (curve.magnitudes.isEmpty()) {
             throw IllegalStateException("the sweep was too short to measure")
@@ -288,7 +318,12 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
 
     private companion object {
         /** Seconds to record before the sweep, so there is a quiet stretch to compare with. */
-        const val RECORDING_MARGIN = 3.0
+        /**
+         * Seconds recorded beyond the sweep: the travel to the test point, its dwell, and
+         * enough slack for a larger printer. It is also what the progress bar counts, so it
+         * is not free - but a band that stops short is worse than a minute of waiting.
+         */
+        const val RECORDING_MARGIN = 15.0
 
         /** How many measurements stay on screen to be compared with each other. */
         const val MAX_REMEMBERED_RUNS = 8
@@ -311,6 +346,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
          * itself.
          */
         const val DEFAULT_MOVING_MASS_GRAMS = 350.0
+
+        /** How long to let klippy finish writing its saved values before restarting. */
+        const val SAVE_CONFIG_SETTLE_MS = 750L
     }
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         repository.saveShapers(settings)

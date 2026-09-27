@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.system.Os
 import android.util.Log
@@ -95,7 +96,6 @@ class KlipperEngineService : Service() {
             return START_STICKY
         }
         if (process == null) {
-            acquireWakeLock()
             Thread({ launch() }, "klipper-launch").start()
         } else {
             // klippy is already up, so this request is about the printer. It has just
@@ -119,8 +119,35 @@ class KlipperEngineService : Service() {
     }
 
     /** Extract the payload, prepare a printer, then run klippy. */
+    /**
+     * One host at a time, whatever the intents say.
+     *
+     * A restart clears the process before the new one exists, so a start arriving while the
+     * restart unwinds - a rotation re-delivering the USB attach intent, or a Start button
+     * pressed while the screen says "not reachable" - began a second launch. Two klippy
+     * processes then share a socket path and a log, the second unlinks the first's socket,
+     * and the app talks to whichever won. The lock is held across a restart too, so the
+     * second request waits rather than racing.
+     */
+    private val launchLock = Any()
+
     private fun launch() {
+        synchronized(launchLock) {
+            if (process != null) {
+                Log.i(TAG, "a host is already running; ignoring the start")
+                return
+            }
+            launchLocked()
+        }
+    }
+
+    private fun launchLocked() {
         stopping = false
+        // Held for the life of a run, and taken here rather than by the caller: a restart
+        // releases it on the way out, so a lock taken only on the plain start path was gone
+        // for good after the first restart - and with it the guarantee that a long print
+        // survives the screen going off.
+        acquireWakeLock()
         // Held so that the finally below can tell this run apart from the next one:
         // a restart starts the new host before this one has finished unwinding.
         var started: Process? = null
@@ -138,6 +165,16 @@ class KlipperEngineService : Service() {
             // The printer is reached through a pty this process owns one end of:
             // klippy opens a device node and applies termios to it, and there is no
             // device node to give it.
+            // Whatever the last run left behind goes first. A host that exited on its own - a
+            // crash, an OOM kill - left the bridge pumping a pty whose klippy is gone, and
+            // PrinterBridge.start() answers "already running" without adopting the new one:
+            // the restarted klippy would be pointed at a node nobody reads. Closing the old
+            // master here is also what keeps a crash loop from leaking one per relaunch.
+            PrinterBridge.stop()
+            if (ptyMasterFd >= 0) {
+                runCatching { ParcelFileDescriptor.adoptFd(ptyMasterFd).close() }
+                ptyMasterFd = -1
+            }
             val pty = KlipperPty.open()
             if (pty == null) {
                 Log.e(TAG, "could not open a pty for the printer")
@@ -446,8 +483,10 @@ class KlipperEngineService : Service() {
      */
     private fun restartHost() {
         Log.i(TAG, "restarting the host")
-        stopEngine()
-        launch()
+        synchronized(launchLock) {
+            stopEngine()
+            launch()
+        }
     }
 
     private fun bridgePrinter(masterFd: Int) {
@@ -505,7 +544,10 @@ class KlipperEngineService : Service() {
 
     /** Files whose absence means the extraction did not really finish. */
     private fun payloadIsComplete(root: File) =
-        PAYLOAD_SENTINELS.all { File(root, it).isFile }
+        // The module app.cfg loads at every start: without it klippy refuses the
+        // configuration outright, so a payload missing it is not a degraded host, it is no
+        // host at all.
+        PAYLOAD_SENTINELS.all { File(root, it).isFile } && countFiles(root) >= MINIMUM_PAYLOAD_FILES
 
     /**
      * Copy one asset entry, recursing into directories.
@@ -645,8 +687,24 @@ class KlipperEngineService : Service() {
         private val PAYLOAD_SENTINELS = listOf(
             "klippy/klippy.py",
             "klippy/chelper/c_helper.so",
+            "klippy/extras/resonance_playback.py",
             "lib/python3.11/encodings/__init__.py",
         )
+
+        /**
+         * A tree this size, or the extraction did not finish.
+         *
+         * The sentinels above catch a payload that is wrong; this catches one that is
+         * incomplete, which is the shape a copy that half failed leaves behind - and the
+         * stamp that says "already extracted" would otherwise freeze it for the life of the
+         * installed version.
+         */
+        private const val MINIMUM_PAYLOAD_FILES = 800
+
+        private fun countFiles(root: File): Int {
+            val entries = root.listFiles() ?: return 0
+            return entries.sumOf { if (it.isDirectory) countFiles(it) else 1 }
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, KlipperEngineService::class.java)

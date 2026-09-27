@@ -59,7 +59,24 @@ internal object KlipperConfigFile {
      * hand-written configuration - pins, kinematics, limits - has moved on.
      */
     fun differsFromShipped(running: String, shipped: String): Boolean =
-        withoutSavedBlock(running).trim() != withoutSavedBlock(shipped).trim()
+        withoutAppInclude(withoutSavedBlock(running)).trim() !=
+        withoutAppInclude(withoutSavedBlock(shipped)).trim()
+
+    /**
+     * The configuration without the app's own include line.
+     *
+     * The printer's file carries "[include app.cfg]" and the reference copy the app keeps
+     * does not, so comparing them directly made every configuration look edited - the Machine
+     * screen told the user their configuration was not the one this version ships even when
+     * they had never touched it. The line is the app's, and it is not evidence of an edit.
+     */
+    fun withoutAppInclude(text: String): String = text.lines()
+        .filterNot { line ->
+            val trimmed = line.trim()
+            trimmed.startsWith("[include", ignoreCase = true) &&
+                trimmed.contains("app.cfg", ignoreCase = true)
+        }
+        .joinToString("\n")
 
     /** The shipped default, with the values the printer has already saved carried over. */
     fun withSavedValues(shipped: String, existing: String): String {
@@ -134,6 +151,17 @@ internal object KlipperConfigFile {
         if (restartAt >= 0) {
             lines.removeAt(restartAt)
             changes += "removed restart_method, which a printer on this app's connection does not have"
+        }
+
+        // baud goes the same way, and for a subtler reason: klippy does not read it on a pty,
+        // and then refuses to start over the option it never used - "Option 'baud' is not
+        // valid in section 'mcu'". The app's own configuration has it only in a comment, so
+        // this bites the configuration somebody brings from a printer that talked over USB,
+        // which is exactly the configuration the import screen exists to accept.
+        val baudAt = indexOfOption(lines, "mcu", BAUD_OPTION)
+        if (baudAt >= 0) {
+            lines.removeAt(baudAt)
+            changes += "removed baud: the app hands klippy a pty, which has no baud rate"
         }
 
         // The virtual SD card is where this app puts the file it prints, so it has to be
@@ -229,11 +257,21 @@ internal object KlipperConfigFile {
                 "shaper_type_$axis" to setting.type.lowercase(),
                 "shaper_freq_$axis" to number(setting.frequency, 1),
             ) + listOfNotNull(
-                setting.dampingRatio?.let { "damping_ratio_$axis" to number(it, 3) },
+                // Bounded here as well as in the screen: klippy divides by sqrt(1 - zeta^2),
+                // so a saved 1.0 is a configuration the host refuses to start from.
+                setting.dampingRatio
+                    ?.takeIf { it > 0.0 && it <= MAX_DAMPING_RATIO }
+                    ?.let { "damping_ratio_$axis" to number(it, 3) },
             )
             wanted.forEach { (key, value) ->
                 val at = (header + 1 until end).firstOrNull { index ->
-                    body[index].trim().substringBefore(':').trim().equals(key, ignoreCase = true)
+                    // Either separator: klippy reads both, the configuration this app ships
+                    // writes "shaper_type_x = mzv", and an earlier version of this only
+                    // understood "name:" - so every save appended a second copy of each key.
+                    // klippy takes the last one, so the value was right and the file grew by
+                    // four lines a save, with the stale line first for anyone reading it.
+                    val name = body[index].trim().substringBefore(':').substringBefore('=').trim()
+                    name.equals(key, ignoreCase = true)
                 }
                 if (at != null) {
                     body[at] = "$key = $value"
@@ -314,6 +352,7 @@ internal object KlipperConfigFile {
     private val SERIAL_OPTION = Regex("serial\\s*:.*", RegexOption.IGNORE_CASE)
     private val CANBUS_OPTION = Regex("canbus_uuid\\s*:.*", RegexOption.IGNORE_CASE)
     private val RESTART_OPTION = Regex("restart_method\\s*:.*", RegexOption.IGNORE_CASE)
+    private val BAUD_OPTION = Regex("baud\\s*:.*", RegexOption.IGNORE_CASE)
     /**
      * A number as klippy writes one in its own configuration: a dot for the decimal
      * point, whatever language the phone is set to. The same trap as the one that sent
@@ -321,6 +360,9 @@ internal object KlipperConfigFile {
      */
     private fun number(value: Double, decimals: Int): String =
         java.lang.String.format(java.util.Locale.ROOT, "%." + decimals + "f", value)
+
+    /** The highest damping ratio klippy can do arithmetic with. */
+    private const val MAX_DAMPING_RATIO = 0.9
 
     private val SDCARD_PATH = Regex("path\\s*:.*", RegexOption.IGNORE_CASE)
     private val INCLUDE = Regex("\\[include\\s+(.+?)]", RegexOption.IGNORE_CASE)

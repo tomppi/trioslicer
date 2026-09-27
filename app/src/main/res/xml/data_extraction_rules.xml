@@ -37,6 +37,14 @@
         <exclude domain="file" path="logs/" />
         <exclude domain="file" path="annotations/" />
         <exclude domain="file" path="crash.log" />
+        <!-- And the printer side, which the Klipper work added afterwards: gcodes/
+             holds a copy of everything printed, never reaped, and klipper-host/ the
+             running printer.cfg with the calibrations klippy has saved in it. The
+             first is regenerable and large, the second names this phone's paths and
+             can be exported from the Machine screen. -->
+        <exclude domain="file" path="gcodes/" />
+        <exclude domain="file" path="klipper-host/" />
+        <exclude domain="file" path="printer-pty" />
     </cloud-backup>
     <device-transfer>
         <!-- As in the cloud-backup rules above: the OctoPrint credential is
@@ -45,6 +53,14 @@
         <exclude domain="sharedpref" path="octoprint_client.xml" />
         <exclude domain="sharedpref" path="harness_config.xml" />
         <exclude domain="file" path="smart-infill/" />
+        <!-- And the printer side, which the Klipper work added afterwards: gcodes/
+             holds a copy of everything printed, never reaped, and klipper-host/ the
+             running printer.cfg with the calibrations klippy has saved in it. The
+             first is regenerable and large, the second names this phone's paths and
+             can be exported from the Machine screen. -->
+        <exclude domain="file" path="gcodes/" />
+        <exclude domain="file" path="klipper-host/" />
+        <exclude domain="file" path="printer-pty" />
         <!-- And the same files/ directories: a replacement device has no use for
              half a gigabyte of engine tree and its scratch home, models,
              G-code or FEA reports it imports or generates itself - nor for the

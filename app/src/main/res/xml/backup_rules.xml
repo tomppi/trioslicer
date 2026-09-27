@@ -5,6 +5,17 @@
          30-day session cookie, both encrypted with a Keystore key that never
          leaves this device, so a restored copy is ciphertext nothing can read.
          The address and session ids beside them are this device's business. -->
+    <!-- And the printer side of the app, which the Klipper work added afterwards:
+         gcodes/ holds a copy of everything that has been printed and is never reaped,
+         and klipper-host/ holds the running printer.cfg - with the PID calibration, the
+         probe offset and any mesh profile klippy has saved - beside its shipped copy,
+         the previous one, and the pty symlink. The first is regenerable and large; the
+         second is per-device (the paths in it name this phone) and can be exported from
+         the Machine screen. Between them they would push a backup past its quota, and
+         an over-quota backup is not a partial one. -->
+    <exclude domain="file" path="gcodes/" />
+    <exclude domain="file" path="klipper-host/" />
+    <exclude domain="file" path="printer-pty" />
     <exclude domain="sharedpref" path="octoprint_client.xml" />
     <exclude domain="sharedpref" path="harness_config.xml" />
     <exclude domain="file" path="smart-infill/" />

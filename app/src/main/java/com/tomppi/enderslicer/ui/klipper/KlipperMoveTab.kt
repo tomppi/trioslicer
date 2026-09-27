@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.parseDecimal
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.macros
 
@@ -91,14 +92,22 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                 AxisRow(
                     axis = axis,
                     state = state,
-                    enabled = ready && (axis == "Z" || homed),
-                    onJog = { direction -> viewModel.jog(axis, direction * step) },
-                    feedrate = rate,
+                    // Per axis, because klippy reports homing per axis: after homing X and Y
+                    // together - which this screen offers - the Z axis is the one that must
+                    // not move, and the old all-or-nothing test had it backwards in both
+                    // directions.
+                    enabled = ready && state.homedAxes.contains(axis.lowercase()),
+                    onJog = { direction ->
+                        viewModel.jog(axis, direction * step, parseDecimal(feedrate)?.toInt() ?: 3000)
+                    },
                 )
             }
             if (!homed) {
                 Spacer(Modifier.height(4.dp))
-                KlipperNote("X and Y move once the machine is homed; Z moves either way.")
+                KlipperNote(
+                    "Each axis moves once it has been homed, and not before: X and Y can be " +
+                        "homed together, Z on its own.",
+                )
             }
         }
 
@@ -143,7 +152,6 @@ private fun AxisRow(
     axis: String,
     state: KlipperPrinterState,
     enabled: Boolean,
-    feedrate: Int,
     onJog: (Double) -> Unit,
 ) {
     val index = AXES.indexOf(axis)

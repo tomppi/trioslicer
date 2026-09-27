@@ -146,7 +146,24 @@ internal object KlipperScripts {
         "SET_HEATER_TEMPERATURE HEATER=${heater.substringAfter(' ')} TARGET=$celsius"
 
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
-    fun meshProfile(action: String, name: String): String = "BED_MESH_PROFILE $action=$name"
+    fun meshProfile(action: String, name: String): String =
+        "BED_MESH_PROFILE $action=" + quoted(name)
+
+    /**
+     * A name, quoted for klippy's extended-command parser.
+     *
+     * Every command that is not one of G-code's own is re-parsed by klippy with shlex
+     * (gcode.py's _get_extended_params), so an unquoted name with a space in it splits into
+     * two words, the second of which has no "=" in it, and the answer is "Malformed command".
+     * That is what a sliced model called "Phone Stand" produced: the file was copied to the
+     * printer, appeared in the list, and every print button did nothing at all.
+     *
+     * Names this app makes cannot contain a quote - [KlipperPrint.fileName] maps everything
+     * but letters, digits, dash, underscore, dot and space to an underscore - and a quote that
+     * arrives from somewhere else is dropped here rather than being allowed to close the
+     * quoting early.
+     */
+    fun quoted(name: String): String = "\"" + name.replace("\"", "") + "\""
 
     /**
      * A number as klippy's parser wants it: a dot for the decimal point, always.

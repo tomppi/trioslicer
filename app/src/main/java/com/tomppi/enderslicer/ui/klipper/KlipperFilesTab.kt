@@ -83,7 +83,9 @@ internal fun KlipperFilesTab(
                 KlipperValue("File", KlipperPrint.fileName(suggestedFileName))
                 Spacer(Modifier.height(8.dp))
                 KlipperButtons {
-                    KlipperButton("Print this file", enabled = state.isReady) {
+                    // isReady is klippy's printer state, which stays "ready" through a print; the print
+                    // state is the other flag, and SDCARD_PRINT_FILE answers "SD busy" without it.
+                    KlipperButton("Print this file", enabled = state.isReady && !state.isPrinting) {
                         viewModel.printFile(sliced, suggestedFileName)
                     }
                 }
@@ -125,7 +127,9 @@ internal fun KlipperFilesTab(
                     file = file,
                     open = selected == file.name,
                     thumbnail = if (selected == file.name) thumbnail else null,
-                    printable = state.isReady,
+                    // klippy answers "SD busy" while a print is running, and this screen used
+                    // to offer the button and promise the running print would stop.
+                    printable = state.isReady && !state.isPrinting,
                     onOpen = { selected = if (selected == file.name) null else file.name },
                     onPrint = { confirmPrint = file },
                     onDelete = { confirmDelete = file },
@@ -137,8 +141,7 @@ internal fun KlipperFilesTab(
     confirmPrint?.let { file ->
         KlipperConfirmDialog(
             title = "Print " + file.name + "?",
-            text = "The printer starts on this file now" +
-                (state.printFileName?.takeIf { state.isPrinting }?.let { " and stops printing $it" } ?: "") + ".",
+            text = "The printer starts on this file now.",
             confirmLabel = "Print",
             onConfirm = {
                 scope.launch { viewModel.printGcodeFile(file.name) }

@@ -16,4 +16,14 @@
     <usb-device vendor-id="4292" product-id="60000" />
     <!-- 0403:6001  FTDI FT232 -->
     <usb-device vendor-id="1027" product-id="24577" />
+    <!--
+      1a86:5523 and 1a86:7522 CH341/CH340 variants, and 4348:5523 the same silicon
+      under another vendor id. The app's fallback prober lists all three, and until
+      they were here that prober could find a board this filter would never grant
+      permission for - a printer that is on the bus, recognised, and unreachable,
+      with nothing on screen and no dialog to accept.
+    -->
+    <usb-device vendor-id="6790" product-id="21795" />
+    <usb-device vendor-id="6790" product-id="29986" />
+    <usb-device vendor-id="17224" product-id="21795" />
 </resources>

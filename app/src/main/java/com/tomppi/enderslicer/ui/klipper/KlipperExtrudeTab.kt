@@ -74,11 +74,14 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
                 val amount = parseDecimal(length) ?: 0.0
+                // The field was inert: it said 300 while the command carried the
+                // repository's 120, and editing it changed nothing.
+                val speed = parseDecimal(feedrate)?.toInt() ?: 300
                 KlipperButton("Extrude", enabled = state.isReady && amount > 0) {
-                    viewModel.extrude(amount)
+                    viewModel.extrude(amount, speed)
                 }
                 KlipperButton("Retract", enabled = state.isReady && amount > 0) {
-                    viewModel.extrude(-amount)
+                    viewModel.extrude(-amount, speed)
                 }
             }
             Spacer(Modifier.height(4.dp))

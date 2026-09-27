@@ -131,7 +131,16 @@ class KlipperScriptsTest {
 
     @Test
     fun aMeshProfileIsAnActionAndAName() {
-        assertEquals("BED_MESH_PROFILE LOAD=default", KlipperScripts.meshProfile("LOAD", "default"))
-        assertEquals("BED_MESH_PROFILE REMOVE=cold", KlipperScripts.meshProfile("REMOVE", "cold"))
+        // Quoted, because klippy re-parses a non-traditional command with shlex: a profile
+        // called "cold bed" unquoted arrives as two words and klippy answers "Malformed
+        // command". shlex strips the quotes, so a plain name is unaffected.
+        assertEquals("BED_MESH_PROFILE LOAD=\"default\"", KlipperScripts.meshProfile("LOAD", "default"))
+        assertEquals("BED_MESH_PROFILE REMOVE=\"cold\"", KlipperScripts.meshProfile("REMOVE", "cold"))
+        assertEquals(
+            "BED_MESH_PROFILE LOAD=\"cold bed\"",
+            KlipperScripts.meshProfile("LOAD", "cold bed"),
+        )
+        // A quote in the name is dropped rather than allowed to close the quoting early.
+        assertEquals("BED_MESH_PROFILE LOAD=\"ab\"", KlipperScripts.meshProfile("LOAD", "a\"b"))
     }
 }

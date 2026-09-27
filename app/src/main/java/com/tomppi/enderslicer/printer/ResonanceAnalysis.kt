@@ -166,10 +166,13 @@ object ResonanceAnalysis {
         return clusters
             .filter { it.runs.size >= minimumRuns }
             .map { cluster ->
-                val sorted = cluster.frequencies.sorted()
+                // The strongest of the peaks that agreed, not the middle of them: a median
+                // across a cluster can report a frequency no measurement ever saw, and this
+                // one is offered as a value to type into the printer.
+                val strongest = cluster.frequencies.indices.maxBy { cluster.magnitudes[it] }
                 val magnitudes = cluster.magnitudes.sorted()
                 AgreedPeak(
-                    frequencyHz = sorted[sorted.size / 2],
+                    frequencyHz = cluster.frequencies[strongest],
                     seenIn = cluster.runs.size,
                     ofRuns = measurements.size,
                     typicalMagnitude = magnitudes[magnitudes.size / 2],
@@ -259,7 +262,6 @@ object ResonanceAnalysis {
         hzPerSec: Double,
         stepHz: Double = 1.0,
         windowSeconds: Double = 1.0,
-        ridingTheDrive: Boolean = false,
     ): ResonanceCurve {
         val frequencies = mutableListOf<Double>()
         val magnitudes = mutableListOf<Double>()
@@ -270,7 +272,12 @@ object ResonanceAnalysis {
             if (at < 0 || at + windowSamples > samples.size) break
             val measured = goertzel(samples, at, windowSamples, frequency, sampleRateHz)
             frequencies += frequency
-            magnitudes += if (ridingTheDrive) measured / frequency else measured
+            // Divided by the frequency in both places, because the ramp belongs to the drive
+            // and not to where the phone is standing: the excitation is accel_per_hz * f, so a
+            // sensor on the frame feels it climbing too. Graded against the median of a tilted
+            // curve, a resonance at 35 Hz had to be four or five times its neighbourhood to be
+            // reported, and was usually dropped - the low Y ring, in the common case.
+            magnitudes += measured / frequency
             frequency += stepHz
         }
         return ResonanceCurve(frequencies.toDoubleArray(), magnitudes.toDoubleArray())

@@ -97,7 +97,11 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
                 KlipperButton("Home first", enabled = state.isReady) { viewModel.home() }
-                KlipperButton("Probe the bed", enabled = state.isReady) { confirmCalibrate = true }
+                // Probing raises "Must home before probe" while Z is unhomed, and the failure
+                // only reaches the console - so the button waits, as the Z probe screen's does.
+                KlipperButton("Probe the bed", enabled = state.isReady && state.isHomed) {
+                    confirmCalibrate = true
+                }
             }
         }
 
