@@ -40,6 +40,14 @@ internal object KlipperScripts {
         "RESTORE_GCODE_STATE NAME=$JOG_STATE",
     ).joinToString("\n")
 
+    /**
+     * A signed distance, as the commands that take one want it: TESTZ Z=-0.050.
+     *
+     * Its own function because the sign is part of the number rather than a word
+     * beside it, and formatting it is where the decimal point lives.
+     */
+    fun offset(delta: Double): String = number(delta)
+
     /** Nudge the first layer up or down, which is what a Z offset is for. */
     fun zOffset(delta: Double, move: Boolean): String =
         "SET_GCODE_OFFSET Z_ADJUST=${number(delta)}" + if (move) " MOVE=1" else ""

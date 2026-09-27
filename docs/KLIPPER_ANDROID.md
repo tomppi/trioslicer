@@ -580,7 +580,7 @@ the host is not obviously disqualified; they do not say it is safe.
 
 ## Rounds 79-81: the user's actual printer, and what it removes
 
-The user runs an **Ender 3 V2 with a CR-Touch on a Creality Sonic Pad**, and supplied
+The user runs an **Ender 3 V2 with a BLTouch on a Creality Sonic Pad**, and supplied
 Creality's own repository for it (github.com/CrealityOfficial/Creality_Sonic_Pad).
 That answers several questions at once.
 

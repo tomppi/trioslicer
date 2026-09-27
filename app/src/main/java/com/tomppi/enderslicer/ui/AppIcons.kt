@@ -235,6 +235,14 @@ object AppIcons {
         )
     }
 
+    /** Printer tab: the Z probe, and the first layer it sets. */
+    val Probe: ImageVector by lazy {
+        glyph(
+            "Probe",
+            "M11 2h2v9h4l-5 6-5-6h4V2zM3 19h18v2H3z",
+        )
+    }
+
     /** Printer tab: the bed mesh. */
     val Mesh: ImageVector by lazy {
         glyph(

@@ -95,6 +95,12 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun setExtrudeFactor(percent: Int) = repository.setExtrudeFactor(percent)
     fun excludeObject(name: String) = repository.excludeObject(name)
 
+    // The Z probe: the offset the first layer is decided by.
+    fun calibrateProbe() = repository.calibrateProbe()
+    fun testZ(delta: Double) = repository.testZ(delta)
+    fun acceptProbeCalibration() = repository.acceptProbeCalibration()
+    fun abortProbeCalibration() = repository.abortProbeCalibration()
+
     // The bed mesh.
     fun calibrateMesh() = repository.calibrateMesh()
     fun meshProfile(action: String, name: String) = repository.meshProfile(action, name)

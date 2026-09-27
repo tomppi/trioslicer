@@ -22,6 +22,7 @@ internal enum class KlipperTab(val label: String) {
     MACROS("Macros"),
     FILES("Files"),
     CONSOLE("Console"),
+    ZPROBE("Z probe"),
     MESH("Mesh"),
     HISTORY("History"),
     MACHINE("Machine"),
@@ -44,6 +45,7 @@ internal val KlipperTab.icon: ImageVector
         KlipperTab.MACROS -> AppIcons.Macro
         KlipperTab.FILES -> AppIcons.Folder
         KlipperTab.CONSOLE -> AppIcons.Console
+        KlipperTab.ZPROBE -> AppIcons.Probe
         KlipperTab.MESH -> AppIcons.Mesh
         KlipperTab.HISTORY -> AppIcons.History
         KlipperTab.MACHINE -> AppIcons.Wrench

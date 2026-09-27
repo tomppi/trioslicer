@@ -152,6 +152,49 @@ data class KlipperLayers(val current: Int, val total: Int)
 /** The object status klippy last reported, or null if it has never mentioned it. */
 internal fun KlipperPrinterState.obj(name: String): JSONObject? = objects[name]
 
+/**
+ * The section that configures the Z probe, if the printer has one.
+ *
+ * [bltouch] covers the BLTouch and its clones - a CR-Touch is one - so this is the
+ * section a probe calibration reads and the one SAVE_CONFIG writes to.
+ */
+internal val KlipperPrinterState.probeSection: String?
+    get() = listOf("bltouch", "probe").firstOrNull { configSections?.has(it) == true }
+
+/** The probe's own offset from the printer's configuration, in millimetres. */
+internal val KlipperPrinterState.configuredProbeOffset: Double?
+    get() {
+        val section = probeSection ?: return null
+        val raw = configSections?.optJSONObject(section)?.opt("z_offset")?.toString() ?: return null
+        return raw.toDoubleOrNull()
+    }
+
+/** What the probe calls itself: "bltouch", "probe", or nothing if there is none. */
+internal val KlipperPrinterState.probeName: String?
+    get() = obj("probe")?.optString("name")?.takeIf { it.isNotBlank() }
+
+/** Where the probe last stopped, in millimetres of Z. */
+internal val KlipperPrinterState.lastProbeResult: Double?
+    get() = obj("probe")?.number("last_z_result")
+
+/** What the probe reported the last time it was queried, if it can be. */
+internal val KlipperPrinterState.lastProbeQuery: String?
+    get() = obj("probe")?.optString("last_query")?.takeIf { it.isNotBlank() && it != "null" }
+
+/**
+ * True while a calibration is waiting for the paper.
+ *
+ * klippy publishes this itself - manual_probe.is_active - which is what lets a screen
+ * offer the nudges that only make sense in that state, rather than guessing at it from
+ * the last command it sent.
+ */
+internal val KlipperPrinterState.manualProbeActive: Boolean
+    get() = obj("manual_probe")?.optBoolean("is_active") ?: false
+
+/** Where the nozzle is during that calibration, in millimetres. */
+internal val KlipperPrinterState.manualProbeZ: Double?
+    get() = obj("manual_probe")?.number("z_position")
+
 /** The objects klippy publishes, by name - what a screen may ask for. */
 internal val KlipperPrinterState.objectNames: Set<String> get() = objects.keys
 

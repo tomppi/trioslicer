@@ -16,11 +16,12 @@ Moonraker speaks to.
 | --- | --- | --- |
 | Dashboard | What the machine is doing now | `print_stats`, `virtual_sdcard`, `display_status`, `gcode_move`, `fan`, `toolhead`, `mcu`, `exclude_object` |
 | Temperatures | Every heater and sensor, and the last five minutes of them | `extruder`, `heater_bed`, `temperature_sensor *`, `heater_generic *`, `temperature_fan *`, `configfile` |
-| Move | Homing, jogging, Z offset, the steppers | `toolhead`, `gcode_move`, `configfile` |
+| Move | Homing, jogging, the steppers | `toolhead`, `gcode_move`, `configfile` |
 | Extrude | Feeding filament, pressure advance, retraction | `extruder`, `configfile` |
 | Macros | The printer's own `gcode_macro` sections | `configfile.settings` |
 | Files | What is on its virtual SD card, and what each file says about itself | The app's own `gcodes` directory, and the G-code header of each file |
 | Console | What it says, and a line to answer with | `gcode/subscribe_output`, `gcode/help`, `gcode/script` |
+| Z probe | The probe's offset, and the calibration that sets it | `probe`, `manual_probe`, `configfile` |
 | Mesh | The bed as the probe found it | `bed_mesh` |
 | History | What this app has printed | Its own record, written when a print ends |
 | Machine | The host, the boards, the configuration and the log | `info`, `mcu`, `system_stats`, `query_endstops`, `configfile` |
@@ -87,11 +88,33 @@ empty:
   is the only moment those numbers exist: klippy's `print_stats` describes the print that
   is happening and then the next one.
 
+## The first layer, and the two numbers called Z offset
+
+A printer with a probe has two of them, and only one persists:
+
+- **The probe's offset** is `z_offset` in the printer's `[bltouch]` (or `[probe]`) section. It
+  is what the first layer is decided by, and it cannot be calculated - the probe finds the
+  bed, somebody brings the nozzle down onto a piece of paper, and where it stopped becomes
+  the number.
+- **The live offset** is applied on top while printing, for correcting a layer that is going
+  down now. It is forgotten when the host restarts.
+
+The **Z probe** screen does the first one: heat (both the nozzle and the bed grow when hot,
+and a cold calibration is out by a tenth of a millimetre or more), home, `PROBE_CALIBRATE`,
+then the four nudges that find the paper. Those go out as `TESTZ Z=...` rather than as moves,
+because klippy is in its manual-probe state and is measuring the offset from each one - a
+plain `G1` would move the head without telling the calibration anything. `ACCEPT` takes the
+position as the offset, and the screen then offers to save it, which writes it into the
+configuration and restarts the host.
+
+The live offset has its own card on the same screen, next to a note saying to reset it after
+calibrating, so a correction from an earlier print is not still in the number.
+
 ## Bringing your own printer
 
 The app runs Klipper itself, so it has to be told what printer it is driving. It ships
 with the configuration of the machine it was developed on - an Ender-3 V2 with a
-CR-Touch and an Orbiter extruder - and that is what a fresh install uses.
+BLTouch and an Orbiter extruder - and that is what a fresh install uses.
 
 For any other printer, import its `printer.cfg` from **Machine -> Klipper setup**. Choose
 the file, and any files it includes, in one go. Everything in it that describes the

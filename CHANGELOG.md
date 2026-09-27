@@ -4,6 +4,25 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-27
+
+### Added
+
+- **A Z probe screen**, which is the one calibration a printer with a probe cannot do
+  without a hand on it: the probe finds the bed, then the nozzle is brought down onto a
+  piece of paper and that position becomes the offset the first layer is decided by. The
+  screen heats the nozzle and bed first (both grow when hot), homes, runs the calibration
+  and takes the four nudges that find the paper - through `TESTZ`, so klippy is measuring
+  the offset rather than being moved behind its back - then accepts it and writes it to the
+  configuration.
+- The two Z offsets are shown apart, because they are easy to confuse and only one of them
+  persists: the **probe's offset**, from the printer's configuration, and the **live
+  offset** applied on top of a print that is already running.
+
+### Changed
+
+- The Z offset buttons moved from **Move** to the **Z probe** screen, so both offsets and
+  the calibration that sets one of them are in the same place.
 ## [1.5.0] - 2026-09-27
 
 **The printer front end is new, and it is in testing.** The built-in Klipper host has

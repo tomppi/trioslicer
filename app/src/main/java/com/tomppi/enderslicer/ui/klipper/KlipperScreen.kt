@@ -73,6 +73,7 @@ internal fun KlipperScreen(
                 KlipperTab.FILES ->
                     KlipperFilesTab(state, viewModel, localGcodePath, suggestedFileName)
                 KlipperTab.CONSOLE -> KlipperConsoleTab(state, viewModel)
+                KlipperTab.ZPROBE -> KlipperZProbeTab(state, viewModel)
                 KlipperTab.MESH -> KlipperMeshTab(state, viewModel)
                 KlipperTab.HISTORY -> KlipperHistoryTab(viewModel)
                 KlipperTab.MACHINE -> KlipperMachineTab(state, viewModel)

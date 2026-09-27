@@ -188,7 +188,7 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                 KlipperNote(
                     "This app runs Klipper itself, so it has to be told what printer it is " +
                         "driving. It ships with the configuration of the machine it was " +
-                        "developed on - an Ender-3 V2 with a CR-Touch and an Orbiter extruder.",
+                        "developed on - an Ender-3 V2 with a BLTouch and an Orbiter extruder.",
                 )
                 Spacer(Modifier.height(8.dp))
                 KlipperNote(

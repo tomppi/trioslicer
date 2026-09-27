@@ -382,6 +382,30 @@ class KlipperPrinterRepository(
 
     fun queryEndstops() = send("QUERY_ENDSTOPS")
 
+    /**
+     * Start calibrating the probe: klippy probes the bed and then waits, above it, for
+     * someone to bring the nozzle down onto a piece of paper with [testZ].
+     *
+     * This is the number that decides the first layer - and the one the app had no way
+     * of setting at all until the Z probe screen existed.
+     */
+    fun calibrateProbe() = send("PROBE_CALIBRATE")
+
+    /**
+     * Move the nozzle by a distance while calibrating, and let klippy track it.
+     *
+     * TESTZ rather than a move: klippy is in its manual-probe state, where a Z move is
+     * how the offset being calibrated is measured. Sending G1 here would move the head
+     * without telling the calibration what happened.
+     */
+    fun testZ(delta: Double) = send("TESTZ Z=" + KlipperScripts.offset(delta))
+
+    /** Take the position the paper was found at as the probe's offset. */
+    fun acceptProbeCalibration() = send("ACCEPT")
+
+    /** Give up on a calibration without changing anything. */
+    fun abortProbeCalibration() = send("ABORT")
+
     fun disableMotors() = send("M84")
 
     fun enableMotors() = send("M17")

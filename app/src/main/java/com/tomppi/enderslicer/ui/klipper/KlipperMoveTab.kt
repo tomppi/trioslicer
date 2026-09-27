@@ -23,7 +23,6 @@ import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.macros
-import com.tomppi.enderslicer.printer.zOffset
 
 /**
  * Moving the machine by hand.
@@ -103,19 +102,12 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             }
         }
 
-        KlipperCard(title = "Z offset", subtitle = state.zOffset?.let { "%.3f mm".format(it) } ?: "-") {
+
+        KlipperCard(title = "The first layer") {
             KlipperNote(
-                "Nudges the whole print up or down without moving the machine's own zero. " +
-                    "The printer is moved to show the change when it is homed.",
+                "The Z offset - both the probe's own and the live correction - is on the " +
+                    "Z probe screen, with the calibration that sets it.",
             )
-            Spacer(Modifier.height(8.dp))
-            KlipperButtons {
-                KlipperButton("−0.05", enabled = homed) { viewModel.adjustZOffset(-0.05, homed) }
-                KlipperButton("−0.01", enabled = homed) { viewModel.adjustZOffset(-0.01, homed) }
-                KlipperButton("+0.01", enabled = homed) { viewModel.adjustZOffset(0.01, homed) }
-                KlipperButton("+0.05", enabled = homed) { viewModel.adjustZOffset(0.05, homed) }
-                KlipperButton("Reset") { viewModel.resetZOffset() }
-            }
         }
 
         KlipperCard(title = "Steppers") {
