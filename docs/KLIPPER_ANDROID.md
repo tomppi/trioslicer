@@ -1000,6 +1000,31 @@ shutdown, and the next start reports "Can not update MCU 'mcu' config as it is
 shutdown" - a state Klipper recovers from with FIRMWARE_RESTART, over the same API
 socket the app's own front end will use.
 
+## Unplugging the printer can panic the phone
+
+This is the other half of the dead port, and it is worse: removing the USB cable can
+take the whole phone down. The previous boot's kernel log has it, and the fault is not
+in anything this app does.
+
+    [ 2675.823969] Unable to handle kernel paging request at virtual address 1ec0000000000000
+    [ 2675.824051] Internal error: Oops: 0000000096000004 [#1] PREEMPT SMP
+    [ 2675.824991] pc : pm_get_wakeup_count+0x114/0x248
+    [ 2675.825628] Kernel panic - not syncing: Oops: Fatal exception
+    [ 2676.483049] gh-watchdog: Causing a QCOM Apps Watchdog bite!
+
+On a binder thread of pid 1108 - system_server - reading /sys/power/wakeup_count, which
+Android's power manager does routinely. That read walks the global list of wakeup
+sources under the wakeup-source lock; unplugging a USB device unregisters that device's
+wakeup sources. When the two land together the walk follows an entry that is gone, into
+an address in neither the user nor the kernel range, and a translation fault in
+interrupt context is fatal. Kernel 5.15.209-g1e6986e67a48-dirty, Samsung's.
+
+So the unplug is the trigger and not the cause, and it is a race - which is why it does
+not happen every time and why the delay after the removal varies. The full sequence and
+the log are in
+[docs/logs/kernel-panic-pm-get-wakeup-count.log](logs/kernel-panic-pm-get-wakeup-count.log);
+the raw capture is on the phone as last-kmsg-previous-boot.log.
+
 ## After a phone reboot: the USB port comes back dead
 
 The kernel log of one of these is kept at
