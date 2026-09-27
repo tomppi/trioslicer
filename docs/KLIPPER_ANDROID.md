@@ -19,6 +19,7 @@ without root. Verified on the device, from klippy's log and the app's:
 | the screen updates | after the notification fix: klippy sends `{"params":{"eventtime":…,"status":{…}}}` with **no method name**, and the client had required one, so every screen kept its first snapshot |
 | identity of the built APK | `com.tomppi.enderslicercura`, targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
 | **a print, start to finish** | the first completed print driven end to end by the app's host, on the printer, sliced by this app and streamed from its own storage - reported by the user on 27 September 2026. Small: it settles that the chain works, not that it holds for hours |
+| the print record the app keeps | History shows that print after the fact - file, printing time, filament, how it ended - written by the app at the moment the print stopped, which is the only moment klippy reports those numbers |
 
 **The printer's front end is the app's own ten screens**: dashboard, temperatures,
 move, extrude, macros, files, console, mesh, history and machine - see
@@ -42,10 +43,13 @@ runs wedged after five to fifteen minutes, and a restart does not save a print t
 already running. A long unattended print is the test that answers it, with the margin
 recorder watching.
 
-**What is still open.** The first print was small, so duration is untested; `z_offset` was
-0 in the configuration at that point, so the first layer came from the geometry of the
-mount rather than from a calibration; and the hotend is still on the printer's original PID
-values. None of those stop a print, and all three are now settable from the app -
+**What is still open.** The first print was small, so duration is untested, and the hotend
+is still on the printer's original PID values. The first layer was set by the probe's own
+offset - the value a calibration writes - with the live offset at 0, which is what a print
+needing no correction on top looks like. Whether that offset was measured on this phone or
+arrived with the configuration the printer has been running is not something the app can
+say: klippy gets whatever file it is given, and the file was the printer's before the app
+had it. Both of these are settable from the app -
 [KLIPPER_UI.md](KLIPPER_UI.md) has the Z probe screen and the temperature screen - so they
 are chores rather than blockers. The USB link is the one with a history: earlier host runs
 wedged after five to fifteen minutes, the host now restarts itself when it notices, and a
