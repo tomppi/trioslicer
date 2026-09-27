@@ -1002,6 +1002,13 @@ socket the app's own front end will use.
 
 ## After a phone reboot: the USB port comes back dead
 
+The kernel log of one of these is kept at
+[docs/logs/usb-otg-pwr-event-storm.log](logs/usb-otg-pwr-event-storm.log): 1342
+"unexpected PWR_EVNT" events over eight and a half minutes, with the link reporting
+state 0x0005, and nothing in it an application did. It is not a panic - the phone's own
+boot reason is `reboot` and `/sys/fs/pstore` is empty - which is why the workaround is
+to re-probe the charger IC rather than to reboot again.
+
 Measured, twice, and worth writing down because nothing in the app can cause or fix
 it. After the phone rebooted, host mode never came up again on its own:
 

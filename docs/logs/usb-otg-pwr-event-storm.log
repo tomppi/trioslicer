@@ -1,0 +1,50 @@
+What the USB port does when it dies after a reboot
+==================================================
+
+Captured from /proc/last_kmsg on the Fold 5 (SM-F946B), read over adb on
+2026-09-27. The phone's own boot reason for that boot was 'reboot' and
+/sys/fs/pstore was empty, so this is not a panic: the kernel stayed up and the
+USB controller spun. The full 7821-line capture is 823KB of mostly the same four
+lines; an unedited copy is on the phone at
+/sdcard/Download/dsh-agent/usb-otg-pwr-event-storm.log and on the machine that
+captured it. This is the part that carries the meaning.
+
+The signature, repeated 1342 times between t=2112.7s and t=2630.9s of that boot
+- eight and a half minutes of it, roughly two and a half a second:
+
+  1:[ 2112.718264]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  5:[ 2113.018329]I[0:  kworker/u16:0:16439] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  9:[ 2113.619735]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  13:[ 2113.918977]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  17:[ 2114.818373]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  21:[ 2115.118109]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  25:[ 2115.418596]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  29:[ 2115.718398]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  ...
+  7517:[ 2630.886900]I[0:      swapper/0:    0] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+  7521:[ 2630.889250]I[0:        ueventd:  214] msm-dwc3 a600000.ssusb: dwc3_pwr_event_handler: unexpected PWR_EVNT, irq_stat=3C1000
+
+Counts over the whole capture:
+  unexpected PWR_EVNT: 1342
+  link state = 0x0005: 1340
+  pwr_irq received:    1341
+
+The other things in the same capture that name the port and the charger IC,
+deduplicated - the storm drowns everything else out:
+  I[N:        rcuop/N:   N]  nuN_charger(E) msm_eva(OE) qcrypto_msm_dlkm(OE) rmnet_aps(OE) mbhc_dlkm(OE) fsaN_iNc(E) cnss_plat_ipc_qmi_svc(OE) qrtr_smd(E) rmnet_offload(OE) wcdNx_slave_dlkm(OE) maxN_fuelgauge(E) bt_fm_slim(OE) fingerprint(E) wcdNx_slave_dlkm(OE) aNtN(E) isgN(E) qcom_lpm(E) qcom_qNvN_pas(E) qcom_hv_haptics(E) maxN_charger(E) wsaNx_dlkm(OE) swr_haptics_dlkm(OE) wsaNx_dlkm(OE) btpower(OE) qti_qmi_sensor_vN(E) qN_dlkm(OE) dwcN_msm(E) wcdNx_slave_dlkm(OE) wcd_usbss_iNc(E) hdcp_qseecom_dlkm(OE) msm_video(OE) msm_hw_fence(OE) qrng_dlkm(OE) macN(E) tz_log_dlkm(OE) qcedev_mod_dlkm(OE) qcom_va_minidump(E) snd_usb_audio_qmi(E) hung_task_enh(E) rmnet_sch(OE) snd_soc_hdmi_codec(E) snvm(E) hdmi_dlkm(OE) slim_qcom_ngd_ctrl(E) qti_amoled_ecm(E) phy_qcom_ufs_qmp_vN(E) altmode_glink(E) msm_lmh_dcvs(E) ssg(E) qti_userspace_cdev(E) sec_qc_qcom_reboot_reason(E) sec_thermistor(E) blk_sec_wb(E) sec_direct_charger(E) extcon_ltNuxeN(E) uwb(E) akm(E)
+  [N:  binder:N_N:N]  nuN_charger(E) msm_eva(OE) qcrypto_msm_dlkm(OE) rmnet_aps(OE) mbhc_dlkm(OE) fsaN_iNc(E) cnss_plat_ipc_qmi_svc(OE) qrtr_smd(E) rmnet_offload(OE) wcdNx_slave_dlkm(OE) maxN_fuelgauge(E) bt_fm_slim(OE) fingerprint(E) wcdNx_slave_dlkm(OE) aNtN(E) isgN(E) qcom_lpm(E) qcom_qNvN_pas(E) qcom_hv_haptics(E) maxN_charger(E) wsaNx_dlkm(OE) swr_haptics_dlkm(OE) wsaNx_dlkm(OE) btpower(OE) qti_qmi_sensor_vN(E) qN_dlkm(OE) dwcN_msm(E) wcdNx_slave_dlkm(OE) wcd_usbss_iNc(E) hdcp_qseecom_dlkm(OE) msm_video(OE) msm_hw_fence(OE) qrng_dlkm(OE) macN(E) tz_log_dlkm(OE) qcedev_mod_dlkm(OE) qcom_va_minidump(E) snd_usb_audio_qmi(E) hung_task_enh(E) rmnet_sch(OE) snd_soc_hdmi_codec(E) snvm(E) hdmi_dlkm(OE) slim_qcom_ngd_ctrl(E) qti_amoled_ecm(E) phy_qcom_ufs_qmp_vN(E) altmode_glink(E) msm_lmh_dcvs(E) ssg(E) qti_userspace_cdev(E) sec_qc_qcom_reboot_reason(E) sec_thermistor(E) blk_sec_wb(E) sec_direct_charger(E) extcon_ltNuxeN(E) uwb(E) akm(E)
+  [N:    kworker/N:N:N] usb_notify: send_otg_notify event=device_connect(N) enable=N
+  [N:  kworker/uN:N:  N] maxN_chg_monitor_work: [CHG] MODE(Nxf), BNSOVRC(NxN), otg_on(N)
+  [N:  kworker/uN:N:N] maxN_chg_monitor_work: [CHG] MODE(Nxf), BNSOVRC(NxN), otg_on(N)
+  [N:  kworker/uN:N:  N] maxN_get_charging_health: vbus_state: NxN, chg_dtls: NxN, iin: NmA, vbyp: NmV, health: N, abnormal: true
+  [N:  kworker/uN:N:N] maxN_get_charging_health: vbus_state: NxN, chg_dtls: NxN, iin: NmA, vbyp: NmV, health: N, abnormal: true
+  [N:  kworker/uN:N:  N] maxN_get_vbus_state: VBUS is valid. CHGIN < CHGIN_OVLO
+  [N:  kworker/uN:N:N] maxN_get_vbus_state: VBUS is valid. CHGIN < CHGIN_OVLO
+  { N }[ XBL ] maxN_chg_set_vbuslimit : current(N), data(NxN)
+
+What this means for the port: dwc3 is being told about power events it does not
+expect (irq_stat=3C1000) while the link reports state 0x0005, and it re-arms and
+is told again. Nothing in the storm is an application's doing, and no app change
+affects it. The port comes back by re-probing the charger IC that reports those
+events - see the MUIC section of KLIPPER_ANDROID.md for the sequence, which only
+works with the printer already attached.
