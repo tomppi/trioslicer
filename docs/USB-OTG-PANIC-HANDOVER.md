@@ -1,5 +1,13 @@
 # Handover: unplugging the printer's USB can panic the phone
 
+> **Resolved - no work needed.** The cause was the phone's own kernel build: its KPM
+> (Kernel Patch Module) support broke USB OTG, and removing KPM fixed it. The hook is
+> visible in the panic trace itself, as `==== Start KernelPatch for Kernel panic ====`
+> and `KP hook panic rc: 0`, which I mistook for a Samsung mechanism.
+>
+> Kept as the record of what narrowed it, and because both traps at the end apply to the
+> next fault. **The "Not tested" list is closed with the bug** - do not spend time on it.
+
 Written for whoever picks up the USB fault. Everything here is read out of a log, not
 inferred, and the two traps that cost me time are called out at the end.
 

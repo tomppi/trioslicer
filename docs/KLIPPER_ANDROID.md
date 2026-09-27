@@ -1000,11 +1000,13 @@ shutdown, and the next start reports "Can not update MCU 'mcu' config as it is
 shutdown" - a state Klipper recovers from with FIRMWARE_RESTART, over the same API
 socket the app's own front end will use.
 
-## Unplugging the printer can panic the phone
+## Unplugging the printer could panic the phone - solved, and it was the kernel
 
-This is the other half of the dead port, and it is worse: removing the USB cable can
-take the whole phone down. The previous boot's kernel log has it, and the fault is not
-in anything this app does.
+**Resolved: the fault was in the phone's own custom kernel build.** Its KPM (Kernel
+Patch Module) support broke USB OTG, so removing the cable could take the phone down;
+removing KPM fixed it. The forensics are kept because they are what narrowed it down,
+and because the traps in reading them apply to the next fault - but do not read what
+follows as a live problem.
 
     [ 2675.823969] Unable to handle kernel paging request at virtual address 1ec0000000000000
     [ 2675.824051] Internal error: Oops: 0000000096000004 [#1] PREEMPT SMP
@@ -1020,12 +1022,23 @@ an address in neither the user nor the kernel range, and a translation fault in
 interrupt context is fatal. Kernel 5.15.209-g1e6986e67a48-dirty, Samsung's.
 
 So the unplug is the trigger and not the cause, and it is a race - which is why it does
-not happen every time and why the delay after the removal varies. The full sequence and
-the log are in
+not happen every time and why the delay after the removal varies. The hook that was
+doing the damage is in the middle of that very trace, where it should have been caught:
+
+    [ 2675.825266] ==== Start KernelPatch for Kernel panic ====
+    [ 2675.825422] KP hook panic rc: 0
+
+That is KPM, not a Samsung mechanism, and it was the phone's own build. The full
+sequence and the log are in
 [docs/logs/kernel-panic-pm-get-wakeup-count.log](logs/kernel-panic-pm-get-wakeup-count.log);
 the raw capture is on the phone as last-kmsg-previous-boot.log.
 
 ## After a phone reboot: the USB port comes back dead
+
+**Probably the same cause, now gone.** The dead host port appeared in the same kernel
+build, and with KPM removed it has not been seen again - though it was never reproduced
+deliberately, so that is an absence of evidence rather than a proof. The rebind below
+stays as the fallback if it ever returns.
 
 The kernel log of one of these is kept at
 [docs/logs/usb-otg-pwr-event-storm.log](logs/usb-otg-pwr-event-storm.log): 1342
