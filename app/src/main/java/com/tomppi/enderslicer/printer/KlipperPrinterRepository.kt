@@ -91,7 +91,23 @@ class KlipperPrinterRepository(
             ).withStatus(snapshot)
         }
         Log.i(TAG, "watching ${c.toString().let { _ -> socketPath }} as ${info.optString("state")}")
-        while (c.isConnected && currentCoroutineContext().isActive) delay(1000)
+        // klippy has no state notification on the wire, so the state that decides
+        // whether the screen is allowed to print is asked for rather than waited on.
+        var sinceStateCheck = 0
+        while (c.isConnected && currentCoroutineContext().isActive) {
+            delay(1000)
+            if (++sinceStateCheck >= STATE_POLL_SECONDS) {
+                sinceStateCheck = 0
+                runCatching { c.info() }.getOrNull()?.let { info ->
+                    _state.update {
+                        it.copy(
+                            state = info.optString("state", it.state),
+                            stateMessage = info.optString("state_message", it.stateMessage),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -219,6 +235,9 @@ class KlipperPrinterRepository(
 
         /** How often the merged state is written down, so the screen can be checked. */
         const val STATUS_LOG_MS = 30_000L
+
+        /** How often klippy is asked for its own state, which it never pushes. */
+        const val STATE_POLL_SECONDS = 5
 
         /** The objects the screen needs: the machine, and any print on it. */
         val WATCHED = arrayOf(

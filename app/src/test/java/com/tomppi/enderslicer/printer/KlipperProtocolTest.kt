@@ -61,21 +61,40 @@ class KlipperProtocolTest {
     }
 
     @Test
-    fun readsStatusFromTheObjectFormKlippySends() {
+    fun readsStatusFromWhatKlippyActuallySends() {
+        // Copied from a socket, not from the documentation: klippy puts no method name
+        // on the wire, and this test used to require one, which is how a client that
+        // ignored every update for its whole life passed its own test suite.
         val message = JSONObject(
-            """{"method":"notify_status_update",
-                "params":{"eventtime":1.5,"status":{"toolhead":{"homed_axes":"xyz"}}}}""",
+            """{"params":{"eventtime":4539.56348582,
+                "status":{"extruder":{"temperature":202.47}}}}""",
+        )
+        val status = KlipperProtocol.statusUpdate(message)
+        assertEquals(202.47, status?.getJSONObject("extruder")?.getDouble("temperature")!!, 1e-9)
+    }
+
+    @Test
+    fun readsStatusFromAWholeUpdateCarryingSeveralObjects() {
+        val message = JSONObject(
+            """{"params":{"eventtime":4540.066089309,
+                "status":{"toolhead":{"homed_axes":"xyz"},"heater_bed":{"temperature":60.0}}}}""",
         )
         val status = KlipperProtocol.statusUpdate(message)
         assertEquals("xyz", status?.getJSONObject("toolhead")?.getString("homed_axes"))
+        assertEquals(60.0, status?.getJSONObject("heater_bed")?.getDouble("temperature")!!, 1e-9)
     }
 
     @Test
     fun ignoresMessagesCarryingNoStatus() {
         assertNull(KlipperProtocol.statusUpdate(JSONObject("""{"id":1,"result":{}}""")))
+        // A subscription reply is a result, not a notification, even though it carries
+        // status of its own.
         assertNull(
-            KlipperProtocol.statusUpdate(JSONObject("""{"method":"notify_klippy_ready"}""")),
+            KlipperProtocol.statusUpdate(
+                JSONObject("""{"id":1,"result":{"eventtime":1.0,"status":{}}}"""),
+            ),
         )
+        assertNull(KlipperProtocol.statusUpdate(JSONObject("""{"params":{"state":"ready"}}""")))
     }
 
     @Test

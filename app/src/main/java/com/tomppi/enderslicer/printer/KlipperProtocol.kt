@@ -51,13 +51,32 @@ internal object KlipperProtocol {
         return messages to rest
     }
 
-    /** The status a notification carries, or null if it is not one that carries any. */
+    /**
+     * The status a notification carries, or null if it is not one that carries any.
+     *
+     * klippy puts no method name on the wire. A status update is exactly this and
+     * nothing else:
+     *
+     *     {"params": {"eventtime": 4539.56, "status": {"extruder": {"temperature": 202.47}}}}
+     *
+     * so it has to be recognised by its shape. This used to require a method called
+     * "notify_status_update", which klippy never sends - the result was a client that
+     * connected, took the snapshot from its subscription, and then ignored every update
+     * for the rest of its life. The screen showed whatever was true when it opened.
+     */
     fun statusUpdate(message: JSONObject): JSONObject? {
-        if (message.optString("method") != "notify_status_update") return null
-        return message.optJSONObject("params")?.optJSONObject("status")
+        val params = message.optJSONObject("params") ?: return null
+        if (!params.has("eventtime")) return null
+        return params.optJSONObject("status")
     }
 
-    /** klippy announcing a change in its own state, which carries no status. */
+    /**
+     * klippy announcing a change in its own state, if it ever does.
+     *
+     * Kept because a method name is harmless if one turns up, but nothing should depend
+     * on it: the state is polled instead, since the wire carries no such notification
+     * in any form this client has seen.
+     */
     fun lifecycle(message: JSONObject): String? {
         val method = message.optString("method")
         return if (method.startsWith("notify_klippy_")) method else null
