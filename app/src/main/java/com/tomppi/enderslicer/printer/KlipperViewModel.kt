@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.printer
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
@@ -14,29 +15,116 @@ import kotlinx.coroutines.flow.StateFlow
  * Watching starts with the view model, so opening the screen is what connects the UI
  * to the host - and the host itself is started by the USB attach intent, or by the
  * button here when it is not.
+ *
+ * The actions are one line each on purpose: they are G-code, the printer is the thing
+ * that knows what it means, and klippy's own status is what reports the result. Any
+ * checking done here would be a second opinion about a machine this code cannot see.
  */
 class KlipperViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = KlipperPrinterRepository(application, viewModelScope)
     val state: StateFlow<KlipperPrinterState> = repository.state
+
+    /** The console's scrollback, oldest first. */
+    val consoleLines: StateFlow<List<KlipperConsoleLine>> = repository.consoleLines
+
+    /** Every command this printer answers, with klippy's own description. */
+    val commands: StateFlow<Map<String, String>> = repository.commands
+
+    /** One temperature reading a second for the last five minutes. */
+    val temperatures: StateFlow<List<KlipperTemperatureSample>> = repository.temperatures
+
+    /** Prints this app has run, newest first. */
+    val history: StateFlow<List<KlipperPrintRecord>> = repository.history
 
     init {
         repository.start()
     }
 
     fun startHost() = KlipperEngineService.start(getApplication())
-    fun home() = repository.home()
+
+    /** Stop the host: the printer is released and the process ends. */
+    fun stopHost() = KlipperEngineService.stop(getApplication())
+
+    /**
+     * Rebuild the host, which is what applying a saved configuration means.
+     *
+     * Not a G-code restart: klippy's own restart makes it exit, and the process it
+     * exits from is the one this app started and would have to start again.
+     */
+    fun restartHost() = KlipperEngineService.restart(getApplication())
+
+    // The machine.
+    fun home(axes: String = "") = repository.home(axes)
+    fun jog(axis: String, distance: Double) = repository.jog(axis, distance)
+    fun adjustZOffset(delta: Double, move: Boolean = true) = repository.adjustZOffset(delta, move)
+    fun resetZOffset() = repository.resetZOffset()
+    fun disableMotors() = repository.disableMotors()
+    fun enableMotors() = repository.enableMotors()
+    fun queryEndstops() = repository.queryEndstops()
+
+    // Temperatures.
     fun setExtruderTemperature(celsius: Int) = repository.setExtruderTemperature(celsius)
     fun setBedTemperature(celsius: Int) = repository.setBedTemperature(celsius)
-    fun firmwareRestart() = repository.firmwareRestart()
+    fun setHeaterTemperature(heater: String, celsius: Int) = when (heater) {
+        "extruder" -> repository.setExtruderTemperature(celsius)
+        "heater_bed" -> repository.setBedTemperature(celsius)
+        // Any other heater is addressed the way its own section names it.
+        else -> repository.send("SET_HEATER_TEMPERATURE HEATER=${heater.substringAfter(' ')} TARGET=$celsius")
+    }
+    fun coolDown() = repository.coolDown()
+    fun calibratePid(heater: String, target: Int) = repository.calibratePid(heater, target)
 
-    /** Hand a sliced file to the printer and start it. */
+    // Printing.
     fun printFile(sourcePath: String, name: String) {
         viewModelScope.launch { repository.printFile(sourcePath, name) }
     }
-
     fun pausePrint() = repository.pausePrint()
     fun resumePrint() = repository.resumePrint()
     fun cancelPrint() = repository.cancelPrint()
+
+    // Extrusion and the print's own adjustments.
+    fun extrude(lengthMm: Double) = repository.extrude(lengthMm)
+    fun setPressureAdvance(advance: Double) = repository.setPressureAdvance(advance)
+    fun setRetraction(length: Double, speed: Double) = repository.setRetraction(length, speed)
+    fun setFan(percent: Int) = repository.setFan(percent)
+    fun setSpeedFactor(percent: Int) = repository.setSpeedFactor(percent)
+    fun setExtrudeFactor(percent: Int) = repository.setExtrudeFactor(percent)
+    fun excludeObject(name: String) = repository.excludeObject(name)
+
+    // The bed mesh.
+    fun calibrateMesh() = repository.calibrateMesh()
+    fun meshProfile(action: String, name: String) = repository.meshProfile(action, name)
+
+    // Macros and the console.
+    fun runMacro(name: String) = repository.runMacro(name)
+    fun sendCommand(script: String) = repository.send(script)
+    fun clearConsole() = repository.clearConsole()
+
+    // The host itself.
+    fun firmwareRestart() = repository.firmwareRestart()
+    fun saveConfig() = repository.saveConfig()
+    fun emergencyStop() = repository.emergencyStop()
+
+    /** The configuration the host is running with, for the Machine screen. */
+    suspend fun readConfig(): String? = repository.readConfigFile()
+
+    /** True when the running configuration is not the one this app ships. */
+    suspend fun configDiffersFromShipped(): Boolean = repository.configDiffersFromShipped()
+
+    /** Put the shipped configuration back, keeping what the printer has saved. */
+    suspend fun restoreShippedConfig(): Boolean = repository.restoreShippedConfig()
+
+    /** The tail of klippy's own log, for the Machine screen. */
+    suspend fun readLog(): String? = repository.readHostLog()
+
+    // The files on the printer's own SD card.
+    suspend fun listGcodeFiles(): List<KlipperGcodeFile> = repository.listGcodeFiles()
+    suspend fun printGcodeFile(name: String) = repository.printGcodeFile(name)
+    suspend fun deleteGcodeFile(name: String): Boolean = repository.deleteGcodeFile(name)
+    suspend fun thumbnailFor(name: String): Bitmap? = repository.fileThumbnail(name)
+
+    /** Forget every print this app has written down. */
+    fun clearHistory() = repository.clearHistory()
 
     override fun onCleared() {
         repository.stop()

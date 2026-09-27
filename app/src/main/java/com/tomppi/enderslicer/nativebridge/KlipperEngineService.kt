@@ -16,6 +16,7 @@ import android.system.Os
 import android.util.Log
 import com.tomppi.enderslicer.MainActivity
 import com.tomppi.enderslicer.printer.KlipperClient
+import com.tomppi.enderslicer.printer.KlipperConfigFile
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperPty
@@ -54,6 +55,15 @@ class KlipperEngineService : Service() {
     private var process: Process? = null
 
     /**
+     * True while the engine is being taken down on purpose.
+     *
+     * klippy exiting is not always a failure: SAVE_CONFIG restarts it deliberately,
+     * and its host is expected to start it again. That makes "it exited" and "it
+     * should stay exited" two different things, and this is the second one.
+     */
+    @Volatile private var stopping = false
+
+    /**
      * The master end of the printer's pty, or -1 before one exists.
      *
      * Kept because a start request that arrives while klippy is already running is
@@ -74,6 +84,14 @@ class KlipperEngineService : Service() {
             startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(NOTIF_ID, notification)
+        }
+        if (intent?.getStringExtra(EXTRA_ACTION) == ACTION_RESTART) {
+            // Rebuild the host from the socket down, on a thread of its own: the
+            // front end asks for this when the link has wedged or the configuration
+            // has been saved, and both mean the process, the pty and the bridge all
+            // have to go together.
+            Thread({ restartHost() }, "klipper-restart").start()
+            return START_STICKY
         }
         if (process == null) {
             acquireWakeLock()
@@ -101,6 +119,10 @@ class KlipperEngineService : Service() {
 
     /** Extract the payload, prepare a printer, then run klippy. */
     private fun launch() {
+        stopping = false
+        // Held so that the finally below can tell this run apart from the next one:
+        // a restart starts the new host before this one has finished unwinding.
+        var started: Process? = null
         try {
             val root = File(filesDir, "klipper")
             val libexec = File(root, "libexec")
@@ -122,7 +144,7 @@ class KlipperEngineService : Service() {
             }
             Log.i(TAG, "printer pty ${pty.slavePath}, master fd ${pty.masterFd}")
             ptyMasterFd = pty.masterFd
-            val config = writePrinterConfig(root, pty.slavePath)
+            val config = printerConfig(serialPath(pty.slavePath))
             bridgePrinter(pty.masterFd)
 
             // Truncated first: klippy appends to the log it is given, so without
@@ -151,6 +173,7 @@ class KlipperEngineService : Service() {
             Log.i(TAG, "starting klippy: ${pb.command().joinToString(" ")}")
             val proc = pb.start()
             process = proc
+            started = proc
             // klippy's API is what the app's front end talks to, so it is proved here
             // as soon as klippy opens it. This runs on its own thread because the one
             // below reads klippy's output until it exits.
@@ -163,12 +186,30 @@ class KlipperEngineService : Service() {
             }
             val code = proc.waitFor()
             Log.i(TAG, "klippy exited with $code")
+            // Started again rather than left dead. klippy exits on its own after
+            // SAVE_CONFIG, which is the app telling the user their calibration was
+            // written and then leaving the printer with no host at all - and it
+            // exits when it crashes, where a restart is the only recovery a user
+            // has. Only when this is still the current run and nobody asked it to
+            // stop: a restart has already assigned the next process, and onDestroy
+            // means stay down.
+            if (process === proc && !stopping) {
+                Log.i(TAG, "starting the host again in ${RELAUNCH_DELAY_MS}ms")
+                Thread.sleep(RELAUNCH_DELAY_MS)
+                if (process === proc && !stopping) {
+                    Thread({ launch() }, "klipper-launch").start()
+                }
+            }
         } catch (error: Throwable) {
             // Throwable, not Exception: a missing libklipper_pty.so surfaces as an
             // UnsatisfiedLinkError, and an uncaught one takes the app's process down.
             Log.e(TAG, "klipper host stopped", error)
         } finally {
-            process = null
+            // Only when this run is still the current one. A restart assigns the
+            // next process before this one has finished unwinding, and clearing the
+            // field here would leave the service believing nothing is running -
+            // while a klippy it can no longer stop keeps the printer.
+            if (process === started) process = null
         }
     }
 
@@ -288,24 +329,57 @@ class KlipperEngineService : Service() {
     }
 
     /**
-     * The board's own configuration, with the two paths this device has to supply.
+     * A path for the printer that means the same thing on every run.
      *
-     * Pins, kinematics and probe offsets belong to the printer and are not touched
-     * here; only the serial port and the gcode directory differ from the file the
-     * same printer is set up with on a host.
+     * klippy is given this instead of the pty's own /dev/pts/N, because N is
+     * different every time the host starts and the configuration file is not. A file
+     * naming the pty of an earlier run is a file that has to be rewritten on every
+     * run - and a file that is rewritten on every run is a file klippy's own
+     * SAVE_CONFIG can never keep anything in, which is where a PID calibration, a Z
+     * offset and every saved mesh profile live.
+     *
+     * A symlink to the slave end is opened by klippy exactly like the device node it
+     * points at: connect_pipe does nothing but os.open it. What it sees is a pty
+     * either way, and what the config file holds is a name that does not move.
      */
-    private fun writePrinterConfig(root: File, serialPath: String): File {
+    private fun serialPath(slavePath: String): String {
+        val link = File(filesDir, PTY_LINK_NAME)
+        // Unconditionally: the link is only ever a name for this run's pty.
+        if (!link.delete() && link.exists()) {
+            Log.w(TAG, "could not replace ${link.absolutePath}")
+        }
+        Os.symlink(slavePath, link.absolutePath)
+        return link.absolutePath
+    }
+
+    /**
+     * The printer's configuration: the app's default once, and then its own.
+     *
+     * Seeded from the assets the first time it is needed and never rewritten
+     * afterwards, so that what klippy saves survives both a restart of the host and
+     * an update of the app. Pins, kinematics and probe offsets belong to the printer
+     * and are not touched here; only the serial port and the gcode directory differ
+     * from the file the same printer is set up with on a host.
+     *
+     * The shipped default is left beside it, resolved the same way, so that the app
+     * can say whether the file has moved on from what it ships - and put it back
+     * without losing what the printer has learned.
+     */
+    private fun printerConfig(serialPath: String): File {
+        val directory = File(filesDir, CONFIG_DIRECTORY).apply { mkdirs() }
         // The same directory constant the print path copies files into: the config's
         // virtual_sdcard and the code that hands it a file have to agree, and a second
         // literal here is how they stop agreeing.
         val gcodes = File(filesDir, KlipperPrint.GCODE_DIR).apply { mkdirs() }
-        val template = assets.open("klipper-host/printer.cfg")
+        val shipped = assets.open("klipper-host/printer.cfg")
             .bufferedReader().use { it.readText() }
-        val config = File(root, "printer.cfg")
-        config.writeText(
-            template.replace("__SERIAL__", serialPath)
-                .replace("__GCODES__", gcodes.absolutePath),
-        )
+        val resolved = KlipperConfigFile.resolve(shipped, serialPath, gcodes.absolutePath)
+        File(directory, CONFIG_DEFAULT_NAME).writeText(resolved)
+        val config = File(directory, CONFIG_NAME)
+        if (!config.isFile || config.readText().isBlank()) {
+            config.writeText(resolved)
+            Log.i(TAG, "seeded ${config.absolutePath}")
+        }
         Log.i(TAG, "printer config ${config.absolutePath}: serial $serialPath")
         return config
     }
@@ -496,6 +570,9 @@ class KlipperEngineService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun stopEngine() {
+        // Before the process is destroyed, so that the thread watching it does not
+        // start it again on the way out.
+        stopping = true
         process?.let { if (it.isAlive) it.destroy() }
         process = null
         // The bridge holds the USB port and the pty master: leaving it running would
@@ -510,8 +587,28 @@ class KlipperEngineService : Service() {
         private const val NOTIF_ID = 4711
         private const val CHANNEL_ID = "klipper_host"
 
+        /** What a start request is asking for, when it is asking for more than a start. */
+        private const val EXTRA_ACTION = "klipper_action"
+        private const val ACTION_RESTART = "restart"
+
+        /** The name the printer's pty is given, which is what the config file holds. */
+        private const val PTY_LINK_NAME = "printer-pty"
+
+        /** Where the printer's configuration lives: outside the extracted payload. */
+        private const val CONFIG_DIRECTORY = "klipper-host"
+        private const val CONFIG_NAME = "printer.cfg"
+        private const val CONFIG_DEFAULT_NAME = "printer.cfg.default"
+
         /** How long to wait for klippy to create its API socket. */
         private const val API_WAIT_MS = 30_000L
+
+        /**
+         * How long to wait before starting klippy again after it has exited.
+         *
+         * Long enough that a crash loop does not become a busy loop on a phone,
+         * short enough that a SAVE_CONFIG restart is not something a user waits for.
+         */
+        private const val RELAUNCH_DELAY_MS = 2_000L
 
         /** How long to keep asking until the printer calls itself ready. */
         private const val API_READY_WAIT_MS = 90_000L
@@ -552,6 +649,21 @@ class KlipperEngineService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, KlipperEngineService::class.java))
+        }
+
+        /**
+         * Rebuild the running host: klippy, the pty it listens on, and the bridge.
+         *
+         * The action a front end takes after saving the configuration, and the one
+         * that clears a wedged link. Starting the service when it is not running
+         * starts a host rather than restarting one, which is what a user means by
+         * the same button in both cases.
+         */
+        fun restart(context: Context) {
+            val intent = Intent(context, KlipperEngineService::class.java)
+                .putExtra(EXTRA_ACTION, ACTION_RESTART)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+            else context.startService(intent)
         }
 
         private fun ensureChannel(context: Context) {

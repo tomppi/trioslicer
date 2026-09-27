@@ -42,6 +42,25 @@ data class KlipperPrinterState(
      * one thing the user already knows.
      */
     val hostLogTail: String? = null,
+    /**
+     * Everything klippy has pushed, merged per object, exactly as it sent it.
+     *
+     * The typed fields above are the handful the dashboard reads on every update. This
+     * is the rest: a fan, a mesh, the config, a second micro-controller, a chamber
+     * sensor. Keeping the objects as objects is what lets a tab show a printer it was
+     * not written for - the tabs read [obj] and the accessors beside it rather than a
+     * field that has to be added here first.
+     */
+    val objects: Map<String, JSONObject> = emptyMap(),
+    /** klippy itself: its version, where it runs, and the files it is using. */
+    val host: KlipperHost = KlipperHost(),
+    /**
+     * Every object klippy publishes, by name, as it was when the host was asked.
+     *
+     * What the printer *has*, rather than what it has been asked for: the difference is
+     * a config section and the screen that offers it.
+     */
+    val published: List<String> = emptyList(),
 ) {
     val isReady: Boolean get() = connected && state == "ready"
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")
@@ -145,6 +164,7 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
         printTime = toolhead.number("print_time") ?: printTime,
         estimatedPrintTime = toolhead.number("estimated_print_time") ?: estimatedPrintTime,
         printStalls = toolhead.int("stalls") ?: printStalls,
+        objects = objects.mergedWith(status),
     )
 }
 
@@ -165,12 +185,5 @@ private fun JSONObject.toTiming(): KlipperTiming? {
         mcuTaskAverageSeconds = number("mcu_task_avg"),
     )
 }
-
-private fun JSONObject?.int(name: String): Int? =
-    if (this != null && has(name) && !isNull(name)) optInt(name) else null
-
-/** A numeric field, or null when klippy did not mention it this time. */
-private fun JSONObject?.number(name: String): Double? =
-    if (this != null && has(name) && !isNull(name)) optDouble(name) else null
 
 private fun JSONArray.toDoubleList(): List<Double> = (0 until length()).map { optDouble(it) }

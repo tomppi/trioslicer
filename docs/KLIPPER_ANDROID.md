@@ -19,6 +19,13 @@ without root. Verified on the device, from klippy's log and the app's:
 | the screen updates | after the notification fix: klippy sends `{"params":{"eventtime":…,"status":{…}}}` with **no method name**, and the client had required one, so every screen kept its first snapshot |
 | identity of the built APK | `com.tomppi.enderslicercura` 1.4.0 (49), targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
 
+**The printer's front end is the app's own ten screens**: dashboard, temperatures,
+move, extrude, macros, files, console, mesh, history and machine - see
+[KLIPPER_UI.md](KLIPPER_UI.md). They are fed from the objects the printer publishes
+rather than from a list compiled into the app, and the configuration file no longer
+lives with the extracted payload, so what `SAVE_CONFIG` writes survives a restart and
+an app update.
+
 **The payload plans motion on the phone**: 40000 moves in 1.18s, 33852 moves/s, with a
 step stream within 0.16% of the desktop's for the same file. A print consumes moves at a
 few hundred a second for coarse segments and a few thousand for fine ones, so this is

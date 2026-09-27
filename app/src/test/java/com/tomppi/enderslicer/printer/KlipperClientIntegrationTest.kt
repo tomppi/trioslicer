@@ -83,7 +83,13 @@ class KlipperClientIntegrationTest {
     fun aRealReplyMergesIntoWhatTheScreenReads() {
         val client = connect()
         try {
-            val snapshot = client.subscribe(*KlipperPrinterRepository.WATCHED)
+            // Exactly the objects the app subscribes to on this printer, chosen the
+            // way it chooses them: a real object list, filtered. A list that has
+            // drifted from what a real klippy publishes fails here rather than on a
+            // phone.
+            val wanted = KlipperWatch.forPrinter(client.listObjects())
+            assertTrue("no objects were selected to subscribe to", wanted.isNotEmpty())
+            val snapshot = client.subscribe(*wanted.toTypedArray())
             val state = KlipperPrinterState(connected = true).withStatus(snapshot)
 
             // The fields the screen renders, checked against the shapes a real klippy

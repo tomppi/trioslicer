@@ -179,4 +179,83 @@ object AppIcons {
             "M19 13H5v-2h14v2z",
         )
     }
+    /** Printer tab: the dashboard, which is a readout of the whole machine. */
+    val Dashboard: ImageVector by lazy {
+        glyph(
+            "Dashboard",
+            "M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z",
+        )
+    }
+
+    /** Printer tab: temperatures. */
+    val Thermometer: ImageVector by lazy {
+        glyph(
+            "Thermometer",
+            "M15 13V5c0-1.66-1.34-3-3-3S9 3.34 9 5v8c-1.21.91-2 2.37-2 4 0 2.76 2.24 5 5 5s5-2.24 5-5c0-1.63-.79-3.09-2-4zm-4-8c0-.55.45-1 1-1s1 .45 1 1h-1v1h1v2h-1v1h1v2h-2V5z",
+        )
+    }
+
+    /** Printer tab: moving the head by hand. */
+    val Move: ImageVector by lazy {
+        glyph(
+            "Move",
+            "M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2l-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z",
+        )
+    }
+
+    /** Printer tab: pushing filament through. */
+    val Extrude: ImageVector by lazy {
+        glyph(
+            "Extrude",
+            "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z",
+        )
+    }
+
+    /** Printer tab: the printer's own macros. */
+    val Macro: ImageVector by lazy {
+        glyph(
+            "Macro",
+            "M4 10h12v2H4zm0-4h12v2H4zm0 8h8v2H4zm10 0v6l5-3z",
+        )
+    }
+
+    /** Printer tab: the files the printer can print. */
+    val Folder: ImageVector by lazy {
+        glyph(
+            "Folder",
+            "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
+        )
+    }
+
+    /** Printer tab: the console. */
+    val Console: ImageVector by lazy {
+        glyph(
+            "Console",
+            "M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z",
+        )
+    }
+
+    /** Printer tab: the bed mesh. */
+    val Mesh: ImageVector by lazy {
+        glyph(
+            "Mesh",
+            "M20 2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM8 20H4v-4h4v4zm0-6H4v-4h4v4zm0-6H4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4z",
+        )
+    }
+
+    /** Printer tab: what this printer has printed. */
+    val History: ImageVector by lazy {
+        glyph(
+            "History",
+            "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z",
+        )
+    }
+
+    /** Printer tab: the machine and the host running it. */
+    val Wrench: ImageVector by lazy {
+        glyph(
+            "Wrench",
+            "M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z",
+        )
+    }
 }

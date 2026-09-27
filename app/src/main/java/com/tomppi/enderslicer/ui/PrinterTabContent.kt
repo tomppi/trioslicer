@@ -20,6 +20,7 @@ import com.tomppi.enderslicer.octoprint.OctoPrintUiState
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
+import com.tomppi.enderslicer.ui.klipper.KlipperScreen
 
 /**
  * The Print destination, which is where a printer is reached from.
@@ -53,7 +54,7 @@ internal fun PrinterTabContent(
             }
         }
         if (localPrinter) {
-            KlipperPrinterSheet(
+            KlipperScreen(
                 state = klipperState,
                 viewModel = klipperViewModel,
                 localGcodePath = localGcodePath,

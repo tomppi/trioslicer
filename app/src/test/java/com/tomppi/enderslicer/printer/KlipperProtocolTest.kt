@@ -259,5 +259,53 @@ class KlipperProtocolTest {
         assertEquals(1.5, after.lookaheadSeconds!!, 1e-9)
     }
 
+    @Test
+    fun aGcodeResponseIsReadWhateverTheClientCalledItsTemplate() {
+        // The method name is the subscribing client's own choice - Moonraker asks for
+        // process_gcode_response and re-emits it as notify_gcode_response - so the
+        // message is recognised by the payload it carries.
+        val moonrakers = JSONObject(
+            """{"method": "process_gcode_response", "params": {"response": "// hello"}}""",
+        )
+        assertEquals("// hello", KlipperProtocol.gcodeResponse(moonrakers))
+
+        val mainails = JSONObject(
+            """{"method": "notify_gcode_response", "params": {"response": "!! failed"}}""",
+        )
+        assertEquals("!! failed", KlipperProtocol.gcodeResponse(mainails))
+
+        // And it is not a status update, which is what it would be mistaken for if
+        // either were classified by method name.
+        assertNull(KlipperProtocol.statusUpdate(moonrakers))
+    }
+
+    @Test
+    fun aStatusUpdateCarriesNoGcodeResponse() {
+        val update = JSONObject("""{"params": {"eventtime": 1.0, "status": {"fan": {"speed": 0.5}}}}""")
+        assertNull(KlipperProtocol.gcodeResponse(update))
+    }
+
+    @Test
+    fun anErrorForACommandNobodyWaitedForIsStillRead() {
+        // A script sent asynchronously has no waiter, so its error arrives on the
+        // notification path - and was discarded there, which is why a macro that
+        // failed looked like a macro that did nothing.
+        val error = JSONObject(
+            """{"id": 7, "error": {"error": "WebRequestError", "message": "Printer is shutdown"}}""",
+        )
+        assertEquals("Printer is shutdown", KlipperProtocol.errorReply(error))
+    }
+
+    @Test
+    fun aReplyThatIsNotAnErrorIsNotReportedAsOne() {
+        assertNull(KlipperProtocol.errorReply(JSONObject("""{"id": 7, "result": {}}""")))
+        // An error object with no message falls back to its own name rather than
+        // reporting an empty failure.
+        assertEquals(
+            "WebRequestError",
+            KlipperProtocol.errorReply(JSONObject("""{"id": 7, "error": {"error": "WebRequestError"}}""")),
+        )
+    }
+
     private fun frame(json: String) = json.toByteArray() + byteArrayOf(KlipperProtocol.ETX)
 }

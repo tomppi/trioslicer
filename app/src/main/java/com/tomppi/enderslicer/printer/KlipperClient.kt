@@ -152,6 +152,59 @@ class KlipperClient internal constructor(
     }
 
     /**
+     * Every object klippy publishes, by name.
+     *
+     * This is what a front end can subscribe to, and it is not a fixed list: it is the
+     * printer's configuration. Fans, extra sensors, a second micro-controller and every
+     * saved bed mesh profile are sections someone put in a config file, so the objects
+     * that describe them exist only for the printer that has them.
+     */
+    fun listObjects(): List<String> {
+        val objects = call("objects/list").optJSONArray("objects") ?: return emptyList()
+        return (0 until objects.length())
+            .mapNotNull { objects.optString(it).takeIf(String::isNotBlank) }
+    }
+
+    /**
+     * Every G-code command this printer answers, with klippy's own description of it.
+     *
+     * The list is the printer's, not Klipper's: an extended command exists here because
+     * a config section or a macro defines it. That is what makes it worth showing - it
+     * is a description of this machine.
+     */
+    fun gcodeHelp(): Map<String, String> {
+        val help = call("gcode/help")
+        return help.keys().asSequence()
+            .sorted()
+            .associateWith { help.optString(it) }
+    }
+
+    /**
+     * Ask klippy to push G-code output to this connection.
+     *
+     * Nothing arrives until this is called: klippy only registers an output handler
+     * once a client subscribes, which is why a console that never asked shows nothing
+     * at all rather than showing it late.
+     *
+     * The template is Moonraker's (klippy_apis.py's subscribe_gcode_output), so the
+     * frames are the ones every existing front end already parses rather than a shape
+     * invented here.
+     */
+    fun subscribeOutput() = call(
+        "gcode/subscribe_output",
+        JSONObject().put("response_template", JSONObject().put("method", GCODE_RESPONSE_METHOD)),
+    )
+
+    /**
+     * Stop everything, now.
+     *
+     * klippy's emergency stop: it halts the micro-controller, turns the heaters off and
+     * shuts down. Deliberately not routed through G-code, which is processed in order
+     * after whatever is already queued.
+     */
+    fun emergencyStop() = call("emergency_stop")
+
+    /**
      * Run G-code and wait for it to finish.
      *
      * klippy answers a script when the script completes, not when it is accepted, and
@@ -187,5 +240,11 @@ class KlipperClient internal constructor(
     private companion object {
         const val TAG = "KlipperClient"
         val ERROR_JSON = JSONObject().put("error", "closed")
+
+        /**
+         * The method name klippy puts on pushed G-code output, and the one Moonraker
+         * asks for: the client chooses it, klippy echoes it back.
+         */
+        const val GCODE_RESPONSE_METHOD = "process_gcode_response"
     }
 }

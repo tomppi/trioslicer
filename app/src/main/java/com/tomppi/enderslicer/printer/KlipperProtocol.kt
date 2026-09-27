@@ -71,6 +71,38 @@ internal object KlipperProtocol {
     }
 
     /**
+     * A line of G-code output, if the message is one.
+     *
+     * Only sent to a client that asked for it, and it carries whatever method name
+     * that client put in its response template. The app asks for Moonraker's, so the
+     * wire matches the one every web front end reads:
+     *
+     *     {"method": "process_gcode_response", "params": {"response": "// hello"}}
+     *
+     * Recognised by shape for the same reason a status update is: the method name is
+     * the client's own choice and carries no information.
+     */
+    fun gcodeResponse(message: JSONObject): String? {
+        val params = message.optJSONObject("params") ?: return null
+        if (!params.has("response")) return null
+        return params.optString("response")
+    }
+
+    /**
+     * The message in an error klippy sent for a request nobody is waiting on.
+     *
+     * A script sent asynchronously - anything slow enough that waiting for its reply
+     * would block the screen for minutes - has no waiter, so klippy's error object for
+     * it arrives on the notification path. Dropped there, a macro that failed looked
+     * exactly like a macro that did nothing.
+     */
+    fun errorReply(message: JSONObject): String? {
+        val error = message.optJSONObject("error") ?: return null
+        return error.optString("message").takeIf { it.isNotBlank() }
+            ?: error.optString("error", "klippy refused the request")
+    }
+
+    /**
      * klippy announcing a change in its own state, if it ever does.
      *
      * Kept because a method name is harmless if one turns up, but nothing should depend
