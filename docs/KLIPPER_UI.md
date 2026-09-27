@@ -119,6 +119,24 @@ running. **Export** writes the running file out where the user asks for it, and
 **Restore the app's configuration** puts the shipped default back, keeping klippy's saved
 values - the way back from an import the printer will not start with.
 
+### What the app brings, and what it expects
+
+Importing a configuration tells the app about a printer; it does not put Klipper on the
+board. Three things have to be true before any of this moves:
+
+- the board is running **Klipper firmware**, not the stock firmware it shipped with;
+- that firmware is from the **same Klipper version** as the host this app carries
+  (currently v0.13.0) - Klipper's host and micro-controller speak a versioned protocol, and
+  a board flashed some time ago commonly has to be reflashed when the host moves;
+- the board is on **USB serial** in a form the app can drive: the chips it knows are the
+  CH340/CH341 that Creality boards carry, plus CP210x, FTDI, PL2303 and CDC-ACM boards - so
+  an STM32 board flashed with Klipper's own USB support works, and a CAN toolhead board does
+  not.
+
+A configuration also has to be for a Klipper that knows its options: an unknown option is a
+hard error at startup, and the log on the Machine screen is where it says so.
+
+### What the screens need from a configuration
 ## The configuration file, and what survives a restart
 
 `PID_CALIBRATE`, `BED_MESH_CALIBRATE` and a Z offset all end in values that live in

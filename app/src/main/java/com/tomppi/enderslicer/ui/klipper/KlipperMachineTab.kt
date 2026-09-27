@@ -206,6 +206,16 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                         "want.",
                 )
                 Spacer(Modifier.height(8.dp))
+                KlipperNote(
+                    "Your board has to be running Klipper itself, of the same version as the " +
+                        "host in this app" +
+                        state.host.softwareVersion.takeIf { it.isNotBlank() }
+                            ?.let { " ($it)" }.orEmpty() +
+                        ": importing a configuration tells the app about your printer, it does " +
+                        "not flash your board. A printer still running its stock firmware, or " +
+                        "a board flashed with a different Klipper, will not answer.",
+                )
+                Spacer(Modifier.height(8.dp))
                 KlipperButtons {
                     KlipperButton("Import a configuration") { importLauncher.launch(arrayOf("*/*")) }
                     KlipperButton("Export the running one") { exportLauncher.launch("printer.cfg") }
