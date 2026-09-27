@@ -4,6 +4,21 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-09-27
+
+### Added
+
+- **An input shaping screen.** Two numbers per axis - the shaper type and the frequency it is
+  tuned to - decide the pattern the steppers are driven with, so that a machine's ringing
+  cancels itself instead of printing as ripples beside every corner. Both are editable, both
+  can be applied live, and both can be saved into `[input_shaper]` in the printer's
+  configuration, which is where a restart reads them from. Nothing needs to be measured to be
+  adjusted: an accelerometer makes finding the frequencies easier and is not required to use
+  them. Each type's lowest useful frequency is stated, and warned about when a value goes
+  below it.
+- The screen can also ask the printer what shaping it is currently using - klippy publishes
+  no status for the input shaper, so that is the only way to see it, and the answer arrives
+  in the console.
 ## [1.5.1] - 2026-09-27
 
 ### Added

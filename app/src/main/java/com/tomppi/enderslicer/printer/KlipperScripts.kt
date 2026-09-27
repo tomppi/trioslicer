@@ -60,6 +60,26 @@ internal object KlipperScripts {
         "RESTORE_GCODE_STATE NAME=$EXTRUDE_STATE",
     ).joinToString("\n")
 
+    /**
+     * Set one axis of input shaping, live.
+     *
+     * Nothing is saved by this: the printer's configuration keeps the values it has
+     * until they are written into [input_shaper] and the host restarts. The damping
+     * ratio is left out when it was not given, because klippy then keeps the one that
+     * belongs to the shaper rather than being handed a default that may not.
+     */
+    fun inputShaper(axis: String, type: String, frequency: Double, dampingRatio: Double?): String {
+        val upper = axis.uppercase()
+        val parts = mutableListOf(
+            "SHAPER_TYPE_$upper=" + type.lowercase(),
+            "SHAPER_FREQ_$upper=" + number(frequency, 1),
+        )
+        if (dampingRatio != null) {
+            parts += "DAMPING_RATIO_$upper=" + number(dampingRatio, 3)
+        }
+        return "SET_INPUT_SHAPER " + parts.joinToString(" ")
+    }
+
     fun pressureAdvance(advance: Double): String =
         "SET_PRESSURE_ADVANCE ADVANCE=${number(advance, 4)}"
 

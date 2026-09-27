@@ -101,6 +101,13 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun acceptProbeCalibration() = repository.acceptProbeCalibration()
     fun abortProbeCalibration() = repository.abortProbeCalibration()
 
+    // Input shaping: adjusted live, saved into the printer's configuration.
+    fun applyShaper(axis: String, type: String, frequency: Double, dampingRatio: Double?) =
+        repository.applyShaper(axis, type, frequency, dampingRatio)
+    fun reportShapers() = repository.reportShapers()
+    internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
+        repository.saveShapers(settings)
+
     // The bed mesh.
     fun calibrateMesh() = repository.calibrateMesh()
     fun meshProfile(action: String, name: String) = repository.meshProfile(action, name)

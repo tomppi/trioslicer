@@ -22,6 +22,7 @@ Moonraker speaks to.
 | Files | What is on its virtual SD card, and what each file says about itself | The app's own `gcodes` directory, and the G-code header of each file |
 | Console | What it says, and a line to answer with | `gcode/subscribe_output`, `gcode/help`, `gcode/script` |
 | Z probe | The probe's offset, and the calibration that sets it | `probe`, `manual_probe`, `configfile` |
+| Shaping | Input shaping, per axis | `configfile` (klippy publishes no status for the input shaper) |
 | Mesh | The bed as the probe found it | `bed_mesh` |
 | History | What this app has printed | Its own record, written when a print ends |
 | Machine | The host, the boards, the configuration and the log | `info`, `mcu`, `system_stats`, `query_endstops`, `configfile` |
@@ -87,6 +88,32 @@ empty:
 - The History screen's records are written by this app at the moment a print ends, which
   is the only moment those numbers exist: klippy's `print_stats` describes the print that
   is happening and then the next one.
+
+## Input shaping
+
+Two numbers per axis - a shaper type and the frequency it is tuned to - decide the pattern
+the steppers are driven with, so that the machine's own ringing cancels itself instead of
+printing as ripples beside every corner. The **Shaping** screen sets both, and saves them
+into `[input_shaper]` in the printer's configuration.
+
+Two things about it are worth knowing, because they are not what the rest of the interface
+does:
+
+- **klippy publishes nothing for the input shaper.** Its status object is empty - queried on
+  a running printer, `objects/query?input_shaper` answers `{}` - so the values the screen
+  shows are the ones in the configuration, which is what the next restart will use. What the
+  printer is using *right now* can only be asked for: `SET_INPUT_SHAPER` with no values makes
+  klippy report them, and the answer arrives in the console. The screen has a button for
+  exactly that.
+- **Nothing needs to be measured to be adjusted.** An accelerometer and a
+  `[resonance_tester]` section make finding the frequencies easier; they are not required to
+  use them, and the values are routinely set from a ringing test or from a calibration done
+  on another host. Where a printer has no accelerometer, the screen says so once and says
+  how the numbers are found without one.
+
+Each type has a lowest frequency that means anything - zv 21 Hz, mzv 23, zvd and ei 29,
+2hump_ei 39, 3hump_ei 48 - and the screen says so when a frequency is put below the floor
+for the type chosen, because below it a shaper pushes the ringing rather than cancelling it.
 
 ## The first layer, and the two numbers called Z offset
 

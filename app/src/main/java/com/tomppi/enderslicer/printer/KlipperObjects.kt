@@ -195,6 +195,49 @@ internal val KlipperPrinterState.manualProbeActive: Boolean
 internal val KlipperPrinterState.manualProbeZ: Double?
     get() = obj("manual_probe")?.number("z_position")
 
+/**
+ * One axis of input shaping, as the printer's configuration has it.
+ *
+ * klippy publishes no status for the input_shaper object at all - queried on a running
+ * printer, its status is an empty object - so the configured values are read from
+ * configfile, which is also the thing that decides them at the next start. What is
+ * *in use* right now is whatever SET_INPUT_SHAPER last set, and the only way to see it
+ * is to ask the printer, which answers in the console.
+ */
+data class KlipperShaper(
+    /** x or y. */
+    val axis: String,
+    val type: String,
+    val frequency: Double?,
+    val dampingRatio: Double?,
+)
+
+/** The shaping this printer is configured with, per axis, if it has any. */
+internal val KlipperPrinterState.shapers: List<KlipperShaper>
+    get() {
+        val section = configSections?.optJSONObject("input_shaper") ?: return emptyList()
+        return listOf("x", "y").map { axis ->
+            KlipperShaper(
+                axis = axis,
+                type = section.optString("shaper_type_$axis").takeIf { it.isNotBlank() }
+                    ?: section.optString("shaper_type").takeIf { it.isNotBlank() }.orEmpty(),
+                frequency = section.opt("shaper_freq_$axis")?.toString()?.toDoubleOrNull(),
+                dampingRatio = section.opt("damping_ratio_$axis")?.toString()?.toDoubleOrNull(),
+            )
+        }
+    }
+
+/**
+ * True when this printer can measure its own resonances.
+ *
+ * SHAPER_CALIBRATE is registered by [resonance_tester], and it needs an accelerometer
+ * to read the vibrations it excites. Without both, the command does not exist at all -
+ * a macro that calls it fails with "Unknown command", which is worth saying rather than
+ * offering a button that cannot work.
+ */
+internal val KlipperPrinterState.canMeasureResonances: Boolean
+    get() = configSections?.has("resonance_tester") == true
+
 /** The objects klippy publishes, by name - what a screen may ask for. */
 internal val KlipperPrinterState.objectNames: Set<String> get() = objects.keys
 

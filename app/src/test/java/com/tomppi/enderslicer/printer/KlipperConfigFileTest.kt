@@ -205,4 +205,53 @@ class KlipperConfigFileTest {
         // printer's own saved values back over whatever it writes.
         assertFalse(rewrite.text.contains(KlipperConfigFile.SAVED_MARKER))
     }
+
+    @Test
+    fun inputShapingIsWrittenIntoTheConfiguration() {
+        val config = """
+            [input_shaper]
+            shaper_type_x = mzv
+            shaper_freq_x = 89.8
+
+            [bltouch]
+            z_offset: 0
+        """.trimIndent()
+        val written = KlipperConfigFile.withInputShaper(
+            config,
+            listOf(
+                KlipperConfigFile.ShaperSetting("x", "ei", 41.5, dampingRatio = 0.05),
+                KlipperConfigFile.ShaperSetting("y", "mzv", 35.2),
+            ),
+        )
+        assertTrue(written.contains("shaper_type_x = ei"))
+        assertTrue(written.contains("shaper_freq_x = 41.5"))
+        assertTrue(written.contains("damping_ratio_x = 0.050"))
+        // A setting for an axis the section did not have is added to it, not to the file.
+        assertTrue(written.contains("shaper_type_y = mzv"))
+        val bltouchAt = written.indexOf("[bltouch]")
+        assertTrue("shaping must stay inside its own section", written.indexOf("shaper_type_y") < bltouchAt)
+        assertTrue(written.contains("z_offset: 0"))
+    }
+
+    @Test
+    fun aConfigurationWithNoShapingSectionGetsOne() {
+        val written = KlipperConfigFile.withInputShaper(
+            "[mcu]\nserial: /dev/ttyUSB0\n",
+            listOf(KlipperConfigFile.ShaperSetting("x", "mzv", 89.8)),
+        )
+        assertTrue(written.contains("[input_shaper]"))
+        assertTrue(written.contains("shaper_type_x = mzv"))
+        assertTrue(written.contains("shaper_freq_x = 89.8"))
+    }
+
+    @Test
+    fun writingShapingKeepsWhatKlippySaved() {
+        val config = "[input_shaper]\nshaper_type_x = zv\n" + "\n" + saved + "\n"
+        val written = KlipperConfigFile.withInputShaper(
+            config,
+            listOf(KlipperConfigFile.ShaperSetting("x", "mzv", 60.0)),
+        )
+        assertTrue("the calibration survives", written.contains("pid_Kp = 21.000"))
+        assertEquals(1, Regex(KlipperConfigFile.SAVED_MARKER).findAll(written).count())
+    }
 }

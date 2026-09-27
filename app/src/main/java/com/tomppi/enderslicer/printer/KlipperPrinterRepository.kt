@@ -377,6 +377,34 @@ class KlipperPrinterRepository(
 
     fun calibrateMesh() = send("BED_MESH_CALIBRATE")
 
+    /**
+     * Set one axis of input shaping, live.
+     *
+     * The printer acts on it immediately and forgets it at the next restart: what
+     * survives is the [input_shaper] section of its configuration, which is what
+     * [saveShapers] writes. Nothing here needs an accelerometer - the values can be
+     * set from a ringing test or from whatever the printer was tuned with - and the
+     * effect of a wrong value is visible in the print, which is how most people tune
+     * it.
+     */
+    fun applyShaper(axis: String, type: String, frequency: Double, dampingRatio: Double?) =
+        send(KlipperScripts.inputShaper(axis, type, frequency, dampingRatio))
+
+    /** Ask the printer what shaping it is using; it answers in the console. */
+    fun reportShapers() = send("SET_INPUT_SHAPER")
+
+    /** Write shaping into the printer's own configuration, where a restart finds it. */
+    internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val config = KlipperHostFiles.config(application.filesDir)
+                if (!config.isFile) return@runCatching false
+                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+                config.writeText(KlipperConfigFile.withInputShaper(config.readText(), settings))
+                true
+            }.getOrDefault(false)
+        }
+
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
     fun meshProfile(action: String, name: String) = send(KlipperScripts.meshProfile(action, name))
 

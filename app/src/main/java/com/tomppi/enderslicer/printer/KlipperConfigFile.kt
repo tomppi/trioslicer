@@ -183,6 +183,62 @@ internal object KlipperConfigFile {
         return DeviceRewrite(lines.joinToString("\n").trimEnd() + "\n", changes, warnings)
     }
 
+    /**
+     * Write input shaping into a configuration, and answer with the result.
+     *
+     * Shaping is the one motion setting that cannot be saved from the printer side:
+     * SET_INPUT_SHAPER changes what is running and nothing else, and SAVE_CONFIG only
+     * writes what klippy marked as changed. So a value that is meant to survive a
+     * restart is written here, into the [input_shaper] section - the same treatment the
+     * app gives a brought configuration's serial port, and for the same reason: it is
+     * the part of the file this app is being asked to change.
+     */
+    fun withInputShaper(text: String, settings: List<ShaperSetting>): String {
+        val lines = text.lines().toMutableList()
+        val saved = savedBlock(text)
+        val body = withoutSavedBlock(text).lines().toMutableList()
+        var header = body.indexOfFirst { it.trim().equals("[input_shaper]", ignoreCase = true) }
+        if (header < 0) {
+            while (body.isNotEmpty() && body.last().isBlank()) body.removeAt(body.size - 1)
+            body += listOf("", "[input_shaper]")
+            header = body.size - 1
+        }
+        var end = header + 1
+        while (end < body.size && !body[end].trim().startsWith("[")) end++
+
+        settings.forEach { setting ->
+            val axis = setting.axis.lowercase()
+            val wanted = listOf(
+                "shaper_type_$axis" to setting.type.lowercase(),
+                "shaper_freq_$axis" to number(setting.frequency, 1),
+            ) + listOfNotNull(
+                setting.dampingRatio?.let { "damping_ratio_$axis" to number(it, 3) },
+            )
+            wanted.forEach { (key, value) ->
+                val at = (header + 1 until end).firstOrNull { index ->
+                    body[index].trim().substringBefore(':').trim().equals(key, ignoreCase = true)
+                }
+                if (at != null) {
+                    body[at] = "$key = $value"
+                } else {
+                    body.add(end, "$key = $value")
+                    end++
+                }
+            }
+        }
+
+        val rebuilt = body.joinToString("\n").trimEnd() + "\n"
+        return if (saved.isBlank()) rebuilt else rebuilt.trimEnd() + "\n\n" + saved
+    }
+
+    /** One axis's shaping, as it is written into the configuration. */
+    data class ShaperSetting(
+        val axis: String,
+        val type: String,
+        val frequency: Double,
+        val dampingRatio: Double? = null,
+    )
+
     /** The files a configuration includes, by the name it gives them. */
     fun includesOf(text: String): List<String> = text.lines()
         .mapNotNull { INCLUDE.matchEntire(it.trim())?.groupValues?.get(1)?.trim() }
@@ -241,6 +297,14 @@ internal object KlipperConfigFile {
     private val SERIAL_OPTION = Regex("serial\\s*:.*", RegexOption.IGNORE_CASE)
     private val CANBUS_OPTION = Regex("canbus_uuid\\s*:.*", RegexOption.IGNORE_CASE)
     private val RESTART_OPTION = Regex("restart_method\\s*:.*", RegexOption.IGNORE_CASE)
+    /**
+     * A number as klippy writes one in its own configuration: a dot for the decimal
+     * point, whatever language the phone is set to. The same trap as the one that sent
+     * G1 Y10,000 to the printer, in a file instead of a command.
+     */
+    private fun number(value: Double, decimals: Int): String =
+        java.lang.String.format(java.util.Locale.ROOT, "%." + decimals + "f", value)
+
     private val SDCARD_PATH = Regex("path\\s*:.*", RegexOption.IGNORE_CASE)
     private val INCLUDE = Regex("\\[include\\s+(.+?)]", RegexOption.IGNORE_CASE)
     private val EXTRA_MCU = Regex("\\[mcu\\s+(.+?)]", RegexOption.IGNORE_CASE)
