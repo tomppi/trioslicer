@@ -1,0 +1,104 @@
+package com.tomppi.enderslicer.printer
+
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.Handler
+import android.os.HandlerThread
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.math.sqrt
+
+/** What the phone heard, and what it heard it with. */
+data class PhoneRecording(
+    /** The magnitude of the acceleration, sample by sample. */
+    val samples: DoubleArray,
+    /** Measured from the samples' own timestamps, not from what was asked for. */
+    val sampleRateHz: Double,
+    val sensorName: String,
+)
+
+/**
+ * The phone's accelerometer, used as the sensor the printer does not have.
+ *
+ * Klipper would measure its own resonances with an accelerometer wired to the micro-controller,
+ * which is a gram of silicon bolted to the toolhead. A phone cannot be that - it weighs two
+ * hundred times as much, and putting it on the moving mass would change the machine it is
+ * measuring. On the printer's base it adds nothing and still feels the machine shake, which is
+ * the same thing people do by ear when they run a ringing test; the difference is that this
+ * records it.
+ *
+ * The samples are the magnitude of the vector rather than its components, so it does not matter
+ * which way up the phone is lying: gravity is a constant in that number and the analysis
+ * removes it, while the shaking is what is left.
+ */
+class PhoneAccelerometer(private val context: Context) {
+    private val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+
+    /** The sensor itself, or null on a phone without one. */
+    val sensor: Sensor? get() = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    /** What the screen says it measured with. */
+    fun describe(): String = sensor?.let { "${it.name}, up to ${it.maximumRange.toInt()} m/s²" }
+        ?: "no accelerometer"
+
+    /**
+     * Record for [seconds].
+     *
+     * SENSOR_DELAY_FASTEST, which on this phone is 416 Hz - the sensor's own maximum rate. The
+     * band a shaper cares about ends around 120 Hz, so that is four times oversampled, and the
+     * rate is measured from the timestamps afterwards rather than assumed: a sensor that
+     * delivers slower than it promised would silently put every frequency in the wrong place.
+     */
+    suspend fun record(seconds: Double): PhoneRecording? = withContext(Dispatchers.IO) {
+        val accelerometer = sensor ?: return@withContext null
+        val magnitudes = ArrayList<Double>((seconds * 400).toInt())
+        val timestamps = ArrayList<Long>((seconds * 400).toInt())
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+                // Floats from the sensor, doubles here: the analysis works in millimetres and
+                // hertz, and a Float squared over ten thousand samples loses more than it saves.
+                magnitudes.add(sqrt((x * x + y * y + z * z).toDouble()))
+                timestamps.add(event.timestamp)
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+        }
+        val thread = HandlerThread("printer-accelerometer").apply { start() }
+        val registered = manager.registerListener(
+            listener, accelerometer, SensorManager.SENSOR_DELAY_FASTEST, Handler(thread.looper),
+        )
+        if (!registered) {
+            thread.quitSafely()
+            return@withContext null
+        }
+        try {
+            delay((seconds * 1000).toLong())
+        } finally {
+            manager.unregisterListener(listener)
+            thread.quitSafely()
+        }
+        if (magnitudes.size < 32) return@withContext null
+        val span = (timestamps.last() - timestamps.first()) / 1_000_000_000.0
+        val rate = if (span > 0.0) (magnitudes.size - 1) / span else 0.0
+        if (rate <= 0.0) return@withContext null
+        PhoneRecording(magnitudes.toDoubleArray(), rate, accelerometer.name)
+    }
+}
+
+/** One axis, measured: the curve, the peaks, and what they were measured with. */
+data class KlipperResonanceMeasurement(
+    val axis: String,
+    val sensorName: String,
+    val sampleRateHz: Double,
+    /** When the machine was heard to start moving, in seconds into the recording. */
+    val movedAt: Double,
+    val curve: ResonanceCurve,
+    val peaks: List<ResonancePeak>,
+)

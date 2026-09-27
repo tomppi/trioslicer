@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperConfigFile
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.KlipperResonanceMeasurement
 import com.tomppi.enderslicer.printer.KlipperShaper
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.canMeasureResonances
@@ -48,6 +50,10 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     var x by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "x" })) }
     var y by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "y" })) }
     var confirmSave by remember { mutableStateOf(false) }
+    var measureAxis by remember { mutableStateOf("x") }
+    var measuring by remember { mutableStateOf(false) }
+    var measurement by remember { mutableStateOf<KlipperResonanceMeasurement?>(null) }
+    var measureError by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -109,6 +115,67 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                     "report what it is using - including anything set since the last restart. " +
                     "The answer appears in the console.",
             )
+        }
+
+        KlipperCard(
+            title = "Measure with this phone",
+            subtitle = "The accelerometer the printer has not got",
+        ) {
+            KlipperNote(
+                "Put the phone on the printer's base - not on the toolhead or the bed, where " +
+                    "its own weight would change the machine being measured - then choose an " +
+                    "axis and press measure. The printer plays Klipper's own sweep while the " +
+                    "phone records itself; what comes back is where the machine answers.",
+            )
+            Spacer(Modifier.height(8.dp))
+            KlipperButtons {
+                listOf("x", "y").forEach { axis ->
+                    KlipperButton(
+                        text = if (axis == measureAxis) "• Axis " + axis.uppercase() else "Axis " + axis.uppercase(),
+                        onClick = { measureAxis = axis },
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            KlipperButtons {
+                KlipperButton(
+                    text = if (measuring) "Measuring…" else "Measure axis " + measureAxis.uppercase(),
+                    enabled = state.isReady && state.isHomed && !measuring,
+                    onClick = {
+                        scope.launch {
+                            measuring = true
+                            measurement = null
+                            measureError = null
+                            viewModel
+                                .measureResonances(measureAxis, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_HZ_PER_SEC)
+                                .onSuccess { result -> measurement = result }
+                                .onFailure { error -> measureError = error.message }
+                            measuring = false
+                        }
+                    },
+                )
+            }
+            if (measuring) {
+                Spacer(Modifier.height(8.dp))
+                KlipperNote(
+                    "Recording for about " + SWEEP_SECONDS + " seconds. Leave the phone " +
+                        "where it is: the sweep starts slow and ends as a buzz.",
+                )
+            }
+            measureError?.let { message ->
+                Spacer(Modifier.height(8.dp))
+                KlipperNote(message, color = MaterialTheme.colorScheme.error)
+            }
+            measurement?.let { result ->
+                MeasurementResult(result, onUse = { frequency ->
+                    val text = "%.1f".format(frequency)
+                    if (result.axis == "Y") {
+                        y = y.copy(frequencyText = text)
+                    } else {
+                        x = x.copy(frequencyText = text)
+                    }
+                })
+            }
         }
 
         if (!state.canMeasureResonances) {
@@ -214,6 +281,47 @@ private fun ShaperCard(
     }
 }
 
+/** What the phone heard, and the frequencies it is offering to try. */
+@Composable
+private fun MeasurementResult(
+    measurement: KlipperResonanceMeasurement,
+    onUse: (Double) -> Unit,
+) {
+    Spacer(Modifier.height(12.dp))
+    KlipperValue("Axis", measurement.axis)
+    KlipperValue("Sensor", measurement.sensorName)
+    KlipperValue("Sampled at", "%.0f Hz".format(measurement.sampleRateHz))
+    KlipperValue("Machine heard at", "%.1f s".format(measurement.movedAt))
+    if (measurement.peaks.isEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        KlipperNote(
+            "The sweep was recorded but nothing stood out of it: either the machine did not " +
+                "move much, or the phone was not on it. Try the other axis, and put the " +
+                "phone flat on the base.",
+        )
+        return
+    }
+    Spacer(Modifier.height(8.dp))
+    KlipperNote("What the machine answered at, strongest first:")
+    measurement.peaks.forEach { peak ->
+        KlipperValue(
+            label = "%.1f Hz".format(peak.frequencyHz),
+            value = "%.0f× the rest".format(peak.signalToNoise),
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    KlipperButtons {
+        measurement.peaks.forEach { peak ->
+            KlipperButton("Use %.1f Hz".format(peak.frequencyHz)) { onUse(peak.frequencyHz) }
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    KlipperNote(
+        "Putting one in the frequency field does not apply it: set the type you want, apply, " +
+            "print something with corners, and judge it by the ripples.",
+    )
+}
+
 /** What a user is editing for one axis, before it is applied. */
 private data class ShaperEdit(
     val type: String,
@@ -232,6 +340,19 @@ private data class ShaperEdit(
         )
     }
 }
+
+/**
+ * The sweep the phone measures with: Klipper's band, run at twice its rate.
+ *
+ * The band is where an Ender-class machine rings and where every shaper Klipper has is
+ * useful; the rate is the generator's own maximum, which turns Klipper's 130 second sweep
+ * into 50. The analysis is handed the same three numbers, and gets its frequency axis from
+ * them rather than from anything the printer told it.
+ */
+private const val SWEEP_START_HZ = 20.0
+private const val SWEEP_END_HZ = 120.0
+private const val SWEEP_HZ_PER_SEC = 2.0
+private const val SWEEP_SECONDS = 50
 
 /** The shapers Klipper implements, from shaper_defs.py. */
 private val SHAPER_TYPES = listOf("zv", "mzv", "zvd", "ei", "2hump_ei", "3hump_ei")

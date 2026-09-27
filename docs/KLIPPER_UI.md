@@ -116,6 +116,27 @@ loaded by a `[resonance_playback]` section, which lives in the app's own `app.cf
 printer's configuration gains exactly one line, `[include app.cfg]`, added above klippy's
 saved block so it is never read as part of it.
 
+### Measuring it with the phone
+
+The **Shaping** screen can play that sweep and listen to it with the phone's own
+accelerometer — an LSM6DSV on the Fold 5, which reports up to 416 Hz. Against a band that
+ends at 120 Hz that is four times oversampled, and against a noise floor of about
+0.1 mg/√Hz it is two orders of magnitude above the shaking a printer produces: a frame
+moving 50 µm at 35 Hz is roughly 245 mg.
+
+The recording and the sweep are not synchronised and do not need to be. The analysis finds
+where the machine started moving inside its own recording, and then, for each frequency in
+the band, measures how much of that frequency is in the stretch of recording from when the
+sweep was playing it — a single-bin DFT per frequency, which is the classic stepped-sine
+method done in one pass. The frequency axis comes from the sweep's own arithmetic: the
+generator advances the frequency by `2 · (0.25 / f) · hz_per_sec` every half period, and a
+half period lasts `0.25 / f`, so the two cancel to `df/dt = hz_per_sec` exactly — the band is
+crossed linearly, at the rate its name says.
+
+The phone goes on the printer's base, never on the toolhead or the bed: it weighs 230 g,
+and on the moving mass that would change the machine being measured. What it hears from the
+base is the frame's response, which is the same path the ringing is audible through.
+
 ## Input shaping
 
 Two numbers per axis - a shaper type and the frequency it is tuned to - decide the pattern

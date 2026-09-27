@@ -4,6 +4,26 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-09-27
+
+### Added
+
+- **The printer's resonances can be measured with the phone.** The Shaping screen plays
+  Klipper's own sweep through the printer and records it with the phone's accelerometer, then
+  reports the frequencies the machine answered at, strongest first, each with how far it
+  stands above the surrounding response. Choosing one puts it in the frequency field, and a
+  test print with corners says whether it helped.
+- The phone's sensor runs at its own maximum rate - 416 Hz on this device, four times
+  oversampled across the shaper band - and the rate used is measured from the samples'
+  timestamps rather than assumed, because a sensor delivering slower than it promised would
+  put every frequency in the wrong place.
+
+### Notes
+
+- The recording and the printer share no clock. The analysis finds the moment the machine
+  started moving inside its own recording, and takes the frequency axis from the sweep's
+  schedule, which is linear in time: `df/dt = hz_per_sec` exactly, because a half period
+  lasts `0.25 / f` and the frequency advances by `2 · (0.25 / f) · hz_per_sec`.
 ## [1.5.2] - 2026-09-27
 
 ### Added

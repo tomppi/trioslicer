@@ -1,0 +1,139 @@
+package com.tomppi.enderslicer.printer
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
+
+/**
+ * Reading a machine's resonances out of a recording of it being swept.
+ *
+ * The numbers here come from the printer's side rather than from this file: the sweep is
+ * Klipper's, played by the playback module, and what is checked is that the analysis agrees
+ * with it about what was being played when.
+ */
+class ResonanceAnalysisTest {
+    private val sampleRate = 416.0
+
+    /**
+     * The generator's own loop, mirrored from resonance_tester.py - the thing the closed-form
+     * mapping is supposed to describe.
+     */
+    private fun generatorPairs(fStart: Double, fEnd: Double, hzPerSec: Double): List<Pair<Double, Double>> {
+        var freq = fStart
+        var time = 0.0
+        val out = mutableListOf<Pair<Double, Double>>()
+        while (freq <= fEnd + 1e-9) {
+            val tSeg = 0.25 / freq
+            time += 2 * tSeg
+            freq += 2 * tSeg * hzPerSec
+            out += time to freq
+        }
+        return out
+    }
+
+    @Test
+    fun theFrequencyMapIsTheGeneratorsOwn() {
+        val hzPerSec = 1.0
+        val pairs = generatorPairs(5.0, 135.0, hzPerSec)
+        pairs.forEach { (time, frequency) ->
+            assertEquals(frequency, ResonanceAnalysis.sweepFrequency(5.0, hzPerSec, time), 1e-9)
+        }
+        // And the inverse lands back where it started, which is what the analysis uses to
+        // ask "when was 42 Hz being played".
+        assertEquals(42.0, ResonanceAnalysis.sweepTime(5.0, hzPerSec, 42.0).let {
+            ResonanceAnalysis.sweepFrequency(5.0, hzPerSec, it)
+        }, 1e-9)
+    }
+
+    @Test
+    fun theSweepTakesAsLongAsKlipperSaysItDoes() {
+        // 130 seconds for 5 to 135 Hz at 1 Hz/s, and the segment count the playback module was
+        // verified against (36398 half periods, so 18199 of these).
+        assertEquals(130.0, ResonanceAnalysis.sweepDuration(5.0, 135.0, 1.0), 1e-9)
+        assertEquals(18199, generatorPairs(5.0, 135.0, 1.0).size)
+    }
+
+    @Test
+    fun oneFrequencyInIsFoundAtThatFrequency() {
+        // A pure 42 Hz tone, sampled like the phone samples, read back by name.
+        val samples = DoubleArray((2 * sampleRate).toInt()) { index ->
+            sin(2 * PI * 42.0 * index / sampleRate)
+        }
+        val magnitude = ResonanceAnalysis.goertzel(samples, 0, samples.size, 42.0, sampleRate)
+        val elsewhere = ResonanceAnalysis.goertzel(samples, 0, samples.size, 55.0, sampleRate)
+        assertTrue("42 Hz should dominate: $magnitude against $elsewhere", magnitude > 20 * elsewhere)
+    }
+
+    @Test
+    fun aMachineThatRingsAtFortyTwoHertzIsReadAsRingingAtFortyTwoHertz() {
+        // The physical model: the machine is driven at the sweep's frequency, and answers in
+        // proportion to how close that is to its resonance. Phase is integrated from the
+        // instantaneous frequency, as the printer's motion would be.
+        val fStart = 20.0
+        val fEnd = 120.0
+        val hzPerSec = 2.0
+        val resonance = 42.0
+        val duration = ResonanceAnalysis.sweepDuration(fStart, fEnd, hzPerSec)
+        val samples = DoubleArray(((duration + 0.2) * sampleRate).toInt())
+        var phase = 0.0
+        for (index in samples.indices) {
+            val t = index / sampleRate
+            val f = ResonanceAnalysis.sweepFrequency(fStart, hzPerSec, t)
+            phase += 2 * PI * f / sampleRate
+            val response = 1.0 + 12.0 / (1.0 + ((f - resonance) / 2.0) * ((f - resonance) / 2.0))
+            samples[index] = response * sin(phase) + 0.05 * sin(2 * PI * 97.0 * index / sampleRate)
+        }
+
+        val curve = ResonanceAnalysis.response(samples, sampleRate, 0.0, fStart, fEnd, hzPerSec)
+        val peaks = curve.peaks()
+        assertTrue("no peak found in ${curve.magnitudes.size} points", peaks.isNotEmpty())
+        assertEquals(resonance, peaks.first().frequencyHz, 1.5)
+        assertTrue("the peak should stand out: ${peaks.first().signalToNoise}", peaks.first().signalToNoise > 2.0)
+    }
+
+    @Test
+    fun gravityAndTheWayThePhoneIsLyingAreRemoved() {
+        // A phone on a printer's base reads 9.81 m/s^2 of gravity plus whatever it is being
+        // shaken by; only the second is interesting.
+        val samples = DoubleArray((sampleRate * 2).toInt()) { index ->
+            9.81 + 0.3 * sin(2 * PI * 35.0 * index / sampleRate)
+        }
+        val quiet = ResonanceAnalysis.detrend(samples, sampleRate)
+        val mean = quiet.sum() / quiet.size
+        assertEquals("gravity should be gone", 0.0, mean, 0.01)
+        val peak = ResonanceAnalysis.goertzel(quiet, 0, quiet.size, 35.0, sampleRate)
+        assertTrue("the shaking should survive", peak > 0.1)
+    }
+
+    @Test
+    fun theMomentTheMachineStartsMovingIsFoundInTheRecording() {
+        val quietSamples = (sampleRate * 2).toInt()
+        val samples = DoubleArray(quietSamples + (sampleRate * 3).toInt()) { index ->
+            val noise = 0.002 * sin(2 * PI * 7.3 * index / sampleRate)
+            if (index < quietSamples) noise
+            else noise + 0.25 * sin(2 * PI * 35.0 * index / sampleRate)
+        }
+        val start = ResonanceAnalysis.motionStart(samples, sampleRate)
+        assertNotNull("the sweep should be noticed", start)
+        assertEquals(2.0, start!! / sampleRate, 0.05)
+    }
+
+    @Test
+    fun aRecordingOfNothingIsNotReadAsAMachine() {
+        val samples = DoubleArray((sampleRate * 3).toInt()) { index ->
+            0.002 * sin(2 * PI * 7.3 * index / sampleRate)
+        }
+        assertNull("nothing moved, so there is no start", ResonanceAnalysis.motionStart(samples, sampleRate))
+    }
+
+    @Test
+    fun aFlatCurveHasNoPeaks() {
+        val frequencies = DoubleArray(100) { 20.0 + it }
+        val flat = ResonanceCurve(frequencies, DoubleArray(100) { 1.0 })
+        assertTrue(flat.peaks().isEmpty())
+    }
+}

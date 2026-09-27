@@ -5,7 +5,12 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import kotlinx.coroutines.flow.StateFlow
 
@@ -105,6 +110,66 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun applyShaper(axis: String, type: String, frequency: Double, dampingRatio: Double?) =
         repository.applyShaper(axis, type, frequency, dampingRatio)
     fun reportShapers() = repository.reportShapers()
+
+    /**
+     * Measure one axis with the phone's own accelerometer.
+     *
+     * The recording starts before the sweep is asked for and runs past its end, because the
+     * analysis works out when the machine started moving from the recording itself - the
+     * phone's clock and the printer's have nothing to do with each other, and a free
+     * measurement must not need them to.
+     */
+    suspend fun measureResonances(
+        axis: String,
+        freqStart: Double,
+        freqEnd: Double,
+        hzPerSec: Double,
+    ): Result<KlipperResonanceMeasurement> = withContext(Dispatchers.IO) {
+        val accelerometer = PhoneAccelerometer(getApplication())
+        val duration = ResonanceAnalysis.sweepDuration(freqStart, freqEnd, hzPerSec)
+        val recording = coroutineScope {
+            val recorder = async { accelerometer.record(duration + 3.0) }
+            // A beat of quiet first, which is what the analysis uses as the machine's own
+            // noise floor, and what it compares the sweep against to find where it began.
+            delay(700)
+            repository.playResonances(axis, freqStart, freqEnd, hzPerSec)
+            recorder.await()
+        } ?: return@withContext Result.failure(
+            IllegalStateException("this phone would not give its accelerometer"),
+        )
+        val clean = ResonanceAnalysis.detrend(recording.samples, recording.sampleRateHz)
+        val start = ResonanceAnalysis.motionStart(clean, recording.sampleRateHz)
+            ?: return@withContext Result.failure(
+                IllegalStateException(
+                    "the machine was not heard moving: check it is homed, and that the axis " +
+                        "chosen is the one that moved",
+                ),
+            )
+        val movedAt = start / recording.sampleRateHz
+        val curve = ResonanceAnalysis.response(
+            samples = clean,
+            sampleRateHz = recording.sampleRateHz,
+            motionStartSeconds = movedAt,
+            fStart = freqStart,
+            fEnd = freqEnd,
+            hzPerSec = hzPerSec,
+        )
+        if (curve.magnitudes.isEmpty()) {
+            return@withContext Result.failure(
+                IllegalStateException("the sweep was too short to measure"),
+            )
+        }
+        Result.success(
+            KlipperResonanceMeasurement(
+                axis = axis.uppercase(),
+                sensorName = recording.sensorName,
+                sampleRateHz = recording.sampleRateHz,
+                movedAt = movedAt,
+                curve = curve,
+                peaks = curve.peaks(),
+            ),
+        )
+    }
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         repository.saveShapers(settings)
 

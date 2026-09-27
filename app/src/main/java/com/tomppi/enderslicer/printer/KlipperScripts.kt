@@ -80,6 +80,19 @@ internal object KlipperScripts {
         return "SET_INPUT_SHAPER " + parts.joinToString(" ")
     }
 
+    /**
+     * Play the resonance sweep, for the phone to measure.
+     *
+     * The command comes from the playback module in the payload, which mirrors Klipper's
+     * own resonance test: the same generator, the same moves. The frequencies and the rate
+     * are passed back to the analysis, which has to know what was played when.
+     */
+    fun playResonances(axis: String, freqStart: Double, freqEnd: Double, hzPerSec: Double): String =
+        "PLAY_RESONANCES AXIS=" + axis.uppercase() +
+            " FREQ_START=" + number(freqStart, 1) +
+            " FREQ_END=" + number(freqEnd, 1) +
+            " HZ_PER_SEC=" + number(hzPerSec, 2)
+
     fun pressureAdvance(advance: Double): String =
         "SET_PRESSURE_ADVANCE ADVANCE=${number(advance, 4)}"
 
