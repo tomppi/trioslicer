@@ -110,6 +110,10 @@ trapezoids and would not be the sweep Klipper measures with.
 `resonance_tester.py` with `ast` and compares the two schedules element by element at every
 staging, so a Klipper that moves is caught on a build machine rather than on a printer.
 
+It has been run on the printer: the module loads through the app's own include, the axis
+sweeps from 20 to 120 Hz, and the velocity limits and the input shaper are restored at the
+end.
+
 It is a file beside Klipper, not a patch to it: Klipper's three Android patches modify
 upstream files, while this adds a command and changes no behaviour of Klipper's own. It is
 loaded by a `[resonance_playback]` section, which lives in the app's own `app.cfg` — the

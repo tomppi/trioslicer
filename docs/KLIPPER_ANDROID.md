@@ -19,6 +19,7 @@ without root. Verified on the device, from klippy's log and the app's:
 | the screen updates | after the notification fix: klippy sends `{"params":{"eventtime":…,"status":{…}}}` with **no method name**, and the client had required one, so every screen kept its first snapshot |
 | identity of the built APK | `com.tomppi.enderslicercura`, targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
 | **a print, start to finish** | the first completed print driven end to end by the app's host, on the printer, sliced by this app and streamed from its own storage - reported by the user on 27 September 2026. Small: it settles that the chain works, not that it holds for hours |
+| the resonance sweep, played on the printer | `PLAY_RESONANCES AXIS=X ...` runs the sweep Klipper's own resonance test uses - the app's module loaded through its own `[include app.cfg]`, the toolhead driven by `toolhead.move()` with explicit velocities, and the velocity limits and input shaper restored at the end. Reported working by the user on 27 September 2026 |
 | the print record the app keeps | History shows that print after the fact - file, printing time, filament, how it ended - written by the app at the moment the print stopped, which is the only moment klippy reports those numbers |
 
 **The printer's front end is the app's own ten screens**: dashboard, temperatures,
