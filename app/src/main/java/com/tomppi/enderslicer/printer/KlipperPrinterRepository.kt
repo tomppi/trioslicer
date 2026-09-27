@@ -323,42 +323,23 @@ class KlipperPrinterRepository(
         command(text)
     }
 
-    fun home(axes: String = "") = send(if (axes.isBlank()) "G28" else "G28 $axes")
+    fun home(axes: String = "") = send(KlipperScripts.home(axes))
 
-    /**
-     * Move one axis by a distance, without changing how the machine is positioned.
-     *
-     * The state is saved and restored around a relative move rather than switching to
-     * relative and switching back: a G91 that is never answered - the link drops, the
-     * printer shuts down - would otherwise leave the machine in the mode that makes the
-     * next absolute move a relative one, which is a crash.
-     */
-    fun jog(axis: String, distance: Double, feedrate: Int = DEFAULT_JOG_FEEDRATE) {
-        // Formatted outside the string: Kotlin cannot lex a string literal inside a
-        // template inside another string literal.
-        val amount = "%.3f".format(distance)
-        send(
-            "SAVE_GCODE_STATE NAME=trioslicer_jog\nG91\nG1 $axis$amount F$feedrate\n" +
-                "RESTORE_GCODE_STATE NAME=trioslicer_jog",
-        )
-    }
+    fun jog(axis: String, distance: Double, feedrate: Int = DEFAULT_JOG_FEEDRATE) =
+        send(KlipperScripts.jog(axis, distance, feedrate))
 
-    /** Nudge the first layer up or down, which is what a Z offset is for. */
-    fun adjustZOffset(delta: Double, move: Boolean) {
-        val amount = "%.3f".format(delta)
-        send("SET_GCODE_OFFSET Z_ADJUST=$amount" + if (move) " MOVE=1" else "")
-    }
+    fun adjustZOffset(delta: Double, move: Boolean) = send(KlipperScripts.zOffset(delta, move))
 
     fun resetZOffset() = send("SET_GCODE_OFFSET Z=0")
 
     /** The part fan, as a percentage of full speed. */
-    fun setFan(percent: Int) = send("M106 S${(percent.coerceIn(0, 100) * 255 / 100)}")
+    fun setFan(percent: Int) = send(KlipperScripts.fan(percent))
 
     /** M220: print speed, as a percentage of what the file asks for. */
-    fun setSpeedFactor(percent: Int) = send("M220 S${percent.coerceIn(1, 999)}")
+    fun setSpeedFactor(percent: Int) = send(KlipperScripts.speedFactor(percent))
 
     /** M221: extrusion, as a percentage of what the file asks for. */
-    fun setExtrudeFactor(percent: Int) = send("M221 S${percent.coerceIn(1, 999)}")
+    fun setExtrudeFactor(percent: Int) = send(KlipperScripts.extrudeFactor(percent))
 
     /**
      * Push filament through, or pull it back.
@@ -366,36 +347,25 @@ class KlipperPrinterRepository(
      * Relative extrusion inside a saved state, for the same reason as a jog: the file's
      * own absolute/relative choice is left exactly as it was.
      */
-    fun extrude(lengthMm: Double, feedrate: Int = DEFAULT_EXTRUDE_FEEDRATE) {
-        val amount = "%.2f".format(lengthMm)
-        send(
-            "SAVE_GCODE_STATE NAME=trioslicer_extrude\nM83\nG1 E$amount F$feedrate\n" +
-                "RESTORE_GCODE_STATE NAME=trioslicer_extrude",
-        )
-    }
+    fun extrude(lengthMm: Double, feedrate: Int = DEFAULT_EXTRUDE_FEEDRATE) =
+        send(KlipperScripts.extrude(lengthMm, feedrate))
 
-    fun setPressureAdvance(advance: Double) {
-        val value = "%.4f".format(advance)
-        send("SET_PRESSURE_ADVANCE ADVANCE=$value")
-    }
+    fun setPressureAdvance(advance: Double) = send(KlipperScripts.pressureAdvance(advance))
 
-    fun setRetraction(length: Double, speed: Double) {
-        val retract = "%.2f".format(length)
-        val rate = "%.1f".format(speed)
-        send("SET_RETRACTION RETRACT_LENGTH=$retract RETRACT_SPEED=$rate")
-    }
+    fun setRetraction(length: Double, speed: Double) =
+        send(KlipperScripts.retraction(length, speed))
 
     /** Run one of the printer's own macros, exactly as its config defines it. */
     fun runMacro(name: String) = send(name)
 
     /** PID-tune a heater, which needs the printer to be at temperature and idle. */
     fun calibratePid(heater: String, target: Int) =
-        send("PID_CALIBRATE HEATER=$heater TARGET=$target")
+        send(KlipperScripts.pidCalibrate(heater, target))
 
     fun calibrateMesh() = send("BED_MESH_CALIBRATE")
 
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
-    fun meshProfile(action: String, name: String) = send("BED_MESH_PROFILE $action=$name")
+    fun meshProfile(action: String, name: String) = send(KlipperScripts.meshProfile(action, name))
 
     fun queryEndstops() = send("QUERY_ENDSTOPS")
 
@@ -442,13 +412,13 @@ class KlipperPrinterRepository(
     fun cancelPrint() = send("CANCEL_PRINT")
 
     /** Heat the hotend, or turn it off with 0. */
-    fun setExtruderTemperature(celsius: Int) = send("M104 S$celsius")
+    fun setExtruderTemperature(celsius: Int) = send(KlipperScripts.hotend(celsius))
 
     /** Heat the bed, or turn it off with 0. */
-    fun setBedTemperature(celsius: Int) = send("M140 S$celsius")
+    fun setBedTemperature(celsius: Int) = send(KlipperScripts.bed(celsius))
 
     /** Turn everything off at once, which is what a user means by "cool down". */
-    fun coolDown() = send("M104 S0\nM140 S0")
+    fun coolDown() = send(KlipperScripts.coolDown())
 
     /**
      * Copy a sliced file into the host's virtual SD card and start it printing.

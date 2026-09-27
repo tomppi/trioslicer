@@ -69,7 +69,7 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         "extruder" -> repository.setExtruderTemperature(celsius)
         "heater_bed" -> repository.setBedTemperature(celsius)
         // Any other heater is addressed the way its own section names it.
-        else -> repository.send("SET_HEATER_TEMPERATURE HEATER=${heater.substringAfter(' ')} TARGET=$celsius")
+        else -> repository.send(KlipperScripts.heaterTemperature(heater, celsius))
     }
     fun coolDown() = repository.coolDown()
     fun calibratePid(heater: String, target: Int) = repository.calibratePid(heater, target)
