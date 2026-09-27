@@ -49,6 +49,18 @@ object PrinterBridge {
     @Volatile
     private var running = false
 
+    /**
+     * The device this bridge opened, or null when it is not bridging.
+     *
+     * A bridge outlives its device. Power cycle the printer and the old one keeps
+     * running, keeps reporting itself healthy, and moves nothing while klippy
+     * retransmits into a descriptor whose device is gone. Callers need to be able to
+     * ask whether the bridge they are looking at is a bridge to what is attached now.
+     */
+    @Volatile
+    var bridgedDeviceName: String? = null
+        private set
+
     private var port: UsbSerialPort? = null
     private var pty: ParcelFileDescriptor? = null
     private var usbToPty: Thread? = null
@@ -101,6 +113,7 @@ object PrinterBridge {
             val toPty = FileOutputStream(pfd.fileDescriptor)
             val fromPty = FileInputStream(pfd.fileDescriptor)
             running = true
+            bridgedDeviceName = serial.device.deviceName
             usbToPty = thread(name = "klipper-usb-to-pty") { pumpUsbToPty(serial, toPty) }
             ptyToUsb = thread(name = "klipper-pty-to-usb") { pumpPtyToUsb(fromPty, serial) }
             Log.i(TAG, "bridging ${serial.device.deviceName} at $BAUD_RATE baud to pty fd $ptyMasterFd")
@@ -210,6 +223,7 @@ object PrinterBridge {
     /** Stop pumping and release the port. Safe to call more than once. */
     fun stop() {
         running = false
+        bridgedDeviceName = null
         usbToPty?.interrupt(); ptyToUsb?.interrupt()
         usbToPty = null; ptyToUsb = null
         port?.let {

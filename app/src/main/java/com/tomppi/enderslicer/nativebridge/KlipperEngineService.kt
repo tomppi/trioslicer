@@ -244,12 +244,34 @@ class KlipperEngineService : Service() {
         var lastStalls = 0
         var lastRetransmits = 0
         var lastReport = System.currentTimeMillis()
+        // Tracked separately from lastRetransmits, which is only written when a line
+        // is logged; this has to be updated on every poll to mean anything.
+        var previousRetransmits = 0
+        var climbing = 0
+        var lastRestart = 0L
         while (process != null && client.isConnected) {
             Thread.sleep(MARGIN_POLL_MS)
             state = state.withStatus(client.query("mcu", "toolhead", "print_stats"))
             val stalls = state.printStalls ?: 0
             val retransmits = state.timing?.retransmittedBytes ?: 0
             val now = System.currentTimeMillis()
+
+            // The wedge, as it has looked every time: the micro-controller stops
+            // answering and the retransmit counter climbs without an acknowledgement
+            // ever arriving. Nothing recovers from it on its own - the bridge keeps
+            // reporting itself healthy - so the host rebuilds itself rather than
+            // waiting for someone to notice a dead print. Twenty seconds of climbing is
+            // the signal; the startup burst is a handful and then stops.
+            climbing = if (retransmits > previousRetransmits) climbing + 1 else 0
+            previousRetransmits = retransmits
+            if (climbing >= WEDGE_SAMPLES && now - lastRestart >= RESTART_COOLDOWN_MS) {
+                Log.w(TAG, "link wedged: retransmits climbing for " +
+                    (climbing * MARGIN_POLL_MS / 1000) + "s, now " + retransmits +
+                    "; restarting the host")
+                restartHost()
+                return
+            }
+
             if (stalls != lastStalls || retransmits != lastRetransmits
                 || now - lastReport >= MARGIN_LOG_MS
             ) {
@@ -297,7 +319,22 @@ class KlipperEngineService : Service() {
     /** Bridge now, if there is a printer to bridge and it is not bridged already. */
     private fun bridgePrinterIfNeeded() {
         if (PrinterBridge.isRunning) {
-            Log.i(TAG, "printer already bridged")
+            // "A bridge is running" is not the same question as "the printer is
+            // bridged". A power cycle leaves the old bridge holding a dead device: it
+            // reports itself healthy, moves nothing, and klippy retransmits into it
+            // until it gives up. Asking the second question is what lets the button do
+            // what killing the app used to be the only way to do.
+            val attached = PrinterBridge.findPrinter(
+                getSystemService(Context.USB_SERVICE) as UsbManager,
+            )
+            val bridged = PrinterBridge.bridgedDeviceName
+            if (attached != null && attached.device.deviceName == bridged) {
+                Log.i(TAG, "printer already bridged to " + bridged)
+                return
+            }
+            Log.i(TAG, "the bridge is stale: it holds " + bridged + ", attached is " +
+                (attached?.device?.deviceName ?: "nothing"))
+            restartHost()
             return
         }
         if (ptyMasterFd < 0) {
@@ -305,6 +342,24 @@ class KlipperEngineService : Service() {
             return
         }
         bridgePrinter(ptyMasterFd)
+    }
+
+    /**
+     * Rebuild the host from the socket down: klippy, the pty and the bridge.
+     *
+     * They have to go together. The bridge closes the pty when it stops and klippy
+     * holds the slave end, so a bridge rebuilt underneath a klippy that has given up
+     * would be feeding a process that has stopped listening. Stopping and starting the
+     * engine is what killing the app does, which until now was the only recovery that
+     * worked on a wedged link.
+     *
+     * Safe to call from a start request: the restarted launch asks the same question
+     * again and finds no bridge, so it bridges normally.
+     */
+    private fun restartHost() {
+        Log.i(TAG, "restarting the host")
+        stopEngine()
+        launch()
     }
 
     private fun bridgePrinter(masterFd: Int) {
@@ -466,6 +521,15 @@ class KlipperEngineService : Service() {
 
         /** How often they are written when nothing about them has changed. */
         private const val MARGIN_LOG_MS = 60_000L
+
+        /**
+         * Consecutive polls of a climbing retransmit counter before the host rebuilds
+         * itself. At MARGIN_POLL_MS this is twenty seconds.
+         */
+        private const val WEDGE_SAMPLES = 4
+
+        /** How long to leave a restarted host alone before deciding it is wedged again. */
+        private const val RESTART_COOLDOWN_MS = 180_000L
 
         /**
          * Files whose absence means the payload is not usable: the host itself,
