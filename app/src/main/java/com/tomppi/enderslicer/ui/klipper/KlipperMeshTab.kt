@@ -42,8 +42,14 @@ import com.tomppi.enderslicer.printer.macros
 @Composable
 internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var confirmCalibrate by remember { mutableStateOf(false) }
+    // Which profile is about to be removed, if any: it is deleted from the printer.
+    var confirmRemove by remember { mutableStateOf<String?>(null) }
     var profileName by remember { mutableStateOf("") }
     val mesh = state.mesh
+    // Whether the configuration is known at all, and then whether it has the section: saying
+    // "this printer has no [bed_mesh]" before the configuration has arrived is a guess, and it
+    // was printed as a fact.
+    val configKnown = state.configSections != null
     val configured = state.configSections?.has("bed_mesh") == true
 
     Column(
@@ -126,7 +132,7 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                 KlipperButtons {
                     profiles.forEach { name ->
                         KlipperButton("Remove " + name, enabled = state.isReady) {
-                            viewModel.meshProfile("REMOVE", name)
+                            confirmRemove = name
                         }
                     }
                 }
@@ -166,6 +172,17 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                 }
             }
         }
+    }
+
+    confirmRemove?.let { name ->
+        KlipperConfirmDialog(
+            title = "Remove " + name + "?",
+            text = "The profile is deleted from the printer. The mesh it holds was measured " +
+                "when it was saved, and nothing else on the printer keeps a copy.",
+            confirmLabel = "Remove",
+            onConfirm = { viewModel.meshProfile("REMOVE", name) },
+            onDismiss = { confirmRemove = null },
+        )
     }
 
     if (confirmCalibrate) {

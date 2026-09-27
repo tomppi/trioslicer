@@ -92,9 +92,14 @@ data class KlipperMesh(
     val maxY: Double? = null,
     /** Rows of probed points, as probed rather than as interpolated. */
     val points: List<List<Double>> = emptyList(),
+    /** The saved profiles, by the name the printer knows them under. */
     val profiles: List<String> = emptyList(),
 ) {
-    val isLoaded: Boolean get() = points.isNotEmpty()
+    // A row with no points is what klippy reports before anything has been probed
+    // (probed_matrix [[]]), so "there are rows" is not the question - "is there a point" is.
+    // The old test made an unprobed bed look like a loaded mesh of one row by zero points,
+    // and enabled a profile save that klippy then refused.
+    val isLoaded: Boolean get() = points.any { it.isNotEmpty() }
     val minimum: Double? get() = points.flatten().minOrNull()
     val maximum: Double? get() = points.flatten().maxOrNull()
     /** Row count by column count, for a caption that says what was probed. */
@@ -106,7 +111,13 @@ data class KlipperMesh(
             val min = mesh.optJSONArray("mesh_min")
             val max = mesh.optJSONArray("mesh_max")
             val probed = matrix(mesh.optJSONArray("probed_matrix"))
-            val profiles = mesh.optJSONArray("profiles")?.let { array ->
+            // klippy sends a dict keyed by profile name (bed_mesh.py's get_profiles), and an
+            // array is what the older fixture said - so both are read, the dict first. With
+            // only the array test, the keys answered null and the Mesh screen said "None saved
+            // yet" for profiles that were sitting on the printer.
+            val profiles = mesh.optJSONObject("profiles")?.let { dictionary ->
+                dictionary.keys().asSequence().toList()
+            } ?: mesh.optJSONArray("profiles")?.let { array ->
                 (0 until array.length()).mapNotNull { index ->
                     when (val entry = array.opt(index)) {
                         is String -> entry

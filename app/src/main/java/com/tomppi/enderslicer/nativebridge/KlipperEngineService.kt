@@ -6,8 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
@@ -75,9 +78,26 @@ class KlipperEngineService : Service() {
      */
     private var ptyMasterFd = -1
 
+    private val usbPermission = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_USB_PERMISSION) return
+            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            Log.i(TAG, "permission for ${device?.deviceName}: $granted")
+            if (granted) Thread({ bridgePrinterIfNeeded() }, "klipper-bridge").start()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         ensureChannel(this)
+        // For as long as the service runs: the answer to a USB permission request is a
+        // broadcast, and the request is not the only thing that happens in this process.
+        registerReceiver(
+            usbPermission,
+            IntentFilter(ACTION_USB_PERMISSION),
+            if (Build.VERSION.SDK_INT >= 33) RECEIVER_NOT_EXPORTED else 0,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -497,7 +517,13 @@ class KlipperEngineService : Service() {
             return
         }
         if (!manager.hasPermission(serial.device)) {
-            Log.i(TAG, "printer ${serial.device.deviceName} is attached but not permitted")
+            // Permission is granted either by the attach chooser for a device on the manifest
+            // filter, or by asking. Only the first exists here, so a board the app can drive
+            // perfectly well - the whole CDC-ACM and Prolific half of the library's default
+            // prober, which the docs promise - was found, recognised, and then left on the bus
+            // with nothing on screen and no dialog to accept. Ask, and bridge on the answer.
+            Log.i(TAG, "asking for permission to use ${serial.device.deviceName}")
+            requestUsbPermission(manager, serial.device)
             return
         }
         if (!PrinterBridge.start(manager, serial, masterFd)) {
@@ -619,11 +645,30 @@ class KlipperEngineService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(usbPermission) }
         stopEngine()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * Ask Android for the printer, and bridge it when the answer is yes.
+     *
+     * The answer arrives as a broadcast, so the receiver is registered for as long as the
+     * service runs rather than for the length of one request. A refusal is logged and the
+     * user can plug the printer in again; the intent has to be mutable, which is what the
+     * platform requires of a USB permission PendingIntent.
+     */
+    private fun requestUsbPermission(manager: UsbManager, device: UsbDevice) {
+        val granted = PendingIntent.getBroadcast(
+            this,
+            0,
+            Intent(ACTION_USB_PERMISSION).setPackage(packageName),
+            PendingIntent.FLAG_MUTABLE,
+        )
+        manager.requestPermission(device, granted)
+    }
 
     private fun stopEngine() {
         // Before the process is destroyed, so that the thread watching it does not
@@ -640,6 +685,9 @@ class KlipperEngineService : Service() {
 
     companion object {
         private const val TAG = "KlipperEngine"
+
+        /** The action Android sends a USB permission answer under. */
+        private const val ACTION_USB_PERMISSION = "com.tomppi.enderslicercura.USB_PERMISSION"
         private const val NOTIF_ID = 4711
         private const val CHANNEL_ID = "klipper_host"
 

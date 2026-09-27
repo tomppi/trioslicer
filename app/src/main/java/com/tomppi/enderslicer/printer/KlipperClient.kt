@@ -3,7 +3,7 @@ package com.tomppi.enderslicer.printer
 import android.util.Log
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -36,7 +36,16 @@ class KlipperClient internal constructor(
 
     private val writeLock = Any()
     private val ids = AtomicInteger(1)
-    private val waiting = ConcurrentHashMap<Int, SynchronousQueue<JSONObject>>()
+    /**
+     * One slot per outstanding request, and it has to hold one.
+     *
+     * A SynchronousQueue hands over only if the taker is already parked: klippy can answer in
+     * the gap between the write returning and the poll beginning - a pause on either side is
+     * enough - and the reply was then dropped with no log while the caller waited out its
+     * whole timeout for an answer that had arrived. A queue of capacity one buffers it
+     * instead, and `offer` still never blocks the reader thread.
+     */
+    private val waiting = ConcurrentHashMap<Int, ArrayBlockingQueue<JSONObject>>()
     private var reader: Thread? = null
     private var pending = ByteArray(0)
 
@@ -71,7 +80,7 @@ class KlipperClient internal constructor(
      */
     fun call(method: String, params: JSONObject? = null, timeoutMs: Long = 15000): JSONObject {
         val id = ids.getAndIncrement()
-        val queue = SynchronousQueue<JSONObject>()
+        val queue = ArrayBlockingQueue<JSONObject>(1)
         waiting[id] = queue
         try {
             write(KlipperProtocol.encode(id, method, params))
@@ -92,7 +101,10 @@ class KlipperClient internal constructor(
                 // several, and dropping the rest would lose an update silently.
                 for (message in readMessages()) {
                     val queue = waiting[message.optInt("id", -1)]
-                    if (queue != null) queue.offer(message) else onNotification?.invoke(message)
+                    // Refused only if a second reply arrived for one request, which is a
+                    // protocol problem worth seeing rather than swallowing.
+                    if (queue == null) onNotification?.invoke(message)
+                    else if (!queue.offer(message)) Log.w(TAG, "a second reply for one request")
                 }
             }
         } catch (e: Exception) {

@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,15 +55,34 @@ import kotlinx.coroutines.launch
 internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     val scope = rememberCoroutineScope()
     val configured = state.shapers
-    var x by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "x" })) }
-    var y by remember(configured) { mutableStateOf(ShaperEdit.of(configured.firstOrNull { it.axis == "y" })) }
-    var confirmSave by remember { mutableStateOf(false) }
-    var measureAxis by remember { mutableStateOf("x") }
-    var onToolhead by remember { mutableStateOf(false) }
+    // rememberSaveable rather than remember, and seeded only once: these fields hold what the
+    // user took from a measurement, and a tab switch used to throw that away and re-derive the
+    // configured value - which the next save then wrote. The seed is the printer's own value,
+    // used when the field has never been filled.
+    var xType by rememberSaveable { mutableStateOf(ShaperEdit.seedType(configured, "x")) }
+    var xFrequency by rememberSaveable { mutableStateOf(ShaperEdit.seedFrequency(configured, "x")) }
+    var xDamping by rememberSaveable { mutableStateOf(ShaperEdit.seedDamping(configured, "x")) }
+    var yType by rememberSaveable { mutableStateOf(ShaperEdit.seedType(configured, "y")) }
+    var yFrequency by rememberSaveable { mutableStateOf(ShaperEdit.seedFrequency(configured, "y")) }
+    var yDamping by rememberSaveable { mutableStateOf(ShaperEdit.seedDamping(configured, "y")) }
+    val x = ShaperEdit(xType, xFrequency, xDamping)
+    val y = ShaperEdit(yType, yFrequency, yDamping)
+    fun editX(edit: ShaperEdit) {
+        xType = edit.type; xFrequency = edit.frequencyText; xDamping = edit.dampingText
+    }
+    fun editY(edit: ShaperEdit) {
+        yType = edit.type; yFrequency = edit.frequencyText; yDamping = edit.dampingText
+    }
+    var confirmSave by rememberSaveable { mutableStateOf(false) }
+    var measureAxis by rememberSaveable { mutableStateOf("x") }
+    var onToolhead by rememberSaveable { mutableStateOf(false) }
     // The carriage on X, the bed on Y: what the axis actually has to move, which is what the
     // phone's own weight has to be measured against.
-    var movingMass by remember(measureAxis) {
-        mutableStateOf(if (measureAxis == "y") "700" else "350")
+    var movingMassX by rememberSaveable { mutableStateOf("350") }
+    var movingMassY by rememberSaveable { mutableStateOf("700") }
+    val movingMass = if (measureAxis == "y") movingMassY else movingMassX
+    fun setMovingMass(value: String) {
+        if (measureAxis == "y") movingMassY = value else movingMassX = value
     }
     // From the view model rather than from here: a sweep takes a minute, and a result held by
     // the screen is a result that disappears when the screen does.
@@ -77,7 +97,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             // Written with a dot so the app can read its own value back; shown to a Finnish
             // user as 89,8, the field would have parsed as nothing and Apply stayed disabled.
             val text = formatDecimal(frequency, 1)
-            if (axis == "Y") y = y.copy(frequencyText = text) else x = x.copy(frequencyText = text)
+            if (axis == "Y") editY(y.copy(frequencyText = text)) else editX(x.copy(frequencyText = text))
         }
 
         KlipperCard(title = "Input shaping", subtitle = "Why the printer is set up this way") {
@@ -97,7 +117,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             // stashed when it finishes, so an apply now would be undone a minute later with
             // nothing on screen to say so.
             enabled = state.isReady && measurementState !is KlipperMeasurementState.Measuring,
-            onEdit = { x = it },
+            onEdit = ::editX,
             onApply = { edit ->
                 edit.frequency()?.let { frequency ->
                     viewModel.applyShaper("x", edit.type, frequency, edit.damping())
@@ -108,7 +128,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             axis = "Y",
             edit = y,
             enabled = state.isReady && measurementState !is KlipperMeasurementState.Measuring,
-            onEdit = { y = it },
+            onEdit = ::editY,
             onApply = { edit ->
                 edit.frequency()?.let { frequency ->
                     viewModel.applyShaper("y", edit.type, frequency, edit.damping())
@@ -184,7 +204,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                     label = "Moving mass",
                     value = movingMass,
                     onValueChange = { typed ->
-                        movingMass = typed.filter { it.isDigit() }.take(4)
+                        setMovingMass(typed.filter { it.isDigit() }.take(4))
                     },
                     suffix = "g",
                 )
@@ -246,14 +266,17 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
         }
 
         if (!state.canMeasureResonances) {
-            KlipperCard(title = "Finding the numbers", subtitle = "No accelerometer on this printer") {
+            // Not "this printer cannot be measured": the card above does exactly that, with the
+            // phone. What this printer lacks is the wired accelerometer Klipper's own
+            // calibration wants.
+            KlipperCard(title = "Finding the numbers", subtitle = "No accelerometer wired to it") {
                 KlipperNote(
-                    "Measuring the frequencies directly needs an accelerometer and a " +
-                        "[resonance_tester] section, which this printer has neither of. The " +
-                        "usual way without one is a ringing test: print a tall shape fast, " +
+                    "Klipper can measure the frequencies itself, with SHAPER_CALIBRATE - but " +
+                        "that needs an accelerometer wired to the board and a [resonance_tester] " +
+                        "section, and this printer has neither. The phone above is the way round " +
+                        "it. The other way is a ringing test by eye: print a tall shape fast, " +
                         "measure the distance between the ripples it leaves, and divide the " +
-                        "speed by that distance - the result is the frequency to put here. " +
-                        "Klipper's own documentation has the test and the arithmetic.",
+                        "speed by that distance - the result is the frequency to put here.",
                 )
             }
         }
@@ -529,6 +552,17 @@ private data class ShaperEdit(
     fun damping(): Double? = parseDecimal(dampingText)?.takeIf { it > 0.0 && it <= MAX_DAMPING_RATIO }
 
     companion object {
+        fun seedType(shapers: List<KlipperShaper>, axis: String): String =
+            shapers.firstOrNull { it.axis == axis }?.type?.takeIf { it.isNotBlank() } ?: "mzv"
+
+        fun seedFrequency(shapers: List<KlipperShaper>, axis: String): String =
+            shapers.firstOrNull { it.axis == axis }?.frequency?.let { formatDecimal(it, 1) }.orEmpty()
+
+        fun seedDamping(shapers: List<KlipperShaper>, axis: String): String =
+            shapers.firstOrNull { it.axis == axis }?.dampingRatio
+                ?.let { formatDecimal(it, 3) }
+                .orEmpty()
+
         fun of(shaper: KlipperShaper?): ShaperEdit = ShaperEdit(
             type = shaper?.type?.takeIf { it.isNotBlank() } ?: "mzv",
             frequencyText = shaper?.frequency?.let { formatDecimal(it, 1) }.orEmpty(),

@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
+import com.tomppi.enderslicer.printer.configSections
 import com.tomppi.enderslicer.printer.configuredProbeOffset
 import com.tomppi.enderslicer.printer.lastProbeQuery
 import com.tomppi.enderslicer.printer.lastProbeResult
@@ -50,7 +51,7 @@ internal fun KlipperZProbeTab(state: KlipperPrinterState, viewModel: KlipperView
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.probeSection == null) {
+        if (state.configSections != null && state.probeSection == null) {
             KlipperCard(title = "Z probe") {
                 KlipperNote(
                     "This printer's configuration has no [bltouch] or [probe] section, so " +

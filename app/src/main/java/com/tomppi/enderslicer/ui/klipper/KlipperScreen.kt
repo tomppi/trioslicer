@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -44,6 +45,12 @@ internal fun KlipperScreen(
 ) {
     var selectedName by rememberSaveable { mutableStateOf(KlipperTab.DASHBOARD.name) }
     val selected = KlipperTab.named(selectedName)
+    // The tab that is showing is remembered, so the state of the one that was showing has to
+    // be too: only one is composed at a time, and a composable that leaves composition is
+    // forgotten rather than saved. Without this a frequency typed into Shaping was gone the
+    // moment the user looked at another tab - and the save they pressed afterwards wrote the
+    // configured value instead, which is a silent way to lose a measurement.
+    val tabState = rememberSaveableStateHolder()
 
     Column(modifier = modifier.navigationBarsPadding()) {
         SecondaryScrollableTabRow(
@@ -61,23 +68,27 @@ internal fun KlipperScreen(
         }
         HorizontalDivider()
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-            when (selected) {
-                KlipperTab.DASHBOARD ->
-                    KlipperDashboardTab(state, viewModel, localGcodePath, suggestedFileName)
-                // Each screen collects the flows it reads itself, rather than the whole
-                // interface being rebuilt when a console line arrives on another one.
-                KlipperTab.TEMPERATURES -> KlipperTemperaturesTab(state, viewModel)
-                KlipperTab.MOVE -> KlipperMoveTab(state, viewModel)
-                KlipperTab.EXTRUDE -> KlipperExtrudeTab(state, viewModel)
-                KlipperTab.MACROS -> KlipperMacrosTab(state, viewModel)
-                KlipperTab.FILES ->
-                    KlipperFilesTab(state, viewModel, localGcodePath, suggestedFileName)
-                KlipperTab.CONSOLE -> KlipperConsoleTab(state, viewModel)
-                KlipperTab.ZPROBE -> KlipperZProbeTab(state, viewModel)
-                KlipperTab.SHAPING -> KlipperShapingTab(state, viewModel)
-                KlipperTab.MESH -> KlipperMeshTab(state, viewModel)
-                KlipperTab.HISTORY -> KlipperHistoryTab(viewModel)
-                KlipperTab.MACHINE -> KlipperMachineTab(state, viewModel)
+            // Keyed by the tab, so the state of the tab being left is saved rather than
+            // forgotten, and restored when the user comes back to it.
+            tabState.SaveableStateProvider(selected.name) {
+                when (selected) {
+                    KlipperTab.DASHBOARD ->
+                        KlipperDashboardTab(state, viewModel, localGcodePath, suggestedFileName)
+                    // Each screen collects the flows it reads itself, rather than the whole
+                    // interface being rebuilt when a console line arrives on another one.
+                    KlipperTab.TEMPERATURES -> KlipperTemperaturesTab(state, viewModel)
+                    KlipperTab.MOVE -> KlipperMoveTab(state, viewModel)
+                    KlipperTab.EXTRUDE -> KlipperExtrudeTab(state, viewModel)
+                    KlipperTab.MACROS -> KlipperMacrosTab(state, viewModel)
+                    KlipperTab.FILES ->
+                        KlipperFilesTab(state, viewModel, localGcodePath, suggestedFileName)
+                    KlipperTab.CONSOLE -> KlipperConsoleTab(state, viewModel)
+                    KlipperTab.ZPROBE -> KlipperZProbeTab(state, viewModel)
+                    KlipperTab.SHAPING -> KlipperShapingTab(state, viewModel)
+                    KlipperTab.MESH -> KlipperMeshTab(state, viewModel)
+                    KlipperTab.HISTORY -> KlipperHistoryTab(viewModel)
+                    KlipperTab.MACHINE -> KlipperMachineTab(state, viewModel)
+                }
             }
         }
     }

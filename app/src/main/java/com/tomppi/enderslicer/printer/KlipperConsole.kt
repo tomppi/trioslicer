@@ -40,6 +40,14 @@ internal class KlipperConsole(private val capacity: Int = CAPACITY) {
      * A single response can carry several lines - a shutdown explains itself in five -
      * and a console that showed them joined would wrap them unpredictably.
      */
+    /**
+     * Add a line, and hand back the scrollback as it stands.
+     *
+     * The lock covers the snapshot as well as the append. It used to cover only the append, so
+     * the caller assigned the snapshot to the flow outside it: the reader thread and a screen
+     * thread could publish in the opposite order and the loser's older list won, which shows
+     * as a line that has just been written not being there until the next one arrives.
+     */
     fun add(text: String, source: KlipperConsoleLine.Source, atMillis: Long): List<KlipperConsoleLine> {
         val added = text.split('\n')
             .map { it.trimEnd() }

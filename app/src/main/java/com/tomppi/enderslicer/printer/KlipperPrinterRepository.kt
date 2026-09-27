@@ -50,6 +50,9 @@ class KlipperPrinterRepository(
 
     /** What the playback module prints as it sweeps. */
     private val SWEEP_LINE = Regex("Testing frequency\\s+\\d+\\s*Hz")
+
+    /** How long to let klippy reach ready before asking its boards for their timing again. */
+    private val MCU_RECHECK_MS = 2_000L
     private val _consoleLines = MutableStateFlow<List<KlipperConsoleLine>>(emptyList())
 
     /**
@@ -174,6 +177,20 @@ class KlipperPrinterRepository(
         Log.i(TAG, "watching $socketPath as " + info.optString("state") +
             "; following " + wanted.size + " of " + published.size + " objects")
         runCatching { c.gcodeHelp() }.onSuccess { help -> _commands.value = help }
+        // The micro-controller objects grow. A subscription that asks for every field has
+        // klippy freeze that object's key list when the connection is made, and last_stats is
+        // only published once the ready-time stats timer has run - so a connection made in the
+        // window before that would never hear about the timing at all, and the Dashboard's
+        // host link card and the per-board timing would stay empty for the whole session.
+        // Asking once more, after the printer has had time to come up, fills in what was not
+        // there when the connection opened.
+        val boards = published.filter { it == "mcu" || it.startsWith("mcu ") }
+        if (boards.isNotEmpty()) {
+            delay(MCU_RECHECK_MS)
+            runCatching { c.query(*boards.toTypedArray()) }.getOrNull()?.let { status ->
+                _state.update { it.withStatus(status) }
+            }
+        }
         // klippy has no state notification on the wire, so the state that decides
         // whether the screen is allowed to print is asked for rather than waited on.
         var sinceStateCheck = 0

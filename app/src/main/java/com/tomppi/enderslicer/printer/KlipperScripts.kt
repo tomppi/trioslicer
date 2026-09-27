@@ -135,15 +135,34 @@ internal object KlipperScripts {
     /** M221: extrusion, as a percentage of what the file asks for. */
     fun extrudeFactor(percent: Int): String = "M221 S${percent.coerceIn(1, 999)}"
 
+    /**
+     * PID calibration, by the name the heater is known by.
+     *
+     * klippy's lookup_heater is keyed by the short name - the part after the section type -
+     * so `heater_generic chamber` is calibrated as `HEATER=chamber`. The hotend and the bed
+     * have no type in their name and are unaffected, which is why the screen offers this for
+     * those two and the mistake stayed hidden.
+     */
     fun pidCalibrate(heater: String, target: Int): String =
-        "PID_CALIBRATE HEATER=$heater TARGET=$target"
+        "PID_CALIBRATE HEATER=" + quoted(heater.substringAfter(' ')) + " TARGET=$target"
 
     /**
-     * Any heater that is not the hotend or the bed is addressed by its own section name:
-     * `heater_generic chamber` is `SET_HEATER_TEMPERATURE HEATER=chamber`.
+     * A target for anything with a temperature, by the name it is known by.
+     *
+     * Two commands, because klippy has two: `heater_generic chamber` is a Heater and takes
+     * SET_HEATER_TEMPERATURE HEATER=chamber, while a `temperature_fan` is not a Heater at all
+     * and registers SET_TEMPERATURE_FAN_TARGET TEMPERATURE_FAN=<name>. Sending the first to a
+     * fan answered "The value 'chamber' is not valid for HEATER", and the control failed
+     * with only the console saying why.
      */
-    fun heaterTemperature(heater: String, celsius: Int): String =
-        "SET_HEATER_TEMPERATURE HEATER=${heater.substringAfter(' ')} TARGET=$celsius"
+    fun heaterTemperature(heater: String, celsius: Int): String {
+        val short = quoted(heater.substringAfter(' '))
+        return if (heater.startsWith("temperature_fan", ignoreCase = true)) {
+            "SET_TEMPERATURE_FAN_TARGET TEMPERATURE_FAN=$short TARGET=$celsius"
+        } else {
+            "SET_HEATER_TEMPERATURE HEATER=$short TARGET=$celsius"
+        }
+    }
 
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
     fun meshProfile(action: String, name: String): String =

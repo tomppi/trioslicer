@@ -3,6 +3,7 @@ package com.tomppi.enderslicer.printer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
 
 /**
  * A file the printer can print, with what its own header says about it.
@@ -65,14 +66,32 @@ internal object KlipperGcodeFiles {
             filamentMillimetres = value(header, FILAMENT_MM)?.toDoubleOrNull(),
             filamentGrams = value(header, FILAMENT_G)?.toDoubleOrNull(),
             layerHeight = (value(header, LAYER_HEIGHT) ?: curaValue(header, "Layer height"))?.toDoubleOrNull(),
-            layerCount = (value(header, LAYER_COUNT) ?: curaValue(header, "LAYER_COUNT"))?.toIntOrNull(),
+            layerCount = (patterned(header, LAYER_COUNT)
+                ?: value(header, "total_layer_number")
+                ?: curaValue(header, "LAYER_COUNT"))?.toIntOrNull(),
             thumbnail = thumbnail(header),
         )
     }
 
-    /** The head of the file: enough for every comment a slicer writes. */
-    private fun readHeader(file: File, maxBytes: Int = HEADER_BYTES): List<String> = runCatching {
-        file.inputStream().bufferedReader().use { reader ->
+    /**
+     * The comments of a file: its head, and its tail.
+     *
+     * The head alone was not enough, and the slicer this app ships is the reason. OrcaSlicer
+     * writes the layer count near the top and then eighty lines of G-code, and puts the
+     * estimated time, the filament used, the layer height and the thumbnail in a trailing
+     * block after "; EXECUTABLE_BLOCK_END" - twelve thousand lines further down. Stopping at
+     * the first line that is not a comment meant the Files screen could read the slicer's name
+     * out of this app's own output and nothing else.
+     *
+     * The tail is read whole (it is bounded) and its comments are kept, in order, so the same
+     * parsers see both ends.
+     */
+    private fun readHeader(
+        file: File,
+        maxBytes: Int = HEADER_BYTES,
+        maxTailBytes: Int = TAIL_BYTES,
+    ): List<String> = runCatching {
+        val head = file.inputStream().bufferedReader().use { reader ->
             val lines = mutableListOf<String>()
             var read = 0
             while (read < maxBytes) {
@@ -84,6 +103,24 @@ internal object KlipperGcodeFiles {
                 lines += line
             }
             lines
+        }
+        head + tailComments(file, maxTailBytes)
+    }.getOrDefault(emptyList())
+
+    /** The comments in the last stretch of a file, in the order they appear. */
+    private fun tailComments(file: File, maxBytes: Int): List<String> = runCatching {
+        val length = file.length()
+        val from = (length - maxBytes).coerceAtLeast(0L)
+        RandomAccessFile(file, "r").use { input ->
+            input.seek(from)
+            val bytes = ByteArray((length - from).toInt())
+            input.readFully(bytes)
+            String(bytes, Charsets.UTF_8)
+                .lineSequence()
+                // The first line of a window cut mid-file is not a whole line.
+                .drop(if (from > 0) 1 else 0)
+                .filter { it.startsWith(";") }
+                .toList()
         }
     }.getOrDefault(emptyList())
 
@@ -131,6 +168,14 @@ internal object KlipperGcodeFiles {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
 
+    /** The same, for a key whose spelling differs between the head and the tail. */
+    private fun patterned(header: List<String>, key: Regex): String? =
+        header.firstOrNull { key.containsMatchIn(it) }
+            ?.substringAfter('=', "")
+            ?.substringAfterLast(':', "")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
     /** A "KEY:value" comment, which is what Cura writes. */
     private fun curaValue(header: List<String>, key: String): String? =
         header.firstOrNull { it.startsWith(";" + key + ":", ignoreCase = true) }
@@ -161,11 +206,22 @@ internal object KlipperGcodeFiles {
     /** How much of a file is read to find its header. */
     private const val HEADER_BYTES = 96 * 1024
 
+    /** And how much of its end, where OrcaSlicer keeps the numbers worth having. */
+    private const val TAIL_BYTES = 256 * 1024
+
     private const val TIME = "estimated printing time (normal mode)"
     private const val FILAMENT_MM = "filament used [mm]"
     private const val FILAMENT_G = "filament used [g]"
     private const val LAYER_HEIGHT = "layer_height"
-    private const val LAYER_COUNT = "total_layer_number"
+
+    /**
+     * The layer count, under both of the spellings the engines use.
+     *
+     * OrcaSlicer writes "; total layer number: 100" in the head and
+     * "; total layers count = 100" in its trailing block, and neither is the underscore form
+     * this looked for.
+     */
+    private val LAYER_COUNT = Regex("total layer[s]? (number|count)\\s*[:=]", RegexOption.IGNORE_CASE)
 
     private val THUMBNAIL_BEGIN = Regex("; thumbnail(_[A-Z]+)? begin ", RegexOption.IGNORE_CASE)
 

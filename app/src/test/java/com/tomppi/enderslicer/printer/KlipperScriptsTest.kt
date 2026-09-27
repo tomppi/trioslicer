@@ -114,12 +114,16 @@ class KlipperScriptsTest {
 
     @Test
     fun anotherHeaterIsAddressedByItsOwnName() {
-        // [heater_generic chamber] is "SET_HEATER_TEMPERATURE HEATER=chamber".
+        // [heater_generic chamber] is SET_HEATER_TEMPERATURE HEATER=chamber, quoted because
+        // klippy re-parses the parameters with shlex.
         assertEquals(
-            "SET_HEATER_TEMPERATURE HEATER=chamber TARGET=45",
+            "SET_HEATER_TEMPERATURE HEATER=\"chamber\" TARGET=45",
             KlipperScripts.heaterTemperature("heater_generic chamber", 45),
         )
-        assertEquals("PID_CALIBRATE HEATER=heater_bed TARGET=60", KlipperScripts.pidCalibrate("heater_bed", 60))
+        assertEquals(
+            "PID_CALIBRATE HEATER=\"heater_bed\" TARGET=60",
+            KlipperScripts.pidCalibrate("heater_bed", 60),
+        )
     }
 
     @Test
@@ -142,5 +146,28 @@ class KlipperScriptsTest {
         )
         // A quote in the name is dropped rather than allowed to close the quoting early.
         assertEquals("BED_MESH_PROFILE LOAD=\"ab\"", KlipperScripts.meshProfile("LOAD", "a\"b"))
+    }
+
+    @Test
+    fun aTemperatureFanIsAddressedByItsOwnCommand() {
+        // klippy registers SET_HEATER_TEMPERATURE only for its Heater objects; a fan answers
+        // with "The value 'chamber' is not valid for HEATER".
+        assertEquals(
+            "SET_TEMPERATURE_FAN_TARGET TEMPERATURE_FAN=\"chamber\" TARGET=40",
+            KlipperScripts.heaterTemperature("temperature_fan chamber", 40),
+        )
+        assertEquals(
+            "SET_HEATER_TEMPERATURE HEATER=\"chamber\" TARGET=40",
+            KlipperScripts.heaterTemperature("heater_generic chamber", 40),
+        )
+        assertEquals(
+            "SET_HEATER_TEMPERATURE HEATER=\"heater_bed\" TARGET=60",
+            KlipperScripts.heaterTemperature("heater_bed", 60),
+        )
+        // And PID calibration is keyed by the short name too.
+        assertEquals(
+            "PID_CALIBRATE HEATER=\"chamber\" TARGET=200",
+            KlipperScripts.pidCalibrate("heater_generic chamber", 200),
+        )
     }
 }
