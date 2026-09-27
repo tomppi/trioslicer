@@ -155,11 +155,28 @@ as roughly 73 Hz. On the bed — a few hundred grams of plate, carriage and spri
 bed-mounted phone reads low by around 15%, which is why a bed reading of 30 Hz and a
 toolhead-mounted 35 Hz are the same machine rather than two different ones.
 
-What the phone gets from the printer's base instead is the frame's response to the moving
-mass. The frame is connected to the gantry and the belts, so the toolhead's ringing at 90 Hz
-shakes the whole machine — audibly, which is why the ringing test works by ear at all. The
-cost is that the frame has modes of its own, loud in some places and quiet in others, so a
-reading depends on where the phone is standing.
+What the phone gets instead, from whatever part of the machine it is lying on, is that
+part's response to the moving mass — and the parts are not equally good at it.
+
+**The gantry is the best place a phone can go for X.** It is the rail the toolhead rides on,
+so the toolhead's inertia reacts directly against it: the beam is shaken by exactly the
+motion the shaper is correcting, which is why a phone lying on the gantry reads within a
+couple of hertz of a toolhead-mounted accelerometer.
+
+It is also the place where the phone's weight matters least. The gantry, its uprights and
+the base together come to several kilograms, so 253 g is a few per cent of the structure it
+is sitting on — a shift of around 2% in any mode that involves it, against 23% on the
+toolhead and 15% on the bed. And for the toolhead's own mode, mass on the gantry does not
+change the moving mass at all: the toolhead still weighs what it weighed, so what the
+reading gives is that mode seen through the beam's response.
+
+**The base is the place for Y**, where the reaction path runs from the bed through the Y
+belt and its motor mount into the frame. The gantry is coupled to it as well, being bolted
+through the uprights, but further from where the bed's force enters.
+
+The cost either way is that the structure has modes of its own, loud in some places and
+quiet in others, so a single reading depends on where the phone is standing — which is what
+the agreement across several measurements is for.
 
 That is what the agreement across several measurements is for, and it is worth being clear
 about the order of trust:
