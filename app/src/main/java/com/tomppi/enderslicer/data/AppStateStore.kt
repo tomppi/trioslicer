@@ -393,15 +393,22 @@ class AppStateStore(context: Context) {
         return runCatching {
             val root = JSONObject(encoded)
             val values = root.getJSONObject("settings")
+            val settings = SlicerSettingsJson.apply(SlicerSettings(), values, SlicerSettingsJson.allKeys)
             SnapshotBaseline(
-                settings = SlicerSettingsJson.apply(SlicerSettings(), values, SlicerSettingsJson.allKeys),
-                // A profile stored before the defaults became Klipper's still holds the
-                // Marlin text - G29 L0 and G29 A included - and on this printer G29 is a
-                // macro that homes and probes, so those two lines were costing three homes
-                // and two mesh probes before every print. Only an untouched default is
-                // replaced; anything edited by hand is left exactly as it is.
-                startGcode = BuiltInGcode.migrateStart(root.optString("startGcode", "")),
-                endGcode = BuiltInGcode.migrateEnd(root.optString("endGcode", "")),
+                settings = settings,
+                // Two dialects, two defaults. The app slices for a printer on the far end of
+                // OctoPrint, which is usually Marlin, and for the Klipper host inside it, so
+                // which default is right depends on the profile's own flavour - a Marlin
+                // printer wants the UBL lines, Klipper must not be given them. Only an
+                // untouched default is moved; anything edited by hand comes back unchanged.
+                startGcode = BuiltInGcode.migrateStart(
+                    root.optString("startGcode", ""),
+                    settings.gcodeFlavor,
+                ),
+                endGcode = BuiltInGcode.migrateEnd(
+                    root.optString("endGcode", ""),
+                    settings.gcodeFlavor,
+                ),
                 profileName = root.optString("profileName", ""),
                 profileSource = root.optString("profileSource", ""),
             )

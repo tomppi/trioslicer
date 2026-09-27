@@ -15,7 +15,7 @@ object BuiltInGcode {
      * by name. Probing is the default because it is right whatever the printer's history is;
      * the line below it is what to use instead when a mesh is saved and the wait is unwanted.
      */
-    val START: String = """
+    val START_KLIPPER: String = """
         ; Ender 3 start G-code for Klipper
         G92 E0 ; reset the extruder's position
         G28 ; home all axes
@@ -38,7 +38,7 @@ object BuiltInGcode {
      * releases every motor, Z included. On a leadscrew that is not a drop, and the comment now
      * says what happens rather than what Marlin would have done.
      */
-    val END: String = """
+    val END_KLIPPER: String = """
         G91 ; relative positioning
         G1 E-2 F2700 ; retract a little
         G1 E-2 Z0.2 F2400 ; retract and raise
@@ -55,12 +55,16 @@ object BuiltInGcode {
     """.trimIndent()
 
     /**
-     * The Marlin start G-code this app used to ship, kept so it can be recognised.
+     * The Marlin start G-code, which is what a Marlin printer needs.
      *
-     * A profile made before the change still holds that text. Only an untouched one is replaced;
-     * anything a user has edited is theirs and is left exactly as it is.
+     * It was the only default this app had, and the app slices for two very different
+     * machines: a printer on the other end of OctoPrint, which is usually Marlin, and the
+     * Klipper host inside the app. G29 L0 and G29 A are UBL - load a mesh from slot 0 and
+     * activate it - and on a Marlin board that is exactly right. So this stays, and the
+     * choice between the two is made from the profile's own flavour rather than by there
+     * being one default for both.
      */
-    const val LEGACY_START: String = """
+    val START_MARLIN: String = """
         ; Ender 3 Custom Start G-code
         G92 E0 ; Reset Extruder
         G28 ; Home all axes
@@ -76,8 +80,8 @@ object BuiltInGcode {
         G1 X5 Y20 Z0.3 F5000.0 ; Move over to prevent blob squish
     """
 
-    /** The Marlin end G-code, likewise kept only to recognise it. */
-    const val LEGACY_END: String = """
+    /** The Marlin end G-code, where M84 does take axis words and Z can be spared. */
+    val END_MARLIN: String = """
         G91 ;Relative positioning
         G1 E-2 F2700 ;Retract a bit
         G1 E-2 Z0.2 F2400 ;Retract and raise Z
@@ -93,9 +97,47 @@ object BuiltInGcode {
         M84 X Y E ;Disable all steppers but Z
     """
 
-    /** The start G-code a stored profile should have: its own, or the current default. */
-    fun migrateStart(stored: String): String = if (stored.trim() == LEGACY_START.trim()) START else stored
+    /**
+     * The default for a profile, in the dialect that profile declares.
+     *
+     * Klipper is named in the flavour field; everything else - Marlin, RepRap, Smoothie, a
+     * blank - gets the Marlin text, which is what it had before and what such a printer wants.
+     */
+    fun startGcodeFor(flavor: String): String = if (isKlipper(flavor)) START_KLIPPER else START_MARLIN
 
     /** The same for the end G-code. */
-    fun migrateEnd(stored: String): String = if (stored.trim() == LEGACY_END.trim()) END else stored
+    fun endGcodeFor(flavor: String): String = if (isKlipper(flavor)) END_KLIPPER else END_MARLIN
+
+    /**
+     * What a stored profile should hold, given the dialect it declares.
+     *
+     * Two untouched defaults are moved to the right one for the flavour: a Marlin profile that
+     * somehow holds the Klipper text gets Marlin's, and the other way round. Anything a user
+     * has edited is theirs and comes back unchanged - which is also what keeps a Marlin
+     * printer's UBL lines from being rewritten into Klipper commands it cannot run.
+     */
+    fun migrateStart(stored: String, flavor: String): String {
+        val trimmed = stored.trim()
+        val wantsKlipper = isKlipper(flavor)
+        return when {
+            trimmed == START_KLIPPER.trim() && !wantsKlipper -> START_MARLIN
+            trimmed == START_MARLIN.trim() && wantsKlipper -> START_KLIPPER
+            trimmed.isEmpty() -> startGcodeFor(flavor)
+            else -> stored
+        }
+    }
+
+    /** The same for the end G-code. */
+    fun migrateEnd(stored: String, flavor: String): String {
+        val trimmed = stored.trim()
+        val wantsKlipper = isKlipper(flavor)
+        return when {
+            trimmed == END_KLIPPER.trim() && !wantsKlipper -> END_MARLIN
+            trimmed == END_MARLIN.trim() && wantsKlipper -> END_KLIPPER
+            trimmed.isEmpty() -> endGcodeFor(flavor)
+            else -> stored
+        }
+    }
+
+    private fun isKlipper(flavor: String): Boolean = flavor.trim().lowercase().startsWith("klipper")
 }

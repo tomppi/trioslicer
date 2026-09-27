@@ -197,8 +197,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val stateStore = AppStateStore(app)
     private val workspaceStore = WorkspaceStateStore(app)
     private val pendingExportStore = PendingDocumentExportStore(app)
-    private val initialStartGcode = BuiltInGcode.START
-    private val initialEndGcode = BuiltInGcode.END
+    // The default for a profile that declares no dialect is Marlin's, which is what this
+    // app shipped before there was a Klipper host in it; the choice moves to the Klipper
+    // text the moment a profile says it is for Klipper.
+    private val initialStartGcode = BuiltInGcode.START_MARLIN
+    private val initialEndGcode = BuiltInGcode.END_MARLIN
     private var importedSettingsBaseline: SlicerSettings? = null
     private var sourceMesh: StlMesh? = null
     private var importedScene: CuraProjectScene? = null
