@@ -376,10 +376,23 @@ class KlipperEngineService : Service() {
             .bufferedReader().use { it.readText() }
         val resolved = KlipperConfigFile.resolve(shipped, serialPath, gcodes.absolutePath)
         File(directory, KlipperHostFiles.SHIPPED).writeText(resolved)
+        // The app's own sections, in the app's own file: the printer's configuration gets
+        // one include line rather than a section of ours appearing in it. Written every
+        // start because it is ours and small, and the include is added if it is missing -
+        // including for a configuration somebody brought, which is the point of doing it
+        // here rather than at import.
+        KlipperHostFiles.appConfig(filesDir).writeText("[resonance_playback]\n")
         val config = File(directory, KlipperHostFiles.CONFIG)
         if (!config.isFile || config.readText().isBlank()) {
-            config.writeText(resolved)
+            config.writeText(KlipperConfigFile.withAppInclude(resolved))
             Log.i(TAG, "seeded ${config.absolutePath}")
+        } else {
+            val existing = config.readText()
+            val included = KlipperConfigFile.withAppInclude(existing)
+            if (included != existing) {
+                config.writeText(included)
+                Log.i(TAG, "added the app include to ${config.absolutePath}")
+            }
         }
         Log.i(TAG, "printer config ${config.absolutePath}: serial $serialPath")
         return config

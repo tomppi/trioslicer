@@ -140,6 +140,13 @@ available upstream and in the checkout this was staged from.
 One line of klippy/util.py is patched against this file's own copy: its
 create_pty() chmods a /dev/pts node, which Android does not allow an app to do.
 The patch is in scripts/stage-klipper-android.sh, which is the whole diff.
+
+One file here is not Klipper's at all: klippy/extras/resonance_playback.py is
+TrioSlicer's, and its source is in this repository at native/klipper-playback/. It
+adds a single command, PLAY_RESONANCES, which plays the vibration sweep the resonance
+test uses so that a sensor outside the printer - a phone lying on its base - can
+measure it. It changes nothing about how Klipper behaves, and it is checked against
+Klipper's own generator by scripts/verify-resonance-playback.py at every staging.
 TXT
 
 # One patch to klippy, applied here so that what ships is what this script built.
@@ -229,6 +236,22 @@ open(path, "w").write(source.replace(old, new, 1))
 PATCH
 grep -q "bionic has no getloadavg" "$ASSETS/klippy/extras/statistics.py" \
   || { echo "the statistics.py patch did not apply" >&2; exit 1; }
+
+# The one file here that is not Klipper's: an extra of our own, which plays the
+# resonance sweep without an accelerometer so that the phone can measure it instead.
+# It changes nothing about Klipper - it adds a command - which is why it is a file
+# beside the tree rather than another patch to it.
+PLAYBACK="$ROOT/native/klipper-playback/resonance_playback.py"
+[ -f "$PLAYBACK" ] || { echo "no playback module at $PLAYBACK" >&2; exit 1; }
+install -m 644 "$PLAYBACK" "$ASSETS/klippy/extras/resonance_playback.py"
+grep -q "PLAY_RESONANCES" "$ASSETS/klippy/extras/resonance_playback.py" \
+  || { echo "the playback module did not stage" >&2; exit 1; }
+# And it has to be the same sweep as the one it mirrors: the comparison is with the
+# gen_test lifted out of the vendored resonance_tester.py, so a Klipper that moves
+# is caught here rather than on a printer.
+"$ROOT/scripts/verify-resonance-playback.py" >/dev/null \
+  || { echo "the playback sweep no longer matches Klipper's" >&2; exit 1; }
+echo "playback: PLAY_RESONANCES staged and checked against Klipper's own sweep"
 
 COUNT="$(find "$ASSETS" -name "*.py" | wc -l)"
 SIZE="$(du -sh "$ASSETS" | cut -f1)"

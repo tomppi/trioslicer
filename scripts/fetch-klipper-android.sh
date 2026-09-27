@@ -50,7 +50,7 @@ DOWNLOAD_DIR="$ROOT/.build/klipper-host-download"
 
 # The payload is executed by the app, so its digest is pinned: a deliberate re-pin sets
 # KLIPPER_HOST_SHA256 to the digest of the new asset.
-KLIPPER_HOST_SHA256_PINNED="555d178dfff4399923faa1680bc3762702a0f7de3c95c9972f5257cb20e84c1c"
+KLIPPER_HOST_SHA256_PINNED="945b99424feea51f34fe88a4e25b480708ecd07a207b7f8975dc64ad9c49ba8e"
 
 # Files whose absence means the payload is not usable. The same three the service checks
 # before starting a host, so a truncated download fails here rather than on a phone.

@@ -89,6 +89,33 @@ empty:
   is the only moment those numbers exist: klippy's `print_stats` describes the print that
   is happening and then the next one.
 
+### Playing the sweep without an accelerometer
+
+Klipper's `TEST_RESONANCES` does two things at once: it excites an axis with a frequency
+sweep, and it records what an accelerometer felt. When the sensor is somewhere else — a
+phone lying on the base of the printer — only the excitation is wanted, and there is no way
+to ask for it: `[resonance_tester]` requires an accelerometer chip, and the test always
+captures.
+
+So the app carries one file of its own inside the staged payload:
+`native/klipper-playback/resonance_playback.py`, which adds `PLAY_RESONANCES AXIS=X`. It
+mirrors `ResonanceTestExecutor.run_test` line for line — the same generator (5→135 Hz at
+1 Hz/s, `accel_per_hz` 60, alternating half periods), the same `M204` per segment, the same
+explicit velocities passed to `toolhead.move()`, and the same disabling of input shaping for
+the duration. That fidelity is not decoration: the moves are `toolhead.move()` calls with
+velocities G-code cannot express, so a sweep sent as `G1`s would be planned as its own
+trapezoids and would not be the sweep Klipper measures with.
+
+`scripts/verify-resonance-playback.py` lifts `gen_test` out of the vendored
+`resonance_tester.py` with `ast` and compares the two schedules element by element at every
+staging, so a Klipper that moves is caught on a build machine rather than on a printer.
+
+It is a file beside Klipper, not a patch to it: Klipper's three Android patches modify
+upstream files, while this adds a command and changes no behaviour of Klipper's own. It is
+loaded by a `[resonance_playback]` section, which lives in the app's own `app.cfg` — the
+printer's configuration gains exactly one line, `[include app.cfg]`, added above klippy's
+saved block so it is never read as part of it.
+
 ## Input shaping
 
 Two numbers per axis - a shaper type and the frequency it is tuned to - decide the pattern

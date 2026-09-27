@@ -254,4 +254,24 @@ class KlipperConfigFileTest {
         assertTrue("the calibration survives", written.contains("pid_Kp = 21.000"))
         assertEquals(1, Regex(KlipperConfigFile.SAVED_MARKER).findAll(written).count())
     }
+
+    @Test
+    fun theAppsOwnIncludeIsAddedOnceAndAboveTheSavedBlock() {
+        val config = "[mcu]\nserial: /dev/ttyUSB0\n" + "\n" + saved + "\n"
+        val included = KlipperConfigFile.withAppInclude(config)
+        assertTrue(included.contains("[include app.cfg]"))
+        assertTrue(
+            "the include must not land inside klippy's saved block",
+            included.indexOf("[include app.cfg]") < included.indexOf(KlipperConfigFile.SAVED_MARKER),
+        )
+        assertTrue(included.contains("pid_Kp = 21.000"))
+        // Idempotent, because this runs at every start of the host.
+        assertEquals(included, KlipperConfigFile.withAppInclude(included))
+    }
+
+    @Test
+    fun aConfigurationThatAlreadyIncludesItIsLeftAlone() {
+        val config = "[include app.cfg]\n[mcu]\nserial: /dev/ttyUSB0\n"
+        assertEquals(config, KlipperConfigFile.withAppInclude(config))
+    }
 }

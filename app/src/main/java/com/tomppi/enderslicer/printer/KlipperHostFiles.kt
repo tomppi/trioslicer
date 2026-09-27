@@ -36,6 +36,15 @@ internal object KlipperHostFiles {
     /** Where the running configuration came from: shipped, or imported. */
     const val SOURCE = "config.source"
 
+    /**
+     * The app's own sections of the printer's configuration.
+     *
+     * The printer's file gets one line - an include of this - and everything the app
+     * needs the configuration to contain lives here instead of being spread through a
+     * file that belongs to somebody else.
+     */
+    const val APP_CONFIG = "app.cfg"
+
     /** Printed files, which the configuration's virtual SD card points at. */
     const val GCODES = "gcodes"
 
@@ -46,4 +55,5 @@ internal object KlipperHostFiles {
     fun source(filesDir: File): File = File(directory(filesDir), SOURCE)
     fun pty(filesDir: File): File = File(filesDir, PTY_LINK)
     fun gcodes(filesDir: File): File = File(filesDir, GCODES)
+    fun appConfig(filesDir: File): File = File(directory(filesDir), APP_CONFIG)
 }

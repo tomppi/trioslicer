@@ -184,6 +184,23 @@ internal object KlipperConfigFile {
     }
 
     /**
+     * The configuration, with an include of the app's own file in it.
+     *
+     * Added above the saved block, never inside it: everything below that marker belongs
+     * to klippy and is re-parsed as its saved values, so a line put there would be read
+     * as one and the block it was put in would be rejected. Unchanged when the include
+     * is already there, so this can run at every start.
+     */
+    fun withAppInclude(text: String, name: String = "app.cfg"): String {
+        val include = "[include " + name + "]"
+        if (text.lines().any { it.trim().equals(include, ignoreCase = true) }) return text
+        val marker = text.indexOf(SAVED_MARKER)
+        val body = if (marker < 0) text.trimEnd() + "\n" else withoutSavedBlock(text).trimEnd() + "\n"
+        val saved = savedBlock(text)
+        return body + "\n" + include + "\n" + if (saved.isBlank()) "" else "\n" + saved
+    }
+
+    /**
      * Write input shaping into a configuration, and answer with the result.
      *
      * Shaping is the one motion setting that cannot be saved from the printer side:

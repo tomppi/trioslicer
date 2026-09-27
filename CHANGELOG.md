@@ -16,6 +16,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   adjusted: an accelerometer makes finding the frequencies easier and is not required to use
   them. Each type's lowest useful frequency is stated, and warned about when a value goes
   below it.
+- **The resonance sweep can be played without an accelerometer.** A file of the app's own now
+  travels in the staged payload — `PLAY_RESONANCES` — which mirrors Klipper's
+  `ResonanceTestExecutor` line for line and plays the same 5→135 Hz sweep, so a sensor
+  outside the printer (a phone on its base) can measure what the machine does. It is a file
+  beside Klipper rather than a patch to it, and `scripts/verify-resonance-playback.py` checks
+  its schedule against Klipper's own generator at every staging. The printer's configuration
+  gains one line for it — an include of the app's own `app.cfg` — added above klippy's saved
+  block.
 - The screen can also ask the printer what shaping it is currently using - klippy publishes
   no status for the input shaper, so that is the only way to see it, and the answer arrives
   in the console.
