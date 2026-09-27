@@ -59,7 +59,11 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     var confirmSave by remember { mutableStateOf(false) }
     var measureAxis by remember { mutableStateOf("x") }
     var onToolhead by remember { mutableStateOf(false) }
-    var movingMass by remember { mutableStateOf("350") }
+    // The carriage on X, the bed on Y: what the axis actually has to move, which is what the
+    // phone's own weight has to be measured against.
+    var movingMass by remember(measureAxis) {
+        mutableStateOf(if (measureAxis == "y") "700" else "350")
+    }
     // From the view model rather than from here: a sweep takes a minute, and a result held by
     // the screen is a result that disappears when the screen does.
     val measurementState by viewModel.measurement.collectAsStateWithLifecycle()
@@ -162,7 +166,7 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             Spacer(Modifier.height(4.dp))
             KlipperButtons {
                 KlipperButton(
-                    text = if (onToolhead) "• Phone on the toolhead" else "Phone on the toolhead",
+                    text = if (onToolhead) "• Phone on the moving part" else "Phone on the moving part",
                     onClick = { onToolhead = !onToolhead },
                 )
             }
@@ -182,10 +186,19 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
                     suffix = "g",
                 )
                 KlipperNote(
-                    "Carriage, hotend, extruder, duct and probe: about 350 g with an Orbiter " +
-                        "v2, against roughly 210 on a stock Ender-3 V2, which had no motor on " +
-                        "the carriage at all. Weigh the parts if you can - the correction is " +
-                        "only as good as this number.",
+                    if (measureAxis == "y") {
+                        "The bed: plate, heater, carriage, wheels and whatever sits on top. An " +
+                            "Ender-3 V2 shipped with a glass plate of about 550 g, where a " +
+                            "magnetic sheet and a spring steel PEI plate come to roughly 250 - " +
+                            "so a lighter bed than stock, and a phone on it very nearly puts " +
+                            "the weight back. Weigh the parts, or measure twice with a known " +
+                            "weight added to the bed and let the machine work its own mass out."
+                    } else {
+                        "Carriage, hotend, extruder, duct and probe: about 350 g with an Orbiter " +
+                            "v2, against roughly 210 on a stock Ender-3 V2, which had no motor on " +
+                            "the carriage at all. Weigh the parts if you can - the correction is " +
+                            "only as good as this number."
+                    },
                 )
             }
             Spacer(Modifier.height(4.dp))
