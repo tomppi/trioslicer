@@ -109,6 +109,9 @@ class KlipperPrinterRepository(
         interesting.takeIf { it.isNotEmpty() }?.joinToString("\n")
     }.getOrNull()
 
+    /** When the repository last wrote what it had merged. */
+    private var lastStatusLog = 0L
+
     private fun applyNotification(message: JSONObject) {
         when (KlipperProtocol.lifecycle(message)) {
             "notify_klippy_ready" -> _state.update {
@@ -123,6 +126,17 @@ class KlipperPrinterRepository(
         }
         KlipperProtocol.statusUpdate(message)?.let { status ->
             _state.update { it.withStatus(status) }
+            // The screen and the log disagree about whether temperatures arrive, and
+            // there is no way to tell which is lying from the outside. This says what
+            // the state actually holds, bounded so a print does not fill the log.
+            val now = System.currentTimeMillis()
+            if (now - lastStatusLog >= STATUS_LOG_MS) {
+                lastStatusLog = now
+                val merged = _state.value
+                Log.i(TAG, "status: extruder=" + merged.extruderTemp + "C bed=" + merged.bedTemp +
+                    "C printer=" + merged.state + " print=" + merged.printState +
+                    " objects=" + status.length())
+            }
         }
     }
 
@@ -202,6 +216,9 @@ class KlipperPrinterRepository(
 
         /** How much of the host's log the screen is shown when it stops answering. */
         const val LOG_TAIL_LINES = 6
+
+        /** How often the merged state is written down, so the screen can be checked. */
+        const val STATUS_LOG_MS = 30_000L
 
         /** The objects the screen needs: the machine, and any print on it. */
         val WATCHED = arrayOf(
