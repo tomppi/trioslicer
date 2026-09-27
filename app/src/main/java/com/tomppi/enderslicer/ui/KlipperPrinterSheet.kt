@@ -226,10 +226,19 @@ private fun TemperatureRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
+            // The label yields before the reading does: in a narrow window an
+            // unweighted label pushes the value off the edge, and a clipped
+            // temperature reads as a screen that has stopped updating.
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f, fill = false),
+                maxLines = 1,
+            )
             Text(
                 text = if (current == null) "-" else "%.1f °C · target %.0f °C".format(current, target ?: 0.0),
                 style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -283,7 +292,10 @@ private fun TimingCard(state: KlipperPrinterState) {
                 Text(
                     text = "Lookahead %.2f s".format(lookahead),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (lookahead >= KlipperPrinterState.BUFFER_TIME_LOW) {
+                    // Judged by the state, which knows an idle printer has a negative
+                    // lookahead by construction and is not starving. Comparing the raw
+                    // figure here painted a ready machine red.
+                    color = if (state.lookaheadIsHealthy) {
                         MaterialTheme.colorScheme.onSurface
                     } else {
                         MaterialTheme.colorScheme.error

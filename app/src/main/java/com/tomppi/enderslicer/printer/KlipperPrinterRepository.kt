@@ -133,9 +133,9 @@ class KlipperPrinterRepository(
             if (now - lastStatusLog >= STATUS_LOG_MS) {
                 lastStatusLog = now
                 val merged = _state.value
-                Log.i(TAG, "status: extruder=" + merged.extruderTemp + "C bed=" + merged.bedTemp +
-                    "C printer=" + merged.state + " print=" + merged.printState +
-                    " objects=" + status.length())
+                Log.i(TAG, "status: extruder=" + merged.extruderTemperature + "C bed=" +
+                    merged.bedTemperature + "C printer=" + merged.state + " print=" +
+                    merged.printState + " objects=" + status.length())
             }
         }
     }
