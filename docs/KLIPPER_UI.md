@@ -63,6 +63,12 @@ empty:
   queue today.
 - **Klipper's own `configfile.config`** is a parsed dictionary rather than the file, so
   the Machine screen reads `printer.cfg` from disk - which is where the comments are.
+- **Editing `printer.cfg` in the app.** It is shown, and the shipped default can be
+  put back over it, but there is no text editor for it: four hundred lines in a text
+  field driven by a phone keyboard is a poor place to change the pin a stepper is on,
+  and the two things people actually edit it for - calibration values and a saved mesh
+  - are written by klippy from the screens that do them. Worth adding if it turns out
+  to be wanted; the restore button is the way back from a bad edit either way.
 
 ## Where the numbers on the screens come from
 
