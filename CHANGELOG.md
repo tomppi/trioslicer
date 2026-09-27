@@ -4,6 +4,60 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-27
+
+**The printer front end is new, and it is in testing.** The built-in Klipper host has
+driven the printer from this app for a while; what it did not have was a way to see it
+or to set anything. It has ten screens now, and they are the part to be careful with:
+the host itself has printed, but a long unattended print has not yet finished on it,
+and the two calibrations below are still outstanding.
+
+### Added
+
+- **Ten screens for the printer, inside the app.** Dashboard, Temperatures, Move,
+  Extrude, Macros, Files, Console, Mesh, History, Machine - the tabs someone who has
+  used Mainsail already knows where to find, arranged for a phone. The app is its own
+  front end: nothing is installed beside it, and nothing is configured.
+- **The screens follow the printer, not a list in the app.** What is subscribed to is
+  decided at every connection from the printer's own objects, so a chamber sensor, a
+  second micro-controller or a fan you named appears on its own.
+- **A console that shows both sides.** Everything the app sends is written down beside
+  what klippy answers, including its errors - which is how the bug below became
+  visible in one screenshot rather than in an afternoon of guessing.
+- **A live temperature chart**: five minutes, one reading a second, per heater and
+  sensor, with presets and PID calibration.
+- **Files read their own headers** - the slicer, the estimated time, the filament, the
+  layer height and the embedded thumbnail - and can be printed or deleted from the list.
+- **Move**: homing, a jog pad with step sizes and a feedrate, Z-offset nudges, and the
+  printer's own leveling macros.
+- **Mesh**: the probed bed drawn as a picture, with profiles to load, save and remove.
+- **Print history**: what this app has printed, written down as each print ends.
+- **The host is supervised.** klippy exits by itself after saving a calibration and
+  when it crashes; either way it is started again rather than leaving the printer with
+  no host until somebody notices.
+
+### Fixed
+
+- **Every jog, Z nudge and extrusion was being sent as `G1 Y10,000 F3000`** on a phone
+  whose language writes decimals with a comma. String formatting follows the locale, so
+  the printer answered *Unable to parse move* and the buttons did nothing at all.
+  Numbers that go to the printer are now formatted for the wire, and the tests run
+  under a comma locale.
+- **A calibration saved with `SAVE_CONFIG` was lost on the next start of the host.**
+  The configuration file was rewritten from the app's assets every time, and the
+  printer's port changes every time; a PID calibration, a Z offset or a mesh profile
+  had nowhere to live. The port is a name that does not move now, so the file is the
+  printer's own - and the app can say when it no longer matches what it ships and put
+  the default back without losing the saved values.
+
+### Known, and next
+
+- The USB link occasionally stops being answered (the host restarts itself within
+  twenty seconds when it notices). A long unattended print is the test that settles it.
+- `z_offset` is still 0 and the hotend is still on the printer's original PID values.
+- The extruder's direction was corrected in the configuration, and the steps per
+  millimetre are inferred rather than measured; a measured 100 mm extrusion settles it.
+
 ## [1.4.0] - 2026-09-26
 
 ### Added
