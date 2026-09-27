@@ -65,9 +65,19 @@ data class KlipperPrinterState(
     val lookaheadSeconds: Double?
         get() = printTime?.let { queued -> estimatedPrintTime?.let { done -> queued - done } }
 
-    /** True while the host is keeping up the way klippy wants it to. */
+    /**
+     * True while the host is keeping up the way klippy wants it to.
+     *
+     * Only meaningful while there is a print to keep up with. An idle printer has
+     * print_time frozen where the last move ended and the micro-controller's clock
+     * still advancing, so the difference goes negative and keeps going - which is not
+     * starvation, and reading it as a fault puts a red number on a ready machine.
+     */
     val lookaheadIsHealthy: Boolean
-        get() = lookaheadSeconds?.let { it >= BUFFER_TIME_LOW } ?: true
+        get() {
+            if (!isPrinting && !isPaused) return true
+            return lookaheadSeconds?.let { it >= BUFFER_TIME_LOW } ?: true
+        }
 
     companion object {
         /** toolhead.py's BUFFER_TIME_LOW: below this, klippy is priming. */

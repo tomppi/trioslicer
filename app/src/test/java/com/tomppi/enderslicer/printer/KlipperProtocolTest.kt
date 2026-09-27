@@ -193,12 +193,30 @@ class KlipperProtocolTest {
     }
 
     @Test
-    fun lookaheadBelowTheLowMarkIsNotHealthy() {
+    fun lookaheadBelowTheLowMarkIsNotHealthyWhilePrinting() {
         val state = KlipperPrinterState(connected = true).withStatus(
-            JSONObject("""{"toolhead":{"print_time":100.4,"estimated_print_time":100.0}}"""),
+            JSONObject(
+                """{"toolhead":{"print_time":100.4,"estimated_print_time":100.0},
+                    "print_stats":{"state":"printing"}}""",
+            ),
         )
         assertEquals(0.4, state.lookaheadSeconds!!, 1e-9)
         assertTrue(!state.lookaheadIsHealthy)
+    }
+
+    @Test
+    fun theSameNegativeLookaheadIsNotAFaultWhenIdle() {
+        // print_time stops where the last move ended while the micro-controller's clock
+        // keeps running, so this is what an idle printer looks like - and it must not
+        // be reported as the host failing to keep up.
+        val state = KlipperPrinterState(connected = true).withStatus(
+            JSONObject(
+                """{"toolhead":{"print_time":100.0,"estimated_print_time":220.0},
+                    "print_stats":{"state":"standby"}}""",
+            ),
+        )
+        assertEquals(-120.0, state.lookaheadSeconds!!, 1e-9)
+        assertTrue(state.lookaheadIsHealthy)
     }
 
     @Test
