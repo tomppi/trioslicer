@@ -412,19 +412,25 @@ class KlipperEngineService : Service() {
         val target = File(applicationInfo.nativeLibraryDir, "libpython3.11.so")
         if (!target.isFile) throw IOException("${target.absolutePath} is missing")
         val soname = File(libexec, "libpython3.11.so.1.0")
-        try {
-            Os.symlink(target.absolutePath, soname.absolutePath)
-            Log.i(TAG, "linked ${soname.name} to ${target.absolutePath}")
-        } catch (e: Exception) {
-            // Already there from an earlier run of this app version. The payload is
-            // re-extracted whenever the version changes, so the link cannot be
-            // pointing at a directory that no longer exists - and if it somehow is,
-            // exists() follows the link and the check below says so.
-            Log.i(TAG, "soname link already in place: ${e.message}")
+
+        // A link can be present and wrong. Every install gets its own native library
+        // directory, while the payload and the stamp that says it is extracted sit in
+        // app data and survive an update - so the link left by the previous version
+        // points into a directory Android has since removed, and exists() follows it
+        // and reports false. Left in place it is worse than absent: symlink then fails
+        // with EEXIST, and the host cannot start at all after an update.
+        if (soname.exists() && soname.canonicalPath == target.canonicalPath) {
+            Log.i(TAG, "soname link already resolves to ${target.absolutePath}")
+            return
         }
+        if (soname.exists() || soname.delete()) {
+            Log.i(TAG, "replaced the soname link: it did not resolve to ${target.absolutePath}")
+        }
+        Os.symlink(target.absolutePath, soname.absolutePath)
         if (!soname.exists()) {
             throw IOException("soname link does not resolve: ${soname.absolutePath}")
         }
+        Log.i(TAG, "linked ${soname.name} to ${target.absolutePath}")
     }
 
     override fun onDestroy() {

@@ -25,8 +25,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERIAL="${SERIAL:-100.72.208.101:5555}"
 APP_ID="${APP_ID:-com.tomppi.enderslicercura}"
 DICT="${DICT:-$ROOT/.build/klipper-src/out/klipper.dict}"
-GCODE="$ROOT/native/klipper-pty/batch-motion.gcode"
+GCODE="${GCODE:-$ROOT/native/klipper-pty/batch-motion.gcode}"
 STAGE="/data/local/tmp/klipper-batch"
+# MOVES: generate a print's worth of moves instead of using the fixture. The planning
+# rate only means something at that size, and this is the measurement the objective
+# asks for - the same one verify-klipper-batch.sh takes on a host.
+MOVES="${MOVES:-0}"
 
 [ -e "$DICT" ] || { echo "no dictionary at $DICT - see scripts/verify-klipper-batch.sh" >&2; exit 2; }
 adb connect "$SERIAL" >/dev/null 2>&1 || true
@@ -54,6 +58,19 @@ echo "native:   $NATIVE"
 # placeholders pointed at scratch paths, plus force_move because SET_KINEMATIC_POSITION
 # - how axes are told where they are with no endstops to home against - exists only
 # when enable_force_move is set.
+if [ "$MOVES" -gt 0 ]; then
+  GCODE="/tmp/klipper-device-generated.gcode"
+  awk -v n="$MOVES" 'BEGIN {
+    print "G90"; print "G21"; print "M107"
+    print "SET_KINEMATIC_POSITION X=0 Y=0 Z=10"
+    for (i = 0; i < n; i++) {
+      x = 10 + (i % 50) * 2
+      y = 10 + int(i / 50) % 50
+      printf "G1 X%d Y%d.%d E0.05 F3600\n", x, y, i % 10
+    }
+  }' > "$GCODE"
+fi
+
 $ADB shell "rm -rf $STAGE && mkdir -p $STAGE/gcodes"
 sed -e "s|__SERIAL__|$STAGE/batch|" -e "s|__GCODES__|$STAGE/gcodes|" \
   "$ROOT/app/src/main/assets/klipper-host/printer.cfg" > /tmp/klipper-batch-config.cfg
@@ -64,6 +81,10 @@ $ADB push "$DICT" "$STAGE/klipper.dict" >/dev/null
 
 echo
 echo "=== running the payload's klippy in batch mode on the device ==="
+# Timed around the run rather than by the script: the pushes above are this host's
+# work, and the number that matters is how long the phone takes to plan. The adb
+# round trip either side is about a tenth of a second.
+STARTED=$(date +%s.%N)
 set +e
 $ADB shell "cd $PAYLOAD && PYTHONHOME=$PAYLOAD \
   LD_LIBRARY_PATH=$PAYLOAD/libexec:$NATIVE \
@@ -71,20 +92,31 @@ $ADB shell "cd $PAYLOAD && PYTHONHOME=$PAYLOAD \
   -i $STAGE/batch-motion.gcode -o $STAGE/steps.bin -d $STAGE/klipper.dict \
   -l $STAGE/klippy.log $STAGE/printer.cfg"
 STATUS=$?
+FINISHED=$(date +%s.%N)
 set -e
+ELAPSED=$(echo "$FINISHED - $STARTED" | bc)
 
-STEPS=$($ADB shell "stat -c%s $STAGE/steps.bin 2>/dev/null || echo 0" | tr -d '\r')
-MOVES=$(grep -c "^G1" "$GCODE" || true)
-REFUSED=$($ADB shell "grep -c 'Must home axis first' $STAGE/klippy.log 2>/dev/null || echo 0" | tr -d '\r')
+STEPS=$($ADB shell "stat -c%s $STAGE/steps.bin 2>/dev/null || echo 0" | tr -d '\r' | head -1)
+PLANNED=$(grep -c "^G1" "$GCODE" || true)
+# Counted with awk rather than grep: grep exits 1 when the count is zero, and under
+# this script's pipefail that ends the run before it prints its summary - which is
+# exactly how a successful batch run came to look like a hang.
+REFUSED=$($ADB shell "awk '/Must home axis first/{n++} END{print n+0}' $STAGE/klippy.log 2>/dev/null" \
+  | tr -d '\r' | head -1)
+REFUSED="${REFUSED:-0}"
 
 echo
-echo "klippy exited with $STATUS"
-echo "step stream: $STEPS bytes"
-echo "moves:       $MOVES (refused: $REFUSED)"
+echo "klippy exited with  $STATUS"
+echo "step stream:   $STEPS bytes"
+echo "moves planned: $PLANNED (refused: $REFUSED)"
+echo "wall clock:    ${ELAPSED}s on the phone"
+if [ "${PLANNED:-0}" -ge 1000 ]; then
+  echo "planning:      $(echo "scale=0; $PLANNED / $ELAPSED" | bc) moves/s"
+fi
 if [ "$STATUS" -ne 0 ] || [ "$STEPS" -le 0 ] || [ "$REFUSED" -ne 0 ]; then
   echo >&2
   echo "FAILED on the device; last of its log:" >&2
   $ADB shell "tail -20 $STAGE/klippy.log" >&2 || true
   exit 1
 fi
-echo "OK: the payload planned \$MOVES moves on the phone and wrote \$STEPS bytes of steps"
+echo "OK: the payload planned $PLANNED moves on the phone and wrote $STEPS bytes of steps"

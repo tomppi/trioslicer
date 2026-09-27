@@ -18,18 +18,17 @@ without root. Verified on the device, from klippy's log and the app's:
 | payload size, in the APK | 957 files, 27MB, all present under `assets/klipper/` |
 | identity of the built APK | `com.tomppi.enderslicercura` 1.4.0 (49), targetSdk 36, signed by this repository's key (SHA-256 `E4D88AC9...128EA5D7`, alias `trioslicer`) - so it updates the existing install rather than needing it removed |
 
-**A print's under-load margins are not measured yet**, and neither is the payload's own
-planning rate on the phone. The desktop reference for that rate is 27185 moves/s over
-40000 moves. Both measurements have a command waiting below.
+**The payload plans motion on the phone**: 40000 moves in 1.18s, 33852 moves/s, with a
+step stream within 0.16% of the desktop's for the same file. A print consumes moves at a
+few hundred a second for coarse segments and a few thousand for fine ones, so this is
+ten to a hundred times what a print needs. Measured with
+`MOVES=40000 scripts/verify-klipper-on-device.sh`, which needs no printer - batch mode
+takes a dictionary in place of a serial port.
 
-What remains, in the order it can be done:
-
-1. `scripts/verify-klipper-on-device.sh` - the payload planning motion **on the phone**,
-   no printer needed.
-2. `MOVES=40000` on the device - its planning rate.
-3. The runbook below, then calibration (`z_offset` is still 0), then a small print with
-   the margin recorder watching. It logs lookahead, stalls, round trip and retransmits
-   once a minute, and immediately when one of them goes wrong.
+**A print's under-load margins are still not measured.** That is the one thing left, and
+it needs the printer: the runbook below, then calibration (`z_offset` is still 0), then a
+small print with the margin recorder watching. It logs lookahead, stalls, round trip and
+retransmits once a minute, and immediately when one of them goes wrong.
 
 Licensing is a separate open question with its own note:
 [KLIPPER_VENDORING.md](KLIPPER_VENDORING.md).
@@ -1222,10 +1221,18 @@ to spare. MOVES generates a file of that size and the run reports the rate:
     wall clock:  1.471s for 40000 moves (interpreter start included)
     planning:    27185 moves/s
 
-That is this host, a desktop, as a reference point and as proof the measurement works.
-**The phone's number is the one that matters and it is not measured yet** - the same
-command with the payload's interpreter produces it, and that comparison is the
-feasibility question answered with figures instead of an argument.
+That was this host, a desktop, as a reference point. The phone's number comes from the
+same run with the payload's interpreter:
+
+    MOVES=40000 scripts/verify-klipper-on-device.sh
+    step stream:   1252117 bytes       (the desktop wrote 1254547 for the same file)
+    wall clock:    1.181592313s on the phone
+    planning:      33852 moves/s       (the desktop: 27185)
+
+So the Fold 5 plans moves faster than this desktop, and its step stream agrees with the
+desktop's to within 0.16%. A print needs a few hundred moves a second at coarse segments
+and a few thousand at fine ones: the margin is tenfold to a hundredfold, which is the
+feasibility question answered with figures rather than an argument.
 
 The same run belongs on the device, and that is what proves the payload rather than the
 host it was built on: scripts/verify-klipper-on-device.sh stages the dictionary, the
