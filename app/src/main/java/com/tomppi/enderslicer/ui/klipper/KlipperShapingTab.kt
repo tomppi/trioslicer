@@ -445,7 +445,7 @@ private fun MeasurementResult(
     KlipperValue("Sweep start from", measurement.startFrom)
     if (measurement.onToolhead) {
         KlipperValue(
-            label = "Phone on the toolhead",
+            label = "Phone on the moving part",
             value = "%.0f g on %.0f g moves each frequency up by %.0f%%".format(
                 253.0, measurement.movingMassGrams,
                 (measurement.massCorrection - 1.0) * 100.0,
@@ -453,8 +453,9 @@ private fun MeasurementResult(
         )
         KlipperNote(
             "The frequencies below have been corrected for the phone's own weight, which is " +
-                "an estimate from a single-mass model - the mode is not only the toolhead on " +
-                "the belt. Treat it as a place to start, not as a calibration.",
+                "an estimate from a single-mass model - the mode is not only " +
+                (if (measurement.axis == "Y") "the bed" else "the toolhead") +
+                " on the belt. Treat it as a place to start, not as a calibration.",
         )
     }
     if (measurement.saturated) {

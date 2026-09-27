@@ -132,10 +132,6 @@ class KlipperPrinterRepository(
     private suspend fun watch() {
         while (currentCoroutineContext().isActive) {
             try {
-                // Before watching: a configuration this app seeded and has since improved
-                // is the app's to keep current, and klippy picks it up at its next start
-                // rather than being rewritten under a running host.
-                refreshShippedConfigIfUntouched()
                 follow()
             } catch (e: Exception) {
                 client?.close()
@@ -715,29 +711,26 @@ class KlipperPrinterRepository(
         }.getOrDefault(false)
     }
 
-    /**
-     * Keep a configuration this app seeded current with the one it ships.
+    /*
+     * There was a refreshShippedConfigIfUntouched() here, called on every connection, which
+     * rewrote the printer's configuration with the app's own whenever the two differed -
+     * keeping only klippy's saved block. Its rule was "this file is the app's until somebody
+     * imports one", and that rule was wrong in the way that matters: a user who edits the
+     * seeded configuration is not importing anything, so the app took their edit for
+     * staleness and put its defaults back.
      *
-     * Runs once per start, and only while the configuration is still the app's own: a
-     * configuration somebody brought is theirs, and this is the difference between an app
-     * that fixes its own defaults and one that quietly edits a user's printer. The saved
-     * block comes across, so this cannot cost a calibration.
+     * It cost exactly that on a real printer. Input shaping was saved with a measured Y
+     * frequency of 44.3 Hz; the file was written correctly, and then the next connection
+     * replaced it with the shipped 35.2 and a copy of the old file that agreed, because it
+     * had been made from the same stale text. The saved block survived, which is why the
+     * probe offset calibrated the same evening is still there and the shaper value is not -
+     * a good illustration of how narrow the escape was.
+     *
+     * The configuration is now written once, when it is seeded, and after that only by the
+     * user: the app keeps to its own parts of it - the include line, and the serial path and
+     * gcode directory the service resolves at every start - and never rewrites the whole
+     * file on a rule about who it thinks owns it.
      */
-    private suspend fun refreshShippedConfigIfUntouched() {
-        withContext(Dispatchers.IO) {
-            runCatching {
-                if (_configSource.value.imported) return@runCatching
-                val config = KlipperHostFiles.config(application.filesDir)
-                if (!config.isFile) return@runCatching
-                val shipped = KlipperHostFiles.shipped(application.filesDir).takeIf { it.isFile }
-                    ?: return@runCatching
-                val running = config.readText()
-                if (!KlipperConfigFile.differsFromShipped(running, shipped.readText())) return@runCatching
-                config.writeText(KlipperConfigFile.withSavedValues(shipped.readText(), running))
-                Log.i(TAG, "refreshed the printer configuration this app seeds")
-            }
-        }
-    }
 
     /** The name a file has on the device it was picked from. */
     private fun fileNameOf(uri: Uri): String = runCatching {

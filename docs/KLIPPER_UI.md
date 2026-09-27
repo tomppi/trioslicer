@@ -320,6 +320,27 @@ A configuration also has to be for a Klipper that knows its options: an unknown 
 hard error at startup, and the log on the Machine screen is where it says so.
 
 ### What the screens need from a configuration
+### Who owns printer.cfg
+
+The app writes the configuration **once**, when it seeds it from the file it ships with the
+device-specific values substituted. After that the printer's configuration belongs to whoever
+is using the printer, and the app keeps to its own parts of it: the one `[include app.cfg]`
+line, and the serial path and gcode directory that the host service resolves at every start.
+
+That rule is written down because the opposite one cost real work. An earlier version also ran
+a *refresh* on every connection: if the running configuration differed from the one the app
+ships, it was replaced with the shipped file, keeping klippy's saved block. The intent was to
+keep an untouched seeded configuration current with the app's own improvements, and the rule it
+actually implemented was "this file is the app's until somebody imports one" — so a user who
+edited the seeded configuration, rather than importing one, had their edit read as staleness.
+
+On a real printer that looked like this: a measured Y shaper frequency of 44.3 Hz was saved,
+the file was written correctly, and the next connection replaced it with the shipped 35.2. The
+copy the app keeps of the previous file agreed with the result, because it had been taken from
+the same stale text, so nothing on the device showed what had happened. The probe offset
+calibrated the same evening survived, because it lives in klippy's `#*#` block and that is
+carried across — which is what made the loss look like a save that had never happened.
+
 ## The configuration file, and what survives a restart
 
 `PID_CALIBRATE`, `BED_MESH_CALIBRATE` and a Z offset all end in values that live in
