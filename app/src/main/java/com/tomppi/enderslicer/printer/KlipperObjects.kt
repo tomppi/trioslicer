@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.printer
 
 import org.json.JSONArray
+import com.tomppi.enderslicer.data.KlipperMacroLibrary
 import org.json.JSONObject
 
 /**
@@ -380,6 +381,24 @@ private fun triggerWord(value: Any?): String = when (value) {
     }
     else -> "-"
 }
+
+/**
+ * Klipper's starter macros this configuration does not define.
+ *
+ * Read from the section list rather than from [KlipperPrinterState.macros], which deliberately
+ * hides the macros a screen should not offer to press - a macro that is present but hidden must
+ * not be reported as missing, or the app would offer to add it twice.
+ */
+internal val KlipperPrinterState.missingStarterMacros: List<KlipperMacroLibrary.StarterMacro>
+    get() {
+        val sections = configSections ?: return emptyList()
+        val defined = sections.keys().asSequence()
+            .map { it.trim().uppercase() }
+            .toSet()
+        return KlipperMacroLibrary.all.filterNot {
+            ("GCODE_MACRO " + it.name.uppercase()) in defined
+        }
+    }
 
 /** True when klippy has changes waiting for a restart before they take effect. */
 internal val KlipperPrinterState.saveConfigPending: Boolean

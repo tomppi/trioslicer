@@ -448,6 +448,23 @@ internal object KlipperConfigFile {
      * not write this one. The separator and indentation of the line it replaces are kept, and
      * klippy's saved block stays where klippy put it.
      */
+    /**
+     * Add whole sections, each one before klippy's saved block, touching nothing else.
+     *
+     * The configuration is the user's: an existing section is left exactly as it is, however
+     * it was written, so adding a macro can never rewrite one that is already there. Sections
+     * go in at the end of the body, where a hand-added macro would go, and the saved block
+     * stays last, where klippy expects to find it.
+     */
+    fun withSections(text: String, sections: List<String>): String {
+        val additions = sections.filter { it.isNotBlank() }
+        if (additions.isEmpty()) return text
+        val saved = savedBlock(text)
+        val body = withoutSavedBlock(text).trimEnd()
+        val rebuilt = body + "\n\n" + additions.joinToString("\n\n") { it.trimEnd() } + "\n"
+        return if (saved.isBlank()) rebuilt else rebuilt.trimEnd() + "\n\n" + saved
+    }
+
     fun withOption(text: String, section: String, key: String, value: String): String {
         val saved = savedBlock(text)
         val body = withoutSavedBlock(text).lines().toMutableList()

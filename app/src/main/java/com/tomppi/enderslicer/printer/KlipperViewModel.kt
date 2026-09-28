@@ -375,6 +375,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     internal suspend fun saveRotationDistance(distance: Double): Boolean =
         repository.saveRotationDistance(distance)
 
+    /** Add Klipper's starter macros that this printer is missing; returns their names. */
+    internal suspend fun addStarterMacros(): List<String> = repository.addStarterMacros()
+
     // Macros and the console.
     fun runMacro(name: String) = repository.runMacro(name)
     fun sendCommand(script: String) = repository.send(script)

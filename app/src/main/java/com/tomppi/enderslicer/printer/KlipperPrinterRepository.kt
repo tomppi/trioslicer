@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
+import com.tomppi.enderslicer.data.KlipperMacroLibrary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -554,6 +555,26 @@ class KlipperPrinterRepository(
             printState = next.printState.orEmpty(),
             message = next.printMessage,
         )
+    }
+
+    /**
+     * Add the starter macros this printer does not have, and say which were added.
+     *
+     * The configuration is the user's, so this adds and never rewrites: a macro that is
+     * already defined is left alone whatever it says, which is why the missing list is worked
+     * out first. The file is backed up as previous.printer.cfg, as every config write here is.
+     */
+    internal suspend fun addStarterMacros(): List<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val config = KlipperHostFiles.config(application.filesDir)
+            if (!config.isFile) return@runCatching emptyList()
+            val text = config.readText()
+            val missing = KlipperMacroLibrary.missingFrom(text)
+            if (missing.isEmpty()) return@runCatching emptyList()
+            config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+            config.writeText(KlipperConfigFile.withSections(text, missing.map { it.section }))
+            missing.map { it.name }
+        }.getOrDefault(emptyList())
     }
 
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */

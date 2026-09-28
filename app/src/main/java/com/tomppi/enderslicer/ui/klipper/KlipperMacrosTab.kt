@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import com.tomppi.enderslicer.printer.missingStarterMacros
+import kotlinx.coroutines.launch
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +45,10 @@ import com.tomppi.enderslicer.printer.macros
 @Composable
 internal fun KlipperMacrosTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var filter by rememberSaveable { mutableStateOf("") }
+    var adding by remember { mutableStateOf(false) }
+    var added by remember { mutableStateOf<List<String>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+    val missing = state.missingStarterMacros
     val all = state.macros
     val shown = remember(all, filter) {
         val needle = filter.trim()
@@ -53,6 +60,46 @@ internal fun KlipperMacrosTab(state: KlipperPrinterState, viewModel: KlipperView
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        //
+        // Klipper's own starter macros, for the ones this printer does not have.
+        //
+        // The macros themselves live in printer.cfg, which belongs to the user - so this offers
+        // the ones a Klipper printer is usually given and adds only what is missing, leaving
+        // every macro already in the file exactly as it is. Klipper reads its macros at start,
+        // so the host is restarted afterwards, which is what makes them appear on this screen.
+        //
+        if (missing.isNotEmpty() || added.isNotEmpty()) {
+            KlipperCard(
+                title = "Starter macros",
+                subtitle = if (missing.isEmpty()) "Added" else "${missing.size} not in printer.cfg",
+            ) {
+                KlipperNote(
+                    "Klipper's own sample macros, adapted: a filament change, load and unload, " +
+                        "and object cancellation under Marlin's name. Adding them writes new " +
+                        "sections into printer.cfg and leaves everything already there alone. " +
+                        "The host restarts to pick them up.",
+                )
+                Spacer(Modifier.height(4.dp))
+                missing.forEach { macro -> KlipperValue(macro.name, macro.summary) }
+                added.forEach { name -> KlipperValue(name, "added") }
+                Spacer(Modifier.height(8.dp))
+                KlipperButtons {
+                    KlipperButton(
+                        text = if (adding) "Adding…" else "Add them",
+                        enabled = !adding && missing.isNotEmpty() && state.isReady,
+                    ) {
+                        adding = true
+                        scope.launch {
+                            val names = viewModel.addStarterMacros()
+                            adding = false
+                            added = names
+                            if (names.isNotEmpty()) viewModel.restartHost()
+                        }
+                    }
+                }
+            }
+        }
+
         OutlinedTextField(
             value = filter,
             onValueChange = { filter = it },

@@ -89,6 +89,33 @@ class KlipperConfigFileTest {
     }
 
     @Test
+    fun sectionsAreAddedWithoutTouchingWhatIsThere() {
+        val existing = "[mcu]\nserial: /dev/ttyUSB0\n\n[gcode_macro PAUSE]\ngcode:\n    PAUSE_BASE\n"
+        val added = KlipperConfigFile.withSections(
+            existing,
+            listOf("[gcode_macro M600]\ngcode:\n    PAUSE"),
+        )
+        assertTrue("the file is kept", added.contains("serial: /dev/ttyUSB0"))
+        assertTrue("the macro already there is kept", added.contains("[gcode_macro PAUSE]"))
+        assertTrue("the new one is added", added.contains("[gcode_macro M600]"))
+        // Adding nothing changes nothing: the caller works out what is missing, and a screen
+        // that asks twice must not append the same macro twice.
+        assertEquals(existing, KlipperConfigFile.withSections(existing, emptyList()))
+    }
+
+    @Test
+    fun addedSectionsGoInBeforeKlippysSavedBlock() {
+        val withBlock = "[mcu]\nserial: /dev/ttyUSB0\n\n" +
+            "#*# <---------------------- SAVE_CONFIG ---------------------->\n" +
+            "#*# [bltouch]\n" +
+            "#*# z_offset = 1.830\n"
+        val added = KlipperConfigFile.withSections(withBlock, listOf("[gcode_macro M600]\ngcode:\n    PAUSE"))
+        val macro = added.indexOf("[gcode_macro M600]")
+        val block = added.indexOf("#*# <---------------------- SAVE_CONFIG")
+        assertTrue("the macro is in the body", macro in 0 until block)
+    }
+
+    @Test
     fun restoringTheShippedConfigurationKeepsTheSavedCalibrations() {
         // The bug this pins: klippy loads the file and the saved block together, and where
         // both define an option the *file* wins - the block's copy is commented out at load.
