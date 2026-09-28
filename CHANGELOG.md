@@ -4,6 +4,70 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-28
+
+The printer can now be a Klipper host on another computer, and the app is the interface to it.
+
+### Added
+
+- **Drive a Klipper host on a computer.** The Print tab has a third route beside "This device"
+  and "OctoPrint": give it a host and a port and the same Klipper screens drive that machine -
+  jogging, temperatures, macros, mesh, shaping, the console, the emergency stop - over
+  Moonraker. Verified against a real host: connect, subscribe, home, and print.
+- **Files go to whichever host is printing.** A file is uploaded to the host with Moonraker's
+  upload endpoint, listed from that host, deleted from it, and its thumbnail and slicer details
+  come from the host's own metadata. The command that prints it is klippy's, either way.
+- **The print camera**, when the host publishes one. It appears on the dashboard with a frame a
+  second while the screen is open, and the requests stop when it is not.
+- **Klipper's starter macros, on request.** The Macros screen offers the ones a Klipper printer
+  is usually given - M600, M486, LOAD_FILAMENT, UNLOAD_FILAMENT - and adds only what is missing
+  from printer.cfg, leaving everything already in the file exactly as it is.
+- **Each G-code route has its own custom start and end script.** A script written for the
+  Klipper host is no longer sent to a Marlin printer when the flavour changes, nor the other
+  way round; all four are on the machine settings screen, each named for its machine.
+- **A guided extruder calibration**: mark the filament, push a known length, measure what moved,
+  and the corrected rotation distance is computed, applied live, and written to printer.cfg.
+  This is the one figure in the chain that no measurement had ever confirmed.
+- Live velocity limits on the dashboard - the way to settle a print that is ringing without
+  stopping it - and a slider for each fan the configuration names itself.
+- Babystepping on the dashboard, a stop on every tab while a print runs, and a notification when
+  a print ends, carrying klippy's own reason when it stopped.
+
+### Changed
+
+- **The Marlin side is frozen.** The G-code path is two routes rather than one with a switch in
+  it: FrozenGcodeRoute is TrioSlicer 1.4.0's code verbatim, KlipperGcodeRoute owns everything
+  Klipper, and neither can call the other. Marlin output is pinned by tests against the 1.4.0
+  text and a golden file of every layer event, so a Klipper change cannot alter it silently.
+- Motion is refused while a print runs rather than merely discouraged: homing, jogging, stepper
+  release and hand extrusion would each leave the printer out of step with the file.
+
+### Fixed
+
+The same five-agent audit as the last release, and the same rule that every finding was checked
+against klippy's source before it was believed. Grouped, not ordered:
+
+- **Restoring the shipped configuration kept the calibrations it promised to keep.** klippy
+  loads the file and the SAVE_CONFIG block together and the file wins, so a pristine body in
+  front of a saved block silently reverted the probe offset, the PID terms and the shaper
+  frequencies - and the next SAVE_CONFIG wrote them away for good.
+- **Starting a print while one was paused destroyed it and broke Pause until the host was
+  restarted**: klippy only refuses while its work timer runs, and a pause stops it, leaving
+  pause_resume still paused while the file carried on printing.
+- **A print that dies with the host is now recorded and announced** instead of leaving half a
+  part and nothing else; a refused print says so where the button was pressed; a failed upload
+  no longer leaves a truncated file that prints as far as it goes and is reported as finished.
+- M17, which klippy has never had, replaced by SET_STEPPER_ENABLE per stepper; "Cool everything
+  down" now turns off every heater rather than the two its command named; `restart_method` is
+  kept, because without it FIRMWARE_RESTART falls through to toggling DTR, which this
+  connection cannot deliver.
+- Numbers that were wrong on screen: memory reported as bytes when the file counts kilobytes,
+  the board's duty cycle shown as a fraction of one rather than of its five-second window, and
+  endstops reading "true" where klippy says TRIGGERED.
+- A saved measurement can no longer be silently overridden by a stale duplicate: the shaping
+  writer left one option per key, and klippy reads the last one.
+- **Pre-release, and still in testing.** The Klipper host this app runs itself is the tested
+  path; the computer route is new. Nothing here changes what a Marlin printer is sent.
 ## [1.5.3] - 2026-09-27
 
 ### Added
