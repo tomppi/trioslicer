@@ -52,6 +52,20 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         repository.start()
     }
 
+    /** Which host the app drives: this device, or a computer running Klipper. */
+    internal fun hostChoice(): KlipperHostChoice = KlipperHostChoiceStore(getApplication()).load()
+
+    /**
+     * Point the app at a host, and connect to it.
+     *
+     * Saved before the reconnection is asked for: the repository reads the choice when it
+     * opens a connection, so a choice saved afterwards would be one connection late.
+     */
+    internal fun setHostChoice(choice: KlipperHostChoice) {
+        KlipperHostChoiceStore(getApplication()).save(choice)
+        repository.reconnect()
+    }
+
     fun startHost() = KlipperEngineService.start(getApplication())
 
     /** Stop the host: the printer is released and the process ends. */
@@ -80,7 +94,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
                 // restarting into a half-written config would be worse than waiting.
                 delay(SAVE_CONFIG_SETTLE_MS)
             }
-            KlipperEngineService.restart(getApplication())
+            // The repository decides what a restart means for the host in use: the service
+            // here, or klippy restarting itself on the computer.
+            repository.restartHost()
         }
     }
 

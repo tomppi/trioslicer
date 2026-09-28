@@ -22,6 +22,15 @@ data class KlipperPrinterState(
     /** printing, paused, complete, cancelled or error - klippy's own words. */
     val printState: String? = null,
     /**
+     * The computer this app is driving, when it is not driving the phone's own host.
+     *
+     * Null means the host is this device, which is what every screen used to assume. The
+     * affordances that only make sense for a host in your hand - starting it, stopping it, the
+     * phone's own battery and temperature - ask this rather than a flag threaded through the
+     * screens.
+     */
+    val remoteHost: String? = null,
+    /**
      * What klippy said about this print, when it had something to say.
      *
      * print_stats.message is where a failure lands - "Move out of range", "Heater extruder

@@ -167,7 +167,7 @@ private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (!state.connected) {
+        if (!state.connected && state.remoteHost == null) {
             Spacer(Modifier.height(12.dp))
             KlipperButtons {
                 // The host is normally started by the printer being plugged in; this is
@@ -618,8 +618,10 @@ private fun TimingCard(state: KlipperPrinterState) {
         // and a shrinking lookahead, and the cause is worth naming before the symptoms are
         // hunted for in the printer.
         //
+        // Not when the host is a computer: the phone's battery and temperature are then its
+        // own business, and the card is about the link to a printer this device is not driving.
         val context = LocalContext.current
-        val battery = remember(timing) { readBattery(context) }
+        val battery = if (state.remoteHost == null) remember(timing) { readBattery(context) } else null
         battery?.let { reading ->
             val hot = reading.temperatureCelsius?.let { it >= 42.0 } == true
             KlipperValue(

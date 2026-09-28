@@ -9,6 +9,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import com.tomppi.enderslicer.data.KlipperMacroLibrary
+import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -109,6 +110,10 @@ class KlipperPrinterRepository(
     private var lastPrintState: String? = null
     private var client: KlipperClient? = null
 
+    /** Which host the app is pointed at, and what it takes to reach it. */
+    private val hostChoice = KlipperHostChoiceStore(application)
+
+    /** The app's own host, when that is the one in use. */
     private val socketPath: String
         get() = File(application.filesDir, "klippy.sock").absolutePath
 
@@ -186,7 +191,18 @@ class KlipperPrinterRepository(
 
     /** Connect, take a snapshot, subscribe, then hold the connection until it drops. */
     private suspend fun follow() {
-        val c = KlipperClient(socketPath)
+        //
+        // Which host this is, is decided here and nowhere else: klippy inside the phone over its
+        // unix socket, or klippy on a computer over Moonraker. Everything downstream - the
+        // screens, the protocol, the framing - is the same either way, which is what the
+        // transport is for.
+        //
+        val choice = hostChoice.load()
+        if (!choice.isUsable) {
+            _state.update { it.copy(connected = false, error = "No host is set for the PC route") }
+            error("no Klipper host is set")
+        }
+        val c = KlipperClient(choice.transportFor(socketPath), choice.label)
         c.onNotification = ::applyNotification
         c.connect()
         // Before anything else, and again on every connection: the subscription belongs
@@ -204,6 +220,7 @@ class KlipperPrinterRepository(
         _state.update {
             it.copy(
                 connected = true,
+                remoteHost = choice.host.trim().takeIf { choice.isRemote },
                 state = info.optString("state", "unknown"),
                 stateMessage = info.optString("state_message"),
                 error = null,
@@ -211,7 +228,7 @@ class KlipperPrinterRepository(
                 published = published,
             ).withStatus(snapshot)
         }
-        Log.i(TAG, "watching $socketPath as " + info.optString("state") +
+        Log.i(TAG, "watching " + choice.label + " as " + info.optString("state") +
             "; following " + wanted.size + " of " + published.size + " objects")
         runCatching { c.gcodeHelp() }.onSuccess { help -> _commands.value = help }
         // The micro-controller objects grow. A subscription that asks for every field has
@@ -627,6 +644,34 @@ class KlipperPrinterRepository(
 
     /** Write klippy's saved values into the config file; it restarts to apply them. */
     fun saveConfig() = send("SAVE_CONFIG")
+
+    /**
+     * Drop the connection, so the watch loop makes a new one.
+     *
+     * The host is chosen before a connection is opened, so a user who changes it is owed a
+     * connection to the new one rather than a wait for the old one to fail.
+     */
+    fun reconnect() {
+        runCatching { client?.close() }
+        client = null
+        _state.update { it.copy(connected = false, error = null) }
+    }
+
+    /**
+     * Restart the host that is doing the printing.
+     *
+     * On this device that means the service: klippy is a process the app started and can stop.
+     * On a computer it means asking klippy to restart itself, which is a G-code command - and
+     * the one that applies a SAVE_CONFIG on that side, where the app cannot reach the service
+     * at all. Both leave the printer in the same place; only the asking differs.
+     */
+    fun restartHost() {
+        if (hostChoice.load().isRemote) {
+            send("RESTART")
+            return
+        }
+        KlipperEngineService.restart(application)
+    }
 
     /**
      * Reset the firmware and reload the configuration.
