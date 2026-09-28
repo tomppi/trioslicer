@@ -345,20 +345,30 @@ internal object KlipperConfigFile {
                     ?.let { "damping_ratio_$axis" to number(it, 3) },
             )
             wanted.forEach { (key, value) ->
-                val at = (header + 1 until end).firstOrNull { index ->
-                    // Either separator: klippy reads both, the configuration this app ships
-                    // writes "shaper_type_x = mzv", and an earlier version of this only
-                    // understood "name:" - so every save appended a second copy of each key.
-                    // klippy takes the last one, so the value was right and the file grew by
-                    // four lines a save, with the stale line first for anyone reading it.
+                // Either separator: klippy reads both, and the configuration this app ships
+                // writes "shaper_type_x = mzv".
+                val matches = (header + 1 until end).filter { index ->
                     val name = body[index].trim().substringBefore(':').substringBefore('=').trim()
                     name.equals(key, ignoreCase = true)
                 }
-                if (at != null) {
-                    body[at] = "$key = $value"
-                } else {
+                if (matches.isEmpty()) {
                     body.add(end, "$key = $value")
                     end++
+                } else {
+                    //
+                    // One line, carrying the new value - and the extras removed.
+                    //
+                    // An earlier version of this only understood "name:", so every save
+                    // appended a second copy of each key. Replacing the first and leaving the
+                    // rest would be worse than it looks: klippy reads the LAST value, so the
+                    // stale duplicate further down the section is the one that would win, and
+                    // a saved measurement would appear to do nothing.
+                    //
+                    body[matches.first()] = "$key = $value"
+                    matches.drop(1).sortedDescending().forEach { index ->
+                        body.removeAt(index)
+                        end--
+                    }
                 }
             }
         }

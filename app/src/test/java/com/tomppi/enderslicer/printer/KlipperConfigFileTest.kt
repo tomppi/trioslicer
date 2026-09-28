@@ -115,6 +115,38 @@ class KlipperConfigFileTest {
         assertTrue("the macro is in the body", macro in 0 until block)
     }
 
+@Test
+    fun aDuplicateOptionLeftByAnOlderWriterIsCleanedUpNotLeftBehind() {
+        // klippy reads the LAST value in a section, so replacing the first and leaving a stale
+        // duplicate below it would make a saved measurement look like it did nothing - which is
+        // exactly what the old writer left on the printer this app was built for.
+        val config = """
+            [input_shaper]
+            shaper_type_x = mzv
+            shaper_freq_x = 41.7
+            shaper_type_y = mzv
+            shaper_freq_y = 35.2
+            shaper_type_x = mzv
+            shaper_freq_x = 89.8
+            shaper_type_y = mzv
+            shaper_freq_y = 44.3
+        """.trimIndent()
+        // Both axes, because a save writes both: an axis nobody measured keeps whatever it had,
+        // duplicates and all, and that is the caller's business rather than this function's.
+        val written = KlipperConfigFile.withInputShaper(
+            config,
+            listOf(
+                KlipperConfigFile.ShaperSetting("X", "mzv", 89.8, 0.1),
+                KlipperConfigFile.ShaperSetting("Y", "mzv", 52.5, 0.1),
+            ),
+        )
+        assertEquals(1, written.split("shaper_freq_y").size - 1)
+        assertTrue(written.contains("shaper_freq_y = 52.5"))
+        assertEquals(1, written.split("shaper_freq_x").size - 1)
+        assertTrue("the value written last time survives", written.contains("shaper_freq_x = 89.8"))
+        assertEquals(1, written.split("shaper_type_x").size - 1)
+    }
+
     @Test
     fun restoringTheShippedConfigurationKeepsTheSavedCalibrations() {
         // The bug this pins: klippy loads the file and the saved block together, and where
