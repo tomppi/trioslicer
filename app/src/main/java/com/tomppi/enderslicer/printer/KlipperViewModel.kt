@@ -66,6 +66,10 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         repository.reconnect()
     }
 
+    /** Write pressure advance into the printer's configuration, where a restart finds it. */
+    suspend fun savePressureAdvance(advance: Double, smoothTime: Double? = null): Boolean =
+        repository.savePressureAdvance(advance, smoothTime)
+
     /** A Marlin-only command in a sliced file's start G-code, if it has one. */
     suspend fun marlinOnlyStartCommand(path: String): String? =
         repository.marlinOnlyStartCommand(path)

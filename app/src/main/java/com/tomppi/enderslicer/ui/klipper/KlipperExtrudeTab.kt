@@ -217,6 +217,17 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 "How much the extruder leads a corner to make up for the filament's own " +
                     "springiness. Worth calibrating per filament.",
             )
+            //
+            // Set is the tuning action - live, immediate, and normally done while a print is
+            // running. Save is the other half, and it is separate because it is not free:
+            // klippy offers no way to save this one, so it means writing printer.cfg and
+            // restarting the host, which would end the print being tuned.
+            //
+            KlipperNote(
+                "Set applies it now and lasts until the host restarts. klippy has no way to " +
+                    "save this setting, so Save writes it into printer.cfg - which restarts " +
+                    "the host, and so waits until the print is finished.",
+            )
             Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -234,6 +245,15 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                     text = "Set",
                     enabled = state.isReady && parseDecimal(advance) != null,
                     onClick = { parseDecimal(advance)?.let { viewModel.setPressureAdvance(it) } },
+                )
+                KlipperButton(
+                    text = "Save",
+                    enabled = state.isReady && !state.isPrinting && parseDecimal(advance) != null,
+                    onClick = {
+                        parseDecimal(advance)?.let { value ->
+                            scope.launch { viewModel.savePressureAdvance(value) }
+                        }
+                    },
                 )
             }
             val own = state.macros.filter { it.name.contains("Press_Advance", ignoreCase = true) }

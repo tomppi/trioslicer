@@ -554,6 +554,40 @@ class KlipperPrinterRepository(
     /** Ask klippy what it is using; it answers in the console. */
     fun askRotationDistance() = send(KlipperScripts.rotationDistance("extruder"))
 
+    /**
+     * Write pressure advance into printer.cfg, where the next start reads it.
+     *
+     * SET_PRESSURE_ADVANCE changes the value klippy is using and nothing else: its command sets
+     * the value and calls set_rollover_info, and never marks the configuration as needing a save
+     * (kinematics/extruder.py:93-104). So SAVE_CONFIG has nothing to write for it, and the next
+     * restart quietly brings the old figure back.
+     *
+     * The file is the only thing that keeps it - which is why tuning it during a print, the way
+     * it is normally tuned, ends with the printer forgetting what was tuned.
+     */
+    internal suspend fun savePressureAdvance(advance: Double, smoothTime: Double? = null): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val text = readHostConfig() ?: return@runCatching false
+                var written = KlipperConfigFile.withOption(
+                    text,
+                    "extruder",
+                    "pressure_advance",
+                    String.format(java.util.Locale.ROOT, "%.4f", advance),
+                )
+                smoothTime?.let { time ->
+                    written = KlipperConfigFile.withOption(
+                        written,
+                        "extruder",
+                        "pressure_advance_smooth_time",
+                        String.format(java.util.Locale.ROOT, "%.3f", time),
+                    )
+                }
+                if (written == text) return@runCatching false
+                writeHostConfig(written)
+            }.getOrDefault(false)
+        }
+
     /** Write the rotation distance into printer.cfg, where the next start reads it. */
     internal suspend fun saveRotationDistance(distance: Double): Boolean =
         withContext(Dispatchers.IO) {
