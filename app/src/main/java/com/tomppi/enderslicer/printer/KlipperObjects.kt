@@ -249,6 +249,19 @@ internal val KlipperPrinterState.shapers: List<KlipperShaper>
 internal val KlipperPrinterState.canMeasureResonances: Boolean
     get() = configSections?.has("resonance_tester") == true
 
+/**
+ * The extruder's rotation distance, as the configuration has it.
+ *
+ * Read from the configuration rather than from klippy because klippy does not publish it:
+ * the extruder's status carries pressure advance and the motion queue, and nothing about how
+ * far one turn of the motor moves the filament. This is the value the calibration replaces,
+ * and the value the app needs in order to compute the new one.
+ */
+internal val KlipperPrinterState.rotationDistance: Double?
+    get() = configSections?.optJSONObject("extruder")?.opt("rotation_distance")
+        ?.toString()
+        ?.toDoubleOrNull()
+
 /** The objects klippy publishes, by name - what a screen may ask for. */
 internal val KlipperPrinterState.objectNames: Set<String> get() = objects.keys
 

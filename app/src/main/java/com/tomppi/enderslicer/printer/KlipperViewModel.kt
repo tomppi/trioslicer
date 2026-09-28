@@ -357,6 +357,14 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun calibrateMesh() = repository.calibrateMesh()
     fun meshProfile(action: String, name: String) = repository.meshProfile(action, name)
 
+    // The extruder calibration: the one figure that decides whether the slicer's extrusion
+    // is what the printer delivers.
+    fun extrudeForCalibration(lengthMm: Double) = repository.extrudeForCalibration(lengthMm)
+    fun applyRotationDistance(distance: Double) = repository.applyRotationDistance(distance)
+    fun askRotationDistance() = repository.askRotationDistance()
+    internal suspend fun saveRotationDistance(distance: Double): Boolean =
+        repository.saveRotationDistance(distance)
+
     // Macros and the console.
     fun runMacro(name: String) = repository.runMacro(name)
     fun sendCommand(script: String) = repository.send(script)

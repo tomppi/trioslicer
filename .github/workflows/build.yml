@@ -359,6 +359,13 @@ jobs:
           test -x .build/curaengine-host-tests/artifacts/CuraEngine
           echo "CURAENGINE_HOST_BINARY=${GITHUB_WORKSPACE}/.build/curaengine-host-tests/artifacts/CuraEngine" >> "$GITHUB_ENV"
 
+      # The app slices for a Marlin printer on the far end of OctoPrint as well as for the
+      # Klipper host inside it. This fails if Klipper code has been imported outside its own
+      # folders, and MarlinRouteContractTest fails if Marlin output has changed - the two
+      # halves of the rule that a shared default start G-code once broke.
+      - name: Verify the Klipper side has not reached into the shared side
+        run: scripts/verify-route-separation.sh
+
       - name: Unit, definition, and real CuraEngine regional-toolpath tests
         run: |
           set -o pipefail

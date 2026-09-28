@@ -3,6 +3,8 @@ package com.tomppi.enderslicer.printer
 import java.util.Locale
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
@@ -168,6 +170,40 @@ class KlipperScriptsTest {
         assertEquals(
             "PID_CALIBRATE HEATER=\"chamber\" TARGET=200",
             KlipperScripts.pidCalibrate("heater_generic chamber", 200),
+        )
+    }
+
+    @Test
+    fun theExtruderCalibrationIsKlippersOwnProcedure() {
+        // Mark, push a known length, measure: a millimetre a second, relative, in a saved
+        // state so the file's own modes are untouched.
+        val command = KlipperScripts.extrudeForCalibration(100.0)
+        assertTrue(command.contains("G1 E100.0 F60"))
+        assertTrue(command.contains("M83"))
+        assertTrue(command.contains("SAVE_GCODE_STATE"))
+    }
+
+    @Test
+    fun theRotationDistanceIsCorrectedByWhatActuallyMoved() {
+        // 100 asked for, 90 delivered: the motor turns 10 per cent too little per millimetre.
+        assertEquals(4.221, KlipperScripts.correctedRotationDistance(4.69, 100.0, 90.0)!!, 1e-9)
+        assertEquals(5.211, KlipperScripts.correctedRotationDistance(4.69, 100.0, 111.1)!!, 1e-9)
+        // Klipper asks for three places.
+        assertEquals(4.237, KlipperScripts.correctedRotationDistance(4.69, 100.0, 90.34)!!, 1e-9)
+        assertNull(KlipperScripts.correctedRotationDistance(0.0, 100.0, 90.0))
+        assertNull(KlipperScripts.correctedRotationDistance(4.69, 100.0, 0.0))
+    }
+
+    @Test
+    fun rotationDistanceIsAddressedByTheExtrudersOwnName() {
+        assertEquals(
+            "SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=\"extruder\" DISTANCE=4.237",
+            KlipperScripts.rotationDistance("extruder", 4.237),
+        )
+        // With no distance, klippy reports the value in use.
+        assertEquals(
+            "SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=\"extruder\"",
+            KlipperScripts.rotationDistance("extruder"),
         )
     }
 }

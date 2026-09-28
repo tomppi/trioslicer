@@ -17,7 +17,7 @@ internal object GcodeProbePauseInjector {
      * `M0` immediately after it. Returns false when there is no probe to pause
      * after, or when the marker is already present (idempotent).
      */
-    fun inject(file: File): Boolean {
+    fun inject(file: File, pauseCommand: String = "M0"): Boolean {
         require(file.isFile && file.length() > 0L) { "Sliced G-code is unavailable" }
 
         var lastProbeIndex = -1
@@ -50,7 +50,11 @@ internal object GcodeProbePauseInjector {
                             writer.newLine()
                             writer.write("M117 $PAUSE_MESSAGE")
                             writer.newLine()
-                            writer.write("M0")
+                            // Marlin stops on M0; Klipper has no M0 and would answer "Unknown
+                            // command" and carry on, so the caller passes PAUSE there. The
+                            // default keeps every existing caller - and the Marlin route -
+                            // exactly as it was.
+                            writer.write(pauseCommand)
                             writer.newLine()
                         }
                         current++

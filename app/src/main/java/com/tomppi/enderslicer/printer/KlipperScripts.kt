@@ -143,6 +143,38 @@ internal object KlipperScripts {
      * have no type in their name and are unaffected, which is why the screen offers this for
      * those two and the mistake stayed hidden.
      */
+    /**
+     * Push filament through for the extruder calibration, slowly.
+     *
+     * Klipper's own procedure: mark the filament, ask for a known length, measure what
+     * actually moved. A millimetre a second, because the point is to measure the extruder
+     * and not to find out where it skips.
+     */
+    fun extrudeForCalibration(lengthMm: Double): String =
+        "SAVE_GCODE_STATE NAME=extrude_calibration\n" +
+            "M83\n" +
+            "G1 E" + number(lengthMm, 1) + " F60\n" +
+            "RESTORE_GCODE_STATE NAME=extrude_calibration"
+
+    /**
+     * The extruder's rotation distance: set it, or ask what it is.
+     *
+     * The command is a mux keyed by the extruder's config name, so the default extruder is
+     * "extruder" - not the empty string a section-type strip would produce. With no distance
+     * klippy reports the value in use, which is how the screen fills itself in.
+     */
+    fun rotationDistance(extruder: String, distance: Double? = null): String {
+        val head = "SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=" + quoted(extruder)
+        return if (distance == null) head else head + " DISTANCE=" + number(distance, 3)
+    }
+
+    /** the figure an extruder calibration arrives at, to three places as Klipper asks. */
+    fun correctedRotationDistance(current: Double, requested: Double, measured: Double): Double? {
+        if (current <= 0.0 || requested <= 0.0 || measured <= 0.0) return null
+        val corrected = current * measured / requested
+        return kotlin.math.round(corrected * 1000.0) / 1000.0
+    }
+
     fun pidCalibrate(heater: String, target: Int): String =
         "PID_CALIBRATE HEATER=" + quoted(heater.substringAfter(' ')) + " TARGET=$target"
 

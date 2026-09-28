@@ -12,6 +12,10 @@ class CalibrationFirmwareEncoder private constructor(
 
     class UnsupportedFirmwareCommand(message: String) : IllegalArgumentException(message)
 
+    /** What stops this machine: Klipper has PAUSE, Marlin and the rest have M0. */
+    fun pauseCommand(): String =
+        if (dialect == FirmwareDialect.KLIPPER) "PAUSE" else "M0"
+
     fun commands(
         type: LayerEventType,
         layerNumber: Int,
@@ -19,8 +23,15 @@ class CalibrationFirmwareEncoder private constructor(
         secondaryValue: Double? = null,
         text: String = "",
     ): List<String> = when (type) {
-        LayerEventType.PAUSE -> listOf("M117 Pause layer $layerNumber", "M0")
-        LayerEventType.FILAMENT_CHANGE -> listOf("M600")
+        // Two vocabularies, and getting it wrong is silent: klippy has no M0 and no M600, and
+        // answers an unknown command with "Unknown command" and carries on - so a pause set
+        // for layer 40 printed straight through it. Klipper pauses with its own command, and
+        // the printer's own PAUSE macro decides what happens to the head.
+        LayerEventType.PAUSE -> listOf("M117 Pause layer $layerNumber", pauseCommand())
+        LayerEventType.FILAMENT_CHANGE -> when (dialect) {
+            FirmwareDialect.KLIPPER -> listOf("M117 Change filament", pauseCommand())
+            else -> listOf("M600")
+        }
         LayerEventType.NOZZLE_TEMPERATURE -> {
             // Marlin's M109 S waits only while heating; R also waits for the
             // temperature to come back down, which descending towers require.

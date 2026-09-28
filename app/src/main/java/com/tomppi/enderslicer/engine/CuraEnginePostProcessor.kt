@@ -68,7 +68,8 @@ internal object CuraEnginePostProcessor {
             (conformalDiagnostics != null && NonPlanarRuntime.current().pauseAfterProbe) ||
             (conicalDiagnostics != null && ConicalRuntime.current().pauseAfterProbe)
         ) {
-            GcodeProbePauseInjector.inject(outputFile)
+            // The flavour decides what a pause is here too: M0 on Marlin, PAUSE on Klipper.
+            GcodeProbePauseInjector.inject(outputFile, firmware.pauseCommand())
         } else {
             false
         }

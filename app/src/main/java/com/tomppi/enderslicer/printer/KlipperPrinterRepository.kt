@@ -444,6 +444,44 @@ class KlipperPrinterRepository(
             }.getOrDefault(false)
         }
 
+    /**
+     * The extruder calibration: mark the filament, push a known length, measure.
+     *
+     * The one number in this printer's chain that decides whether what the slicer asks for is
+     * what comes out, and the configuration's own comment asks for the measurement. Klippy
+     * holds the value in memory when it is set, so it is written into the file here as well -
+     * SAVE_CONFIG would not, and the next restart would put the old figure back.
+     */
+    fun extrudeForCalibration(lengthMm: Double) =
+        send(KlipperScripts.extrudeForCalibration(lengthMm))
+
+    /** Set the extruder's rotation distance, live. */
+    fun applyRotationDistance(distance: Double) =
+        send(KlipperScripts.rotationDistance("extruder", distance))
+
+    /** Ask klippy what it is using; it answers in the console. */
+    fun askRotationDistance() = send(KlipperScripts.rotationDistance("extruder"))
+
+    /** Write the rotation distance into printer.cfg, where the next start reads it. */
+    internal suspend fun saveRotationDistance(distance: Double): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val config = KlipperHostFiles.config(application.filesDir)
+                if (!config.isFile) return@runCatching false
+                val text = config.readText()
+                val written = KlipperConfigFile.withOption(
+                    text,
+                    "extruder",
+                    "rotation_distance",
+                    String.format(java.util.Locale.ROOT, "%.3f", distance),
+                )
+                if (written == text) return@runCatching false
+                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+                config.writeText(written)
+                true
+            }.getOrDefault(false)
+        }
+
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
     fun meshProfile(action: String, name: String) = send(KlipperScripts.meshProfile(action, name))
 

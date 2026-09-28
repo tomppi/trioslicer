@@ -13,7 +13,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,7 +28,10 @@ import com.tomppi.enderslicer.printer.configSections
 import com.tomppi.enderslicer.printer.heaters
 import com.tomppi.enderslicer.printer.macros
 import com.tomppi.enderslicer.printer.obj
+import com.tomppi.enderslicer.printer.KlipperScripts
+import com.tomppi.enderslicer.printer.orDash
 import com.tomppi.enderslicer.printer.parseDecimal
+import com.tomppi.enderslicer.printer.rotationDistance
 
 /**
  * Feeding filament: by hand, and the two settings that change how it is fed.
@@ -34,11 +41,20 @@ import com.tomppi.enderslicer.printer.parseDecimal
  * away. What this screen does do is say which temperature it is at, so that the refusal
  * is not a surprise.
  */
+/** A field that takes digits and a decimal mark and nothing else. */
+private fun digits(typed: String, limit: Int): String =
+    typed.filter { it.isDigit() || it == '.' || it == ',' }.take(limit)
+
 @Composable
 internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var length by remember { mutableStateOf("10") }
     var feedrate by remember { mutableStateOf("300") }
     var advance by remember { mutableStateOf("") }
+    var calibrationLength by rememberSaveable { mutableStateOf("100") }
+    var markDistance by rememberSaveable { mutableStateOf("120") }
+    var leftAfter by rememberSaveable { mutableStateOf("") }
+    var askedPrinter by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     val hotend = state.heaters.firstOrNull { it.name == "extruder" }
     val extruder = state.obj("extruder")
@@ -89,6 +105,104 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 "Relative, inside a saved state: the file's own absolute or relative " +
                     "mode is left exactly as it was.",
             )
+        }
+
+        KlipperCard(
+            title = "Extruder calibration",
+            subtitle = "How far one turn actually moves the filament",
+        ) {
+            KlipperNote(
+                "Mark the filament " + markDistance + " mm above the extruder, push " +
+                    calibrationLength + " mm through, then measure from the extruder up to the " +
+                    "mark again. Hot, or it will slip. That measurement is what the printer " +
+                    "actually delivered, and the figure below replaces the configured one.",
+            )
+            KlipperValue("Configured now", state.rotationDistance.orDash(3))
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                KlipperNumberField(
+                    label = "Push",
+                    value = calibrationLength,
+                    onValueChange = { typed -> calibrationLength = digits(typed, 4) },
+                    suffix = "mm",
+                    enabled = state.isReady,
+                )
+                KlipperNumberField(
+                    label = "Mark was",
+                    value = markDistance,
+                    onValueChange = { typed -> markDistance = digits(typed, 4) },
+                    suffix = "mm",
+                    enabled = state.isReady,
+                )
+                KlipperNumberField(
+                    label = "Now reads",
+                    value = leftAfter,
+                    onValueChange = { typed -> leftAfter = digits(typed, 5) },
+                    suffix = "mm",
+                    enabled = state.isReady,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            val requested = parseDecimal(calibrationLength)
+            val mark = parseDecimal(markDistance)
+            val left = parseDecimal(leftAfter)
+            val moved = if (mark != null && left != null) mark - left else null
+            val configured = state.rotationDistance
+            val corrected = if (configured != null && requested != null && moved != null) {
+                KlipperScripts.correctedRotationDistance(configured, requested, moved)
+            } else {
+                null
+            }
+            KlipperButtons {
+                KlipperButton(
+                    text = "Push it through",
+                    enabled = state.isReady && (requested ?: 0.0) > 0.0 && !state.isPrinting,
+                ) {
+                    requested?.let { viewModel.extrudeForCalibration(it) }
+                }
+                KlipperButton("Ask the printer", enabled = state.isReady) {
+                    viewModel.askRotationDistance()
+                    askedPrinter = true
+                }
+            }
+            if (askedPrinter) {
+                KlipperNote("The answer is in the console; the value above is the configuration's.")
+            }
+            if (moved != null && corrected != null) {
+                Spacer(Modifier.height(8.dp))
+                KlipperValue("That moved", "%.2f mm".format(moved))
+                KlipperValue("New rotation distance", "%.3f".format(corrected))
+                if (moved <= 0.0) {
+                    KlipperNote(
+                        "The mark cannot end up further away than it started - check the two " +
+                            "numbers.",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (kotlin.math.abs(moved - (requested ?: 0.0)) > 0.05 * (requested ?: 1.0)) {
+                    KlipperNote(
+                        "That is more than a few per cent out, so repeat the measurement before " +
+                            "saving it: two marks and a ruler are easy to get a millimetre wrong, " +
+                            "and this is the figure every print is extruded with.",
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                KlipperButtons {
+                    KlipperButton("Apply now", enabled = state.isReady && moved > 0.0) {
+                        viewModel.applyRotationDistance(corrected)
+                    }
+                    KlipperButton("Save to printer.cfg", enabled = moved > 0.0) {
+                        scope.launch { viewModel.saveRotationDistance(corrected) }
+                    }
+                }
+                KlipperNote(
+                    "Applying takes effect at once and lasts until the host restarts; saving " +
+                        "writes it into the configuration so the restart keeps it. Push the " +
+                        "same length again afterwards to confirm the measurement.",
+                )
+            }
         }
 
         KlipperCard(

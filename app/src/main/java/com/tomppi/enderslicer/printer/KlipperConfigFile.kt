@@ -354,6 +354,36 @@ internal object KlipperConfigFile {
     private val RESTART_OPTION = Regex("restart_method\\s*:.*", RegexOption.IGNORE_CASE)
     private val BAUD_OPTION = Regex("baud\\s*:.*", RegexOption.IGNORE_CASE)
     /**
+     * One option in one section, with everything else left as it was.
+     *
+     * The same shape as the shaping write, and for the same reason: a calibration klippy only
+     * holds in memory is gone at the next start unless it is in the file, and SAVE_CONFIG does
+     * not write this one. The separator and indentation of the line it replaces are kept, and
+     * klippy's saved block stays where klippy put it.
+     */
+    fun withOption(text: String, section: String, key: String, value: String): String {
+        val saved = savedBlock(text)
+        val body = withoutSavedBlock(text).lines().toMutableList()
+        val header = body.indexOfFirst { it.trim().equals("[$section]", ignoreCase = true) }
+        if (header < 0) return text
+        var end = header + 1
+        while (end < body.size && !body[end].trim().startsWith("[")) end++
+        val at = (header + 1 until end).firstOrNull { index ->
+            body[index].trim().substringBefore(':').substringBefore('=').trim()
+                .equals(key, ignoreCase = true)
+        }
+        if (at != null) {
+            val indent = body[at].takeWhile { it.isWhitespace() }
+            val separator = if (body[at].substringBefore('=').contains(':')) ": " else " = "
+            body[at] = indent + key + separator + value
+        } else {
+            body.add(end, key + ": " + value)
+        }
+        val rebuilt = body.joinToString("\n").trimEnd() + "\n"
+        return if (saved.isBlank()) rebuilt else rebuilt.trimEnd() + "\n\n" + saved
+    }
+
+    /**
      * A number as klippy writes one in its own configuration: a dot for the decimal
      * point, whatever language the phone is set to. The same trap as the one that sent
      * G1 Y10,000 to the printer, in a file instead of a command.

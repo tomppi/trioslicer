@@ -78,7 +78,7 @@ object BuiltInGcode {
         G92 E0 ; Reset Extruder
         G1 Z2.0 F3000 ; Move Z Axis up little to prevent scratching of Heat Bed
         G1 X5 Y20 Z0.3 F5000.0 ; Move over to prevent blob squish
-    """
+    """.trimIndent()
 
     /** The Marlin end G-code, where M84 does take axis words and Z can be spared. */
     val END_MARLIN: String = """
@@ -95,7 +95,7 @@ object BuiltInGcode {
         M140 S0 ;Turn-off bed
 
         M84 X Y E ;Disable all steppers but Z
-    """
+    """.trimIndent()
 
     /**
      * The default for a profile, in the dialect that profile declares.
