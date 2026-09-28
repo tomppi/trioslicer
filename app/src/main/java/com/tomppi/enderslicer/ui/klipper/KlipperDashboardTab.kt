@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
+import com.tomppi.enderslicer.printer.KlipperFileLimits
+import java.io.File
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.displayMessage
@@ -76,6 +78,7 @@ internal fun KlipperDashboardTab(
             TemperaturesCard(state, viewModel)
             ExcludedObjectsCard(state, onExclude = { confirmExclude = it })
         }
+        LimitsCard(state, localGcodePath)
         PositionCard(state, viewModel)
         TimingCard(state)
         DangerCard(state, onEmergencyStop = { confirmStop = true })
@@ -388,6 +391,55 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * What the file asks the machine for, against what the machine allows.
+ *
+ * The two figures are set in different places and neither screen mentions the other: the
+ * profile's machine limits become M204 at the head of the file, the printer's own max_accel and
+ * max_velocity are in printer.cfg. A file that asks for less than the machine can do prints
+ * slowly and says nothing about it, which is worth an answer on the screen where the print is
+ * started. Marlin's own limit lines are named for the same reason: klippy has no M201, M203 or
+ * M205, so a file that appears to set a ceiling is really setting nothing.
+ */
+@Composable
+private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?) {
+    val file = localGcodePath?.let(::File)
+    val limits = remember(state.speeds, localGcodePath) { KlipperFileLimits.of(state, file) } ?: return
+    KlipperCard(title = "Limits", subtitle = "This file, and this printer") {
+        KlipperValue(
+            "File asks for",
+            limits.askedAccel?.let { "%.0f mm/s²".format(it) } ?: "no acceleration figure",
+        )
+        KlipperValue(
+            "Printer allows",
+            limits.allowedAccel?.let { "%.0f mm/s²".format(it) } ?: "-",
+        )
+        limits.allowedVelocity?.let { KlipperValue("Top speed", "%.0f mm/s".format(it)) }
+        when {
+            limits.accelerationIsTheFilesOwn -> {
+                Spacer(Modifier.height(4.dp))
+                KlipperNote(
+                    "The print will run at the file's figure, not the printer's - the lower of " +
+                        "the two is what a move uses. The machine limits in the slicer profile " +
+                        "are where it comes from.",
+                )
+            }
+            limits.accelerationIsClampedByThePrinter -> {
+                Spacer(Modifier.height(4.dp))
+                KlipperNote("The file asks for more than the printer allows, so the printer holds it to its own figure.")
+            }
+        }
+        if (limits.ignoredMarlinLimits.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            KlipperNote(
+                "This file also carries " + limits.ignoredMarlinLimits.joinToString(", ") +
+                    ". Those are Marlin's commands and klippy has none of them: it answers " +
+                    "\"Unknown command\" and moves at the printer's own limits instead.",
+            )
         }
     }
 }

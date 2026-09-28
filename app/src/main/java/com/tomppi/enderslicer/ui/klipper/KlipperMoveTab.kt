@@ -44,6 +44,13 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
     // that cannot work is better disabled with the reason on screen.
     val ready = state.isReady
     val homed = state.isHomed
+    //
+    // Moving the head during a print is not a nudge: the file's idea of where the tool is
+    // stops matching the machine's, and the print carries on from the wrong place. So homing,
+    // jogging and releasing the steppers wait for the print - pausing is what they are for -
+    // while macros stay available, because a macro is how a user reaches their own printer.
+    //
+    val motionAllowed = ready && !state.isPrinting
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -51,15 +58,21 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
     ) {
         KlipperCard(title = "Home", subtitle = if (homed) "Homed" else "Not homed") {
             KlipperButtons {
-                KlipperButton("All", enabled = ready) { viewModel.home() }
-                KlipperButton("X", enabled = ready) { viewModel.home("X") }
-                KlipperButton("Y", enabled = ready) { viewModel.home("Y") }
-                KlipperButton("Z", enabled = ready) { viewModel.home("Z") }
-                KlipperButton("X and Y", enabled = ready) { viewModel.home("X Y") }
+                KlipperButton("All", enabled = motionAllowed) { viewModel.home() }
+                KlipperButton("X", enabled = motionAllowed) { viewModel.home("X") }
+                KlipperButton("Y", enabled = motionAllowed) { viewModel.home("Y") }
+                KlipperButton("Z", enabled = motionAllowed) { viewModel.home("Z") }
+                KlipperButton("X and Y", enabled = motionAllowed) { viewModel.home("X Y") }
             }
             if (!ready) {
                 Spacer(Modifier.height(4.dp))
                 KlipperNote("The printer is not ready, so it will not move.")
+            } else if (state.isPrinting) {
+                Spacer(Modifier.height(4.dp))
+                KlipperNote(
+                    "A print is running. Homing or jogging now would put the head out of step " +
+                        "with the file - pause the print and the buttons come back.",
+                )
             }
         }
 
@@ -96,7 +109,7 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                     // together - which this screen offers - the Z axis is the one that must
                     // not move, and the old all-or-nothing test had it backwards in both
                     // directions.
-                    enabled = ready && state.homedAxes.contains(axis.lowercase()),
+                    enabled = motionAllowed && state.homedAxes.contains(axis.lowercase()),
                     onJog = { direction ->
                         viewModel.jog(axis, direction * step, parseDecimal(feedrate)?.toInt() ?: 3000)
                     },
@@ -123,7 +136,8 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             KlipperNote("Motors off lets the head be moved by hand; the machine is not homed afterwards.")
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
-                KlipperButton("Motors off", enabled = ready) { viewModel.disableMotors() }
+                // Releasing the steppers mid-print lets the head be pushed out of position.
+                KlipperButton("Motors off", enabled = motionAllowed) { viewModel.disableMotors() }
                 KlipperButton("Motors on", enabled = ready) { viewModel.enableMotors() }
             }
         }

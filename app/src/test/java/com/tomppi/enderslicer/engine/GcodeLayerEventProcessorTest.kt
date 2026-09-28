@@ -1,10 +1,55 @@
 package com.tomppi.enderslicer.engine
 
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GcodeLayerEventProcessorTest {
+    /**
+     * A pause set for a layer has to be a command the machine has.
+     *
+     * This is the bug the route split was partly about: the encoder wrote M0 for every machine,
+     * and klippy has no M0 - it answers "Unknown command" and carries on, so a pause scheduled
+     * for layer 40 printed straight through it. The Klipper route writes PAUSE, and this holds
+     * the whole way through: profile flavour in, command in the file out.
+     */
+    @Test
+    fun aPauseForAKlipperProfileIsKlippersOwnPause() {
+        val base = kotlin.io.path.createTempFile("enderslicer-pause-klipper", ".gcode").toFile().apply {
+            writeText(
+                """
+                ;FLAVOR:Klipper
+                G28
+                ;LAYER:0
+                G1 X1 Y1 E1
+                ;LAYER:1
+                G1 X2 Y2 E2
+                ;LAYER:2
+                G1 X3 Y3 E3
+                """.trimIndent(),
+            )
+        }
+        val event = LayerEvent(
+            id = "pause-layer-1",
+            layerNumber = 1,
+            zMm = 0.4f,
+            type = LayerEventType.PAUSE,
+        )
+        val output = kotlin.io.path.createTempFile("enderslicer-pause-output", ".gcode").toFile()
+        GcodeLayerEventProcessor.materialize(
+            base,
+            output,
+            listOf(event),
+            GcodeRoute.forFlavor("Klipper"),
+        )
+        val result = output.readText()
+        val layer = result.indexOf(";LAYER:1")
+        val pause = result.indexOf("PAUSE", layer)
+        assertTrue("the pause is written after the layer it was set for", pause > layer)
+        assertTrue("klippy has no M0, so none may be written", !result.contains("M0"))
+    }
+
     @Test
     fun retractionChangeWaitsUntilFirmwareRecover() {
         val base = kotlin.io.path.createTempFile("enderslicer-retract-events", ".gcode").toFile().apply {

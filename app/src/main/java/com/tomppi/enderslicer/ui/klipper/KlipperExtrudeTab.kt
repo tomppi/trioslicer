@@ -55,6 +55,10 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
     var leftAfter by rememberSaveable { mutableStateOf("") }
     var askedPrinter by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // Extruding by hand during a print adds filament the file did not ask for; paused, it is
+    // how a filament change is finished. The retraction settings and the calibration stay
+    // available either way - neither moves the extruder on its own.
+    val canExtrude = state.isReady && !state.isPrinting
 
     val hotend = state.heaters.firstOrNull { it.name == "extruder" }
     val extruder = state.obj("extruder")
@@ -93,10 +97,10 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 // The field was inert: it said 300 while the command carried the
                 // repository's 120, and editing it changed nothing.
                 val speed = parseDecimal(feedrate)?.toInt() ?: 300
-                KlipperButton("Extrude", enabled = state.isReady && amount > 0) {
+                KlipperButton("Extrude", enabled = canExtrude && amount > 0) {
                     viewModel.extrude(amount, speed)
                 }
-                KlipperButton("Retract", enabled = state.isReady && amount > 0) {
+                KlipperButton("Retract", enabled = canExtrude && amount > 0) {
                     viewModel.extrude(-amount, speed)
                 }
             }
