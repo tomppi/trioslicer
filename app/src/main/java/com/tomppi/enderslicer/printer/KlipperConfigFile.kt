@@ -27,6 +27,9 @@ internal object KlipperConfigFile {
     /** The line klippy puts above the values it saves, verbatim from configfile.py. */
     const val SAVED_MARKER = "#*# <---------------------- SAVE_CONFIG ---------------------->"
 
+    /** What klippy prefixes every line of its saved block with. */
+    private const val SAVED_PREFIX = "#*#"
+
     /** The shipped default with the paths filled in. */
     fun resolve(template: String, serialPath: String, gcodeDirectory: String): String =
         template.replace(SERIAL_PLACEHOLDER, serialPath)
@@ -78,11 +81,72 @@ internal object KlipperConfigFile {
         }
         .joinToString("\n")
 
-    /** The shipped default, with the values the printer has already saved carried over. */
+    /**
+     * The shipped default, with the values the printer has already saved carried over.
+     *
+     * Carried over is the word that was wrong here. klippy loads the file and the autosave
+     * block together, and where both define the same option the *file* wins - the block's
+     * copy is commented out at load (configfile.py:279-300), which is exactly what SAVE_CONFIG
+     * relies on when it writes the block and comments the option it just saved (configfile.py:372).
+     * So a pristine body spliced in front of a saved block silently reverts every option the
+     * two share: the probe's Z offset, the PID terms, the shaper frequencies - the values this
+     * function exists to preserve, and the ones the dialog promises are kept.
+     *
+     * The body's copies are therefore commented out here, as klippy comments them when it
+     * saves. Everything else in the body is left exactly as shipped.
+     */
     fun withSavedValues(shipped: String, existing: String): String {
         val saved = savedBlock(existing)
         if (saved.isBlank()) return shipped
-        return withoutSavedBlock(shipped).trimEnd() + "\n\n" + saved
+        val savedOptions = savedOptionKeys(saved)
+        val body = commentOutSavedOptions(withoutSavedBlock(shipped), savedOptions)
+        return body.trimEnd() + "\n\n" + saved
+    }
+
+/**
+     * The section-and-option pairs a saved block defines, as "section\u0000option".
+     *
+     * Read the way klippy reads the block: section headers in brackets, options as key: value
+     * or key = value, and klippy's own "#*#" prefix stripped from the line first.
+     */
+    private fun savedOptionKeys(saved: String): Set<String> {
+        val keys = mutableSetOf<String>()
+        var section = ""
+        for (raw in saved.lineSequence()) {
+            val line = raw.removePrefix(SAVED_PREFIX).trim()
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length - 1).trim().lowercase()
+                continue
+            }
+            if (section.isEmpty() || line.isEmpty() || line.startsWith("#")) continue
+            val option = line.substringBefore(':').substringBefore('=').trim().lowercase()
+            if (option.isNotEmpty() && line.contains(':') || line.contains('=')) {
+                keys += section + "\u0000" + option
+            }
+        }
+        return keys
+    }
+
+    /** Comment out those options in the body, leaving every other line untouched. */
+    private fun commentOutSavedOptions(body: String, savedOptions: Set<String>): String {
+        if (savedOptions.isEmpty()) return body
+        var section = ""
+        return body.lineSequence().joinToString("\n") { line ->
+            val trimmed = line.trim()
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                section = trimmed.substring(1, trimmed.length - 1).trim().lowercase()
+                return@joinToString line
+            }
+            if (section.isEmpty() || trimmed.isEmpty() || trimmed.startsWith("#")) {
+                return@joinToString line
+            }
+            val option = trimmed.substringBefore(':').substringBefore('=').trim().lowercase()
+            if (option.isNotEmpty() && (section + "\u0000" + option) in savedOptions) {
+                line.replaceFirst(trimmed, "# " + trimmed)
+            } else {
+                line
+            }
+        }
     }
 
     /**
@@ -145,19 +209,36 @@ internal object KlipperConfigFile {
             changes += "removed $section: there is no second board for the app to reach"
         }
 
-        // restart_method describes a real serial port. klippy rejects the option outright
-        // for a pipe connection, which is what a pty is.
+        // A board on this connection is reset by command, not by DTR.
+        //
+        // klippy really does read restart_method here: only /dev/rpmsg_* and
+        // /tmp/klipper_host_* are treated as something other than a serial port, and this
+        // app's path is a symlink under its own files directory (mcu.py:569-579). With the
+        // option absent klippy falls through to the arduino method - toggling DTR - and the
+        // bridge moves bytes and nothing else, so the toggle never reaches the board and
+        // FIRMWARE_RESTART ends in "Failed automated reset of MCU". 'command' asks the board
+        // to reset itself, which is what the printer's own configuration used.
         val restartAt = indexOfOption(lines, "mcu", RESTART_OPTION)
         if (restartAt >= 0) {
-            lines.removeAt(restartAt)
-            changes += "removed restart_method, which a printer on this app's connection does not have"
+            val current = lines[restartAt].substringAfter(':').substringAfter('=').trim()
+            if (!current.equals("command", ignoreCase = true)) {
+                lines[restartAt] = lines[restartAt].takeWhile { it.isWhitespace() } +
+                    "restart_method: command"
+                changes += "reset the board by command, which is the only reset this " +
+                    "connection can deliver"
+            }
+        } else if (serialAt >= 0) {
+            // A CAN board needs nothing: with no baud klippy uses the command method already.
+            lines.add(serialAt + 1, "restart_method: command")
+            changes += "reset the board by command, which is the only reset this connection " +
+                "can deliver"
         }
 
-        // baud goes the same way, and for a subtler reason: klippy does not read it on a pty,
-        // and then refuses to start over the option it never used - "Option 'baud' is not
-        // valid in section 'mcu'". The app's own configuration has it only in a comment, so
-        // this bites the configuration somebody brings from a printer that talked over USB,
-        // which is exactly the configuration the import screen exists to accept.
+        // baud is removed because it means nothing on this connection: the printer is reached
+        // through a pseudo-terminal, where there is no line rate to set. (klippy does read the
+        // option here - the comment that used to stand in this place claimed it refused the
+        // option outright, which is not so - so it is harmless either way, and removing it
+        // keeps a brought configuration from carrying a number that describes nothing.)
         val baudAt = indexOfOption(lines, "mcu", BAUD_OPTION)
         if (baudAt >= 0) {
             lines.removeAt(baudAt)
@@ -349,10 +430,16 @@ internal object KlipperConfigFile {
         lines.subList(headerIndex, end).clear()
     }
 
-    private val SERIAL_OPTION = Regex("serial\\s*:.*", RegexOption.IGNORE_CASE)
-    private val CANBUS_OPTION = Regex("canbus_uuid\\s*:.*", RegexOption.IGNORE_CASE)
-    private val RESTART_OPTION = Regex("restart_method\\s*:.*", RegexOption.IGNORE_CASE)
-    private val BAUD_OPTION = Regex("baud\\s*:.*", RegexOption.IGNORE_CASE)
+    //
+    // klippy delimits an option on either ":" or "=" (configfile.py:178), and a configuration
+    // brought from somewhere else may use either. Matching only ":" meant a file saying
+    // "serial = /dev/ttyUSB0" was not recognised at all, and the app told the user their [mcu]
+    // section named no serial port - which is not what their file said.
+    //
+    private val SERIAL_OPTION = Regex("serial\\s*[:=].*", RegexOption.IGNORE_CASE)
+    private val CANBUS_OPTION = Regex("canbus_uuid\\s*[:=].*", RegexOption.IGNORE_CASE)
+    private val RESTART_OPTION = Regex("restart_method\\s*[:=].*", RegexOption.IGNORE_CASE)
+    private val BAUD_OPTION = Regex("baud\\s*[:=].*", RegexOption.IGNORE_CASE)
     /**
      * One option in one section, with everything else left as it was.
      *
@@ -394,7 +481,7 @@ internal object KlipperConfigFile {
     /** The highest damping ratio klippy can do arithmetic with. */
     private const val MAX_DAMPING_RATIO = 0.9
 
-    private val SDCARD_PATH = Regex("path\\s*:.*", RegexOption.IGNORE_CASE)
+    private val SDCARD_PATH = Regex("path\\s*[:=].*", RegexOption.IGNORE_CASE)
     private val INCLUDE = Regex("\\[include\\s+(.+?)]", RegexOption.IGNORE_CASE)
     private val EXTRA_MCU = Regex("\\[mcu\\s+(.+?)]", RegexOption.IGNORE_CASE)
 }

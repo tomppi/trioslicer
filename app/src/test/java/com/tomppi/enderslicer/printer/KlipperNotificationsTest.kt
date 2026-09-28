@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.printer
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,6 +14,16 @@ import org.junit.Test
  * behind is news, and it is news exactly once.
  */
 class KlipperNotificationsTest {
+    @Test
+    fun anInterruptedPrintSaysSoRatherThanBorrowingAnotherWord() {
+        // The host dying mid-print is not a cancellation and not a failure klippy reported;
+        // it is the one outcome the app has to name for itself.
+        assertEquals("The print was interrupted", KlipperNotifications.titleFor("interrupted"))
+        assertEquals("The print finished", KlipperNotifications.titleFor("complete"))
+        assertEquals("The print was cancelled", KlipperNotifications.titleFor("cancelled"))
+        assertEquals("The print stopped", KlipperNotifications.titleFor("error"))
+    }
+
     @Test
     fun leavingAPrintBehindIsWorthTelling() {
         assertTrue(KlipperNotifications.endedBetween("printing", "complete"))

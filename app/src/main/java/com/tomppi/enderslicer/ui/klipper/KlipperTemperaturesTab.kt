@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.printer.KlipperHeater
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.genericFans
 import com.tomppi.enderslicer.printer.KlipperTemperatureSample
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.heaters
@@ -80,6 +81,23 @@ internal fun KlipperTemperaturesTab(state: KlipperPrinterState, viewModel: Klipp
             )
         }
         if (state.heaters.any { it.isHeater }) {
+            //
+            // Fans the configuration named itself. They were subscribed to and never shown,
+            // so a fan on the machine could only be driven from the console - which is the
+            // opposite of what this app promises about the sections in a printer.cfg.
+            //
+            state.genericFans.forEach { (name, speed) ->
+                KlipperCard(title = name, subtitle = "Fan the printer names itself") {
+                    KlipperSlider(
+                        label = "Speed",
+                        value = ((speed ?: 0.0) * 100).toFloat().coerceIn(0f, 100f),
+                        range = 0f..100f,
+                        valueText = "%.0f%%".format((speed ?: 0.0) * 100),
+                        onSet = { percent -> viewModel.setGenericFan(name, percent / 100.0) },
+                    )
+                }
+            }
+
             KlipperCard(title = "All of them") {
                 KlipperButtons {
                     KlipperButton("Cool everything down") { viewModel.coolDown() }

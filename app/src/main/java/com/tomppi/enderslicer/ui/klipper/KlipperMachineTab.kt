@@ -45,6 +45,9 @@ import kotlinx.coroutines.launch
  * host is doing to this phone, what the endstops say, and the two files that explain
  * almost every failure - the configuration and the log.
  */
+/** How often the micro-controller reports its own statistics: basecmd.c's 5000000 us timer. */
+private const val MCU_STATS_WINDOW_SECONDS = 5.0
+
 @Composable
 internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var confirmRestart by remember { mutableStateOf(false) }
@@ -156,10 +159,14 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             if (stats == null) {
                 KlipperNote("The host has not reported its own load yet.")
             } else {
-                KlipperValue("Load average", stats.load?.let { "%.2f".format(it) } ?: "-")
+                // No load average: the host is a phone, os.getloadavg is not there, and the
+                // staged statistics.py reports 0.0 - a row that reads "0.00" forever is a
+                // wrong number rather than a missing one, so it is not shown at all.
                 KlipperValue(
                     "Memory available",
-                    stats.memoryAvailable?.let { "%.0f MB".format(it / 1024 / 1024) } ?: "-",
+                    // /proc/meminfo counts in kilobytes and klippy passes the number
+                    // through unmodified, so this is one division, not two.
+                    stats.memoryAvailable?.let { "%.0f MB".format(it / 1024) } ?: "-",
                 )
                 KlipperValue(
                     "Host CPU time",
@@ -364,7 +371,11 @@ private fun ImportedDialog(result: KlipperImportResult, onDismiss: () -> Unit) {
 private fun McuCard(mcu: KlipperMcu) {
     KlipperCard(title = mcu.name, subtitle = mcu.version.ifBlank { "no version reported" }) {
         mcu.frequency?.let { KlipperValue("Clock", "%.0f MHz".format(it / 1_000_000)) }
-        mcu.awake?.let { KlipperValue("Busy", "%.0f%%".format(it * 100)) }
+        // mcu_awake is seconds of the last five-second stats window (basecmd.c asks for the
+        // report every 5000000 us), so the duty is that over five - not the number itself.
+        mcu.awake?.let { awake ->
+            KlipperValue("Busy", "%.0f%%".format(awake / MCU_STATS_WINDOW_SECONDS * 100))
+        }
         mcu.load?.let { KlipperValue("Task average", "%.1f µs".format(it * 1_000_000)) }
         mcu.roundTripSeconds?.let { KlipperValue("Round trip", "%.1f ms".format(it * 1000)) }
         mcu.jitterSeconds?.let { KlipperValue("Jitter", "±%.1f ms".format(it * 1000)) }

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.obj
 import com.tomppi.enderslicer.printer.parseDecimal
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.macros
@@ -133,12 +134,23 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
         }
 
         KlipperCard(title = "Steppers") {
-            KlipperNote("Motors off lets the head be moved by hand; the machine is not homed afterwards.")
+            KlipperNote(
+                "Motors off lets the head be moved by hand; the machine is not homed afterwards. " +
+                    "Motors on energises them again where they stand, which is not the same as " +
+                    "homing: the next move still needs G28.",
+            )
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
                 // Releasing the steppers mid-print lets the head be pushed out of position.
                 KlipperButton("Motors off", enabled = motionAllowed) { viewModel.disableMotors() }
-                KlipperButton("Motors on", enabled = ready) { viewModel.enableMotors() }
+                // klippy has no M17: this enables each stepper by name, and says that
+                // re-energising them is not the same as knowing where they are.
+                KlipperButton(
+                    text = "Motors on",
+                    enabled = ready && state.obj("stepper_enable") != null,
+                ) {
+                    viewModel.enableMotors()
+                }
             }
         }
 

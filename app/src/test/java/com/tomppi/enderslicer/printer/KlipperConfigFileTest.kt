@@ -89,6 +89,35 @@ class KlipperConfigFileTest {
     }
 
     @Test
+    fun restoringTheShippedConfigurationKeepsTheSavedCalibrations() {
+        // The bug this pins: klippy loads the file and the saved block together, and where
+        // both define an option the *file* wins - the block's copy is commented out at load.
+        // A pristine body spliced in front of a saved block therefore reverts every option
+        // they share: the probe's Z offset, the PID terms, the shaper frequencies. The values
+        // the dialog promises to keep were the ones being thrown away.
+        //
+        // The body's copies are commented out instead, which is what SAVE_CONFIG does when it
+        // writes the block, so the saved values are the ones that take effect.
+        val shipped = "[bltouch]\nz_offset: 0\n\n[extruder]\npid_Kp: 29.291\n"
+        val existing = "[bltouch]\nz_offset: 0.0\n\n" +
+            "#*# <---------------------- SAVE_CONFIG ---------------------->\n" +
+            "#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n" +
+            "#*#\n" +
+            "#*# [bltouch]\n" +
+            "#*# z_offset = 1.830\n" +
+            "#*#\n" +
+            "#*# [extruder]\n" +
+            "#*# pid_Kp = 33.500\n"
+        val restored = KlipperConfigFile.withSavedValues(shipped, existing)
+        // The shipped copies are commented, so klippy does not let them win.
+        assertTrue("the shipped z_offset must not win", restored.contains("# z_offset: 0"))
+        assertTrue("the shipped pid_Kp must not win", restored.contains("# pid_Kp: 29.291"))
+        // And the saved values are still there, untouched.
+        assertTrue(restored.contains("#*# z_offset = 1.830"))
+        assertTrue(restored.contains("#*# pid_Kp = 33.500"))
+    }
+
+    @Test
     fun aHostConfigurationIsMadeToRunOnThisDevice() {
         val host = """
             [mcu]
@@ -105,13 +134,30 @@ class KlipperConfigFileTest {
         val rewrite = KlipperConfigFile.forDevice(host, "/data/pty", "/data/gcodes")
         assertTrue(rewrite.text.contains("serial: /data/pty"))
         assertTrue(rewrite.text.contains("path: /data/gcodes"))
-        // klippy rejects this option outright for the pty connection the app gives it.
-        assertFalse(rewrite.text.contains("restart_method"))
+        // klippy reads this option for the app's connection - only /dev/rpmsg_* and
+        // /tmp/klipper_host_* are treated otherwise - and with it absent it falls through to
+        // toggling DTR, which a bridge that moves bytes cannot deliver. So it stays, as the
+        // one reset this connection can do.
+        assertTrue(rewrite.text.contains("restart_method: command"))
         // And the printer's own settings are none of the app's business.
         assertTrue(rewrite.text.contains("rotation_distance: 4.69"))
         assertTrue(rewrite.text.contains("dir_pin: !PB3"))
-        assertEquals(3, rewrite.changes.size)
-        assertTrue(rewrite.changes.any { it.contains("restart_method") })
+        // Two changes, because this file already said "command": a value that is already
+        // right is not a change, and a screen that listed it as one would be lying about
+        // what it did to the user's file.
+        assertEquals(2, rewrite.changes.size)
+        assertTrue(rewrite.changes.any { it.contains("micro-controller") })
+    }
+
+    @Test
+    fun aFileThatSaysNothingAboutResettingGetsTheOneResetThatWorks() {
+        // No restart_method at all: klippy falls through to toggling DTR, which this
+        // connection cannot deliver, so the app writes the method that asks the board to
+        // reset itself - and says that it did.
+        val without = "[mcu]\nserial: /dev/ttyUSB0\n"
+        val rewrite = KlipperConfigFile.forDevice(without, "/data/pty", "/data/gcodes")
+        assertTrue(rewrite.text.contains("restart_method: command"))
+        assertTrue(rewrite.changes.any { it.contains("reset the board by command") })
     }
 
     @Test
@@ -300,10 +346,10 @@ class KlipperConfigFileTest {
             kinematics: cartesian
         """.trimIndent()
         val rewrite = KlipperConfigFile.forDevice(brought, "/data/pty", "/data/gcodes")
-        // klippy does not read baud on a pty, and then refuses to start over the option it
-        // never used - so a configuration brought from a printer on USB has to lose it.
-        assertFalse("baud is not read on a pty and then rejected", rewrite.text.contains("baud:"))
-        assertFalse(rewrite.text.contains("restart_method"))
+        // baud describes a line rate, and a pseudo-terminal has none: it is removed because
+        // it means nothing here, not because klippy would refuse it.
+        assertFalse("baud describes a rate this connection does not have", rewrite.text.contains("baud:"))
+        assertTrue(rewrite.text.contains("restart_method: command"))
         assertTrue(rewrite.text.contains("serial: /data/pty"))
     }
 }

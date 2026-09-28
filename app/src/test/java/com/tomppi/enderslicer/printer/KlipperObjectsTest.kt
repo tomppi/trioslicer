@@ -156,7 +156,8 @@ class KlipperObjectsTest {
     @Test
     fun theEndstopsAreWhateverKlippyLastSaid() {
         val state = KlipperPrinterState(connected = true).withStatus(
-            status("""{"query_endstops": {"last_query": {"x": "open", "y": "TRIGGERED", "z": "open"}}}"""),
+            // Booleans, which is what query_endstops.py publishes; the words are Klipper's.
+            status("""{"query_endstops": {"last_query": {"x": false, "y": true, "z": false}}}"""),
         )
         assertEquals(mapOf("x" to "open", "y" to "TRIGGERED", "z" to "open"), state.endstops)
     }

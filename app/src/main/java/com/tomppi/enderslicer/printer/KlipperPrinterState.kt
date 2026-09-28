@@ -167,7 +167,18 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
         homedAxes = toolhead?.optString("homed_axes").orEmpty().ifEmpty { homedAxes },
         printFileName = stats?.optString("filename").orEmpty().ifEmpty { printFileName },
         printState = stats?.optString("state").orEmpty().ifEmpty { printState },
-        printMessage = stats?.optString("message").orEmpty().ifEmpty { printMessage },
+        //
+        // klippy clears this field by sending it empty - at every print start, and at
+        // complete and cancel - and only sends the fields that changed. Keeping the previous
+        // value when the field is present but empty meant one failure was shown, and announced
+        // in the notification, against every later print of the session. Absent is different
+        // from empty: absent means klippy did not mention it.
+        //
+        printMessage = if (stats?.has("message") == true) {
+            stats.optString("message").takeIf { it.isNotBlank() && it != "null" }
+        } else {
+            printMessage
+        },
         printDurationSeconds = stats.number("print_duration") ?: printDurationSeconds,
         printProgress = sdcard.number("progress") ?: printProgress,
         timing = status.optJSONObject("mcu")?.optJSONObject("last_stats")?.toTiming() ?: timing,

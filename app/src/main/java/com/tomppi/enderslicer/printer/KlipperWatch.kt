@@ -41,6 +41,10 @@ internal object KlipperWatch {
     private val families = listOf(
         "temperature_sensor ", "temperature_fan ", "temperature_host ", "temperature_mcu ",
         "heater_generic ", "fan_generic ", "controller_fan ", "heater_fan ", "output_pin ",
+        // A second extruder is "extruder1", not "extruder", so the fixed list missed it; a
+        // named sensor module is "bme280 chamber". Both publish a temperature and both are
+        // rendered by the same heater list.
+        "extruder", "bme280 ", "temperature_combined ",
         "mcu ",
     )
 

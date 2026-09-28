@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperGcodeFile
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.isPausedByKlipper
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.ui.formatPrintTime
 import kotlinx.coroutines.launch
@@ -77,15 +78,41 @@ internal fun KlipperFilesTab(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        //
+        // One flag for both print buttons, so neither can drift from the other. Paused counts
+        // as busy: klippy only refuses when its work timer is running, and a pause stops it.
+        //
+        val paused = state.isPaused || state.isPausedByKlipper
+        val printable = state.isReady && !state.isPrinting && !paused
         val sliced = localGcodePath
+        // klippy refuses a print with a reason - "Unable to open file", "SD busy" - and it
+        // comes back on the notification path rather than the reply. This screen used to close
+        // the dialog and change nothing at all, leaving the reason on another tab.
+        state.error?.takeIf { it.isNotBlank() }?.let { reason ->
+            KlipperCard(title = "The printer refused that") {
+                KlipperNote(reason, color = MaterialTheme.colorScheme.error)
+            }
+        }
+
+        if (paused) {
+            KlipperNote(
+                "A print is paused and still loaded. Resume or stop it before starting another: " +
+                    "klippy would reset the paused one and then refuse to pause again until it " +
+                    "is stopped.",
+            )
+        }
+
         if (sliced != null) {
             KlipperCard(title = "Just sliced", subtitle = "Not printed yet") {
                 KlipperValue("File", KlipperPrint.fileName(suggestedFileName))
                 Spacer(Modifier.height(8.dp))
                 KlipperButtons {
-                    // isReady is klippy's printer state, which stays "ready" through a print; the print
-                    // state is the other flag, and SDCARD_PRINT_FILE answers "SD busy" without it.
-                    KlipperButton("Print this file", enabled = state.isReady && !state.isPrinting) {
+                    // Only from a printer with nothing loaded. A paused print is not safe to
+                    // start over: klippy's work timer is stopped while paused, so SDCARD_PRINT_FILE
+                    // does not answer "SD busy" - it resets the file, throwing that print away and
+                    // leaving pause_resume still paused, after which PAUSE parks the head while the
+                    // file carries on printing. Resume or stop the paused print first.
+                    KlipperButton("Print this file", enabled = printable) {
                         viewModel.printFile(sliced, suggestedFileName)
                     }
                 }
@@ -129,7 +156,7 @@ internal fun KlipperFilesTab(
                     thumbnail = if (selected == file.name) thumbnail else null,
                     // klippy answers "SD busy" while a print is running, and this screen used
                     // to offer the button and promise the running print would stop.
-                    printable = state.isReady && !state.isPrinting,
+                    printable = printable,
                     onOpen = { selected = if (selected == file.name) null else file.name },
                     onPrint = { confirmPrint = file },
                     onDelete = { confirmDelete = file },

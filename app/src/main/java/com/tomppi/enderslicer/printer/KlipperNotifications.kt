@@ -27,15 +27,34 @@ internal object KlipperNotifications {
 
     /** Post the result of a print that has just left printing or paused behind. */
     fun printEnded(context: Context, fileName: String?, printState: String, message: String?) {
-        val title = when (printState) {
-            "complete" -> "The print finished"
-            "cancelled" -> "The print was cancelled"
-            else -> "The print stopped"
-        }
+        post(context, titleFor(printState), fileName, message)
+    }
+
+    /**
+     * A print that was running when the host stopped running.
+     *
+     * The host is this app's own process: it can crash, be restarted by the app's wedge
+     * detector, or lose the printer to a USB re-attach. In every one of those the print is
+     * over, and klippy's next process starts with no file and nothing to say about it - so
+     * without this the print simply never finishes and nothing anywhere says why.
+     */
+    fun printInterrupted(context: Context, fileName: String?, reason: String?) {
+        post(context, "The print was interrupted", fileName, reason)
+    }
+
+    /** What a state reads as, in the words the notification uses. */
+    internal fun titleFor(printState: String): String = when (printState) {
+        "complete" -> "The print finished"
+        "cancelled" -> "The print was cancelled"
+        "interrupted" -> "The print was interrupted"
+        else -> "The print stopped"
+    }
+
+    private fun post(context: Context, title: String, fileName: String?, message: String?) {
         val text = listOfNotNull(
             fileName?.takeIf { it.isNotBlank() },
             message?.takeIf { it.isNotBlank() },
-        ).joinToString(" - ").ifBlank { "Klipper reported $printState." }
+        ).joinToString(" - ").ifBlank { "The printer is on its own now." }
 
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(CHANNEL_ID) == null) {

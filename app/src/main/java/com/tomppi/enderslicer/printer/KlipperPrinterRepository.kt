@@ -139,12 +139,48 @@ class KlipperPrinterRepository(
             } catch (e: Exception) {
                 client?.close()
                 client = null
+                recordPrintLostWithTheHost(e.message)
                 _state.update {
                     it.copy(connected = false, error = e.message, hostLogTail = readHostLogTail())
                 }
             }
             delay(RETRY_MS)
         }
+    }
+
+    /**
+     * A print that was running when the host went away is over, and says so.
+     *
+     * Three things kill the host this app owns: a klippy crash, the app's own wedge detector,
+     * and a printer re-attach. The new process starts with no file and print_stats in standby,
+     * so the transition the history and the notification are built on - to complete, cancelled
+     * or error - never happens. Half a part is left on the bed and, if the phone is in a
+     * pocket, nothing at all is said about it.
+     *
+     * Recording it as interrupted is the honest version: the print did not finish, was not
+     * cancelled, and the reason is whatever the connection said when it went.
+     */
+    private fun recordPrintLostWithTheHost(reason: String?) {
+        val current = _state.value
+        val wasRunning = current.isPrinting || current.isPaused ||
+            lastPrintState == "printing" || lastPrintState == "paused"
+        if (!wasRunning) return
+        val name = startedFile.ifBlank { current.printFileName.orEmpty() }
+        _history.value = printHistory.append(
+            KlipperPrintRecord(
+                fileName = name,
+                startedAtMillis = startedAt.takeIf { it > 0 }
+                    ?: (System.currentTimeMillis() - ((current.printDurationSeconds ?: 0.0) * 1000).toLong()),
+                durationSeconds = current.printDurationSeconds ?: 0.0,
+                filamentMillimetres = current.printFilamentUsed ?: 0.0,
+                outcome = "interrupted",
+                layers = current.printLayers?.current,
+            ),
+        )
+        startedAt = 0L
+        startedFile = ""
+        lastPrintState = "standby"
+        KlipperNotifications.printInterrupted(application, name.takeIf { it.isNotBlank() }, reason)
     }
 
     /** Connect, take a snapshot, subscribe, then hold the connection until it drops. */
@@ -389,6 +425,22 @@ class KlipperPrinterRepository(
     /** The part fan, as a percentage of full speed. */
     fun setFan(percent: Int) = send(KlipperScripts.fan(percent))
 
+    /** A fan the configuration named itself. */
+    fun setGenericFan(name: String, speed: Double) =
+        send(KlipperScripts.genericFan(name, speed))
+
+    /**
+     * The toolhead's limits, live.
+     *
+     * The way to calm a print that is shaking without stopping it, and to speed one up that
+     * is being held back. The change lasts until the host restarts and re-reads printer.cfg.
+     */
+    fun setVelocityLimits(
+        maxVelocity: Double? = null,
+        maxAccel: Double? = null,
+        squareCornerVelocity: Double? = null,
+    ) = send(KlipperScripts.velocityLimit(maxVelocity, maxAccel, squareCornerVelocity))
+
     /** M220: print speed, as a percentage of what the file asks for. */
     fun setSpeedFactor(percent: Int) = send(KlipperScripts.speedFactor(percent))
 
@@ -535,7 +587,19 @@ class KlipperPrinterRepository(
 
     fun disableMotors() = send("M84")
 
-    fun enableMotors() = send("M17")
+    /**
+     * Steppers on, by name.
+     *
+     * M17 does not exist in klippy - it answered "Unknown command" while the console showed it
+     * as sent, so the button did nothing at all. The names come from the printer's own
+     * stepper_enable status, which knows every enable line in its configuration.
+     */
+    fun enableMotors() {
+        val steppers = _state.value.obj("stepper_enable")?.optJSONObject("steppers")
+            ?.keys()?.asSequence()?.toList().orEmpty()
+        if (steppers.isEmpty()) return
+        send(KlipperScripts.enableSteppers(steppers))
+    }
 
     /** Leave one of the file's objects out of the print that is running. */
     fun excludeObject(name: String) = send("EXCLUDE_OBJECT NAME=" + KlipperScripts.quoted(name))
@@ -596,7 +660,12 @@ class KlipperPrinterRepository(
             runCatching {
                 val directory = gcodeDirectory()
                 val fileName = KlipperPrint.fileName(name)
-                File(sourcePath).copyTo(File(directory, fileName), overwrite = true)
+                val source = File(sourcePath)
+                copyForPrinting(source, File(directory, fileName))
+                // The machine's live state is cleared before the file is loaded, not by the
+                // file: klippy keeps the Z offset and the M220/M221 factors across prints, and
+                // the start G-code of a file the user already has will not have been told to.
+                sendScript(KlipperScripts.resetLiveOverrides())
                 val command = "SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName)
                 append(command, KlipperConsoleLine.Source.SENT)
                 client?.gcodeAsync(command)
@@ -616,9 +685,51 @@ class KlipperPrinterRepository(
         KlipperGcodeFiles.list(gcodeDirectory())
     }
 
+    /**
+     * Put a file where the printer will read it, or leave nothing behind.
+     *
+     * A plain copy is what this used to be, and it has two ways to go wrong that look like
+     * something else: a copy that fails partway leaves a truncated .gcode in the directory the
+     * file list reads - which then prints as far as it goes and is reported as a finished
+     * print, because klippy treats the end of the file as the end of the job - and a full disk
+     * fails at some arbitrary point inside the copy rather than before it.
+     *
+     * So: room checked first, written under a name the file list does not read, length checked,
+     * then renamed into place. The temporary is deleted whichever way it goes.
+     */
+    private fun copyForPrinting(source: File, target: File) {
+        val room = target.parentFile?.usableSpace ?: Long.MAX_VALUE
+        if (source.length() > 0 && room < source.length() + UPLOAD_SPARE_BYTES) {
+            throw IllegalStateException(
+                "not enough room for ${target.name}: " +
+                    "${source.length() / 1024} KB needed, ${room / 1024} KB free",
+            )
+        }
+        val partial = File(target.parentFile, target.name + UPLOAD_SUFFIX)
+        try {
+            source.copyTo(partial, overwrite = true)
+            if (partial.length() != source.length()) {
+                throw IllegalStateException("the copy of ${target.name} was incomplete")
+            }
+            if (!partial.renameTo(target)) {
+                throw IllegalStateException("could not put ${target.name} in place")
+            }
+        } finally {
+            // Renamed away on success, so this only fires on a failure.
+            if (partial.exists()) partial.delete()
+        }
+    }
+
+    /** One script, to the printer and to the console the user reads. */
+    private suspend fun sendScript(script: String) {
+        append(script, KlipperConsoleLine.Source.SENT)
+        client?.gcodeAsync(script) ?: throw IllegalStateException("not connected")
+    }
+
     /** Start one of those files printing, by the name the printer knows it by. */
     suspend fun printGcodeFile(name: String) {
         val fileName = KlipperPrint.fileName(name)
+        sendScript(KlipperScripts.resetLiveOverrides())
         append("SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName), KlipperConsoleLine.Source.SENT)
         withContext(Dispatchers.IO) {
             runCatching {
@@ -850,6 +961,17 @@ class KlipperPrinterRepository(
     // subscribes to: the list drifting from what the screen reads is a bug that no
     // fixture in this repository would catch.
     internal companion object {
+        /** Room left over after an upload, so a full disk is not discovered mid-copy. */
+        private const val UPLOAD_SPARE_BYTES = 1L * 1024 * 1024
+
+        /**
+         * What a copy in progress is called.
+         *
+         * The file list reads *.gcode, and this does not end that way, so a partial file is
+         * never offered as something to print.
+         */
+        private const val UPLOAD_SUFFIX = ".uploading"
+
         const val TAG = "KlipperPrinter"
 
         /** How long to wait before trying the host again after a failure. */

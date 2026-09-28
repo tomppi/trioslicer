@@ -17,12 +17,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperFileLimits
+import com.tomppi.enderslicer.printer.parseDecimal
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -83,7 +86,7 @@ internal fun KlipperDashboardTab(
             TemperaturesCard(state, viewModel)
             ExcludedObjectsCard(state, onExclude = { confirmExclude = it })
         }
-        LimitsCard(state, localGcodePath)
+        LimitsCard(state, localGcodePath, viewModel)
         PositionCard(state, viewModel)
         TimingCard(state)
         DangerCard(state, onEmergencyStop = { confirmStop = true })
@@ -411,7 +414,7 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
  * M205, so a file that appears to set a ceiling is really setting nothing.
  */
 @Composable
-private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?) {
+private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, viewModel: KlipperViewModel) {
     val file = localGcodePath?.let(::File)
     val limits = remember(state.speeds, localGcodePath) { KlipperFileLimits.of(state, file) } ?: return
     KlipperCard(title = "Limits", subtitle = "This file, and this printer") {
@@ -438,6 +441,63 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?) {
                 KlipperNote("The file asks for more than the printer allows, so the printer holds it to its own figure.")
             }
         }
+        //
+        // The printer's own limits, changeable while it prints: the way to calm a print that is
+        // shaking itself apart, or to let one run faster than the configuration allows, without
+        // stopping it, editing printer.cfg and restarting the host. An empty field is left alone,
+        // which is what SET_VELOCITY_LIMIT does with a parameter it is not given.
+        //
+        var accel by rememberSaveable { mutableStateOf("") }
+        var velocity by rememberSaveable { mutableStateOf("") }
+        var corner by rememberSaveable { mutableStateOf("") }
+        val newAccel = parseDecimal(accel)
+        val newVelocity = parseDecimal(velocity)
+        val newCorner = parseDecimal(corner)
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            KlipperNumberField(
+                label = "Accel",
+                value = accel,
+                onValueChange = { typed -> accel = limitDigits(typed) },
+                suffix = "mm/s²",
+                enabled = state.isReady,
+            )
+            KlipperNumberField(
+                label = "Top speed",
+                value = velocity,
+                onValueChange = { typed -> velocity = limitDigits(typed) },
+                suffix = "mm/s",
+                enabled = state.isReady,
+            )
+            KlipperNumberField(
+                label = "Corner",
+                value = corner,
+                onValueChange = { typed -> corner = limitDigits(typed) },
+                suffix = "mm/s",
+                enabled = state.isReady,
+            )
+        }
+        KlipperButtons {
+            KlipperButton(
+                text = "Apply limits",
+                enabled = state.isReady && (newAccel != null || newVelocity != null || newCorner != null),
+            ) {
+                viewModel.setVelocityLimits(
+                    maxVelocity = newVelocity,
+                    maxAccel = newAccel,
+                    squareCornerVelocity = newCorner,
+                )
+            }
+        }
+        KlipperNote(
+            "Only the values you fill in change, and they last until the host restarts - which " +
+                "re-reads printer.cfg. Lowering Accel is what settles a print that is ringing or " +
+                "shaking; the file's own M204 still applies underneath it.",
+        )
+
         if (limits.ignoredMarlinLimits.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             KlipperNote(
@@ -459,7 +519,9 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?) {
 @Composable
 private fun ExcludedObjectsCard(state: KlipperPrinterState, onExclude: (String) -> Unit) {
     val objects = state.plateObjects
-    if (objects.isEmpty() || !state.isPrinting) return
+    // Also while paused: pausing to look at the plate and leave out the part that failed is
+    // the workflow this card exists for, and the command works in either state.
+    if (objects.isEmpty() || !(state.isPrinting || state.isPaused)) return
     val excluded = state.excludedObjects
     KlipperCard(
         title = "Objects on the plate",
@@ -595,7 +657,10 @@ private fun TimingCard(state: KlipperPrinterState) {
         timing.jitterSeconds?.let { KlipperValue("Jitter", "±%.1f ms".format(it * 1000)) }
         timing.retransmitTimeoutSeconds?.let { KlipperValue("Resend after", "%.0f ms".format(it * 1000)) }
         timing.headroom?.let { KlipperValue("Headroom", "%.0f×".format(it)) }
-        timing.mcuAwake?.let { KlipperValue("Board busy", "%.0f%%".format(it * 100)) }
+        // Seconds awake in the five-second window the board reports over, so a duty cycle.
+        timing.mcuAwake?.let { awake ->
+            KlipperValue("Board busy", "%.0f%%".format(awake / 5.0 * 100))
+        }
         val retransmits = timing.retransmittedBytes ?: 0
         if (retransmits > 0) {
             KlipperValue(
@@ -621,6 +686,10 @@ private fun DangerCard(state: KlipperPrinterState, onEmergencyStop: () -> Unit) 
         }
     }
 }
+
+/** A field that takes digits and a decimal mark and nothing else. */
+private fun limitDigits(typed: String): String =
+    typed.filter { it.isDigit() || it == '.' || it == ',' }.take(7)
 
 /** Filament used, in metres, which is how a spool is measured. */
 private fun filamentMetres(state: KlipperPrinterState): Double? =

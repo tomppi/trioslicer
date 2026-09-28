@@ -118,6 +118,16 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun setPressureAdvance(advance: Double) = repository.setPressureAdvance(advance)
     fun setRetraction(length: Double, speed: Double) = repository.setRetraction(length, speed)
     fun setFan(percent: Int) = repository.setFan(percent)
+
+    /** A fan the configuration named: SET_FAN_SPEED FAN=<name> SPEED=<0..1>. */
+    fun setGenericFan(name: String, speed: Double) = repository.setGenericFan(name, speed)
+
+    /** The toolhead's own limits, live, until the host restarts. */
+    fun setVelocityLimits(
+        maxVelocity: Double? = null,
+        maxAccel: Double? = null,
+        squareCornerVelocity: Double? = null,
+    ) = repository.setVelocityLimits(maxVelocity, maxAccel, squareCornerVelocity)
     fun setSpeedFactor(percent: Int) = repository.setSpeedFactor(percent)
     fun setExtrudeFactor(percent: Int) = repository.setExtrudeFactor(percent)
     fun excludeObject(name: String) = repository.excludeObject(name)

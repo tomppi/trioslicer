@@ -79,7 +79,11 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
     // The carriage on X, the bed on Y: what the axis actually has to move, which is what the
     // phone's own weight has to be measured against.
     var movingMassX by rememberSaveable { mutableStateOf("350") }
-    var movingMassY by rememberSaveable { mutableStateOf("700") }
+    // Not the stock glass bed's figure: this printer has a magnetic sheet with a spring-steel
+    // PEI plate on it, about 250 g where the glass is about 550 g, plus the carriage. The
+    // correction is the square root of a ratio, so being 300 g out moves the answer by about
+    // a tenth - which is the size of the disagreement the screen already warns about.
+    var movingMassY by rememberSaveable { mutableStateOf("400") }
     val movingMass = if (measureAxis == "y") movingMassY else movingMassX
     fun setMovingMass(value: String) {
         if (measureAxis == "y") movingMassY = value else movingMassX = value

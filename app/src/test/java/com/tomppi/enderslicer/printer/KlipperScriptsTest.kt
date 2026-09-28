@@ -111,7 +111,9 @@ class KlipperScriptsTest {
         assertEquals("M140 S60", KlipperScripts.bed(60))
         assertEquals("M220 S120", KlipperScripts.speedFactor(120))
         assertEquals("M221 S95", KlipperScripts.extrudeFactor(95))
-        assertEquals("M104 S0\nM140 S0", KlipperScripts.coolDown())
+        // Not M104 S0 and M140 S0: those name two heaters, and the button says everything -
+        // see coolingEverythingDownIsNotTwoHeatersWorthOfCommands.
+        assertEquals("TURN_OFF_HEATERS", KlipperScripts.coolDown())
     }
 
     @Test
@@ -171,6 +173,62 @@ class KlipperScriptsTest {
             "PID_CALIBRATE HEATER=\"chamber\" TARGET=200",
             KlipperScripts.pidCalibrate("heater_generic chamber", 200),
         )
+    }
+
+    @Test
+    fun theSteppersAreEnabledByNameBecauseThereIsNoM17() {
+        // klippy registers M18 and M84 and nothing else; M17 was answered "Unknown command"
+        // and enabled nothing, while the console showed it as a command that had been sent.
+        assertEquals(
+            "SET_STEPPER_ENABLE STEPPER=\"stepper_x\" ENABLE=1\n" +
+                "SET_STEPPER_ENABLE STEPPER=\"stepper_y\" ENABLE=1",
+            KlipperScripts.enableSteppers(listOf("stepper_x", "stepper_y")),
+        )
+    }
+
+    @Test
+    fun coolingEverythingDownIsNotTwoHeatersWorthOfCommands() {
+        // M104 and M140 name the extruder and the bed; a chamber heater or a second extruder
+        // would keep running under a button that says everything.
+        assertEquals("TURN_OFF_HEATERS", KlipperScripts.coolDown())
+    }
+
+    @Test
+    fun theLiveLimitsCarryOnlyWhatWasGiven() {
+        assertEquals(
+            "SET_VELOCITY_LIMIT ACCEL=1500.000",
+            KlipperScripts.velocityLimit(maxAccel = 1500.0),
+        )
+        assertEquals(
+            "SET_VELOCITY_LIMIT VELOCITY=120.000 SQUARE_CORNER_VELOCITY=6.500",
+            KlipperScripts.velocityLimit(maxVelocity = 120.0, squareCornerVelocity = 6.5),
+        )
+        // klippy reports the current limits when the command carries none, so sending one
+        // without a value would look like it worked and change nothing.
+        runCatching { KlipperScripts.velocityLimit() }.let { result ->
+            assertTrue("a limit with no values is a mistake", result.isFailure)
+        }
+    }
+
+    @Test
+    fun aNamedFanIsAddressedByItsOwnName() {
+        assertEquals(
+            "SET_FAN_SPEED FAN=\"extruder_partfan\" SPEED=0.500",
+            KlipperScripts.genericFan("extruder_partfan", 0.5),
+        )
+        // The name is a mux value, so it is quoted like every other one the app sends.
+        assertEquals(
+            "SET_FAN_SPEED FAN=\"a fan with spaces\" SPEED=1.000",
+            KlipperScripts.genericFan("a fan with spaces", 1.4),
+        )
+    }
+
+    @Test
+    fun startingAPrintClearsWhatTheLastOneLeftBehind() {
+        val reset = KlipperScripts.resetLiveOverrides()
+        assertTrue(reset.contains("SET_GCODE_OFFSET Z=0"))
+        assertTrue(reset.contains("M220 S100"))
+        assertTrue(reset.contains("M221 S100"))
     }
 
     @Test

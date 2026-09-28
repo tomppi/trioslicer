@@ -190,7 +190,12 @@ internal val KlipperPrinterState.lastProbeResult: Double?
 
 /** What the probe reported the last time it was queried, if it can be. */
 internal val KlipperPrinterState.lastProbeQuery: String?
-    get() = obj("probe")?.optString("last_query")?.takeIf { it.isNotBlank() && it != "null" }
+    get() = obj("probe")?.let { probe ->
+        if (!probe.has("last_query")) return@let null
+        // A JSON boolean, and Klipper's own words for it are these two: "true" on a screen
+        // next to the console's TRIGGERED reads like a bug, because it is one.
+        triggerWord(probe.opt("last_query"))
+    }
 
 /**
  * True while a calibration is waiting for the paper.
@@ -295,6 +300,20 @@ internal val KlipperPrinterState.printLayers: KlipperLayers?
 internal val KlipperPrinterState.displayMessage: String?
     get() = obj("display_status")?.optString("message")?.takeIf { it.isNotBlank() && it != "null" }
 
+/**
+ * The fans the configuration named itself, and their speeds.
+ *
+ * [fan_generic] is the class that takes SET_FAN_SPEED; a heater_fan or controller_fan is
+ * driven by its own conditions and has no such command, so those are deliberately left out.
+ * The prefix is how klippy names these objects - "fan_generic extruder_partfan" - and the
+ * name after it is what the command takes.
+ */
+internal val KlipperPrinterState.genericFans: List<Pair<String, Double?>>
+    get() = objects.keys
+        .filter { it.startsWith("fan_generic ") }
+        .map { it.removePrefix("fan_generic ") to obj(it)?.number("speed") }
+        .sortedBy { it.first }
+
 /** Klipper's own state for the machine: Idle, Printing, Ready. */
 internal val KlipperPrinterState.idleState: String? get() = obj("idle_timeout")?.optString("state")
 
@@ -336,8 +355,31 @@ internal val KlipperPrinterState.mcus: List<KlipperMcu>
 internal val KlipperPrinterState.endstops: Map<String, String>
     get() {
         val last = obj("query_endstops")?.optJSONObject("last_query") ?: return emptyMap()
-        return last.keys().asSequence().associateWith { last.optString(it) }
+        // klippy publishes these as booleans; its own words for them are "open" and
+        // "TRIGGERED" (query_endstops.py's web request and console message both use them), so
+        // the screen says what the console says rather than "true". A string is accepted too,
+        // because that is what an older reading of this field looked like.
+        return last.keys().asSequence().associateWith { name ->
+            triggerWord(last.opt(name))
+        }
     }
+
+/**
+ * What a trigger reads as: Klipper's own two words for it.
+ *
+ * query_endstops and probe publish a boolean, and say "open" or "TRIGGERED" themselves when
+ * they report to the console or over a web request. A string that is not one of the two
+ * truthy spellings is passed through, so nothing is invented.
+ */
+private fun triggerWord(value: Any?): String = when (value) {
+    is Boolean -> if (value) "TRIGGERED" else "open"
+    is String -> when (value.lowercase()) {
+        "true" -> "TRIGGERED"
+        "false" -> "open"
+        else -> value
+    }
+    else -> "-"
+}
 
 /** True when klippy has changes waiting for a restart before they take effect. */
 internal val KlipperPrinterState.saveConfigPending: Boolean

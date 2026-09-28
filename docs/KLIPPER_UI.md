@@ -62,10 +62,11 @@ configuration is missing says so instead.
 The subscription is decided at every connection from the printer's own object list
 (`objects/list`), not from a list compiled into the app. A chamber sensor, a second
 micro-controller, a fan someone named: each is a section in `printer.cfg`, so each
-appears in the screens without this app being told about it. klippy refuses a
-subscription that names an object it does not have - it refuses the whole request - so
-asking for what is published is also the only way to subscribe at all on a printer with
-no `[bed_mesh]` section.
+appears in the screens without this app being told about it. An object the printer has
+never heard of answers with an empty status rather than an error - `webhooks.py` returns
+`{}` for it - so subscribing blindly would fill the screens with objects that are not there.
+Asking for what is published is also the only way to subscribe at all on a printer with no
+`[bed_mesh]` section.
 
 G-code output is only pushed to a client that subscribes (`gcode/subscribe_output`), and
 the app asks for it with Moonraker's own response template, so the frames on the wire are
@@ -312,7 +313,7 @@ The app changes only the parts that are the phone rather than the printer:
 | --- | --- |
 | `[mcu] serial:` | there is no `/dev/serial/by-id` on a phone; klippy is given the pty the app bridges the printer through |
 | `[virtual_sdcard] path:` | the files this app slices are in its own storage, and that is where the printer reads them from (added if the file has no such section) |
-| `restart_method` | it describes a real serial port, and klippy refuses the option on a pipe connection |
+| `restart_method` | it is made `command`, because klippy reads it here and with it absent falls through to toggling DTR, which a bridge that moves bytes cannot deliver |
 | `[mcu <name>]` sections | there is no second board for the app to reach, and klippy will not start while a section names one |
 | an `[include ...]` that was not imported | commented out and named, rather than left to stop the printer from starting |
 

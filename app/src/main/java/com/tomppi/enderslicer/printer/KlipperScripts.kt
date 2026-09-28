@@ -127,7 +127,75 @@ internal object KlipperScripts {
     fun bed(celsius: Int): String = "M140 S$celsius"
 
     /** Everything off at once, which is what a user means by "cool down". */
-    fun coolDown(): String = "M104 S0\nM140 S0"
+    /**
+     * Every heater off, which is what the button says.
+     *
+     * M104 and M140 name the extruder and the bed, and on a printer with a chamber heater or a
+     * second extruder they leave it running - a button labelled "everything" that turns off two
+     * things. TURN_OFF_HEATERS is klippy's own command for all of them (heaters.py:252).
+     */
+    fun coolDown(): String = "TURN_OFF_HEATERS"
+
+    /**
+     * The toolhead's own limits, live: SET_VELOCITY_LIMIT (toolhead.py:627).
+     *
+     * Only the values given are changed, and at least one has to be: klippy reports the
+     * current limits when the command carries none. The change lasts until the host restarts,
+     * which re-reads printer.cfg - so this is the way to calm a print without stopping it.
+     */
+    fun velocityLimit(
+        maxVelocity: Double? = null,
+        maxAccel: Double? = null,
+        squareCornerVelocity: Double? = null,
+    ): String {
+        val parameters = listOfNotNull(
+            maxVelocity?.let { "VELOCITY=" + number(it, 3) },
+            maxAccel?.let { "ACCEL=" + number(it, 3) },
+            squareCornerVelocity?.let { "SQUARE_CORNER_VELOCITY=" + number(it, 3) },
+        )
+        require(parameters.isNotEmpty()) { "a velocity limit needs at least one value" }
+        return "SET_VELOCITY_LIMIT " + parameters.joinToString(" ")
+    }
+
+    /**
+     * A fan the configuration named itself: SET_FAN_SPEED FAN=<name> SPEED=<0..1>.
+     *
+     * Only [fan_generic] takes this; a heater_fan or controller_fan is driven by its own
+     * conditions and has no such command, so those are left alone.
+     */
+    fun genericFan(name: String, speed: Double): String =
+        "SET_FAN_SPEED FAN=" + quoted(name) + " SPEED=" + number(speed.coerceIn(0.0, 1.0), 3)
+
+    /**
+     * Put back what a cancelled print left in the machine's live state.
+     *
+     * The Z offset a first layer was babystepped with, and the M220/M221 factors, live in
+     * klippy's gcode_move and outlive the print: klippy resets none of them when a file is
+     * loaded or a print is cancelled, and the start G-code of a file the user already has
+     * cannot be relied on to do it. So the app clears them itself, immediately before it
+     * starts a print - a first layer that is wrong because of the last print is a hard thing
+     * to diagnose and an easy thing to prevent.
+     */
+    fun resetLiveOverrides(): String = listOf(
+        "SET_GCODE_OFFSET Z=0",
+        "M220 S100",
+        "M221 S100",
+    ).joinToString("\n")
+
+    /**
+     * Turn the steppers back on, one at a time.
+     *
+     * There is no M17: klippy registers M18 and M84 and nothing else, so the old button sent a
+     * command that fell through to "Unknown command" and enabled nothing while looking, in the
+     * console, exactly like a command that worked. SET_STEPPER_ENABLE takes one stepper at a
+     * time, named as the configuration names it (stepper_enable.py:84).
+     *
+     * Re-energising does not restore the position: klippy clears its homing state on M84, so
+     * the machine still has to be homed before it will move.
+     */
+    fun enableSteppers(steppers: List<String>): String = steppers.joinToString("\n") { name ->
+        "SET_STEPPER_ENABLE STEPPER=" + quoted(name) + " ENABLE=1"
+    }
 
     /** M220: print speed, as a percentage of what the file asks for. */
     fun speedFactor(percent: Int): String = "M220 S${percent.coerceIn(1, 999)}"
