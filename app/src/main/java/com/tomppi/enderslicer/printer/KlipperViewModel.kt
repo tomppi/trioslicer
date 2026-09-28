@@ -66,8 +66,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         repository.reconnect()
     }
 
-    /** The flavour a sliced file was written for, from its own header. */
-    suspend fun slicedFlavor(path: String): String? = repository.slicedFlavor(path)
+    /** A Marlin-only command in a sliced file's start G-code, if it has one. */
+    suspend fun marlinOnlyStartCommand(path: String): String? =
+        repository.marlinOnlyStartCommand(path)
 
     /** One frame from a camera the host publishes, fetched when a screen asks for one. */
     suspend fun webcamSnapshot(url: String): ByteArray? = repository.webcamSnapshot(url)

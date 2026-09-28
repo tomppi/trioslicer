@@ -946,18 +946,21 @@ class KlipperPrinterRepository(
     }
 
     /**
-     * The flavour a sliced file was written for, from its own header.
+     * A Marlin-only command in a sliced file, if its start G-code has one.
      *
-     * The file is the authority rather than the setting: a file sliced before the setting was
-     * changed still carries the start script of the flavour it was sliced with, and that is the
-     * script the printer will run.
+     * Not the file's `;FLAVOR:` line, which says which G-code dialect the file is written in
+     * rather than which firmware it is for: Orca and Prusa write `;FLAVOR:Marlin` with their
+     * Klipper flavour selected, because Klipper reads Marlin G-code. Reading it as the firmware
+     * warned about files that had been sliced correctly.
+     *
+     * What actually goes wrong is narrow, and worth naming exactly. `G29 L0` and `G29 A` are
+     * Marlin's UBL commands. On a Klipper host `G29` is whichever macro the printer defines,
+     * and the usual one homes and meshes - so the print homes twice and probes the bed twice
+     * before its first layer, the second probe measuring a bed the first one has touched.
      */
-    suspend fun slicedFlavor(path: String): String? = withContext(Dispatchers.IO) {
+    suspend fun marlinOnlyStartCommand(path: String): String? = withContext(Dispatchers.IO) {
         runCatching {
-            File(path).useLines { lines ->
-                lines.take(HEADER_LINES).firstOrNull { it.startsWith(";FLAVOR:", ignoreCase = true) }
-                    ?.substringAfter(':')?.trim()
-            }
+            File(path).useLines { lines -> marlinOnlyStartCommand(lines) }
         }.getOrNull()
     }
 
@@ -1166,10 +1169,7 @@ class KlipperPrinterRepository(
          * The file list reads *.gcode, and this does not end that way, so a partial file is
          * never offered as something to print.
          */
-        /** How far into a file its header can be: every slicer writes these at the top. */
-    private const val HEADER_LINES = 60
-
-    private const val UPLOAD_SUFFIX = ".uploading"
+        private const val UPLOAD_SUFFIX = ".uploading"
 
         const val TAG = "KlipperPrinter"
 

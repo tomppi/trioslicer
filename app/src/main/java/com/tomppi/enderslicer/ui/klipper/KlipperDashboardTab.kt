@@ -286,21 +286,24 @@ private fun JobCard(
                 KlipperNote("Nothing sliced yet. Slice a model and it appears here.")
             } else {
                 //
-                // A file sliced for Marlin carries Marlin's start script, and its G29 L0 and
-                // G29 A are UBL commands. On this host G29 is the printer's own macro, which
-                // usually homes and meshes again - so the print homes and probes twice before
-                // the first layer, and the second probe measures a bed the first one touched.
+                // A start block with Marlin's UBL commands in it will home and mesh twice here.
                 //
-                var flavor by remember(path) { mutableStateOf<String?>(null) }
-                LaunchedEffect(path) { flavor = viewModel.slicedFlavor(path) }
+                // The file's `;FLAVOR:` line is not the signal: Orca and Prusa write
+                // `;FLAVOR:Marlin` with their Klipper flavour selected, because Klipper reads
+                // Marlin G-code - reading it as the firmware warned about files that were
+                // sliced correctly. G29 and M420 do not have that excuse.
+                //
+                var marlinCommand by remember(path) { mutableStateOf<String?>(null) }
+                LaunchedEffect(path) { marlinCommand = viewModel.marlinOnlyStartCommand(path) }
                 KlipperValue("Ready to print", KlipperPrint.fileName(suggestedFileName))
-                if (flavor?.startsWith("marlin", ignoreCase = true) == true) {
+                marlinCommand?.let { command ->
                     Spacer(Modifier.height(4.dp))
                     KlipperNote(
-                        "This file says it was sliced for Marlin, and Marlin's start script " +
-                            "ends with G29 lines that mean home and mesh again on a Klipper " +
-                            "printer. Slice it again with the Klipper flavour, or expect the " +
-                            "printer to home and probe twice.",
+                        "This file's start G-code has " + command + " in it, which is " +
+                            "Marlin's bed levelling. On this printer G29 is the printer's own " +
+                            "macro, which homes and meshes again - so the print will home and " +
+                            "probe twice. Slice it with the Klipper flavour, whose start " +
+                            "script uses BED_MESH_CALIBRATE instead.",
                     )
                 }
                 Spacer(Modifier.height(8.dp))
