@@ -5,38 +5,49 @@ import org.json.JSONObject
 /**
  * The speeds in play, in the units each of them is actually in.
  *
- * Three different numbers get called "the speed", and the app showed only the first:
+ * Three different numbers get called "the speed":
  *
- *  - what the file asks for, which is the feedrate of the last G-code move, in mm/s
- *    (klippy publishes it as gcode_move.speed);
- *  - what M220 makes of it - klippy's speed_factor is a ratio, 1.0 being the file's own
- *    speed, so the two multiplied are what the printer will actually try to do;
- *  - what the toolhead is doing at this instant, in mm/s, which is motion_report's
- *    live_velocity - the measured one, and the only one of the three that is a fact
- *    rather than a request.
+ *  - what the file asks for, which is the feedrate of the last G-code move. klippy publishes it
+ *    as gcode_move.speed, and it is in mm PER MINUTE - the unit F is written in, and the one
+ *    field in klippy that is not mm/s. G1 assigns it straight from F with no division
+ *    (gcode_move.py:134-139), so 1500 here is the F1500 a slicer wrote, which is 25 mm/s;
+ *  - what M220 makes of it - klippy speed_factor is a ratio, 1.0 being the file own speed, so
+ *    the two multiplied are what the printer will actually try to do;
+ *  - what the toolhead is doing at this instant, in mm/s, which is motion_report live_velocity -
+ *    the measured one, and the only one of the three that is a fact rather than a request. The
+ *    motion system is mm/s throughout, which is why the limits and every other number here are.
  *
- * The limits are beside them because they are what makes the difference: a printer at 200%
- * does not go twice as fast once max_velocity is reached, and acceleration is what governs
- * every move too short to reach it.
+ * The limits are beside them because they are what makes the difference: a printer at 200% does
+ * not go twice as fast once max_velocity is reached, and acceleration is what governs every move
+ * too short to reach it.
+ *
+ * Reading gcode_move.speed as mm/s was this class own mistake for one release. The dashboard
+ * showed a file asking F1500 as "1500 mm/s", multiplied it by sixty to get a mm/min figure, and
+ * then compared that against a mm/s limit - so every print looked as though it were being clamped
+ * at sixty times its real speed, and a warning said so. The units are in the names now, and the
+ * comparison is between two things that are both mm/s.
  */
 data class KlipperSpeeds(
-    /** The last commanded feedrate, in mm/s, before the override. */
-    val askedFor: Double?,
-    /** M220's factor: 1.0 means the speed the file asked for. */
+    /** The last commanded feedrate in mm per minute - the number the file wrote after F. */
+    val askedPerMinute: Double?,
+    /** M220 factor: 1.0 means the speed the file asked for. */
     val override: Double?,
-    /** The toolhead's measured speed, in mm/s, at the moment of the reading. */
+    /** The toolhead measured speed, in mm/s, at the moment of the reading. */
     val live: Double?,
-    /** The extruder's measured speed, in mm/s of filament. */
+    /** The extruder measured speed, in mm/s of filament. */
     val filament: Double?,
     val maxVelocity: Double?,
     val maxAccel: Double?,
     val cornerVelocity: Double?,
 ) {
-    /** What the file's feedrate becomes with the override applied, in mm/s. */
-    val effective: Double? get() = askedFor?.let { it * (override ?: 1.0) }
+    /** The file own figure in mm/s, which is how print speeds are talked about. */
+    val askedPerSecond: Double? get() = askedPerMinute?.div(60.0)
 
-    /** The same in mm per minute, which is the unit feedrates are written in. */
-    val effectivePerMinute: Double? get() = effective?.times(60.0)
+    /** What the file asks for once M220 is applied, in mm per minute. */
+    val effectivePerMinute: Double? get() = askedPerMinute?.let { it * (override ?: 1.0) }
+
+    /** The same in mm/s - and max_velocity is in mm/s, so this is the one to compare. */
+    val effectivePerSecond: Double? get() = effectivePerMinute?.div(60.0)
 
     /**
      * True when the override asks for more than the machine will give.
@@ -45,7 +56,7 @@ data class KlipperSpeeds(
      * "why is 200% no faster", which is otherwise invisible.
      */
     val clamped: Boolean
-        get() = effective?.let { asked -> maxVelocity?.let { asked > it + 0.01 } } == true
+        get() = effectivePerSecond?.let { asked -> maxVelocity?.let { asked > it + 0.01 } } == true
 
     companion object {
         fun of(state: KlipperPrinterState): KlipperSpeeds {
@@ -53,7 +64,7 @@ data class KlipperSpeeds(
             val report = state.obj("motion_report")
             val toolhead = state.obj("toolhead")
             return KlipperSpeeds(
-                askedFor = move?.number("speed"),
+                askedPerMinute = move?.number("speed"),
                 override = move?.number("speed_factor"),
                 live = report?.number("live_velocity"),
                 filament = report?.number("live_extruder_velocity"),

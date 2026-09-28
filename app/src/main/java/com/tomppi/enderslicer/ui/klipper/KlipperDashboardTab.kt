@@ -252,24 +252,24 @@ private fun JobCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(4.dp))
-                KlipperValue("Done", "%.1f%%".format(progress * 100))
+                KlipperValue("Print progress", "%.1f%% of the file".format(progress * 100))
             }
             val seconds = state.printDurationSeconds
             if (seconds != null) {
-                KlipperValue("Printing for", formatPrintTime(seconds.roundToInt()))
+                KlipperValue("Print time so far", formatPrintTime(seconds.roundToInt()))
                 // Only worth showing once there is enough of the print to extrapolate
                 // from: a minute in, the estimate is the noise in the progress figure.
                 val progress = state.printProgress
                 if (progress != null && progress > 0.02 && state.isPrinting) {
                     val remaining = seconds / progress - seconds
-                    KlipperValue("Left", formatPrintTime(remaining.roundToInt()))
+                    KlipperValue("Time left", formatPrintTime(remaining.roundToInt()))
                 }
             }
             state.printLayers?.let { layers ->
                 KlipperValue("Layer", "${layers.current} of ${layers.total}")
             }
             filamentMetres(state)?.let { metres ->
-                KlipperValue("Filament", "%.2f m".format(metres))
+                KlipperValue("Filament used", "%.2f m".format(metres))
             }
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
@@ -310,43 +310,59 @@ private fun JobCard(
 /**
  * The speeds in play, under the slider that only asks for them.
  *
- * A percentage is not a speed, and the number wanted when a print looks slow is in
- * millimetres per second: what the file asked for, what the override makes of it, and what the
- * toolhead is measured to be doing. The limits sit underneath, because they are the reason the
- * third is often below the second - a printer at 200% stops getting faster once its own
- * max_velocity is reached.
+ * Every figure says which quantity it is, because two of these are velocities and one is an
+ * acceleration, and the units alone do not say so to anyone who has not memorised them. An
+ * earlier version put them in shared rows - "1500.0 mm/s · 90000 mm/min" and "300.0 mm/s ·
+ * 3000 mm/s² · corners 5.0 mm/s" - which is three different quantities run together, and left
+ * the reader to work out which was which.
+ *
+ * The velocity limit sits under the override because it is the reason the override stops
+ * helping: a printer at 200% stops getting faster once its own max_velocity is reached.
  */
 @Composable
 private fun SpeedReadings(state: KlipperPrinterState) {
     val speeds = state.speeds
     KlipperValue(
-        label = "Doing now",
-        value = speeds.live.orDash() + " mm/s" +
-            (speeds.filament?.takeIf { it > 0.01 }
-                ?.let { " · " + it.orDash(2) + " mm/s of filament" } ?: ""),
+        label = "Velocity now",
+        value = speeds.live.orDash() + " mm/s, measured",
+    )
+    speeds.filament?.takeIf { it > 0.01 }?.let { filament ->
+        KlipperValue(
+            label = "Filament velocity now",
+            value = filament.orDash(2) + " mm/s of filament",
+        )
+    }
+    KlipperValue(
+        label = "Velocity the file asks for",
+        value = speeds.askedPerSecond.orDash() + " mm/s",
     )
     KlipperValue(
-        label = "The file asks for",
-        value = speeds.askedFor.orDash() + " mm/s · " +
-            speeds.askedFor?.times(60.0).orDash(0) + " mm/min",
+        label = "Velocity with the override",
+        value = speeds.effectivePerSecond.orDash() + " mm/s",
     )
     KlipperValue(
-        label = "With the override",
-        value = speeds.effective.orDash() + " mm/s · " + speeds.effectivePerMinute.orDash(0) +
-            " mm/min",
+        label = "Feedrate the file asks for",
+        value = speeds.askedPerMinute.orDash(0) + " mm/min, which is what the F in the file says",
+    )
+    KlipperValue(
+        label = "Velocity limit",
+        value = speeds.maxVelocity.orDash() + " mm/s",
+    )
+    KlipperValue(
+        label = "Acceleration limit",
+        value = speeds.maxAccel.orDash(0) + " mm/s²",
+    )
+    KlipperValue(
+        label = "Corner velocity",
+        value = speeds.cornerVelocity.orDash() + " mm/s",
     )
     if (speeds.clamped) {
         KlipperNote(
-            "That is past this printer's own limit of " + speeds.maxVelocity.orDash() +
+            "The override asks for more than the velocity limit of " + speeds.maxVelocity.orDash() +
                 " mm/s, so the moves are clamped to it - which is why more override stops " +
                 "making the print faster.",
         )
     }
-    KlipperValue(
-        label = "Its limits",
-        value = speeds.maxVelocity.orDash() + " mm/s · " + speeds.maxAccel.orDash(0) +
-            " mm/s² · corners " + speeds.cornerVelocity.orDash() + " mm/s",
-    )
 }
 
 /** The three factors a print is adjusted by while it runs. */
@@ -354,26 +370,26 @@ private fun SpeedReadings(state: KlipperPrinterState) {
 private fun AdjustmentsCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     KlipperCard(title = "Adjustments") {
         KlipperSlider(
-            label = "Part fan",
+            label = "Part fan speed",
             value = ((state.fanSpeed ?: 0.0) * 100).toFloat().coerceIn(0f, 100f),
             range = 0f..100f,
-            valueText = "%.0f%%".format((state.fanSpeed ?: 0.0) * 100),
+            valueText = "%.0f%% of full speed".format((state.fanSpeed ?: 0.0) * 100),
             onSet = { viewModel.setFan(it.roundToInt()) },
         )
         KlipperSlider(
-            label = "Speed",
+            label = "Print speed factor (M220)",
             value = ((state.speedFactor ?: 1.0) * 100).toFloat().coerceIn(SPEED_RANGE),
             range = SPEED_RANGE,
-            valueText = "%.0f%%".format((state.speedFactor ?: 1.0) * 100),
+            valueText = "%.0f%% of the file's speed".format((state.speedFactor ?: 1.0) * 100),
             steps = 17,
             onSet = { viewModel.setSpeedFactor(it.roundToInt()) },
         )
         SpeedReadings(state)
         KlipperSlider(
-            label = "Flow",
+            label = "Flow factor (M221)",
             value = ((state.extrudeFactor ?: 1.0) * 100).toFloat().coerceIn(FLOW_RANGE),
             range = FLOW_RANGE,
-            valueText = "%.0f%%".format((state.extrudeFactor ?: 1.0) * 100),
+            valueText = "%.0f%% of the file's extrusion".format((state.extrudeFactor ?: 1.0) * 100),
             steps = 9,
             onSet = { viewModel.setExtrudeFactor(it.roundToInt()) },
         )
@@ -468,14 +484,16 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, view
     val limits = remember(state.speeds, localGcodePath) { KlipperFileLimits.of(state, file) } ?: return
     KlipperCard(title = "Limits", subtitle = "This file, and this printer") {
         KlipperValue(
-            "File asks for",
-            limits.askedAccel?.let { "%.0f mm/s²".format(it) } ?: "no acceleration figure",
+            "Acceleration the file asks for",
+            limits.askedAccel?.let { "%.0f mm/s²".format(it) } ?: "none set in the file",
         )
         KlipperValue(
-            "Printer allows",
+            "Acceleration the printer allows",
             limits.allowedAccel?.let { "%.0f mm/s²".format(it) } ?: "-",
         )
-        limits.allowedVelocity?.let { KlipperValue("Top speed", "%.0f mm/s".format(it)) }
+        limits.allowedVelocity?.let {
+            KlipperValue("Velocity the printer allows", "%.0f mm/s".format(it))
+        }
         when {
             limits.accelerationIsTheFilesOwn -> {
                 Spacer(Modifier.height(4.dp))
@@ -508,21 +526,21 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, view
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             KlipperNumberField(
-                label = "Accel",
+                label = "Acceleration limit",
                 value = accel,
                 onValueChange = { typed -> accel = limitDigits(typed) },
                 suffix = "mm/s²",
                 enabled = state.isReady,
             )
             KlipperNumberField(
-                label = "Top speed",
+                label = "Velocity limit",
                 value = velocity,
                 onValueChange = { typed -> velocity = limitDigits(typed) },
                 suffix = "mm/s",
                 enabled = state.isReady,
             )
             KlipperNumberField(
-                label = "Corner",
+                label = "Corner velocity",
                 value = corner,
                 onValueChange = { typed -> corner = limitDigits(typed) },
                 suffix = "mm/s",
@@ -543,8 +561,8 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, view
         }
         KlipperNote(
             "Only the values you fill in change, and they last until the host restarts - which " +
-                "re-reads printer.cfg. Lowering Accel is what settles a print that is ringing or " +
-                "shaking; the file's own M204 still applies underneath it.",
+                "re-reads printer.cfg. Lowering the acceleration limit is what settles a print " +
+                "that is ringing or shaking; the file's own M204 still applies underneath it.",
         )
 
         if (limits.ignoredMarlinLimits.isNotEmpty()) {
@@ -594,11 +612,13 @@ private fun ExcludedObjectsCard(state: KlipperPrinterState, onExclude: (String) 
 private fun PositionCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     KlipperCard(title = "Position") {
         val position = state.position
-        KlipperValue(
-            "X Y Z",
-            if (position.size < 3) "-"
-            else "%.1f  %.1f  %.1f".format(position[0], position[1], position[2]),
-        )
+        if (position.size < 3) {
+            KlipperValue("Toolhead position", "-")
+        } else {
+            KlipperValue("X position", "%.1f mm".format(position[0]))
+            KlipperValue("Y position", "%.1f mm".format(position[1]))
+            KlipperValue("Z position", "%.1f mm".format(position[2]))
+        }
         KlipperValue("Homing", if (state.isHomed) "Homed" else "Not homed")
         state.zOffset?.let { offset -> KlipperValue("Z offset", "%.3f mm".format(offset)) }
         //
@@ -673,14 +693,16 @@ private fun TimingCard(state: KlipperPrinterState) {
         val battery = if (state.remoteHost == null) remember(timing) { readBattery(context) } else null
         battery?.let { reading ->
             val hot = reading.temperatureCelsius?.let { it >= 42.0 } == true
-            KlipperValue(
-                label = "This device",
-                value = listOfNotNull(
-                    reading.percent?.let { "$it %" },
-                    reading.temperatureCelsius?.let { "%.1f °C".format(it) },
-                ).joinToString("  "),
-                valueColor = if (hot) MaterialTheme.colorScheme.error else Color.Unspecified,
-            )
+            reading.percent?.let { percent ->
+                KlipperValue("Battery charge", "$percent% of full")
+            }
+            reading.temperatureCelsius?.let { celsius ->
+                KlipperValue(
+                    label = "Battery temperature",
+                    value = "%.1f °C".format(celsius),
+                    valueColor = if (hot) MaterialTheme.colorScheme.error else Color.Unspecified,
+                )
+            }
             if (hot) {
                 KlipperNote(
                     "It is running hot, and a phone that throttles its processor shows it in " +
@@ -691,7 +713,7 @@ private fun TimingCard(state: KlipperPrinterState) {
         // klippy's own buffer_time, against the marks it acts on.
         state.lookaheadSeconds?.let { lookahead ->
             KlipperValue(
-                label = "Lookahead",
+                label = "Move queue lookahead",
                 value = "%.2f s".format(lookahead),
                 // Judged by the state, which knows an idle printer has a negative
                 // lookahead by construction and is not starving. Comparing the raw
@@ -702,20 +724,20 @@ private fun TimingCard(state: KlipperPrinterState) {
         }
         val stalls = state.printStalls ?: 0
         if (stalls > 0) {
-            KlipperValue("Stalled", "$stalls times", valueColor = MaterialTheme.colorScheme.error)
+            KlipperValue("Move queue stalls", "$stalls times", valueColor = MaterialTheme.colorScheme.error)
         }
-        timing.roundTripSeconds?.let { KlipperValue("Round trip", "%.1f ms".format(it * 1000)) }
-        timing.jitterSeconds?.let { KlipperValue("Jitter", "±%.1f ms".format(it * 1000)) }
-        timing.retransmitTimeoutSeconds?.let { KlipperValue("Resend after", "%.0f ms".format(it * 1000)) }
-        timing.headroom?.let { KlipperValue("Headroom", "%.0f×".format(it)) }
+        timing.roundTripSeconds?.let { KlipperValue("Round-trip time", "%.1f ms".format(it * 1000)) }
+        timing.jitterSeconds?.let { KlipperValue("Round-trip jitter", "±%.1f ms".format(it * 1000)) }
+        timing.retransmitTimeoutSeconds?.let { KlipperValue("Retransmit timeout", "%.0f ms".format(it * 1000)) }
+        timing.headroom?.let { KlipperValue("Serial buffer headroom", "%.0f×".format(it)) }
         // Seconds awake in the five-second window the board reports over, so a duty cycle.
         timing.mcuAwake?.let { awake ->
-            KlipperValue("Board busy", "%.0f%%".format(awake / 5.0 * 100))
+            KlipperValue("Board busy", "%.0f%% of the last 5 s".format(awake / 5.0 * 100))
         }
         val retransmits = timing.retransmittedBytes ?: 0
         if (retransmits > 0) {
             KlipperValue(
-                "Retransmitted",
+                "Bytes retransmitted",
                 "$retransmits bytes",
                 valueColor = MaterialTheme.colorScheme.error,
             )
