@@ -12,9 +12,16 @@
 # where the app has to know that both routes exist at all - and adding to this list is a
 # decision, which is the point.
 #
-# The other half - that Marlin *output* is unchanged - is MarlinRouteContractTest, which pins
-# the two G-code texts as they were before any of the Klipper work and sweeps every layer event
-# for Klipper-only commands.
+# Two more rules keep the two G-code routes apart from each other, because separate
+# implementations that can call one another are not separate for long:
+#
+#   - neither route file may name the other, so neither can call the other;
+#   - only the seam may name a route class at all, so every caller goes through
+#     GcodeRoute.forFlavor and none can be written for one route alone.
+#
+# The other half - that Marlin *output* is unchanged - is MarlinRouteContractTest, which
+# pins the two G-code texts as they were at TrioSlicer 1.4.0, the last release before Klipper
+# existed, and holds every layer event's output in a golden file.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -56,4 +63,33 @@ if [ "${#violations[@]}" -gt 0 ]; then
   exit 1
 fi
 
+ROUTES="$SRC/engine/gcode"
+problems=()
+
+# Naming the other route in a comment is how the two files explain themselves, and is
+# wanted; importing it or constructing it is what would make them one implementation again.
+if grep -qE "import .*\.KlipperGcodeRoute$|KlipperGcodeRoute\(" "$ROUTES/FrozenGcodeRoute.kt"; then
+  problems+=("FrozenGcodeRoute.kt uses the Klipper route")
+fi
+if grep -qE "import .*\.FrozenGcodeRoute$|FrozenGcodeRoute\(" "$ROUTES/KlipperGcodeRoute.kt"; then
+  problems+=("KlipperGcodeRoute.kt uses the frozen route")
+fi
+
+while IFS= read -r file; do
+  relative="${file#"$SRC"/}"
+  case "$relative" in
+    engine/gcode/*) continue ;;
+  esac
+  if grep -qE "import .*\.(Frozen|Klipper)GcodeRoute$|(Frozen|Klipper)GcodeRoute\(" "$file"; then
+    problems+=("$relative uses a route class instead of GcodeRoute.forFlavor")
+  fi
+done < <(find "$SRC" -name "*.kt")
+
+if [ "${#problems[@]}" -gt 0 ]; then
+  echo "the two G-code routes are not separate:" >&2
+  printf "  %s\n" "${problems[@]}" >&2
+  exit 1
+fi
+
 echo "route separation: no Klipper imports outside the Klipper folders"
+echo "route separation: the frozen and Klipper routes do not call each other"

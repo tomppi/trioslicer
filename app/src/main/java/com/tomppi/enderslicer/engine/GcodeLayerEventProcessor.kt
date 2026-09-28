@@ -1,14 +1,15 @@
 package com.tomppi.enderslicer.engine
 
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.nonplanar.NonPlanarRuntime
 import java.io.File
 
-object GcodeLayerEventProcessor {
+internal object GcodeLayerEventProcessor {
     fun materialize(
         baseFile: File,
         destination: File,
         events: List<LayerEvent>,
-        firmware: CalibrationFirmwareEncoder = CalibrationFirmwareEncoder.fromFlavor(
+        firmware: GcodeRoute = GcodeRoute.forFlavor(
             PrinterEnvelope.DEFAULT_GCODE_FLAVOR,
         ),
         /**
@@ -133,12 +134,12 @@ object GcodeLayerEventProcessor {
 
     fun commands(event: LayerEvent): List<String> = commands(
         event,
-        CalibrationFirmwareEncoder.fromFlavor(PrinterEnvelope.DEFAULT_GCODE_FLAVOR),
+        GcodeRoute.forFlavor(PrinterEnvelope.DEFAULT_GCODE_FLAVOR),
     )
 
     internal fun commands(
         event: LayerEvent,
-        firmware: CalibrationFirmwareEncoder,
+        firmware: GcodeRoute,
     ): List<String> {
         validate(event)
         return firmware.commands(

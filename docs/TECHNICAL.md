@@ -155,6 +155,37 @@ exiting non-zero if anything is missing so it can gate CI. None of the three is 
 to run, so it reports rather than assumes. Addresses come from the environment (`PHONE_TAILNET`,
 `PHONE_LAN`, `HARNESS_ORIGIN`, `GPU_BOX`) because none of them belong in a repository.
 
+## The two printer routes, and the rule between them
+
+The app slices for two machines that share almost everything and agree about almost nothing:
+a printer at the far end of OctoPrint, which is usually Marlin, and the Klipper host running
+inside the app. Both use the same slicers, the same settings and the same post-processing; only
+the G-code dialect differs, and the dialect is a parameter rather than a fork.
+
+Three rules keep the older route from being changed by accident. They exist because it was:
+the default start G-code is shared, and replacing it with Klipper's left a Marlin printer being
+sent `BED_MESH_CALIBRATE` and no longer loading its UBL mesh. A second attempt at fixing that
+then changed the Marlin text by its indentation, which nobody would have noticed in a diff of
+the Klipper constants.
+
+1. **Klipper may not depend into the shared side.** Nothing outside `printer/`, `nativebridge/`
+   and `ui/klipper/` may import those packages, except the three files where the app chooses
+   between the routes. `scripts/verify-route-separation.sh` enforces it in CI.
+2. **Shared behaviour is one implementation, switched by dialect.** There is one
+   `CalibrationFirmwareEncoder`, not a Marlin one and a Klipper one, and the injectors take the
+   command their dialect needs. So a bug in shared code is fixed once, for both routes - there
+   is no Klipper-only copy to fix by itself, and no way to leave Marlin behind without noticing.
+3. **Marlin's output is pinned, and changing it is a decision.** `MarlinRouteContractTest` holds
+   the two G-code texts as they were before any Klipper code existed, byte for byte, and refuses
+   any Klipper-only command in a non-Klipper file. When a shared bug genuinely affects Marlin,
+   the fix lands for both and the pinned text is updated *in the same commit*, with the reason in
+   the message - which is the record that the older route changed on purpose. The failure is a
+   prompt to make that decision deliberately, not a prohibition on making it.
+
+The limit is worth stating plainly: the gate can tell that Marlin's output changed, and it
+cannot tell whether the change is a fix or a regression. That judgement is the one thing a
+reviewer has to bring.
+
 ## Feature notes
 
 - Engines: [CURAENGINE_ANDROID.md](CURAENGINE_ANDROID.md), [PRUSASLICER_ANDROID.md](PRUSASLICER_ANDROID.md), [ORCAENGINE_ANDROID.md](ORCAENGINE_ANDROID.md)

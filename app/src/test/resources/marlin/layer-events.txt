@@ -1,0 +1,20 @@
+# The frozen route's output for every layer event, in the order the events are declared.
+#
+# These are the commands TrioSlicer 1.4.0 wrote, and the Marlin route still writes: this file
+# is a golden, so a change to FrozenGcodeRoute fails MarlinRouteContractTest rather than
+# shipping. A deliberate change to the Marlin route updates this file in the same commit, with
+# the reason in the message. Format: <event> <value>[/<secondary>] :: <line> | <line>
+PAUSE 5 :: M117 Pause layer 5 | M0
+FILAMENT_CHANGE 5 :: M600
+NOZZLE_TEMPERATURE 210 :: M109 R210
+BED_TEMPERATURE 60 :: M140 S60
+FAN_SPEED 50 :: M106 S128
+FAN_SPEED 0 :: M107
+SPEED_FACTOR 150 :: M220 S150
+FLOW_FACTOR 110 :: M221 S110
+RETRACTION 1.2/35 :: M207 S1.2 F2100
+PRESSURE_ADVANCE 0.12 :: M900 K0.12
+JUNCTION_DEVIATION 0.02 :: M205 J0.02
+CAMERA_TRIGGER :: M240
+MESSAGE :: M117 hello
+CUSTOM_GCODE :: G1 X1 | G1 X2

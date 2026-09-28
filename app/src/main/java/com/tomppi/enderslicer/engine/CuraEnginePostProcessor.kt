@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.engine
 
 import com.tomppi.enderslicer.conical.ConicalRuntime
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.conical.ConicalStorage
 import com.tomppi.enderslicer.nonplanar.ConformalSurfaceStorage
 import com.tomppi.enderslicer.nonplanar.NonPlanarRuntime
@@ -43,7 +44,7 @@ internal object CuraEnginePostProcessor {
         val workspace = outputFile.parentFile
             ?: error("CuraEngine output path has no parent workspace")
         val effectiveEnvelope = resolvedEnvelope(workspace) ?: printerEnvelope
-        val firmware = CalibrationFirmwareEncoder.fromFlavor(effectiveEnvelope.gcodeFlavor)
+        val firmware = GcodeRoute.forFlavor(effectiveEnvelope.gcodeFlavor)
         require(
             !(ConformalSurfaceStorage.isPrepared(workspace) &&
                 ConicalStorage.isPrepared(workspace)),

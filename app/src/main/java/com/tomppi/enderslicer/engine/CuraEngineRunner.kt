@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.engine
 
 import android.content.Context
 import com.tomppi.enderslicer.conical.ConicalPreparations
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.AllSettingsCatalogs
@@ -403,7 +404,7 @@ class CuraEngineRunner(private val context: Context) {
                     workspace.base,
                     workspace.output,
                     validEvents,
-                    CalibrationFirmwareEncoder.fromFlavor(printerEnvelope.gcodeFlavor),
+                    GcodeRoute.forFlavor(printerEnvelope.gcodeFlavor),
                     machineEndGcode = machineEndGcode,
                 )
             }

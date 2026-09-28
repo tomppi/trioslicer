@@ -1,10 +1,11 @@
 package com.tomppi.enderslicer.engine
 
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class CalibrationFirmwareEncoderTest {
+class GcodeRouteTest {
     @Test
     fun pressureAdvanceUsesTheDeclaredFirmwareDialect() {
         assertEquals(
@@ -43,7 +44,7 @@ class CalibrationFirmwareEncoderTest {
             val error = runCatching {
                 commands(flavor, LayerEventType.JUNCTION_DEVIATION, 0.02)
             }.exceptionOrNull()
-            assertTrue(error is CalibrationFirmwareEncoder.UnsupportedFirmwareCommand)
+            assertTrue(error is com.tomppi.enderslicer.engine.gcode.UnsupportedFirmwareCommand)
         }
         assertEquals(
             listOf("M205 J0.02"),
@@ -53,7 +54,7 @@ class CalibrationFirmwareEncoderTest {
 
     @Test
     fun commonCommandsRemainAvailableForGenericFirmware() {
-        val firmware = CalibrationFirmwareEncoder.fromFlavor("Custom")
+        val firmware = GcodeRoute.forFlavor("Custom")
         assertEquals(
             listOf("M109 S210"),
             firmware.commands(LayerEventType.NOZZLE_TEMPERATURE, 0, 210.0),
@@ -92,7 +93,7 @@ class CalibrationFirmwareEncoderTest {
         type: LayerEventType,
         value: Double,
         secondary: Double? = null,
-    ): List<String> = CalibrationFirmwareEncoder.fromFlavor(flavor).commands(
+    ): List<String> = GcodeRoute.forFlavor(flavor).commands(
         type = type,
         layerNumber = 1,
         value = value,

@@ -74,7 +74,7 @@ class GeneralAuditSafetyRegressionTest {
 
     @Test
     fun reprapToolSettingG10IsNotRetraction() {
-        val firmware = CalibrationFirmwareEncoder.fromFlavor("RepRapFirmware")
+        val firmware = com.tomppi.enderslicer.engine.gcode.GcodeRoute.forFlavor("RepRapFirmware")
         assertTrue(!firmware.isFirmwareRetract(requireNotNull(GcodeCommand.parse("G10 P0 S200 R150"))))
         assertTrue(firmware.isFirmwareRetract(requireNotNull(GcodeCommand.parse("G10"))))
         assertTrue(firmware.isFirmwareUnretract(requireNotNull(GcodeCommand.parse("G11"))))

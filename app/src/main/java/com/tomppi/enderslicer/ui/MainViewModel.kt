@@ -200,8 +200,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // The default for a profile that declares no dialect is Marlin's, which is what this
     // app shipped before there was a Klipper host in it; the choice moves to the Klipper
     // text the moment a profile says it is for Klipper.
-    private val initialStartGcode = BuiltInGcode.START_MARLIN
-    private val initialEndGcode = BuiltInGcode.END_MARLIN
+    private val initialStartGcode = BuiltInGcode.defaultStartGcode
+    private val initialEndGcode = BuiltInGcode.defaultEndGcode
     private var importedSettingsBaseline: SlicerSettings? = null
     private var sourceMesh: StlMesh? = null
     private var importedScene: CuraProjectScene? = null
