@@ -25,6 +25,20 @@ data class SlicerSettings(
     val customStartGcode: String = "",
     val customEndGcodeEnabled: Boolean = false,
     val customEndGcode: String = "",
+    //
+    // The same pair for the Klipper route, kept apart from the one above.
+    //
+    // A printer has one start script per dialect, and this app drives two: the Klipper host
+    // inside it, and a printer at the far end of OctoPrint, which is usually Marlin. One field
+    // for both meant a script written for Klipper - BED_MESH_CALIBRATE, SET_PRESSURE_ADVANCE -
+    // was sent to a Marlin printer as soon as the route changed, and UBL lines meant for Marlin
+    // were sent to klippy. The pair above is the one the frozen route has always used; these
+    // are Klipper's, and the declared flavour decides which pair a slice is given.
+    //
+    val customKlipperStartGcodeEnabled: Boolean = false,
+    val customKlipperStartGcode: String = "",
+    val customKlipperEndGcodeEnabled: Boolean = false,
+    val customKlipperEndGcode: String = "",
     val layerHeightMm: Double = 0.20,
     val initialLayerHeightMm: Double = 0.28,
     val adaptiveLayerHeightEnabled: Boolean = false,
@@ -237,6 +251,10 @@ data class SlicerSettings(
         const val CUSTOM_START_GCODE = "customStartGcode"
         const val CUSTOM_END_GCODE_ENABLED = "customEndGcodeEnabled"
         const val CUSTOM_END_GCODE = "customEndGcode"
+        const val CUSTOM_KLIPPER_START_GCODE_ENABLED = "customKlipperStartGcodeEnabled"
+        const val CUSTOM_KLIPPER_START_GCODE = "customKlipperStartGcode"
+        const val CUSTOM_KLIPPER_END_GCODE_ENABLED = "customKlipperEndGcodeEnabled"
+        const val CUSTOM_KLIPPER_END_GCODE = "customKlipperEndGcode"
         const val LAYER_HEIGHT = "layerHeightMm"
         const val INITIAL_LAYER_HEIGHT = "initialLayerHeightMm"
         const val ADAPTIVE_LAYER_HEIGHT_ENABLED = "adaptiveLayerHeightEnabled"

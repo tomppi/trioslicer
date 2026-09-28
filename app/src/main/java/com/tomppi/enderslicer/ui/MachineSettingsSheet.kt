@@ -139,35 +139,91 @@ internal fun MachineSettingsContent(
             }
         }
 
+        //
+        // Which pair this screen edits is decided by the route the profile declares.
+        //
+        // A start script written for the Klipper host - BED_MESH_CALIBRATE, SET_PRESSURE_ADVANCE -
+        // must not be the one a Marlin printer is sent, and the UBL lines meant for Marlin must
+        // not go to klippy. With one pair for both, switching the flavour above sent whichever
+        // script had been written to the other machine.
+        //
+        val klipperRoute = settings.gcodeFlavor.trim().lowercase().startsWith("klipper")
+        val startEnabledKey = if (klipperRoute) {
+            SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE_ENABLED
+        } else {
+            SlicerSettings.Keys.CUSTOM_START_GCODE_ENABLED
+        }
+        val startTextKey = if (klipperRoute) {
+            SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE
+        } else {
+            SlicerSettings.Keys.CUSTOM_START_GCODE
+        }
+        val startEnabled = if (klipperRoute) {
+            settings.customKlipperStartGcodeEnabled
+        } else {
+            settings.customStartGcodeEnabled
+        }
+        val startText = if (klipperRoute) settings.customKlipperStartGcode else settings.customStartGcode
+
         Section("Start G-code") {
             Text(
-                "The imported or built-in start code remains active until this switch is enabled.",
+                if (klipperRoute) {
+                    "For the Klipper host in this app. The route above decides which script a " +
+                        "slice is given, so the Marlin one is untouched by anything set here."
+                } else {
+                    "For a printer at the far end of OctoPrint, which is usually Marlin - not for " +
+                        "the Klipper host in this app, which has its own below."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             SwitchRow(
-                "Use custom start G-code",
-                settings.customStartGcodeEnabled,
-                source(state, SlicerSettings.Keys.CUSTOM_START_GCODE_ENABLED),
+                if (klipperRoute) "Use custom start G-code (Klipper)" else "Use custom start G-code (Marlin)",
+                startEnabled,
+                source(state, startEnabledKey),
             ) { enabled ->
-                onSettings(SlicerSettings.Keys.CUSTOM_START_GCODE_ENABLED) { current ->
-                    current.copy(
-                        customStartGcodeEnabled = enabled,
-                        customStartGcode = if (enabled && current.customStartGcode.isEmpty()) {
-                            state.startGcode
-                        } else {
-                            current.customStartGcode
-                        },
-                    )
+                onSettings(startEnabledKey) { current ->
+                    if (klipperRoute) {
+                        current.copy(
+                            customKlipperStartGcodeEnabled = enabled,
+                            customKlipperStartGcode = if (enabled && current.customKlipperStartGcode.isEmpty()) {
+                                state.startGcode
+                            } else {
+                                current.customKlipperStartGcode
+                            },
+                        )
+                    } else {
+                        current.copy(
+                            customStartGcodeEnabled = enabled,
+                            customStartGcode = if (enabled && current.customStartGcode.isEmpty()) {
+                                state.startGcode
+                            } else {
+                                current.customStartGcode
+                            },
+                        )
+                    }
                 }
             }
-            if (settings.customStartGcodeEnabled) {
-                GcodeField("Custom start G-code", settings.customStartGcode) {
-                    onSettings(SlicerSettings.Keys.CUSTOM_START_GCODE) { current -> current.copy(customStartGcode = it) }
+            if (startEnabled) {
+                GcodeField(
+                    if (klipperRoute) "Custom start G-code (Klipper)" else "Custom start G-code (Marlin)",
+                    startText,
+                ) { typed ->
+                    onSettings(startTextKey) { current ->
+                        if (klipperRoute) {
+                            current.copy(customKlipperStartGcode = typed)
+                        } else {
+                            current.copy(customStartGcode = typed)
+                        }
+                    }
                 }
                 OutlinedButton(
                     onClick = {
-                        onSettings(SlicerSettings.Keys.CUSTOM_START_GCODE) { current ->
-                            current.copy(customStartGcode = state.startGcode)
+                        onSettings(startTextKey) { current ->
+                            if (klipperRoute) {
+                                current.copy(customKlipperStartGcode = state.startGcode)
+                            } else {
+                                current.copy(customStartGcode = state.startGcode)
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -177,35 +233,77 @@ internal fun MachineSettingsContent(
             }
         }
 
+        val endEnabledKey = if (klipperRoute) {
+            SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE_ENABLED
+        } else {
+            SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED
+        }
+        val endTextKey = if (klipperRoute) {
+            SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE
+        } else {
+            SlicerSettings.Keys.CUSTOM_END_GCODE
+        }
+        val endEnabled = if (klipperRoute) settings.customKlipperEndGcodeEnabled else settings.customEndGcodeEnabled
+        val endText = if (klipperRoute) settings.customKlipperEndGcode else settings.customEndGcode
+
         Section("End G-code") {
             Text(
-                "The imported or built-in end code remains active until this switch is enabled.",
+                if (klipperRoute) {
+                    "For the Klipper host in this app, kept apart from the Marlin one above."
+                } else {
+                    "For a printer at the far end of OctoPrint, which is usually Marlin - not for " +
+                        "the Klipper host in this app, which has its own."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             SwitchRow(
-                "Use custom end G-code",
-                settings.customEndGcodeEnabled,
-                source(state, SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED),
+                if (klipperRoute) "Use custom end G-code (Klipper)" else "Use custom end G-code (Marlin)",
+                endEnabled,
+                source(state, endEnabledKey),
             ) { enabled ->
-                onSettings(SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED) { current ->
-                    current.copy(
-                        customEndGcodeEnabled = enabled,
-                        customEndGcode = if (enabled && current.customEndGcode.isEmpty()) {
-                            state.endGcode
-                        } else {
-                            current.customEndGcode
-                        },
-                    )
+                onSettings(endEnabledKey) { current ->
+                    if (klipperRoute) {
+                        current.copy(
+                            customKlipperEndGcodeEnabled = enabled,
+                            customKlipperEndGcode = if (enabled && current.customKlipperEndGcode.isEmpty()) {
+                                state.endGcode
+                            } else {
+                                current.customKlipperEndGcode
+                            },
+                        )
+                    } else {
+                        current.copy(
+                            customEndGcodeEnabled = enabled,
+                            customEndGcode = if (enabled && current.customEndGcode.isEmpty()) {
+                                state.endGcode
+                            } else {
+                                current.customEndGcode
+                            },
+                        )
+                    }
                 }
             }
-            if (settings.customEndGcodeEnabled) {
-                GcodeField("Custom end G-code", settings.customEndGcode) {
-                    onSettings(SlicerSettings.Keys.CUSTOM_END_GCODE) { current -> current.copy(customEndGcode = it) }
+            if (endEnabled) {
+                GcodeField(
+                    if (klipperRoute) "Custom end G-code (Klipper)" else "Custom end G-code (Marlin)",
+                    endText,
+                ) { typed ->
+                    onSettings(endTextKey) { current ->
+                        if (klipperRoute) {
+                            current.copy(customKlipperEndGcode = typed)
+                        } else {
+                            current.copy(customEndGcode = typed)
+                        }
+                    }
                 }
                 OutlinedButton(
                     onClick = {
-                        onSettings(SlicerSettings.Keys.CUSTOM_END_GCODE) { current ->
-                            current.copy(customEndGcode = state.endGcode)
+                        onSettings(endTextKey) { current ->
+                            if (klipperRoute) {
+                                current.copy(customKlipperEndGcode = state.endGcode)
+                            } else {
+                                current.copy(customEndGcode = state.endGcode)
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),

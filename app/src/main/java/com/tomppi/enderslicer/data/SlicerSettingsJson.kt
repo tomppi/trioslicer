@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.data
 
 import com.tomppi.enderslicer.model.SlicerSettings
+import com.tomppi.enderslicer.model.migrateCustomScriptsToTheRoute
 import org.json.JSONObject
 
 object SlicerSettingsJson {
@@ -30,6 +31,10 @@ object SlicerSettingsJson {
         SlicerSettings.Keys.CUSTOM_START_GCODE,
         SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED,
         SlicerSettings.Keys.CUSTOM_END_GCODE,
+        SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE_ENABLED,
+        SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE,
+        SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE_ENABLED,
+        SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE,
         SlicerSettings.Keys.LAYER_HEIGHT,
         SlicerSettings.Keys.INITIAL_LAYER_HEIGHT,
         SlicerSettings.Keys.ADAPTIVE_LAYER_HEIGHT_ENABLED,
@@ -188,6 +193,10 @@ object SlicerSettingsJson {
         .put(SlicerSettings.Keys.CUSTOM_START_GCODE, settings.customStartGcode)
         .put(SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED, settings.customEndGcodeEnabled)
         .put(SlicerSettings.Keys.CUSTOM_END_GCODE, settings.customEndGcode)
+        .put(SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE_ENABLED, settings.customKlipperStartGcodeEnabled)
+        .put(SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE, settings.customKlipperStartGcode)
+        .put(SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE_ENABLED, settings.customKlipperEndGcodeEnabled)
+        .put(SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE, settings.customKlipperEndGcode)
         .put(SlicerSettings.Keys.LAYER_HEIGHT, settings.layerHeightMm)
         .put(SlicerSettings.Keys.INITIAL_LAYER_HEIGHT, settings.initialLayerHeightMm)
         .put(SlicerSettings.Keys.ADAPTIVE_LAYER_HEIGHT_ENABLED, settings.adaptiveLayerHeightEnabled)
@@ -348,6 +357,14 @@ object SlicerSettingsJson {
                 SlicerSettings.Keys.CUSTOM_START_GCODE -> restored.copy(customStartGcode = values.optString(key, restored.customStartGcode))
                 SlicerSettings.Keys.CUSTOM_END_GCODE_ENABLED -> restored.copy(customEndGcodeEnabled = values.optBoolean(key, restored.customEndGcodeEnabled))
                 SlicerSettings.Keys.CUSTOM_END_GCODE -> restored.copy(customEndGcode = values.optString(key, restored.customEndGcode))
+                SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE_ENABLED ->
+                    restored.copy(customKlipperStartGcodeEnabled = values.optBoolean(key, restored.customKlipperStartGcodeEnabled))
+                SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE ->
+                    restored.copy(customKlipperStartGcode = values.optString(key, restored.customKlipperStartGcode))
+                SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE_ENABLED ->
+                    restored.copy(customKlipperEndGcodeEnabled = values.optBoolean(key, restored.customKlipperEndGcodeEnabled))
+                SlicerSettings.Keys.CUSTOM_KLIPPER_END_GCODE ->
+                    restored.copy(customKlipperEndGcode = values.optString(key, restored.customKlipperEndGcode))
                 SlicerSettings.Keys.LAYER_HEIGHT -> restored.copy(layerHeightMm = values.optDouble(key, restored.layerHeightMm))
                 SlicerSettings.Keys.INITIAL_LAYER_HEIGHT -> restored.copy(initialLayerHeightMm = values.optDouble(key, restored.initialLayerHeightMm))
                 SlicerSettings.Keys.ADAPTIVE_LAYER_HEIGHT_ENABLED -> restored.copy(
@@ -510,6 +527,12 @@ object SlicerSettingsJson {
                 else -> restored
             }
         }
-        return restored
+        //
+        // One migration, on the way in: a custom start or end script that was written while
+        // this profile declared Klipper belongs to the Klipper pair, not to the shared one it
+        // was stored in before there were two. Idempotent, and it does nothing at all to a
+        // profile that declares anything else.
+        //
+        return restored.migrateCustomScriptsToTheRoute()
     }
 }
