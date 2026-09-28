@@ -249,7 +249,11 @@ class KlipperClient internal constructor(
 
     class KlipperError(message: String) : Exception(message)
 
-    private companion object {
+    /**
+     * Constants of the wire protocol, not of this client: the remote transport speaks the same
+     * messages and needs the console method name to translate Moonraker's output into it.
+     */
+    internal companion object {
         const val TAG = "KlipperClient"
         val ERROR_JSON = JSONObject().put("error", "closed")
 
@@ -257,6 +261,6 @@ class KlipperClient internal constructor(
          * The method name klippy puts on pushed G-code output, and the one Moonraker
          * asks for: the client chooses it, klippy echoes it back.
          */
-        const val GCODE_RESPONSE_METHOD = "process_gcode_response"
+        internal const val GCODE_RESPONSE_METHOD = "process_gcode_response"
     }
 }
