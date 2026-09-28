@@ -141,8 +141,35 @@ private fun PcHostCard(
     var host by rememberSaveable { mutableStateOf(stored.host) }
     var port by rememberSaveable { mutableStateOf(stored.port.toString()) }
     var key by rememberSaveable { mutableStateOf(stored.apiKey) }
+    //
+    // Whether the form is open.
+    //
+    // A connection that is working does not need the fields that made it, and the space is
+    // better spent on the printer it is connected to. Connecting closes the form; it does not
+    // reopen it, so "Change" stays open for as long as it is being used.
+    //
+    var editing by rememberSaveable { mutableStateOf(false) }
+    val connected = state.connected && state.remoteHost != null
+    LaunchedEffect(connected) {
+        if (connected) editing = false
+    }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        if (connected && !editing) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Connected to " + state.remoteHost,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { editing = true }) { Text("Change") }
+            }
+        } else {
         Text(
             "Klipper on a computer, over Moonraker. The printer must be plugged into that " +
                 "computer, and this phone on the same network.",
@@ -210,6 +237,11 @@ private fun PcHostCard(
                 },
                 maxLines = 2,
             )
+        }
+        if (connected) {
+            // A way back to the compact row, for someone who opened the form to look.
+            TextButton(onClick = { editing = false }) { Text("Hide") }
+        }
         }
         Spacer(Modifier.height(8.dp))
     }
