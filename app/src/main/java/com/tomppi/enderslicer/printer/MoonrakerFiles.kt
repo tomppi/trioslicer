@@ -45,22 +45,68 @@ internal class MoonrakerFiles(
      * The name is the one the host will know it by, so it is the name klippy is later told to
      * print - which is why [KlipperPrint.fileName] cleans it on the way in rather than here.
      */
-    fun upload(source: File, name: String): Boolean {
+    fun upload(source: File, name: String, root: String = ROOT): Boolean {
         val boundary = "----TrioSlicer" + UUID.randomUUID().toString().replace("-", "")
-        val body = uploadBody(boundary, name, source.readBytes())
+        val body = uploadBody(boundary, name, source.readBytes(), root)
         val answer = request(
             path = UPLOAD_PATH,
             method = "POST",
             body = body,
             contentType = "multipart/form-data; boundary=" + boundary,
         ) ?: return false
-        // Moonraker answers with the item it created; an error arrives as an error instead.
-        return answer.optJSONObject("result")?.has("item") == true
+        //
+        // Moonraker answers with the item it created. Not wrapped in "result" the way its
+        // JSON-RPC calls are - this is its HTTP file API, and the item is the whole body.
+        //
+        // Reading only the wrapped shape is what made an accepted upload look refused: the
+        // host answered 201 Created, wrote the file, and the app reported a refusal, because
+        // the parse found no "result" to look inside. The print that followed was never sent.
+        // A status code in the 200s means the host took it; the item is what says which file.
+        //
+        val result = answer.optJSONObject("result") ?: answer
+        return result.has("item")
     }
 
     /** Delete one, by the name the host knows it by. */
     fun delete(name: String): Boolean =
         request(filePath(name), "DELETE") != null
+
+    /**
+     * The host's own configuration, as the file klippy reads.
+     *
+     * The app changes a printer's configuration in three places - shaping, the extruder's
+     * rotation distance, the starter macros - and when the host is another machine, this is
+     * that machine's file rather than a copy of it in this app's storage.
+     */
+    fun configText(name: String = KlipperHostFiles.CONFIG): String? {
+        val connection = runCatching {
+            URL(urlFor(configPath(name))).openConnection() as HttpURLConnection
+        }.getOrNull() ?: return null
+        return runCatching {
+            connection.connectTimeout = CONNECT_TIMEOUT_MS
+            connection.readTimeout = READ_TIMEOUT_MS
+            apiKey?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Api-Key", it) }
+            val code = connection.responseCode
+            val text = if (code in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                Log.i(TAG, "the host answered $code for its configuration")
+                null
+            }
+            connection.disconnect()
+            text
+        }.getOrNull()
+    }
+
+    /**
+     * Put a configuration file back where klippy reads it.
+     *
+     * The root is `config` rather than `gcodes`: Moonraker serves both from the printer's data
+     * directory and only one of them is the file klippy starts from. It does not take effect
+     * until the host reads it again, which is a restart - so the caller asks for one.
+     */
+    fun uploadConfig(source: File, name: String = KlipperHostFiles.CONFIG): Boolean =
+        upload(source, name, root = CONFIG_ROOT)
 
     /**
      * A file's own numbers and thumbnail, as the host read them from the file.
@@ -106,6 +152,8 @@ internal class MoonrakerFiles(
         val bytes = bytes("/server/files/gcodes/" + encodePath(relative)) ?: return null
         return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
     }
+
+    private fun urlFor(path: String): String = "http://" + host.trim() + ":" + port + path
 
     private fun request(
         path: String,
@@ -156,6 +204,9 @@ internal class MoonrakerFiles(
         /** Where a host keeps files it will print. */
         const val ROOT = "gcodes"
 
+        /** Where klippy's own configuration files live on a host. */
+        const val CONFIG_ROOT = "config"
+
         const val UPLOAD_PATH = "/server/files/upload"
 
         private const val CONNECT_TIMEOUT_MS = 5_000
@@ -166,6 +217,9 @@ internal class MoonrakerFiles(
 
         /** One file, by the name the host knows it by. */
         fun filePath(name: String): String = "/server/files/" + ROOT + "/" + encodePath(name)
+
+        /** One configuration file, from the root klippy reads. */
+        fun configPath(name: String): String = "/server/files/" + CONFIG_ROOT + "/" + encodePath(name)
 
         /** One file's slicer metadata. */
         fun metadataPath(name: String): String =
@@ -196,11 +250,16 @@ internal class MoonrakerFiles(
          * keep, and the root has to be a separate field. Getting any of that wrong is a 400 with
          * nothing on screen to say why.
          */
-        fun uploadBody(boundary: String, name: String, content: ByteArray): ByteArray {
+        fun uploadBody(
+            boundary: String,
+            name: String,
+            content: ByteArray,
+            root: String = ROOT,
+        ): ByteArray {
             val head = StringBuilder()
             head.append("--").append(boundary).append("\r\n")
             head.append("Content-Disposition: form-data; name=\"root\"\r\n\r\n")
-            head.append(ROOT).append("\r\n")
+            head.append(root).append("\r\n")
             head.append("--").append(boundary).append("\r\n")
             head.append("Content-Disposition: form-data; name=\"file\"; filename=\"")
             head.append(name.replace("\"", "")).append("\"\r\n")
