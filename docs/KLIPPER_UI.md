@@ -38,6 +38,11 @@ place:
   mm/s, and reading the first as the second once made the card claim every print was being
   clamped at sixty times its real speed. A printer at 200% does not go twice as fast once
   `max_velocity` is reached, and the card says so rather than leaving the slider looking broken.
+- **Mesh** - the saved profiles, and the fact that Klipper no longer loads one at startup:
+  `[delayed_gcode bed_mesh_init]` calls `BED_MESH_PROFILE LOAD=default`, which is what
+  Klipper's documentation recommends for anyone who wants the old behaviour back. The app's
+  built-in Klipper start script measures the bed every print, so this matters to files whose
+  start script does not - a print with neither a load nor a measurement uses no mesh at all.
 - **Limits** - the same file's own limit lines against the printer's. Only `M204` means anything
   to klippy, as `max_accel = min(P, T)`; `M201`, `M203` and `M205` are Marlin's and are named as
   ignored, because a file that appears to set a 500 mm/s ceiling is setting nothing.
