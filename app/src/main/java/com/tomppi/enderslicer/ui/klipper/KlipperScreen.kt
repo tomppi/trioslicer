@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -16,7 +19,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
@@ -51,6 +56,7 @@ internal fun KlipperScreen(
     // moment the user looked at another tab - and the save they pressed afterwards wrote the
     // configured value instead, which is a silent way to lose a measurement.
     val tabState = rememberSaveableStateHolder()
+    var confirmEmergencyStop by rememberSaveable { mutableStateOf(false) }
 
     Column(modifier = modifier.navigationBarsPadding()) {
         SecondaryScrollableTabRow(
@@ -67,6 +73,28 @@ internal fun KlipperScreen(
             }
         }
         HorizontalDivider()
+        //
+        // While a print is running, the way to stop it is on every screen rather than only on
+        // the dashboard: a print going wrong is noticed wherever the user happens to be
+        // looking, and the cost of finding another tab is paid in filament.
+        //
+        if (state.isPrinting || state.isPaused) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = state.printFileName?.takeIf { it.isNotBlank() }
+                        ?: if (state.isPaused) "Paused" else "Printing",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                KlipperButton("Stop") { confirmEmergencyStop = true }
+            }
+            HorizontalDivider()
+        }
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
             // Keyed by the tab, so the state of the tab being left is saved rather than
             // forgotten, and restored when the user comes back to it.
@@ -91,5 +119,20 @@ internal fun KlipperScreen(
                 }
             }
         }
+    }
+
+    if (confirmEmergencyStop) {
+        KlipperConfirmDialog(
+            title = "Emergency stop?",
+            text = "The printer stops at once and the print cannot be resumed from here. The " +
+                "homing it has done and the mesh it measured survive; the print does not.",
+            confirmLabel = "Stop the printer",
+            destructive = true,
+            onConfirm = {
+                confirmEmergencyStop = false
+                viewModel.emergencyStop()
+            },
+            onDismiss = { confirmEmergencyStop = false },
+        )
     }
 }

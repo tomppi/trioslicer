@@ -188,9 +188,16 @@ class KlipperPrinterRepository(
         if (boards.isNotEmpty()) {
             delay(MCU_RECHECK_MS)
             runCatching { c.query(*boards.toTypedArray()) }.getOrNull()?.let { status ->
-                _state.update { it.withStatus(status) }
+                _state.update { previous ->
+                    val next = previous.withStatus(status)
+                    reportPrintEnd(previous, next)
+                    next
+                }
             }
         }
+        // A print that has stopped says so out loud as well as on the screen: the user is
+        // usually not looking, and the reason klippy gives is the thing they need.
+        //
         // klippy has no state notification on the wire, so the state that decides
         // whether the screen is allowed to print is asked for rather than waited on.
         var sinceStateCheck = 0
@@ -257,7 +264,11 @@ class KlipperPrinterRepository(
             return
         }
         KlipperProtocol.statusUpdate(message)?.let { status ->
-            _state.update { it.withStatus(status) }
+            _state.update { previous ->
+                val next = previous.withStatus(status)
+                reportPrintEnd(previous, next)
+                next
+            }
             // Sampled once a second rather than kept per notification: the chart
             // wants the heater, not the socket.
             temperatureLog.record(System.currentTimeMillis(), _state.value.heaters)?.let { samples ->
@@ -481,6 +492,17 @@ class KlipperPrinterRepository(
                 true
             }.getOrDefault(false)
         }
+
+    /** Tell the phone how a print ended, once, at the moment it stops being a print. */
+    private fun reportPrintEnd(previous: KlipperPrinterState, next: KlipperPrinterState) {
+        if (!KlipperNotifications.endedBetween(previous.printState, next.printState)) return
+        KlipperNotifications.printEnded(
+            context = application,
+            fileName = next.printFileName,
+            printState = next.printState.orEmpty(),
+            message = next.printMessage,
+        )
+    }
 
     /** Load, save or remove a saved mesh profile: LOAD, SAVE, REMOVE. */
     fun meshProfile(action: String, name: String) = send(KlipperScripts.meshProfile(action, name))

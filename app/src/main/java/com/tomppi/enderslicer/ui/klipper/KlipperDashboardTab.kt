@@ -23,6 +23,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperFileLimits
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import androidx.compose.ui.platform.LocalContext
 import java.io.File
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
@@ -511,6 +516,28 @@ private fun PositionCard(state: KlipperPrinterState, viewModel: KlipperViewModel
     }
 }
 
+/** The host device's own battery and temperature, as the system reports them. */
+private data class DeviceReading(val percent: Int?, val temperatureCelsius: Double?)
+
+/**
+ * Read the battery from the sticky broadcast.
+ *
+ * ACTION_BATTERY_CHANGED can be read without registering a receiver - the system keeps the last
+ * one - so a screen that redraws every second may as well ask rather than listen.
+ */
+private fun readBattery(context: Context): DeviceReading? {
+    val intent = runCatching {
+        context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    }.getOrNull() ?: return null
+    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    val tenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+    val percent = if (level >= 0 && scale > 0) level * 100 / scale else null
+    val celsius = if (tenths != Int.MIN_VALUE) tenths / 10.0 else null
+    if (percent == null && celsius == null) return null
+    return DeviceReading(percent, celsius)
+}
+
 /**
  * The host link's margins, which is what decides whether this device can drive the
  * printer rather than the printer waiting on it.
@@ -523,6 +550,31 @@ private fun PositionCard(state: KlipperPrinterState, viewModel: KlipperViewModel
 private fun TimingCard(state: KlipperPrinterState) {
     val timing = state.timing ?: return
     KlipperCard(title = "Host link") {
+        //
+        // The phone is the host, so its own health belongs beside the timing it explains: a
+        // device that is hot enough to throttle its processor shows up here first, as stalls
+        // and a shrinking lookahead, and the cause is worth naming before the symptoms are
+        // hunted for in the printer.
+        //
+        val context = LocalContext.current
+        val battery = remember(timing) { readBattery(context) }
+        battery?.let { reading ->
+            val hot = reading.temperatureCelsius?.let { it >= 42.0 } == true
+            KlipperValue(
+                label = "This device",
+                value = listOfNotNull(
+                    reading.percent?.let { "$it %" },
+                    reading.temperatureCelsius?.let { "%.1f °C".format(it) },
+                ).joinToString("  "),
+                valueColor = if (hot) MaterialTheme.colorScheme.error else Color.Unspecified,
+            )
+            if (hot) {
+                KlipperNote(
+                    "It is running hot, and a phone that throttles its processor shows it in " +
+                        "the link first: stalls, and a lookahead that will not stay up.",
+                )
+            }
+        }
         // klippy's own buffer_time, against the marks it acts on.
         state.lookaheadSeconds?.let { lookahead ->
             KlipperValue(
