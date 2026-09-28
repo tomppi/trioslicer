@@ -364,7 +364,10 @@ jobs:
       # folders, and MarlinRouteContractTest fails if Marlin output has changed - the two
       # halves of the rule that a shared default start G-code once broke.
       - name: Verify the Klipper side has not reached into the shared side
-        run: scripts/verify-route-separation.sh
+        # Through bash rather than by its own shebang: the executable bit is the kind of thing
+        # that survives a checkout only sometimes, and a check that fails on that is a check
+        # nobody trusts.
+        run: bash scripts/verify-route-separation.sh
 
       # A macro body that does not compile is not a macro that fails when it is run: klippy
       # compiles them all at start, so one bad body stops the printer coming up.
