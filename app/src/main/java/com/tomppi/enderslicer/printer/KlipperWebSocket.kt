@@ -19,6 +19,7 @@ import java.util.Base64
 internal object KlipperWebSocket {
     const val OPCODE_TEXT = 0x1
     const val OPCODE_BINARY = 0x2
+    const val OPCODE_CONTINUATION = 0x0
     const val OPCODE_CLOSE = 0x8
     const val OPCODE_PING = 0x9
     const val OPCODE_PONG = 0xA
