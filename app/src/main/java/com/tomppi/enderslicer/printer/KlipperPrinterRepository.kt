@@ -724,10 +724,22 @@ class KlipperPrinterRepository(
     suspend fun printFile(sourcePath: String, name: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val directory = gcodeDirectory()
                 val fileName = KlipperPrint.fileName(name)
                 val source = File(sourcePath)
-                copyForPrinting(source, File(directory, fileName))
+                //
+                // Where the file has to be is the only difference between the two routes: the
+                // app's own host reads a directory in this app's storage, and a host on the
+                // network has to be sent the file. The command that prints it is klippy's own
+                // either way, because either way the name is one the host already knows.
+                //
+                val remote = remoteFiles()
+                if (remote != null) {
+                    if (!remote.upload(source, fileName)) {
+                        throw IllegalStateException("the host refused the upload of $fileName")
+                    }
+                } else {
+                    copyForPrinting(source, File(gcodeDirectory(), fileName))
+                }
                 // The machine's live state is cleared before the file is loaded, not by the
                 // file: klippy keeps the Z offset and the M220/M221 factors across prints, and
                 // the start G-code of a file the user already has will not have been told to.
@@ -748,7 +760,7 @@ class KlipperPrinterRepository(
      * it does not offer.
      */
     suspend fun listGcodeFiles(): List<KlipperGcodeFile> = withContext(Dispatchers.IO) {
-        KlipperGcodeFiles.list(gcodeDirectory())
+        remoteFiles()?.list() ?: KlipperGcodeFiles.list(gcodeDirectory())
     }
 
     /**
@@ -807,6 +819,7 @@ class KlipperPrinterRepository(
 
     /** Delete one of those files. Confined to the printer's own directory. */
     suspend fun deleteGcodeFile(name: String): Boolean = withContext(Dispatchers.IO) {
+        remoteFiles()?.let { files -> return@withContext files.delete(KlipperPrint.fileName(name)) }
         runCatching {
             val directory = gcodeDirectory().canonicalFile
             val target = File(directory, KlipperPrint.fileName(name)).canonicalFile
@@ -823,12 +836,35 @@ class KlipperPrinterRepository(
      * belong in a composable.
      */
     suspend fun fileThumbnail(name: String): Bitmap? = withContext(Dispatchers.IO) {
+        remoteFiles()?.let { files ->
+            val encoded = files.metadata(KlipperPrint.fileName(name))?.thumbnail ?: return@withContext null
+            return@withContext runCatching {
+                val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+        }
         runCatching {
             val file = File(gcodeDirectory(), KlipperPrint.fileName(name))
             val encoded = KlipperGcodeFiles.read(file).thumbnail ?: return@runCatching null
             val bytes = Base64.decode(encoded, Base64.DEFAULT)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         }.getOrNull()
+    }
+
+    /**
+     * The file API of the chosen host, or null when the host is this device.
+     *
+     * Every file operation goes through this: the app's own storage and a computer's are two
+     * different places, and the only thing that decides which is the host choice.
+     */
+    private fun remoteFiles(): MoonrakerFiles? {
+        val choice = hostChoice.load()
+        if (!choice.isRemote || choice.host.isBlank()) return null
+        return MoonrakerFiles(
+            host = choice.host.trim(),
+            port = choice.port,
+            apiKey = choice.apiKey.takeIf { it.isNotBlank() },
+        )
     }
 
     /** The directory [virtual_sdcard] reads, created if it is not there yet. */
