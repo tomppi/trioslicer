@@ -14,7 +14,7 @@ Moonraker speaks to.
 
 | Screen | For | Read from |
 | --- | --- | --- |
-| Dashboard | What the machine is doing now | `print_stats`, `virtual_sdcard`, `display_status`, `gcode_move`, `fan`, `toolhead`, `mcu`, `exclude_object` |
+| Dashboard | What the machine is doing now, why a print stopped, and the numbers that decide its speed | `print_stats`, `virtual_sdcard`, `display_status`, `gcode_move`, `motion_report`, `fan`, `toolhead`, `mcu`, `exclude_object` |
 | Temperatures | Every heater and sensor, and the last five minutes of them | `extruder`, `heater_bed`, `temperature_sensor *`, `heater_generic *`, `temperature_fan *`, `configfile` |
 | Move | Homing, jogging, the steppers | `toolhead`, `gcode_move`, `configfile` |
 | Extrude | Feeding filament, pressure advance, retraction | `extruder`, `configfile` |
@@ -26,6 +26,32 @@ Moonraker speaks to.
 | Mesh | The bed as the probe found it | `bed_mesh` |
 | History | What this app has printed | Its own record, written when a print ends |
 | Machine | The host, the boards, the configuration and the log | `info`, `mcu`, `system_stats`, `query_endstops`, `configfile` |
+
+The dashboard carries the numbers a print is diagnosed with, and they are not all from the same
+place:
+
+- **Speeds** - what the file asked for (`gcode_move.speed`, mm/s), what M220 makes of it
+  (`speed_factor`, a ratio), and what the toolhead is measured doing (`motion_report.live_velocity`),
+  beside the printer's own limits. A printer at 200% does not go twice as fast once
+  `max_velocity` is reached, and the card says so rather than leaving the slider looking broken.
+- **Limits** - the same file's own limit lines against the printer's. Only `M204` means anything
+  to klippy, as `max_accel = min(P, T)`; `M201`, `M203` and `M205` are Marlin's and are named as
+  ignored, because a file that appears to set a 500 mm/s ceiling is setting nothing.
+- **Why it stopped** - `print_stats.message`, which is where klippy puts "Move out of range" and
+  "Heater extruder not heating at expected rate". A print that failed says so, whether or not the
+  state still says printing.
+- **Babystepping** - the same `SET_GCODE_OFFSET Z_ADJUST` nudges as the Z probe screen, on the
+  screen the first layer is watched from. The offset lasts until the host restarts; the Z probe
+  screen is where a good one becomes the probe's own zero.
+- **Host health** - the phone's battery and temperature. The host is this device, and one hot
+  enough to throttle shows it in the link first, as stalls and a lookahead that will not stay up.
+
+Two things are always within reach while a print runs: a **stop** on every tab, because the
+moment a print is seen to be going wrong is the moment to stop it, and a notification when the
+print ends - finished, cancelled, or stopped with klippy's reason in the body. Motion is refused
+while printing rather than merely discouraged: homing, jogging, releasing the steppers and hand
+extrusion would each leave the printer's idea of where the tool is out of step with the file's.
+Pausing brings them back, which is what a filament change needs.
 
 Every screen is always present, whether or not the printer has the section it describes.
 A tab that appears and disappears is a tab nobody learns to find; a screen whose
