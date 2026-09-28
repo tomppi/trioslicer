@@ -285,7 +285,24 @@ private fun JobCard(
             if (path == null) {
                 KlipperNote("Nothing sliced yet. Slice a model and it appears here.")
             } else {
+                //
+                // A file sliced for Marlin carries Marlin's start script, and its G29 L0 and
+                // G29 A are UBL commands. On this host G29 is the printer's own macro, which
+                // usually homes and meshes again - so the print homes and probes twice before
+                // the first layer, and the second probe measures a bed the first one touched.
+                //
+                var flavor by remember(path) { mutableStateOf<String?>(null) }
+                LaunchedEffect(path) { flavor = viewModel.slicedFlavor(path) }
                 KlipperValue("Ready to print", KlipperPrint.fileName(suggestedFileName))
+                if (flavor?.startsWith("marlin", ignoreCase = true) == true) {
+                    Spacer(Modifier.height(4.dp))
+                    KlipperNote(
+                        "This file says it was sliced for Marlin, and Marlin's start script " +
+                            "ends with G29 lines that mean home and mesh again on a Klipper " +
+                            "printer. Slice it again with the Klipper flavour, or expect the " +
+                            "printer to home and probe twice.",
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 KlipperButtons {
                     KlipperButton(

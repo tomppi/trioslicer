@@ -15,6 +15,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -147,9 +148,40 @@ internal fun MachineSettingsContent(
         // klippy. With one pair for both, switching the G-code flavour sent whichever script had
         // been written to the other machine.
         //
+        //
+        // The flavour, which decides which of the two pairs below a slice is given.
+        //
+        // It had no control at all: it was whatever a profile import left behind, and the
+        // default is Marlin. So a printer driven by Klipper - this app's own host, or a computer
+        // running klippy - was sent Marlin's start script, whose G29 L0 and G29 A are UBL
+        // commands. On a Klipper host G29 is whichever macro the printer defines, and the usual
+        // one homes and meshes: the print homed twice and probed the bed twice before the first
+        // layer, with the second probe measuring a bed the first one had already touched.
+        //
+        Text("G-code flavour", style = MaterialTheme.typography.titleSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("Klipper", "Marlin").forEach { flavour ->
+                if (settings.gcodeFlavor.trim().equals(flavour, ignoreCase = true)) {
+                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(flavour) }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            onSettings(SlicerSettings.Keys.GCODE_FLAVOR) { current ->
+                                current.copy(gcodeFlavor = flavour)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text(flavour) }
+                }
+            }
+        }
         Text(
-            "The G-code flavour above decides which of these a slice is given; the other is kept " +
-                "for printing that way.",
+            "Klipper sends G28 then BED_MESH_CALIBRATE; Marlin sends the UBL start script. " +
+                "Which of the two pairs below is used follows this, and the file says which " +
+                "it was written for.",
             style = MaterialTheme.typography.bodySmall,
         )
 

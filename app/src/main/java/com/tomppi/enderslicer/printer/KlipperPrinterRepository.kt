@@ -945,6 +945,22 @@ class KlipperPrinterRepository(
         written
     }
 
+    /**
+     * The flavour a sliced file was written for, from its own header.
+     *
+     * The file is the authority rather than the setting: a file sliced before the setting was
+     * changed still carries the start script of the flavour it was sliced with, and that is the
+     * script the printer will run.
+     */
+    suspend fun slicedFlavor(path: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            File(path).useLines { lines ->
+                lines.take(HEADER_LINES).firstOrNull { it.startsWith(";FLAVOR:", ignoreCase = true) }
+                    ?.substringAfter(':')?.trim()
+            }
+        }.getOrNull()
+    }
+
     /** The directory [virtual_sdcard] reads, created if it is not there yet. */
     private fun gcodeDirectory(): File = KlipperHostFiles.gcodes(application.filesDir).apply { mkdirs() }
 
@@ -1150,7 +1166,10 @@ class KlipperPrinterRepository(
          * The file list reads *.gcode, and this does not end that way, so a partial file is
          * never offered as something to print.
          */
-        private const val UPLOAD_SUFFIX = ".uploading"
+        /** How far into a file its header can be: every slicer writes these at the top. */
+    private const val HEADER_LINES = 60
+
+    private const val UPLOAD_SUFFIX = ".uploading"
 
         const val TAG = "KlipperPrinter"
 
