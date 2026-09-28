@@ -25,6 +25,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.KlipperFileLimits
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import com.tomppi.enderslicer.printer.KlipperWebcam
+import kotlinx.coroutines.delay
 import com.tomppi.enderslicer.printer.parseDecimal
 import android.content.Context
 import android.content.Intent
@@ -86,6 +95,10 @@ internal fun KlipperDashboardTab(
             TemperaturesCard(state, viewModel)
             ExcludedObjectsCard(state, onExclude = { confirmExclude = it })
         }
+        // The camera, when the host publishes one - above the numbers, because a picture of
+        // the thing is the first check anybody makes.
+        state.webcams.firstOrNull()?.let { camera -> KlipperCameraCard(camera, viewModel) }
+
         LimitsCard(state, localGcodePath, viewModel)
         PositionCard(state, viewModel)
         TimingCard(state)
@@ -402,6 +415,42 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
         }
     }
 }
+
+/**
+ * The print camera, when the host has one.
+ *
+ * A frame a second while this screen is open, and nothing at all when it is not: the request
+ * stops with the composition, so a phone in a pocket is not downloading pictures of a printer.
+ * The stream itself is left alone - a multipart response would need a decoder to draw, and one
+ * frame a second is a first layer you can watch.
+ */
+@Composable
+private fun KlipperCameraCard(camera: KlipperWebcam, viewModel: KlipperViewModel) {
+    var frame by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(camera.snapshotUrl) {
+        while (true) {
+            viewModel.webcamSnapshot(camera.snapshotUrl)?.let { bytes ->
+                frame = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }
+            delay(CAMERA_REFRESH_MS)
+        }
+    }
+    KlipperCard(title = camera.name, subtitle = "The print camera") {
+        val picture = frame
+        if (picture == null) {
+            KlipperNote("Waiting for a frame from the camera.")
+        } else {
+            Image(
+                bitmap = picture,
+                contentDescription = "The printer, from its camera",
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/** A frame a second: enough to watch a first layer, cheap enough to leave open. */
+private const val CAMERA_REFRESH_MS = 1_000L
 
 /**
  * What the file asks the machine for, against what the machine allows.

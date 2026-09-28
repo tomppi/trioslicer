@@ -203,6 +203,19 @@ class KlipperPrinterRepository(
             error("no Klipper host is set")
         }
         val c = KlipperClient(choice.transportFor(socketPath), choice.label)
+        // A camera belongs to the host, so this is asked of the host - and only of one that is
+        // somewhere else, because the app's own host has nothing to ask.
+        val webcams = if (choice.isRemote) {
+            runCatching {
+                MoonrakerWebcams(
+                    host = choice.host.trim(),
+                    port = choice.port,
+                    apiKey = choice.apiKey.takeIf { it.isNotBlank() },
+                ).list()
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
         c.onNotification = ::applyNotification
         c.connect()
         // Before anything else, and again on every connection: the subscription belongs
@@ -226,6 +239,7 @@ class KlipperPrinterRepository(
                 error = null,
                 host = KlipperHost.from(info),
                 published = published,
+                webcams = webcams,
             ).withStatus(snapshot)
         }
         Log.i(TAG, "watching " + choice.label + " as " + info.optString("state") +
@@ -562,6 +576,23 @@ class KlipperPrinterRepository(
                 true
             }.getOrDefault(false)
         }
+
+    /**
+     * One frame from a camera, fetched when a screen asks for one.
+     *
+     * On demand rather than pushed: the screens that show a picture show one frame a second
+     * while they are open, and a stream the app is not looking at is bandwidth spent on
+     * nothing.
+     */
+    suspend fun webcamSnapshot(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        val choice = hostChoice.load()
+        if (!choice.isRemote) return@withContext null
+        MoonrakerWebcams(
+            host = choice.host.trim(),
+            port = choice.port,
+            apiKey = choice.apiKey.takeIf { it.isNotBlank() },
+        ).snapshot(url)
+    }
 
     /** Tell the phone how a print ended, once, at the moment it stops being a print. */
     private fun reportPrintEnd(previous: KlipperPrinterState, next: KlipperPrinterState) {

@@ -66,6 +66,9 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
         repository.reconnect()
     }
 
+    /** One frame from a camera the host publishes, fetched when a screen asks for one. */
+    suspend fun webcamSnapshot(url: String): ByteArray? = repository.webcamSnapshot(url)
+
     fun startHost() = KlipperEngineService.start(getApplication())
 
     /** Stop the host: the printer is released and the process ends. */

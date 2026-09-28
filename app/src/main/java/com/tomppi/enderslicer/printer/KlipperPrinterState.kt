@@ -30,6 +30,15 @@ data class KlipperPrinterState(
      * screens.
      */
     val remoteHost: String? = null,
+
+    /**
+     * The print cameras the host publishes, if it has any.
+     *
+     * The app is not the host that owns these: a camera belongs to the machine running the
+     * printer - Moonraker knows about it and the phone is told. Empty on the device route,
+     * where there is nothing to ask.
+     */
+    val webcams: List<KlipperWebcam> = emptyList(),
     /**
      * What klippy said about this print, when it had something to say.
      *
