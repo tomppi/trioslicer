@@ -531,11 +531,8 @@ class KlipperPrinterRepository(
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
-                val config = KlipperHostFiles.config(application.filesDir)
-                if (!config.isFile) return@runCatching false
-                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
-                config.writeText(KlipperConfigFile.withInputShaper(config.readText(), settings))
-                true
+                val text = readHostConfig() ?: return@runCatching false
+                writeHostConfig(KlipperConfigFile.withInputShaper(text, settings))
             }.getOrDefault(false)
         }
 
@@ -561,9 +558,7 @@ class KlipperPrinterRepository(
     internal suspend fun saveRotationDistance(distance: Double): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
-                val config = KlipperHostFiles.config(application.filesDir)
-                if (!config.isFile) return@runCatching false
-                val text = config.readText()
+                val text = readHostConfig() ?: return@runCatching false
                 val written = KlipperConfigFile.withOption(
                     text,
                     "extruder",
@@ -571,9 +566,7 @@ class KlipperPrinterRepository(
                     String.format(java.util.Locale.ROOT, "%.3f", distance),
                 )
                 if (written == text) return@runCatching false
-                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
-                config.writeText(written)
-                true
+                writeHostConfig(written)
             }.getOrDefault(false)
         }
 
@@ -614,13 +607,13 @@ class KlipperPrinterRepository(
      */
     internal suspend fun addStarterMacros(): List<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val config = KlipperHostFiles.config(application.filesDir)
-            if (!config.isFile) return@runCatching emptyList()
-            val text = config.readText()
+            val text = readHostConfig() ?: return@runCatching emptyList()
             val missing = KlipperMacroLibrary.missingFrom(text)
             if (missing.isEmpty()) return@runCatching emptyList()
-            config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
-            config.writeText(KlipperConfigFile.withSections(text, missing.map { it.section }))
+            val written = writeHostConfig(
+                KlipperConfigFile.withSections(text, missing.map { it.section }),
+            )
+            if (!written) return@runCatching emptyList()
             missing.map { it.name }
         }.getOrDefault(emptyList())
     }
@@ -905,6 +898,51 @@ class KlipperPrinterRepository(
             port = choice.port,
             apiKey = choice.apiKey.takeIf { it.isNotBlank() },
         )
+    }
+
+    /**
+     * The chosen host's configuration, as text.
+     *
+     * Three writers in this class change the printer's own configuration - shaping, the
+     * extruder's rotation distance, the starter macros - and where that configuration *is*
+     * depends on which host is printing. Both were this app's own file for one release, which
+     * is why a rotation distance measured while driving the computer landed on the phone:
+     * saved, confirmed by the app, and nowhere near the printer.
+     */
+    private suspend fun readHostConfig(): String? = withContext(Dispatchers.IO) {
+        remoteFiles()?.configText()
+            ?: KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
+    }
+
+    /**
+     * Write a configuration where the host will read it, and make the host read it.
+     *
+     * The device route keeps the file beside the app, as it always has. The computer route
+     * sends it to the machine that is holding the printer - Moonraker's config root is the
+     * directory klippy starts from - keeps what was there as previous.printer.cfg, and asks
+     * for a restart, because a written configuration is not the running one until it does.
+     */
+    private suspend fun writeHostConfig(text: String): Boolean = withContext(Dispatchers.IO) {
+        val remote = remoteFiles()
+        if (remote == null) {
+            KlipperHostFiles.directory(application.filesDir).mkdirs()
+            val config = KlipperHostFiles.config(application.filesDir)
+            if (config.isFile) {
+                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+            }
+            config.writeText(text)
+            return@withContext true
+        }
+        readHostConfig()?.takeIf { it.isNotBlank() }?.let { before ->
+            val previous = File(application.cacheDir, "previous.printer.cfg")
+            previous.writeText(before)
+            remote.uploadConfig(previous, name = "previous.printer.cfg")
+        }
+        val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
+        staged.writeText(text)
+        val written = remote.uploadConfig(staged)
+        if (written) restartHost()
+        written
     }
 
     /** The directory [virtual_sdcard] reads, created if it is not there yet. */
