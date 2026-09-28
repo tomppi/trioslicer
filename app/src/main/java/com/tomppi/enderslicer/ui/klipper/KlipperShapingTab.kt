@@ -356,7 +356,7 @@ private fun ShaperCard(
                 enabled = enabled,
             )
             KlipperNumberField(
-                label = "Damping",
+                label = "Damping ratio",
                 value = edit.dampingText,
                 onValueChange = { typed ->
                             onEdit(
@@ -451,8 +451,8 @@ private fun MeasurementCard(
                     } else {
                         agreed.forEach { peak ->
                             KlipperValue(
-                                label = "%.1f Hz".format(peak.frequencyHz),
-                                value = "in " + peak.seenIn + " of " + peak.ofRuns,
+                                label = "Peak at %.1f Hz".format(peak.frequencyHz),
+                                value = "seen in " + peak.seenIn + " of " + peak.ofRuns + " measurements",
                             )
                         }
                         KlipperButtons {
@@ -479,16 +479,15 @@ private fun MeasurementResult(
     measurement: KlipperResonanceMeasurement,
     onUse: (Double) -> Unit,
 ) {
-    KlipperValue("Sampled at", "%.0f Hz".format(measurement.sampleRateHz))
-    KlipperValue("Machine heard at", "%.1f s into the recording".format(measurement.movedAt))
+    KlipperValue("Sample rate", "%.0f Hz".format(measurement.sampleRateHz))
+    KlipperValue("Movement start", "%.1f s into the recording".format(measurement.movedAt))
     KlipperValue("Sweep start from", measurement.startFrom)
     if (measurement.onToolhead) {
+        KlipperValue("Phone mass", "%.0f g".format(253.0))
+        KlipperValue("Moving mass", "%.0f g".format(measurement.movingMassGrams))
         KlipperValue(
-            label = "Phone on the moving part",
-            value = "%.0f g on %.0f g moves each frequency up by %.0f%%".format(
-                253.0, measurement.movingMassGrams,
-                (measurement.massCorrection - 1.0) * 100.0,
-            ),
+            "Frequency correction",
+            "%.0f%% higher than the phone measured".format((measurement.massCorrection - 1.0) * 100.0),
         )
         KlipperNote(
             "The frequencies below have been corrected for the phone's own weight, which is " +
@@ -518,8 +517,8 @@ private fun MeasurementResult(
     KlipperNote("What the machine answered at, strongest first:")
     measurement.peaks.forEach { peak ->
         KlipperValue(
-            label = "%.1f Hz".format(peak.frequencyHz),
-            value = "%.0f× the rest".format(peak.signalToNoise),
+            label = "Peak at %.1f Hz".format(peak.frequencyHz),
+            value = "%.0f× the machine's own noise".format(peak.signalToNoise),
         )
     }
     Spacer(Modifier.height(8.dp))

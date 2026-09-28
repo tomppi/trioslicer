@@ -121,7 +121,7 @@ internal fun KlipperMacrosTab(state: KlipperPrinterState, viewModel: KlipperView
             return@Column
         }
         Text(
-            text = shown.size.toString() + " of " + all.size + " · tapping one runs it",
+            text = shown.size.toString() + " of " + all.size + " macros · tapping one runs it",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -213,10 +213,10 @@ private fun FileCard(
         trailing = { KlipperButton(if (open) "Close" else "Open", onClick = onOpen) },
     ) {
         file.slicer.takeIf { it.isNotBlank() }?.let { KlipperValue("Sliced by", it) }
-        file.estimatedSeconds?.let { KlipperValue("Estimated", formatPrintTime(it)) }
-        file.filamentGrams?.let { KlipperValue("Filament", "%.1f g".format(it)) }
+        file.estimatedSeconds?.let { KlipperValue("Estimated print time", formatPrintTime(it)) }
+        file.filamentGrams?.let { KlipperValue("Filament used", "%.1f g".format(it)) }
         file.filamentMillimetres?.takeIf { file.filamentGrams == null }?.let {
-            KlipperValue("Filament", "%.2f m".format(it / 1000))
+            KlipperValue("Filament used", "%.2f m".format(it / 1000))
         }
         file.layerHeight?.let { KlipperValue("Layer height", "%.2f mm".format(it)) }
         file.layerCount?.let { KlipperValue("Layers", it.toString()) }

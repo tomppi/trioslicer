@@ -48,12 +48,12 @@ internal fun KlipperHistoryTab(viewModel: KlipperViewModel) {
                 )
             } else {
                 KlipperValue("Prints", records.size.toString())
-                KlipperValue("Finished", records.count { it.outcome == "complete" }.toString())
+                KlipperValue("Prints finished", records.count { it.outcome == "complete" }.toString())
                 val seconds = records.sumOf { it.durationSeconds }
-                KlipperValue("Time printing", formatPrintTime(seconds.toInt()))
+                KlipperValue("Total printing time", formatPrintTime(seconds.toInt()))
                 val millimetres = records.sumOf { it.filamentMillimetres }
                 if (millimetres > 0) {
-                    KlipperValue("Filament", "%.1f m".format(millimetres / 1000))
+                    KlipperValue("Filament used", "%.1f m".format(millimetres / 1000))
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -88,7 +88,7 @@ private fun RecordCard(record: KlipperPrintRecord) {
         KlipperValue("How it ended", record.outcome.replaceFirstChar { it.uppercase() })
         KlipperValue("Printing time", formatPrintTime(record.durationSeconds.toInt()))
         if (record.filamentMillimetres > 0) {
-            KlipperValue("Filament", "%.2f m".format(record.filamentMillimetres / 1000))
+            KlipperValue("Filament used", "%.2f m".format(record.filamentMillimetres / 1000))
         }
         record.layers?.let { KlipperValue("Reached layer", it.toString()) }
     }

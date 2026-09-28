@@ -79,13 +79,13 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 KlipperNumberField(
-                    label = "Length",
+                    label = "Filament length",
                     value = length,
                     onValueChange = { typed -> length = typed.filter { it.isDigit() || it == '.' }.take(5) },
                     suffix = "mm",
                 )
                 KlipperNumberField(
-                    label = "Speed",
+                    label = "Feedrate",
                     value = feedrate,
                     onValueChange = { typed -> feedrate = typed.filter { it.isDigit() }.take(4) },
                     suffix = "mm/min",
@@ -121,28 +121,28 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                     "mark again. Hot, or it will slip. That measurement is what the printer " +
                     "actually delivered, and the figure below replaces the configured one.",
             )
-            KlipperValue("Configured now", state.rotationDistance.orDash(3))
+            KlipperValue("Rotation distance", state.rotationDistance.orDash(3) + " mm per rotation")
             Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 KlipperNumberField(
-                    label = "Push",
+                    label = "Length to push",
                     value = calibrationLength,
                     onValueChange = { typed -> calibrationLength = digits(typed, 4) },
                     suffix = "mm",
                     enabled = state.isReady,
                 )
                 KlipperNumberField(
-                    label = "Mark was",
+                    label = "Mark before",
                     value = markDistance,
                     onValueChange = { typed -> markDistance = digits(typed, 4) },
                     suffix = "mm",
                     enabled = state.isReady,
                 )
                 KlipperNumberField(
-                    label = "Now reads",
+                    label = "Mark after",
                     value = leftAfter,
                     onValueChange = { typed -> leftAfter = digits(typed, 5) },
                     suffix = "mm",
@@ -177,8 +177,8 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
             }
             if (moved != null && corrected != null) {
                 Spacer(Modifier.height(8.dp))
-                KlipperValue("That moved", "%.2f mm".format(moved))
-                KlipperValue("New rotation distance", "%.3f".format(corrected))
+                KlipperValue("Filament moved", "%.2f mm".format(moved))
+                KlipperValue("New rotation distance", "%.3f mm per rotation".format(corrected))
                 if (moved <= 0.0) {
                     KlipperNote(
                         "The mark cannot end up further away than it started - check the two " +
@@ -211,7 +211,7 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
 
         KlipperCard(
             title = "Pressure advance",
-            subtitle = currentAdvance?.let { "%.4f".format(it) },
+            subtitle = currentAdvance?.let { "In use: %.4f s".format(it) },
         ) {
             KlipperNote(
                 "How much the extruder leads a corner to make up for the filament's own " +
@@ -224,9 +224,10 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 KlipperNumberField(
-                    label = "Advance",
+                    label = "Pressure advance",
                     value = advance,
                     onValueChange = { typed -> advance = typed.filter { it.isDigit() || it == '.' }.take(6) },
+                    suffix = "s",
                     enabled = state.isReady,
                 )
                 KlipperButton(
@@ -267,13 +268,13 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     KlipperNumberField(
-                        label = "Length",
+                        label = "Retraction length",
                         value = retractLength,
                         onValueChange = { typed -> retractLength = typed.filter { it.isDigit() || it == '.' }.take(5) },
                         suffix = "mm",
                     )
                     KlipperNumberField(
-                        label = "Speed",
+                        label = "Retraction speed",
                         value = retractSpeed,
                         onValueChange = { typed -> retractSpeed = typed.filter { it.isDigit() }.take(4) },
                         suffix = "mm/s",

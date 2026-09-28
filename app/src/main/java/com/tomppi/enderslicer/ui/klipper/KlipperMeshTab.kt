@@ -78,19 +78,21 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             } else {
                 MeshPicture(mesh)
                 Spacer(Modifier.height(8.dp))
-                KlipperValue("Probed", "%d by %d points".format(mesh.shape.first, mesh.shape.second))
+                KlipperValue("Probe grid", "%d by %d points".format(mesh.shape.first, mesh.shape.second))
                 val lowest = mesh.minimum
                 val highest = mesh.maximum
-                lowest?.let { KlipperValue("Lowest", "%.3f mm".format(it)) }
-                highest?.let { KlipperValue("Highest", "%.3f mm".format(it)) }
+                lowest?.let { KlipperValue("Lowest height", "%.3f mm".format(it)) }
+                highest?.let { KlipperValue("Highest height", "%.3f mm".format(it)) }
                 if (lowest != null && highest != null) {
-                    KlipperValue("Range", "%.3f mm".format(highest - lowest))
+                    KlipperValue("Height range", "%.3f mm".format(highest - lowest))
                 }
                 KlipperValue(
-                    "Area",
-                    "%.0f,%.0f to %.0f,%.0f".format(
-                        mesh.minX ?: 0.0, mesh.minY ?: 0.0, mesh.maxX ?: 0.0, mesh.maxY ?: 0.0,
-                    ),
+                    "Probed X range",
+                    "%.0f to %.0f mm".format(mesh.minX ?: 0.0, mesh.maxX ?: 0.0),
+                )
+                KlipperValue(
+                    "Probed Y range",
+                    "%.0f to %.0f mm".format(mesh.minY ?: 0.0, mesh.maxY ?: 0.0),
                 )
             }
         }

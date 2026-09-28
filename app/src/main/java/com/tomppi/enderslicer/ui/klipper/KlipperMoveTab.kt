@@ -87,14 +87,14 @@ internal fun KlipperMoveTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                 }
             }
             Spacer(Modifier.height(8.dp))
-            KlipperValue("Feedrate", "$feedrate mm/min")
+            KlipperValue("Jog feedrate", "$feedrate mm/min")
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 KlipperNumberField(
-                    label = "Feedrate",
+                    label = "Jog feedrate",
                     value = feedrate,
                     onValueChange = { typed -> feedrate = typed.filter { it.isDigit() }.take(4) },
                     suffix = "mm/min",
@@ -193,7 +193,7 @@ private fun AxisRow(
             modifier = Modifier.weight(1f),
         )
         Text(
-            text = position?.let { "%.1f".format(it) } ?: "-",
+            text = position?.let { "%.1f mm".format(it) } ?: "-",
             style = MaterialTheme.typography.bodyMedium,
         )
         KlipperButton("−", enabled = enabled) { onJog(-1.0) }

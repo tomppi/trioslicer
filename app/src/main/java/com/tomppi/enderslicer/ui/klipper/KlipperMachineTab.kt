@@ -137,7 +137,7 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             KlipperValue("Host name", state.host.hostname.ifBlank { "-" })
             KlipperValue("Python", state.host.pythonPath.ifBlank { "-" })
             KlipperValue("CPU", state.host.cpuInfo.ifBlank { "-" })
-            KlipperValue("Process", state.host.processId.takeIf { it > 0 }?.toString() ?: "-")
+            KlipperValue("Process ID", state.host.processId.takeIf { it > 0 }?.toString() ?: "-")
             KlipperValue("Configuration", state.host.configFile.ifBlank { "-" })
             KlipperValue("Log", state.host.logFile.ifBlank { "-" })
             Spacer(Modifier.height(4.dp))
@@ -370,19 +370,24 @@ private fun ImportedDialog(result: KlipperImportResult, onDismiss: () -> Unit) {
 @Composable
 private fun McuCard(mcu: KlipperMcu) {
     KlipperCard(title = mcu.name, subtitle = mcu.version.ifBlank { "no version reported" }) {
-        mcu.frequency?.let { KlipperValue("Clock", "%.0f MHz".format(it / 1_000_000)) }
+        mcu.frequency?.let { KlipperValue("Clock frequency", "%.0f MHz".format(it / 1_000_000)) }
         // mcu_awake is seconds of the last five-second stats window (basecmd.c asks for the
         // report every 5000000 us), so the duty is that over five - not the number itself.
         mcu.awake?.let { awake ->
-            KlipperValue("Busy", "%.0f%%".format(awake / MCU_STATS_WINDOW_SECONDS * 100))
+            KlipperValue(
+                "Board busy",
+                "%.0f%% of the last %.0f s".format(
+                    awake / MCU_STATS_WINDOW_SECONDS * 100, MCU_STATS_WINDOW_SECONDS,
+                ),
+            )
         }
-        mcu.load?.let { KlipperValue("Task average", "%.1f µs".format(it * 1_000_000)) }
-        mcu.roundTripSeconds?.let { KlipperValue("Round trip", "%.1f ms".format(it * 1000)) }
-        mcu.jitterSeconds?.let { KlipperValue("Jitter", "±%.1f ms".format(it * 1000)) }
-        mcu.timeoutSeconds?.let { KlipperValue("Resend after", "%.0f ms".format(it * 1000)) }
+        mcu.load?.let { KlipperValue("Average task time", "%.1f µs".format(it * 1_000_000)) }
+        mcu.roundTripSeconds?.let { KlipperValue("Round-trip time", "%.1f ms".format(it * 1000)) }
+        mcu.jitterSeconds?.let { KlipperValue("Round-trip jitter", "±%.1f ms".format(it * 1000)) }
+        mcu.timeoutSeconds?.let { KlipperValue("Retransmit timeout", "%.0f ms".format(it * 1000)) }
         val retransmits = mcu.retransmits ?: 0
         if (retransmits > 0) {
-            KlipperValue("Retransmitted", "$retransmits bytes", valueColor = MaterialTheme.colorScheme.error)
+            KlipperValue("Bytes retransmitted", "$retransmits bytes", valueColor = MaterialTheme.colorScheme.error)
         }
     }
 }

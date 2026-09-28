@@ -71,13 +71,13 @@ internal fun KlipperZProbeTab(state: KlipperPrinterState, viewModel: KlipperView
             )
             Spacer(Modifier.height(8.dp))
             KlipperValue(
-                label = "Offset in use now",
+                label = "Z offset in use now",
                 value = "%.3f mm".format(state.zOffset ?: 0.0),
             )
             KlipperNote("Applied on top while printing, and forgotten when the host restarts.")
             state.lastProbeResult?.let { result ->
                 Spacer(Modifier.height(8.dp))
-                KlipperValue("Last probe", "%.3f mm".format(result))
+                KlipperValue("Last probe height", "%.3f mm".format(result))
             }
             state.lastProbeQuery?.let { query -> KlipperValue("Probe state", query) }
         }
@@ -193,7 +193,7 @@ private fun PaperCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
         subtitle = "klippy is waiting for the nozzle to be set",
     ) {
         KlipperValue(
-            label = "Nozzle",
+            label = "Nozzle height",
             value = state.manualProbeZ?.let { "%.3f mm".format(it) } ?: "-",
         )
         Spacer(Modifier.height(8.dp))

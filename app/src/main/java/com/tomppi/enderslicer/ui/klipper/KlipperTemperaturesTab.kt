@@ -89,10 +89,10 @@ internal fun KlipperTemperaturesTab(state: KlipperPrinterState, viewModel: Klipp
             state.genericFans.forEach { (name, speed) ->
                 KlipperCard(title = name, subtitle = "Fan the printer names itself") {
                     KlipperSlider(
-                        label = "Speed",
+                        label = "Fan speed",
                         value = ((speed ?: 0.0) * 100).toFloat().coerceIn(0f, 100f),
                         range = 0f..100f,
-                        valueText = "%.0f%%".format((speed ?: 0.0) * 100),
+                        valueText = "%.0f%% of full speed".format((speed ?: 0.0) * 100),
                         onSet = { percent -> viewModel.setGenericFan(name, percent / 100.0) },
                     )
                 }
@@ -121,10 +121,16 @@ internal fun KlipperTemperaturesTab(state: KlipperPrinterState, viewModel: Klipp
 /** A label and a reading, the shape both this screen and the dashboard use. */
 @Composable
 internal fun HeaterReadoutRow(heater: KlipperHeater) {
-    val reading = heater.temperature?.let { "%.1f °C".format(it) } ?: "-"
-    val target = heater.target?.takeIf { it > 0.0 }?.let { " → %.0f °C".format(it) }.orEmpty()
-    val power = heater.power?.takeIf { it > 0.0 }?.let { "  (%.0f%%)".format(it * 100) }.orEmpty()
-    KlipperValue(heater.label, reading + target + power)
+    KlipperValue(
+        label = heater.label + " temperature",
+        value = heater.temperature?.let { "%.1f °C".format(it) } ?: "-",
+    )
+    heater.target?.takeIf { it > 0.0 }?.let { target ->
+        KlipperValue(heater.label + " target", "%.0f °C".format(target))
+    }
+    heater.power?.takeIf { it > 0.0 }?.let { power ->
+        KlipperValue(heater.label + " heater power", "%.0f%% of full power".format(power * 100))
+    }
 }
 
 /** One heater or sensor, with its presets and its own calibration. */
@@ -152,7 +158,7 @@ private fun HeaterCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             KlipperNumberField(
-                label = "Target",
+                label = "Target temperature",
                 value = typed,
                 onValueChange = { typed = it.filter { character -> character.isDigit() }.take(3) },
                 suffix = "°C",
@@ -296,7 +302,7 @@ private fun PidDialog(heater: KlipperHeater, onRun: (Int) -> Unit, onDismiss: ()
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             KlipperNumberField(
-                label = "Target",
+                label = "Target temperature",
                 value = target,
                 onValueChange = { typed -> target = typed.filter { it.isDigit() }.take(3) },
                 suffix = "°C",

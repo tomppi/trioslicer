@@ -30,9 +30,13 @@ Moonraker speaks to.
 The dashboard carries the numbers a print is diagnosed with, and they are not all from the same
 place:
 
-- **Speeds** - what the file asked for (`gcode_move.speed`, mm/s), what M220 makes of it
-  (`speed_factor`, a ratio), and what the toolhead is measured doing (`motion_report.live_velocity`),
-  beside the printer's own limits. A printer at 200% does not go twice as fast once
+- **Speeds** - one row per quantity, each named: the velocity the file asks for, the feedrate it
+  asks for in the unit a feedrate is written in, the velocity with M220 applied, and the
+  printer's own velocity and acceleration limits. The units are not decoration: `gcode_move.speed`
+  is the file's `F` in **mm per minute** - `cmd_G1` assigns it with no division
+  (`gcode_move.py:134-139`) - while `motion_report.live_velocity` and `toolhead.max_velocity` are
+  mm/s, and reading the first as the second once made the card claim every print was being
+  clamped at sixty times its real speed. A printer at 200% does not go twice as fast once
   `max_velocity` is reached, and the card says so rather than leaving the slider looking broken.
 - **Limits** - the same file's own limit lines against the printer's. Only `M204` means anything
   to klippy, as `max_accel = min(P, T)`; `M201`, `M203` and `M205` are Marlin's and are named as
@@ -87,9 +91,13 @@ empty:
   of a Linux host. Here the host is the app, and its payload is updated with it.
 - **Power devices** - Moonraker's relays and Tasmota plugs. There is no second device to
   switch.
-- **Webcam, timelapse, spoolman, job queue** - Moonraker components or external services.
-  A job queue is the one of these that could be built on this side; nothing prints from a
-  queue today.
+- **Timelapse, spoolman, job queue** - Moonraker components or external services. A job queue is
+  the one of these that could be built on this side; nothing prints from a queue today.
+- **Webcam** - Moonraker's, and shown as a picture on the dashboard rather than played: the app
+  asks for one snapshot a second while that screen is open and stops when it is left. A multipart
+  stream would need a decoder to draw. The URL is taken from the host and made absolute against
+  it, because a path belongs to whatever web server the host answers on and a loopback address
+  belongs to the host's own machine - which is not the phone.
 - **Klipper's own `configfile.config`** is a parsed dictionary rather than the file, so
   the Machine screen reads `printer.cfg` from disk - which is where the comments are.
 - **Editing `printer.cfg` in the app.** It is shown, and the shipped default can be
