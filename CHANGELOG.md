@@ -66,8 +66,13 @@ against klippy's source before it was believed. Grouped, not ordered:
   endstops reading "true" where klippy says TRIGGERED.
 - A saved measurement can no longer be silently overridden by a stale duplicate: the shaping
   writer left one option per key, and klippy reads the last one.
-- **Pre-release, and still in testing.** The Klipper host this app runs itself is the tested
-  path; the computer route is new. Nothing here changes what a Marlin printer is sent.
+
+### Notes
+
+This is a pre-release and still in testing. The Klipper host this app runs itself is the
+tested path; driving a host on a computer is new, and was verified against one machine - this
+author's. Nothing in this release changes what a Marlin printer is sent, and that is held to by
+tests rather than by care.
 ## [1.5.3] - 2026-09-27
 
 ### Added
