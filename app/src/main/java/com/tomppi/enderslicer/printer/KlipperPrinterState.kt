@@ -21,6 +21,15 @@ data class KlipperPrinterState(
     val printFileName: String? = null,
     /** printing, paused, complete, cancelled or error - klippy's own words. */
     val printState: String? = null,
+    /**
+     * What klippy said about this print, when it had something to say.
+     *
+     * print_stats.message is where a failure lands - "Move out of range", "Heater extruder
+     * not heating at expected rate", "Extrude only move too long" - and it was being read past
+     * and thrown away, so a print that stopped itself said nothing about why. The same field
+     * carries a macro's PAUSE message while a print is paused.
+     */
+    val printMessage: String? = null,
     /** 0..1 through the file, from the virtual SD card's own position in it. */
     val printProgress: Double? = null,
     val printDurationSeconds: Double? = null,
@@ -158,6 +167,7 @@ internal fun KlipperPrinterState.withStatus(status: JSONObject): KlipperPrinterS
         homedAxes = toolhead?.optString("homed_axes").orEmpty().ifEmpty { homedAxes },
         printFileName = stats?.optString("filename").orEmpty().ifEmpty { printFileName },
         printState = stats?.optString("state").orEmpty().ifEmpty { printState },
+        printMessage = stats?.optString("message").orEmpty().ifEmpty { printMessage },
         printDurationSeconds = stats.number("print_duration") ?: printDurationSeconds,
         printProgress = sdcard.number("progress") ?: printProgress,
         timing = status.optJSONObject("mcu")?.optJSONObject("last_stats")?.toTiming() ?: timing,

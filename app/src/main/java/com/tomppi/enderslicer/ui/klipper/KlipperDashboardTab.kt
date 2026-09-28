@@ -76,7 +76,7 @@ internal fun KlipperDashboardTab(
             TemperaturesCard(state, viewModel)
             ExcludedObjectsCard(state, onExclude = { confirmExclude = it })
         }
-        PositionCard(state)
+        PositionCard(state, viewModel)
         TimingCard(state)
         DangerCard(state, onEmergencyStop = { confirmStop = true })
         state.error?.let { message ->
@@ -196,6 +196,21 @@ private fun JobCard(
         title = "Print",
         subtitle = if (printing) state.printFileName else null,
     ) {
+        // A print that failed says so here, whether or not it is still "printing": klippy
+        // reports the reason in print_stats.message, and without this the screen showed a
+        // print that had simply stopped.
+        val failed = state.printState == "error" || state.printState == "cancelled"
+        if (failed) {
+            Text(
+                text = if (state.printState == "error") "The print stopped" else "The print was cancelled",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            state.printMessage?.let { reason ->
+                Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         if (printing) {
             Text(
                 text = state.printState.orEmpty().replaceFirstChar { it.uppercase() },
@@ -408,7 +423,7 @@ private fun ExcludedObjectsCard(state: KlipperPrinterState, onExclude: (String) 
 
 /** Where the head is, and whether it knows. */
 @Composable
-private fun PositionCard(state: KlipperPrinterState) {
+private fun PositionCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     KlipperCard(title = "Position") {
         val position = state.position
         KlipperValue(
@@ -418,6 +433,29 @@ private fun PositionCard(state: KlipperPrinterState) {
         )
         KlipperValue("Homing", if (state.isHomed) "Homed" else "Not homed")
         state.zOffset?.let { offset -> KlipperValue("Z offset", "%.3f mm".format(offset)) }
+        //
+        // Babystepping, on the screen a first layer is watched from: the same Z_ADJUST the Z
+        // probe screen sends, so a layer that is too close can be walked away from the bed
+        // without leaving the print to find another screen. The offset lasts until the host
+        // restarts - the Z probe screen is where a good one becomes the probe's own zero.
+        //
+        if (state.isHomed) {
+            Spacer(Modifier.height(8.dp))
+            KlipperButtons {
+                KlipperButton("−0.05") { viewModel.adjustZOffset(-0.05, true) }
+                KlipperButton("−0.01") { viewModel.adjustZOffset(-0.01, true) }
+                KlipperButton("+0.01") { viewModel.adjustZOffset(0.01, true) }
+                KlipperButton("+0.05") { viewModel.adjustZOffset(0.05, true) }
+            }
+            KlipperButtons {
+                KlipperButton("Reset the offset") { viewModel.resetZOffset() }
+            }
+            KlipperNote(
+                "Each nudge moves the head as it prints: down if the layer is not being " +
+                    "squashed onto the plate, up if it is being dragged through. Reset puts it " +
+                    "back to the probe's zero.",
+            )
+        }
     }
 }
 
