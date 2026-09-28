@@ -102,6 +102,65 @@ class MoonrakerTransportTest {
     }
 
     @Test
+    fun anIdleHostIsNotAClosedOne() {
+        // A printer host says nothing at all while nothing is happening. The read timeout is how
+        // the reader wakes up rather than blocking for ever, and an earlier version treated that
+        // wake-up as the end of the connection: the read loop ended on the first quiet thirty
+        // seconds, the app went on believing it was connected, and a print pressed a minute later
+        // was never sent - the file uploaded, klippy never heard about the print, and the host
+        // still had the socket open, which is what that failure looked like from both ends.
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val thread = Thread {
+            server.accept().use { socket ->
+                val input = socket.getInputStream()
+                val output = socket.getOutputStream()
+                val request = readHeaders(input)
+                val key = request.lineSequence()
+                    .first { it.startsWith("Sec-WebSocket-Key:") }
+                    .substringAfter(':').trim()
+                output.write(
+                    (
+                        "HTTP/1.1 101 Switching Protocols\r\n" +
+                            "Upgrade: websocket\r\n" +
+                            "Connection: Upgrade\r\n" +
+                            "Sec-WebSocket-Accept: " + KlipperWebSocket.handshakeAccept(key) + "\r\n\r\n"
+                        ).toByteArray(),
+                )
+                output.flush()
+                // Quiet for longer than several timeouts, and then an answer - which is what a
+                // host that was merely idle does.
+                Thread.sleep(400)
+                output.write(
+                    KlipperWebSocket.encode(
+                        KlipperWebSocket.OPCODE_TEXT,
+                        JSONObject()
+                            .put("jsonrpc", "2.0")
+                            .put("id", 7)
+                            .put("result", JSONObject().put("state", "ready"))
+                            .toString()
+                            .toByteArray(),
+                    ),
+                )
+                output.flush()
+                Thread.sleep(300)
+            }
+        }
+        thread.isDaemon = true
+        thread.start()
+
+        // A short timeout, so the test waits a moment rather than half a minute.
+        val transport = MoonrakerTransport("127.0.0.1", port, readTimeoutMs = 50)
+        transport.connect(3000)
+        val message = readOneMessage(transport)
+        assertEquals("a message after a long silence is still read", 7, message.getInt("id"))
+        assertEquals("ready", message.getJSONObject("result").getString("state"))
+        transport.close()
+        server.close()
+    }
+
+    @Test
     fun aCallMoonrakerDoesNotHaveIsAnsweredRatherThanTimedOut() {
         val transport = MoonrakerTransport("127.0.0.1", 1) // never connected: not needed here
         transport.write(KlipperProtocol.encode(11, "gcode/subscribe_output", JSONObject()))

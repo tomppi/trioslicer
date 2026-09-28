@@ -777,8 +777,17 @@ class KlipperPrinterRepository(
                 sendScript(KlipperScripts.resetLiveOverrides())
                 val command = "SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName)
                 append(command, KlipperConsoleLine.Source.SENT)
-                client?.gcodeAsync(command)
-                    ?: throw IllegalStateException("not connected")
+                if (client == null) {
+                    // The upload got through and the connection went under it. The file is on
+                    // the host, so this is worth one reconnect rather than an error that reads
+                    // like the host refused something it actually accepted.
+                    reconnect()
+                }
+                val connected = client ?: throw IllegalStateException(
+                    "the file is on the printer's host, but the connection dropped - print " +
+                        "it from Files, which does not upload it again",
+                )
+                connected.gcodeAsync(command)
                 fileName
             }.onFailure { e -> _state.update { it.copy(error = e.message) } }
         }

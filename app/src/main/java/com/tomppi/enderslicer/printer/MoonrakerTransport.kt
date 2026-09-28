@@ -6,6 +6,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.Base64
 
 /**
@@ -31,8 +32,11 @@ internal class MoonrakerTransport(
     private val port: Int = DEFAULT_PORT,
     private val apiKey: String? = null,
     private val path: String = DEFAULT_PATH,
+    /** How long a read waits before waking up to keep the connection alive. */
+    private val readTimeoutMs: Int = READ_TIMEOUT_MS,
 ) : KlipperTransport {
 
+    private val frameLock = Any()
     private var socket: Socket? = null
     private var input: InputStream? = null
     private var output: OutputStream? = null
@@ -54,7 +58,7 @@ internal class MoonrakerTransport(
         val connection = Socket()
         connection.tcpNoDelay = true
         connection.connect(InetSocketAddress(host, port), timeoutMs)
-        connection.soTimeout = READ_TIMEOUT_MS
+        connection.soTimeout = readTimeoutMs
         socket = connection
         input = connection.getInputStream()
         output = connection.getOutputStream()
@@ -120,6 +124,22 @@ internal class MoonrakerTransport(
         val chunk = ByteArray(READ_BUFFER_BYTES)
         val count = try {
             stream.read(chunk)
+        } catch (timeout: SocketTimeoutException) {
+            //
+            // An idle socket is not a closed one.
+            //
+            // A printer host says nothing at all while nothing is happening, and this timeout
+            // exists so that the reader wakes up rather than blocking for ever. Waking up is
+            // the moment to say something - a ping keeps the connection alive through whatever
+            // is between here and the host - and not the moment to conclude the host has gone.
+            //
+            // It was concluded, once: the read loop ended on the first quiet thirty seconds,
+            // the app went on believing it was connected, and a print pressed a minute later
+            // was never sent. Nothing reached klippy, and the host still had the socket open,
+            // which is what that failure looked like from both ends.
+            //
+            keepAlive()
+            return true
         } catch (e: Exception) {
             Log.i(TAG, "the remote host stopped answering: ${e.message}")
             return false
@@ -213,9 +233,25 @@ internal class MoonrakerTransport(
         }
     }
 
+    /**
+     * One frame, on a lock.
+     *
+     * Two threads write here already - the reader answers pings and the caller sends
+     * requests - and a frame is not a unit the socket keeps together: interleaved halves are
+     * a protocol error the host answers by closing. The keepalive adds a third writer on the
+     * same schedule, so the lock is what makes any of it safe.
+     */
     private fun sendFrame(opcode: Int, payload: ByteArray) {
-        output?.write(KlipperWebSocket.encode(opcode, payload))
-        output?.flush()
+        synchronized(frameLock) {
+            output?.write(KlipperWebSocket.encode(opcode, payload))
+            output?.flush()
+        }
+    }
+
+    /** A ping, so an idle connection stays a connection. */
+    private fun keepAlive() {
+        runCatching { sendFrame(KlipperWebSocket.OPCODE_PING, ByteArray(0)) }
+            .onFailure { Log.i(TAG, "the keepalive did not go out: ${it.message}") }
     }
 
     /** klippy's messages are ETX-terminated in both directions. */
