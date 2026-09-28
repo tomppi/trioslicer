@@ -4,6 +4,61 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-09-28
+
+A day of printing on the computer-hosted side, and everything it turned up.
+
+### Fixed
+
+- **A print started a minute after connecting was never sent.** A printer host says nothing while
+  nothing is happening; the read timeout that exists so the reader wakes up was treated as the end
+  of the connection, so the read loop ended on the first quiet thirty seconds. The host still had
+  the socket open - its log shows an accepted upload and no print command ever arriving, and no
+  close, because the app never closed it either. An idle read now sends a keepalive and carries on,
+  frames are written under a lock (two threads were already writing them), and a print command that
+  finds the connection gone reconnects and retries once.
+- **Uploads were reported as refused when the host had accepted them.** Moonraker's HTTP file API
+  answers with the item it created; the app looked for it inside a "result" object, which is the
+  shape of its JSON-RPC calls. A 201 Created, a file on disk and a line in the host's log became
+  "the host refused the upload" on screen, and the print that should have followed was never sent.
+  Both shapes are read now, and the test that stood in for the host answers with the real one.
+- **Configuration changes were written into the app's own copy of printer.cfg**, whichever host was
+  printing. A rotation distance measured while driving a computer was saved, confirmed on screen,
+  and left on the phone; a pressure advance lasted until the next restart, which any configuration
+  write brings. Reads, backups and writes now go to the host doing the printing, through one seam,
+  and a write asks that host to restart so that the change becomes the running one.
+- **The G-code flavour had no control at all.** It was whatever a profile import left behind and
+  otherwise Marlin, so a printer driven by Klipper was sent Marlin's start script - whose G29 L0
+  and G29 A are UBL commands. On a Klipper host G29 is the printer's own macro, which homes and
+  meshes, so a print homed twice and probed the bed twice before its first layer. The flavour is now
+  chosen next to the two script pairs it decides between, and the print screen warns when a file's
+  start block contains commands that will misbehave on a Klipper host - reading the start block
+  rather than the file's FLAVOR line, which names the G-code dialect and says Marlin even for a file
+  sliced for Klipper.
+- **Pressure advance could not be saved.** SET_PRESSURE_ADVANCE is live only: klippy's own command
+  never marks the configuration as needing a save, so SAVE_CONFIG has nothing to write for it and
+  the next restart quietly reverts it. The Extrude screen has two buttons now - Set for tuning
+  during a print, Save writing printer.cfg and restarting the host - because they are two different
+  things, and only one of them can happen mid-print.
+- **No bed mesh was loaded when the host started.** Klipper removed the behaviour that loaded the
+  profile named default, so a print whose start script neither loads nor measures a mesh - which a
+  custom start script need not - runs its first layer on the probe offset alone. On a bed whose
+  measured mesh spans about a quarter of a millimetre, that is a quarter of a millimetre of first
+  layer. The shipped configuration now carries the documented [delayed_gcode bed_mesh_init].
+
+### Changed
+
+- The shipped configuration's acceleration limit is **3000 mm/s2**, the value in Klipper's own
+  configuration for this printer. 5000 is the Ender 3 V2 *Neo*'s figure, and had been carried
+  along since the configuration was first written.
+
+### Notes
+
+This remains a pre-release. The Klipper host this app runs itself is the tested path; driving a
+host on a computer is newer, and the six fixes above are what a day of printing on one turned up.
+Nothing in this release changes what a Marlin printer is sent, and that is held to by tests rather
+than by care.
+
 ## [1.6.0] - 2026-09-28
 
 The printer can now be a Klipper host on another computer, and the app is the interface to it.
