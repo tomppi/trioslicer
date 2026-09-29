@@ -498,6 +498,255 @@ internal object KlipperConfigFile {
     }
 
     /**
+     * The printer-describing settings the two configurations disagree about.
+     *
+     * Two configurations of one printer have to differ in how each host reaches it, so most
+     * of what stands between them is not drift at all. Only two things are compared: klippy's
+     * saved block, which is everything the printer has saved about itself, and the handful of
+     * body options that describe the printer rather than the host ([BODY_OPTIONS]). A line
+     * that says how a host reaches the machine - the serial port, the gcode directory, an
+     * include, a second micro-controller - differs because the hosts differ, and is neither
+     * reported here nor moved by [withSynced].
+     *
+     * A setting only one of the two carries is not reported either: a copy moves a value, and
+     * writing one where the other host has never had it is not a copy of anything.
+     */
+    fun differences(a: String, b: String): List<Difference> {
+        val there = settingsOf(b).associateBy { it.key }
+        return settingsOf(a).mapNotNull { setting ->
+            val other = there[setting.key] ?: return@mapNotNull null
+            if (sameValue(setting.value, other.value)) return@mapNotNull null
+            Difference(
+                section = setting.section,
+                option = setting.option,
+                valueA = normalize(setting.value),
+                valueB = normalize(other.value),
+            )
+        }
+    }
+
+    /**
+     * [target] with every printer setting that differs replaced by [source]'s value.
+     *
+     * Only values move. Every other line - the serial port, the restart method, the gcode
+     * directory, the pins, the kinematics, the [mcu] sections, the includes - is handed back
+     * exactly as it was, because that is what makes one of these configurations the phone's
+     * and the other a computer's.
+     *
+     * A value goes back where it was read from: into klippy's block for everything in it,
+     * into the body for the options the body may carry. That is the place klippy reads the
+     * value from, so the next start of either host acts on the copy.
+     */
+    fun withSynced(target: String, source: String): String {
+        val from = settingsOf(source).associateBy { it.key }
+        val edits = settingsOf(target).mapNotNull { setting ->
+            val other = from[setting.key] ?: return@mapNotNull null
+            if (sameValue(setting.value, other.value)) null else setting to other.value
+        }
+        if (edits.isEmpty()) return target
+        val lines = target.split("\n").toMutableList()
+        // Rewritten from the last one up, so that a value running over several lines - a bed
+        // mesh grid - does not move the lines the edits above it are counted from.
+        edits.sortedByDescending { it.first.first }.forEach { (setting, value) ->
+            lines.subList(setting.first, setting.last + 1).clear()
+            lines.addAll(setting.first, setting.rewritten(value))
+        }
+        return lines.joinToString("\n")
+    }
+
+    /**
+     * One setting the two configurations disagree about.
+     *
+     * [valueA] is the value in the first configuration compared and [valueB] in the second, so
+     * a screen showing one host's value against the other's knows which is which by the order
+     * it passed them in. Both are on one line, the way that screen shows them.
+     */
+    data class Difference(
+        val section: String,
+        val option: String,
+        val valueA: String,
+        val valueB: String,
+    )
+
+    /**
+     * The body options a sync may move, by section.
+     *
+     * Everything else in the body belongs to the host that wrote it: the serial port, the
+     * restart method, the gcode directory, the pins, the kinematics, every [mcu] section and
+     * every include. klippy's saved block needs no list, because all of it may move - every
+     * line in it is something the printer saved about itself.
+     */
+    private val BODY_OPTIONS: Map<String, Set<String>> = mapOf(
+        "extruder" to setOf(
+            "rotation_distance",
+            "pressure_advance",
+            "pressure_advance_smooth_time",
+        ),
+        //
+        // Shaping goes into the body when this app writes it - the Shaping screen edits the file
+        // - and into the saved block when klippy saves a SET_INPUT_SHAPER. The block is read whole
+        // either way, so these six are here for the pair where a host keeps them in the body:
+        // without them a measured frequency was not offered to the other host at all, and that is
+        // the calibration most worth copying between two hosts of one printer.
+        //
+        "input_shaper" to setOf(
+            "shaper_type_x",
+            "shaper_freq_x",
+            "damping_ratio_x",
+            "shaper_type_y",
+            "shaper_freq_y",
+            "damping_ratio_y",
+        ),
+        "printer" to setOf(
+            "max_accel",
+            "max_velocity",
+            "square_corner_velocity",
+            "max_z_velocity",
+            "max_z_accel",
+            "minimum_cruise_ratio",
+        ),
+    )
+
+    /** One setting as the file has it: where it is, what it says, and how it is written. */
+    private data class Setting(
+        val section: String,
+        val option: String,
+        val value: String,
+        /** The first line up to the value's own first character, kept so a write can reuse it. */
+        val prefix: String,
+        /** True when klippy's saved block carries it, false when the hand-written body does. */
+        val saved: Boolean,
+        val first: Int,
+        val last: Int,
+    ) {
+        val key: String get() = section + "\u0000" + option
+
+        /** The lines that carry [value] here, in this setting's own shape. */
+        fun rewritten(value: String): List<String> {
+            val parts = value.split('\n')
+            // A saved value that runs over several lines carries the marker on every one of
+            // them, exactly as klippy writes it ("#*# " and then the indented continuation).
+            val continuation = if (saved) SAVED_PREFIX + " " else ""
+            return listOf(prefix + parts.first()) + parts.drop(1).map { continuation + it }
+        }
+    }
+
+    /** An option's name, its value, and the part of its line that comes before the value. */
+    private data class OptionLine(val name: String, val value: String, val prefix: String)
+
+    /**
+     * Every setting a sync may move, as the file has it.
+     *
+     * The body and klippy's block are read together because klippy reads them together: a pair
+     * the body defines wins over the block's copy of it, whose own copy is commented out when
+     * the file is read (configfile.py:279-300). For the pairs a sync may move, then, the body's
+     * value is the one taken where the body has one, and the block's is used only where the
+     * body says nothing - which is exactly what klippy does with the two of them.
+     *
+     * A body option outside [BODY_OPTIONS] is not read at all. It is not a value a sync may
+     * move, so it is not one a sync compares either: where it duplicates something in the
+     * block, writing the block is what klippy's own reader would call the same setting, and
+     * that is the copy that is offered rather than the body line the whitelist does not name.
+     */
+    private fun settingsOf(text: String): List<Setting> {
+        val found = mutableListOf<Setting>()
+        var section = ""
+        var saved = false
+        var continuation = -1
+        text.split("\n").forEachIndexed { index, raw ->
+            if (!saved && raw.contains(SAVED_MARKER)) {
+                // Everything from the marker down is klippy's own saved values.
+                saved = true
+                section = ""
+                continuation = -1
+                return@forEachIndexed
+            }
+            val stripped = if (saved) savedLine(raw) else raw
+            val content = stripped.trim()
+            // klippy reads nothing from a commented line, which is what an option it has
+            // saved is written as.
+            if (content.isEmpty() || content.startsWith("#") || content.startsWith(";")) {
+                return@forEachIndexed
+            }
+            header(content)?.let { name ->
+                section = name
+                continuation = -1
+                return@forEachIndexed
+            }
+            if (section.isEmpty()) return@forEachIndexed
+            // A value that runs over several lines - a bed mesh grid - is written on the lines
+            // under its option, indented, and klippy joins them back together when it reads it.
+            if (continuation >= 0 && stripped.firstOrNull()?.isWhitespace() == true) {
+                val setting = found[continuation]
+                found[continuation] =
+                    setting.copy(value = setting.value + "\n" + stripped, last = index)
+                return@forEachIndexed
+            }
+            val option = optionLine(raw, saved) ?: return@forEachIndexed
+            if (!saved && option.name !in BODY_OPTIONS[section].orEmpty()) {
+                continuation = -1
+                return@forEachIndexed
+            }
+            found += Setting(section, option.name, option.value, option.prefix, saved, index, index)
+            continuation = found.lastIndex
+        }
+        // A pair klippy reads twice in the same place is the last one of them; a pair the body
+        // and the block both carry is the body's.
+        val settings = LinkedHashMap<String, Setting>()
+        found.forEach { setting ->
+            val seen = settings[setting.key]
+            if (seen == null || seen.saved == setting.saved) settings[setting.key] = setting
+        }
+        return settings.values.toList()
+    }
+
+    /**
+     * An option as klippy reads one.
+     *
+     * The name runs to the first ":" or "=" (configfile.py:178) whatever the line says after
+     * it, and a "#" or ";" begins a comment rather than a value. What comes before the value is
+     * kept so that a write can leave the indentation and the separator as they were.
+     */
+    private fun optionLine(raw: String, saved: Boolean): OptionLine? {
+        val text = (if (saved) savedLine(raw) else raw)
+            .substringBefore('#')
+            .substringBefore(';')
+        val at = text.indexOfFirst { it == ':' || it == '=' }
+        if (at <= 0) return null
+        val name = text.substring(0, at).trim().lowercase()
+        if (name.isEmpty()) return null
+        var start = at + 1
+        while (start < text.length && text[start].isWhitespace()) start++
+        return OptionLine(
+            name = name,
+            value = text.substring(start).trimEnd(),
+            prefix = (if (saved) SAVED_PREFIX + " " else "") + text.substring(0, start),
+        )
+    }
+
+    /**
+     * One line of klippy's saved block, as klippy reads it back.
+     *
+     * configfile.py:274 takes exactly four characters off - "#*# " - so the space after the
+     * marker is part of it. Leaving it on would make every line of the block look indented,
+     * and a bed mesh grid is the only thing that is.
+     */
+    private fun savedLine(raw: String): String = raw.removePrefix(SAVED_PREFIX).removePrefix(" ")
+
+    /** The name inside a section header, or null when the line is not one. */
+    private fun header(line: String): String? {
+        val text = line.substringBefore('#').trim()
+        if (text.length < 3 || text.first() != '[' || text.last() != ']') return null
+        return text.substring(1, text.length - 1).trim().lowercase()
+    }
+
+    /** Whether two written values say the same thing, the whitespace between them aside. */
+    private fun sameValue(a: String, b: String): Boolean = normalize(a) == normalize(b)
+
+    /** A value on one line, the way a screen shows it. */
+    private fun normalize(value: String): String = value.trim().replace(WHITESPACE, " ")
+
+    /**
      * A number as klippy writes one in its own configuration: a dot for the decimal
      * point, whatever language the phone is set to. The same trap as the one that sent
      * G1 Y10,000 to the printer, in a file instead of a command.
@@ -511,4 +760,7 @@ internal object KlipperConfigFile {
     private val SDCARD_PATH = Regex("path\\s*[:=].*", RegexOption.IGNORE_CASE)
     private val INCLUDE = Regex("\\[include\\s+(.+?)]", RegexOption.IGNORE_CASE)
     private val EXTRA_MCU = Regex("\\[mcu\\s+(.+?)]", RegexOption.IGNORE_CASE)
+
+    /** The runs of whitespace between the parts of a value, which say nothing about it. */
+    private val WHITESPACE = Regex("\\s+")
 }

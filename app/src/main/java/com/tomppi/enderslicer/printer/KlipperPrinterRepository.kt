@@ -25,6 +25,30 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
+/** Which host's configuration a sync copies the printer's own settings from. */
+internal enum class KlipperSyncSource {
+    /** This phone's own printer.cfg, in the app's storage. */
+    THE_DEVICE,
+
+    /** The computer's printer.cfg, read and written through Moonraker. */
+    THE_REMOTE_HOST,
+}
+
+/**
+ * What a sync found, or what it did.
+ *
+ * [differences] is what the two configurations disagree about - the preview a screen shows
+ * before either direction is chosen - [copied] is what a copy moved, and [error] is why the
+ * other host could not be read at all. An empty list and an error are not the same thing: one
+ * says the two configurations agree, and the other that nothing could be compared.
+ */
+internal data class KlipperSyncResult(
+    val differences: List<KlipperConfigFile.Difference> = emptyList(),
+    val copied: List<KlipperConfigFile.Difference> = emptyList(),
+    val error: String? = null,
+    val restarted: Boolean = false,
+)
+
 /**
  * Watches the printer this device is driving, through klippy's API.
  *
@@ -605,6 +629,71 @@ class KlipperPrinterRepository(
         }
 
     /**
+     * What the two hosts' configurations disagree about.
+     *
+     * Both are read whichever host the app is driving: this phone's own file is in the app's
+     * storage, and the computer's is read from Moonraker at the host stored for it. Either
+     * being unreadable is [KlipperSyncResult.error] rather than an empty list, because
+     * "nothing differs" and "nothing could be compared" must not look the same on screen.
+     */
+    internal suspend fun syncDifferences(): KlipperSyncResult = withContext(Dispatchers.IO) {
+        runCatching {
+            when (val sources = syncSources()) {
+                is SyncSources.Failed -> KlipperSyncResult(error = sources.reason)
+                is SyncSources.Both -> KlipperSyncResult(
+                    differences = KlipperConfigFile.differences(sources.device, sources.remote),
+                )
+            }
+        }.getOrElse { error ->
+            KlipperSyncResult(error = error.message ?: "the configurations could not be read")
+        }
+    }
+
+    /**
+     * Copy the printer's own settings from one host's configuration to the other.
+     *
+     * The two configurations describe one machine and have to agree about it: the calibrations
+     * klippy saved, the extruder's own figures, the motion limits. They have to differ in how
+     * each host reaches the machine - the serial port, the gcode directory, the [mcu] sections,
+     * the includes - and none of that is ever touched, whichever direction this is asked for.
+     * [KlipperConfigFile.withSynced] is the whole of that rule.
+     *
+     * A configuration written for the computer is followed by a restart there, because it is
+     * not the running one until the computer reads it again. This phone's own file is written
+     * and nothing is restarted for it: the Machine screen offers that, and the host here may
+     * not even be running.
+     */
+    internal suspend fun syncConfiguration(from: KlipperSyncSource): KlipperSyncResult =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                when (val sources = syncSources()) {
+                    is SyncSources.Failed -> KlipperSyncResult(error = sources.reason)
+                    is SyncSources.Both -> {
+                        val toComputer = from == KlipperSyncSource.THE_DEVICE
+                        val target = if (toComputer) sources.remote else sources.device
+                        val source = if (toComputer) sources.device else sources.remote
+                        val differences = KlipperConfigFile.differences(target, source)
+                        val synced = KlipperConfigFile.withSynced(target, source)
+                        when {
+                            synced == target -> KlipperSyncResult(differences = differences)
+                            toComputer -> KlipperSyncResult(
+                                differences = differences,
+                                copied = differences,
+                                restarted = writeRemoteConfig(sources.files, synced, sources.remote),
+                            )
+                            else -> {
+                                writeDeviceConfig(synced)
+                                KlipperSyncResult(differences = differences, copied = differences)
+                            }
+                        }
+                    }
+                }
+            }.getOrElse { error ->
+                KlipperSyncResult(error = error.message ?: "the configuration could not be written")
+            }
+        }
+
+    /**
      * One frame from a camera, fetched when a screen asks for one.
      *
      * On demand rather than pushed: the screens that show a picture show one frame a second
@@ -959,12 +1048,7 @@ class KlipperPrinterRepository(
     private suspend fun writeHostConfig(text: String): Boolean = withContext(Dispatchers.IO) {
         val remote = remoteFiles()
         if (remote == null) {
-            KlipperHostFiles.directory(application.filesDir).mkdirs()
-            val config = KlipperHostFiles.config(application.filesDir)
-            if (config.isFile) {
-                config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
-            }
-            config.writeText(text)
+            writeDeviceConfig(text)
             return@withContext true
         }
         readHostConfig()?.takeIf { it.isNotBlank() }?.let { before ->
@@ -977,6 +1061,108 @@ class KlipperPrinterRepository(
         val written = remote.uploadConfig(staged)
         if (written) restartHost()
         written
+    }
+
+    /**
+     * Write this phone's own configuration, keeping the one it replaces beside it.
+     *
+     * Nothing is restarted for it. klippy here is a process this app starts and the screen the
+     * file was written from is where a restart is asked for, and the host may not be running at
+     * all - a sync that started it would be doing something nobody asked for.
+     */
+    private fun writeDeviceConfig(text: String) {
+        KlipperHostFiles.directory(application.filesDir).mkdirs()
+        val config = KlipperHostFiles.config(application.filesDir)
+        if (config.isFile) {
+            config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)
+        }
+        config.writeText(text)
+    }
+
+    /**
+     * The two configurations a sync works on, or the reason one of them is not readable.
+     */
+    private sealed interface SyncSources {
+        data class Both(
+            val device: String,
+            val remote: String,
+            val files: MoonrakerFiles,
+        ) : SyncSources
+
+        data class Failed(val reason: String) : SyncSources
+    }
+
+    /**
+     * Read both hosts' configurations.
+     *
+     * The computer's is looked for at the host stored for it rather than at the host in use: a
+     * sync works on both configurations whichever route is printing, and the computer the app
+     * is not driving is still the one holding the other half of the printer's file. A missing
+     * device file or an unanswered computer is a reason rather than an empty list of
+     * differences, because a card that says the two agree and a card that could not look must
+     * not read the same.
+     */
+    private suspend fun syncSources(): SyncSources {
+        val device = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
+            ?: return SyncSources.Failed(
+                "this device has no printer.cfg yet: start the host here once, or import one",
+            )
+        val files = remoteHostFiles() ?: return SyncSources.Failed(
+            "no computer is set as the other host: connect to one under PC Klipper on the Print tab",
+        )
+        val remote = files.configText() ?: return SyncSources.Failed(
+            "the computer at " + hostChoice.load().host.trim() +
+                " did not answer with its configuration",
+        )
+        return SyncSources.Both(device, remote, files)
+    }
+
+    /**
+     * The computer's file API, whether or not it is the host the app is driving.
+     *
+     * Deliberately not [remoteFiles], which answers only for the host in use. The computer's
+     * name is in the preferences even while this phone's own host is the one printing, and a
+     * sync is about both configurations rather than about the one being driven.
+     */
+    private fun remoteHostFiles(): MoonrakerFiles? {
+        val choice = hostChoice.load()
+        if (choice.host.isBlank()) return null
+        return MoonrakerFiles(
+            host = choice.host.trim(),
+            port = choice.port,
+            apiKey = choice.apiKey.takeIf { it.isNotBlank() },
+        )
+    }
+
+    /**
+     * Put a configuration on the computer and ask it to read it again.
+     *
+     * The two steps [writeHostConfig] takes for the host in use, written out because a sync can
+     * be aimed at the computer while the app is driving the phone - and then the app's own file
+     * and the app's own service are not the things being written to. The file being replaced is
+     * kept on the computer beside it, as every other configuration write here keeps it.
+     *
+     * Answers whether the computer took the restart, which is what makes the written file the
+     * running configuration: a file the host has not read back is not a sync.
+     */
+    private suspend fun writeRemoteConfig(
+        files: MoonrakerFiles,
+        text: String,
+        before: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (before.isNotBlank()) {
+            val previous = File(application.cacheDir, "previous.printer.cfg")
+            previous.writeText(before)
+            files.uploadConfig(previous, name = "previous.printer.cfg")
+        }
+        val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
+        staged.writeText(text)
+        if (!files.uploadConfig(staged)) {
+            throw IllegalStateException("the computer refused the configuration")
+        }
+        // Its own endpoint rather than RESTART down the connection: the computer being written
+        // to is not necessarily the one the app is connected to.
+        files.restart()
     }
 
     /**

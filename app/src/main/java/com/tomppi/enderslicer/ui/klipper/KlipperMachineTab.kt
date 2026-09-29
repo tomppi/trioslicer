@@ -29,6 +29,8 @@ import com.tomppi.enderslicer.BuildConfig
 import com.tomppi.enderslicer.printer.KlipperImportResult
 import com.tomppi.enderslicer.printer.KlipperMcu
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.KlipperSyncResult
+import com.tomppi.enderslicer.printer.KlipperSyncSource
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.endstops
 import com.tomppi.enderslicer.printer.mcus
@@ -254,6 +256,8 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             },
         )
 
+        SyncCard(viewModel)
+
         TextFileCard(
             title = "Log",
             subtitle = "The last two hundred lines klippy wrote",
@@ -391,6 +395,127 @@ private fun McuCard(mcu: KlipperMcu) {
         }
     }
 }
+
+/**
+ * Copy the printer's own settings from one host's configuration to the other.
+ *
+ * The two files describe one machine and must differ only in how each host reaches it, so what
+ * is offered here is the part that has to match and has drifted: the calibrations klippy saved,
+ * the extruder's own figures, the motion limits. Each host's serial port, gcodes directory,
+ * boards and includes belong to it, and are not listed and never moved, whichever direction is
+ * chosen.
+ */
+@Composable
+private fun SyncCard(viewModel: KlipperViewModel) {
+    val scope = rememberCoroutineScope()
+    var preview by remember { mutableStateOf<KlipperSyncResult?>(null) }
+    var outcome by remember { mutableStateOf<String?>(null) }
+    var direction by remember { mutableStateOf<KlipperSyncSource?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { preview = viewModel.syncDifferences() }
+
+    KlipperCard(
+        title = "Sync with the other host",
+        subtitle = "The printer's own settings, from one host's printer.cfg to the other's",
+        trailing = {
+            KlipperButton("Check again", enabled = !busy) {
+                scope.launch {
+                    outcome = null
+                    preview = viewModel.syncDifferences()
+                }
+            }
+        },
+    ) {
+        outcome?.let { message ->
+            KlipperNote(message)
+            Spacer(Modifier.height(8.dp))
+        }
+        val result = preview
+        when {
+            result == null -> KlipperNote("Reading the other host's configuration…")
+            result.error != null -> KlipperNote(
+                text = "Nothing could be compared: " + result.error,
+                color = MaterialTheme.colorScheme.error,
+            )
+            result.differences.isEmpty() -> KlipperNote(
+                "Nothing differs: the two agree about every setting this copies. Each host's " +
+                    "serial port, gcodes directory, boards and includes stay its own.",
+            )
+            else -> {
+                KlipperNote("This device's value first, the other host's second.")
+                Spacer(Modifier.height(4.dp))
+                result.differences.forEach { difference ->
+                    KlipperValue(
+                        label = difference.section + " " + difference.option,
+                        value = difference.valueA + "  \u2192  " + difference.valueB,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                KlipperButtons {
+                    KlipperButton("Copy to the other host", enabled = !busy) {
+                        direction = KlipperSyncSource.THE_DEVICE
+                    }
+                    KlipperButton("Copy from the other host", enabled = !busy) {
+                        direction = KlipperSyncSource.THE_REMOTE_HOST
+                    }
+                }
+            }
+        }
+    }
+
+    direction?.let { from ->
+        val fromComputer = from == KlipperSyncSource.THE_REMOTE_HOST
+        KlipperConfirmDialog(
+            title = if (fromComputer) {
+                "Copy the other host's settings here?"
+            } else {
+                "Copy this device's settings to the other host?"
+            },
+            text = if (fromComputer) {
+                "The printer's own settings in the computer's printer.cfg replace this " +
+                    "device's: the calibrations klippy saved, the extruder's rotation distance " +
+                    "and pressure advance, the motion limits. This device's serial port, its " +
+                    "gcodes directory and its [include app.cfg] are left exactly as they are. " +
+                    "Nothing restarts here by itself: the host reads the new file the next time " +
+                    "it is restarted from this screen."
+            } else {
+                "The printer's own settings in this device's printer.cfg replace the " +
+                    "computer's. Everything that describes the computer rather than the " +
+                    "printer - its serial port, its gcodes directory, its [mcu rpi] section, " +
+                    "its includes - is left exactly as it is. The computer is asked to restart, " +
+                    "which a print in progress there does not survive."
+            },
+            confirmLabel = if (fromComputer) "Copy here" else "Copy there",
+            onConfirm = {
+                scope.launch {
+                    busy = true
+                    val result = viewModel.syncConfiguration(from)
+                    busy = false
+                    outcome = syncOutcome(result, fromComputer)
+                    preview = viewModel.syncDifferences()
+                }
+            },
+            onDismiss = { direction = null },
+        )
+    }
+}
+
+/** What a copy did, in the direction it was asked for. */
+private fun syncOutcome(result: KlipperSyncResult, fromComputer: Boolean): String = when {
+    result.error != null -> "Nothing was copied: " + result.error
+    result.copied.isEmpty() -> "Nothing was copied: the two agree already."
+    fromComputer -> countCopied(result.copied.size) +
+        " into this device's printer.cfg. The host here reads it the next time it restarts."
+    result.restarted -> countCopied(result.copied.size) + " to the other host, which has been " +
+        "asked to restart."
+    else -> countCopied(result.copied.size) + " to the other host. It could not be asked to " +
+        "restart, so it is still running the configuration it had."
+}
+
+/** "2 settings", or "1 setting", for a sentence that says what a copy moved. */
+private fun countCopied(count: Int): String =
+    "Copied " + count + (if (count == 1) " setting" else " settings")
 
 /** A file the screen can show: loaded on request, and hidden again the same way. */
 @Composable

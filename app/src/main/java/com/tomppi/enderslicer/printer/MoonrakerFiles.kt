@@ -109,6 +109,17 @@ internal class MoonrakerFiles(
         upload(source, name, root = CONFIG_ROOT)
 
     /**
+     * Ask the host to restart klippy, which is what makes a configuration written for it the
+     * one it is running.
+     *
+     * Moonraker's own endpoint (klippy_apis.py registers /printer/restart) rather than the
+     * RESTART command the app otherwise sends down its connection to klippy: a configuration
+     * can be written for the computer while the app is driving the phone, and then there is no
+     * connection to that computer to send it down.
+     */
+    fun restart(): Boolean = request(RESTART_PATH, "POST") != null
+
+    /**
      * A file's own numbers and thumbnail, as the host read them from the file.
      *
      * Asked for one file at a time, on the screen that shows one file: the list call does not
@@ -206,6 +217,9 @@ internal class MoonrakerFiles(
 
         /** Where klippy's own configuration files live on a host. */
         const val CONFIG_ROOT = "config"
+
+        /** Moonraker's own restart endpoint, for a host the app has no klippy connection to. */
+        const val RESTART_PATH = "/printer/restart"
 
         const val UPLOAD_PATH = "/server/files/upload"
 

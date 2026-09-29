@@ -2,6 +2,8 @@ package com.tomppi.enderslicer.printer
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -411,5 +413,294 @@ class KlipperConfigFileTest {
         assertTrue(rewrite.text.contains("restart_method: command"))
         assertTrue(rewrite.text.contains("serial: /data/pty"))
     }
+
+    //
+    // The sync: the settings the two hosts' configurations have to agree about, and the lines
+    // they have to differ in.
+    //
+    // The pair below is the one this was built for. One printer, two hosts: klippy on the phone,
+    // reached through the pty the app bridges the board through, and klippy on a computer,
+    // reached over the real serial port. The files must differ in exactly the lines that say how
+    // each host gets to the machine, and must agree about the machine itself - and they drifted:
+    // the probe offset, a PID term and the bed mesh grid were saved on one host and the other
+    // had older ones, and the extruder's rotation distance and pressure advance were tuned on
+    // one and never carried across.
+    //
+
+    /** The phone's own configuration: the app's host, and what it has saved about the printer. */
+    private val phoneConfig: String = listOf(
+        "# !Ender-3 V2 ABL",
+        "[mcu]",
+        "serial: /data/user/0/com.tomppi.enderslicercura/files/printer-pty",
+        "",
+        "[virtual_sdcard]",
+        "path: /data/user/0/com.tomppi.enderslicercura/files/gcodes",
+        "",
+        "[extruder]",
+        "step_pin: PB4",
+        "dir_pin: !PB3",
+        "rotation_distance: 4.69",
+        "pressure_advance: 0.025",
+        "pressure_advance_smooth_time: 0.03",
+        "",
+        "[bltouch]",
+        "sensor_pin: ^PB1",
+        "#z_offset: 0",
+        "",
+        "[printer]",
+        "kinematics: cartesian",
+        "max_velocity: 300",
+        "max_accel: 3000",
+        "square_corner_velocity: 5.0",
+        "max_z_velocity: 5",
+        "max_z_accel: 100",
+        "",
+        "[include app.cfg]",
+        "",
+        "#*# <---------------------- SAVE_CONFIG ---------------------->",
+        "#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.",
+        "#*#",
+        "#*# [extruder]",
+        "#*# pid_kp = 33.500",
+        "#*# pid_ki = 1.566",
+        "#*#",
+        "#*# [bltouch]",
+        "#*# z_offset = 1.750",
+        "#*#",
+        "#*# [bed_mesh default]",
+        "#*# version = 1",
+        "#*# points=",
+        "#*# \t  0.130000, 0.115000, 0.095000",
+        "#*# \t  0.040000, 0.037500, 0.032500",
+        "#*# \t  0.005000, 0.035000, -0.007500",
+        "#*# x_count = 3",
+        "#*# y_count = 3",
+        "#*# algo = bicubic",
+    ).joinToString("\n") + "\n"
+
+    /** The computer's: the same printer, and the lines that are the computer's own. */
+    private val pcConfig: String = listOf(
+        "# !Ender-3 V2 ABL",
+        "[mcu]",
+        "serial: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+        "restart_method: command",
+        "",
+        "[mcu rpi]",
+        "serial: /tmp/klipper_host_mcu",
+        "",
+        "[virtual_sdcard]",
+        "path: /home/tomppi/printer_data/gcodes",
+        "",
+        "[extruder]",
+        "step_pin: PB4",
+        "dir_pin: !PB3",
+        "rotation_distance: 4.643",
+        "pressure_advance: 0.1094",
+        "pressure_advance_smooth_time: 0.03",
+        "",
+        "[bltouch]",
+        "sensor_pin: ^PB1",
+        "#z_offset: 0",
+        "",
+        "[printer]",
+        "kinematics: cartesian",
+        "max_velocity: 300",
+        "max_accel: 4000",
+        "square_corner_velocity: 5.0",
+        "max_z_velocity: 5",
+        "max_z_accel: 100",
+        "",
+        "[include timelapse.cfg]",
+        "",
+        "#*# <---------------------- SAVE_CONFIG ---------------------->",
+        "#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.",
+        "#*#",
+        "#*# [extruder]",
+        "#*# pid_kp = 27.479",
+        "#*# pid_ki = 1.566",
+        "#*#",
+        "#*# [bltouch]",
+        "#*# z_offset = 1.760",
+        "#*#",
+        "#*# [bed_mesh default]",
+        "#*# version = 1",
+        "#*# points=",
+        "#*# \t  0.120000, 0.110000, 0.090000",
+        "#*# \t  0.040000, 0.037500, 0.032500",
+        "#*# \t  0.005000, 0.035000, -0.007500",
+        "#*# x_count = 3",
+        "#*# y_count = 3",
+        "#*# algo = bicubic",
+    ).joinToString("\n") + "\n"
+
+    /** The difference reported for one option, or null when nothing was reported for it. */
+    private fun List<KlipperConfigFile.Difference>.of(section: String, option: String) =
+        firstOrNull { it.section == section && it.option == option }
+
+    /** A line at the same place, byte for byte, in the file a sync produced. */
+    private fun assertSameLine(before: List<String>, after: List<String>, line: String) {
+        val at = before.indexOf(line)
+        assertTrue("the fixture must contain: " + line, at >= 0)
+        assertEquals("this line must come through byte for byte", line, after[at])
+    }
+
+    @Test
+    fun theSettingsThatDriftedAreFoundInTheBlockAndInTheBody() {
+        val drifted = KlipperConfigFile.differences(phoneConfig, pcConfig)
+        // The probe offset is one of the things klippy saves, so it drifts in its block - and
+        // the body's copy of it is commented out, which is what SAVE_CONFIG leaves behind.
+        assertEquals(
+            "z_offset",
+            "1.750" to "1.760",
+            drifted.of("bltouch", "z_offset")?.let { it.valueA to it.valueB },
+        )
+        // Pressure advance is written in the body, where the app puts what klippy will not save.
+        assertEquals(
+            "pressure_advance",
+            "0.025" to "0.1094",
+            drifted.of("extruder", "pressure_advance")?.let { it.valueA to it.valueB },
+        )
+        assertEquals(
+            "rotation_distance",
+            "4.69" to "4.643",
+            drifted.of("extruder", "rotation_distance")?.let { it.valueA to it.valueB },
+        )
+        assertEquals(
+            "max_accel",
+            "3000" to "4000",
+            drifted.of("printer", "max_accel")?.let { it.valueA to it.valueB },
+        )
+        assertEquals(
+            "a saved PID term",
+            "33.500" to "27.479",
+            drifted.of("extruder", "pid_kp")?.let { it.valueA to it.valueB },
+        )
+        // A bed mesh profile's grid runs over several lines, and the grid is the value.
+        val grid = drifted.of("bed_mesh default", "points")
+        assertNotNull("a saved bed mesh grid drifts too", grid)
+        assertTrue(grid!!.valueA.startsWith("0.130000, 0.115000, 0.095000"))
+        assertTrue(grid.valueB.startsWith("0.120000, 0.110000, 0.090000"))
+    }
+
+    @Test
+    fun howEachHostReachesThePrinterIsNotDrift() {
+        val drifted = KlipperConfigFile.differences(phoneConfig, pcConfig)
+        // These differ between the two files by design. They are what makes one of them the
+        // phone's and the other the computer's, so a difference in them is not drift and a copy
+        // must never act on one.
+        assertNull("the serial port", drifted.of("mcu", "serial"))
+        assertNull("the restart method", drifted.of("mcu", "restart_method"))
+        assertNull("the gcode directory", drifted.of("virtual_sdcard", "path"))
+        assertNull("the computer's host board", drifted.of("mcu rpi", "serial"))
+        assertTrue("no [mcu] option may be listed", drifted.none { it.section.startsWith("mcu") })
+        assertTrue("kinematics is the printer's, but not this whitelist's", drifted.none { it.option == "kinematics" })
+        assertTrue(drifted.none { it.section.startsWith("include") })
+    }
+
+    @Test
+    fun aSyncMovesTheDriftedValuesAndNothingElse() {
+        val synced = KlipperConfigFile.withSynced(phoneConfig, pcConfig)
+        val before = phoneConfig.split("\n")
+        val after = synced.split("\n")
+        assertEquals("a sync may not add or remove a line", before.size, after.size)
+        val changed = before.indices.filter { before[it] != after[it] }
+        // Exactly the values of the settings that drifted, in the order the file has them, and
+        // not one line more.
+        assertEquals(
+            "only the values of the settings that differ may move",
+            listOf(
+                "rotation_distance: 4.643",
+                "pressure_advance: 0.1094",
+                "max_accel: 4000",
+                "#*# pid_kp = 27.479",
+                "#*# z_offset = 1.760",
+                "#*# \t  0.120000, 0.110000, 0.090000",
+            ),
+            changed.map { after[it] },
+        )
+        // A saved value moves in the block and a body option in the body: the place klippy
+        // reads each of them from.
+        assertTrue(synced.contains("#*# z_offset = 1.760"))
+        assertTrue(synced.contains("pressure_advance: 0.1094"))
+        assertFalse("the body's own line is not the block's", synced.contains("z_offset: 1.760"))
+        // And every line that says how this host reaches the machine is untouched, in place.
+        listOf(
+            "serial: /data/user/0/com.tomppi.enderslicercura/files/printer-pty",
+            "path: /data/user/0/com.tomppi.enderslicercura/files/gcodes",
+            "[include app.cfg]",
+            "step_pin: PB4",
+            "dir_pin: !PB3",
+            "sensor_pin: ^PB1",
+            "kinematics: cartesian",
+            "#z_offset: 0",
+            "#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.",
+        ).forEach { line -> assertSameLine(before, after, line) }
+    }
+
+    @Test
+    fun aSyncTheOtherWayLeavesTheComputersOwnLinesAlone() {
+        val synced = KlipperConfigFile.withSynced(pcConfig, phoneConfig)
+        assertTrue("the phone's pressure advance went across", synced.contains("pressure_advance: 0.025"))
+        assertTrue("and the offset it saved", synced.contains("#*# z_offset = 1.750"))
+        assertTrue(synced.contains("#*# pid_kp = 33.500"))
+        assertTrue(synced.contains("#*# \t  0.130000, 0.115000, 0.095000"))
+        val before = pcConfig.split("\n")
+        val after = synced.split("\n")
+        assertEquals(before.size, after.size)
+        listOf(
+            "serial: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+            "restart_method: command",
+            "[mcu rpi]",
+            "serial: /tmp/klipper_host_mcu",
+            "path: /home/tomppi/printer_data/gcodes",
+            "[include timelapse.cfg]",
+        ).forEach { line -> assertSameLine(before, after, line) }
+    }
+
+    @Test
+    fun shapingKeptInTheBodyIsCopiedLikeTheRest() {
+        // The real pair keeps shaping in the body - this app writes it there - while klippy saves
+        // it into the block. A whitelist that only knew the block offered the other host nothing,
+        // and a measured frequency is the one calibration worth copying between two hosts.
+        // Its own pair rather than the shared fixtures: they carry what the other tests need, and
+        // this is about a section those do not have.
+        val here = listOf(
+            "[printer]",
+            "max_accel: 3000",
+            "",
+            "[input_shaper]",
+            "shaper_type_y = mzv",
+            "shaper_freq_y = 52.5",
+        ).joinToString("\n")
+        val there = here.replace("52.5", "44.3")
+
+        val drifted = KlipperConfigFile.differences(here, there)
+        assertEquals("52.5", drifted.of("input_shaper", "shaper_freq_y")?.valueA)
+        assertEquals("44.3", drifted.of("input_shaper", "shaper_freq_y")?.valueB)
+
+        val synced = KlipperConfigFile.withSynced(here, there)
+        assertTrue("the measured frequency moved", synced.contains("shaper_freq_y = 44.3"))
+        assertEquals("and the one it replaced is gone", 0, synced.split("shaper_freq_y = 52.5").size - 1)
+        assertEquals("no line added or lost", here.split("\n").size, synced.split("\n").size)
+    }
+
+    @Test
+    fun aValueBothHostsAgreeAboutIsNotReportedAndDoesNotMove() {
+        val drifted = KlipperConfigFile.differences(phoneConfig, pcConfig)
+        assertNull("the same PID term on both", drifted.of("extruder", "pid_ki"))
+        assertNull("the same smooth time on both", drifted.of("extruder", "pressure_advance_smooth_time"))
+        assertNull("the same velocity limit on both", drifted.of("printer", "max_velocity"))
+        assertNull("the same grid shape on both", drifted.of("bed_mesh default", "x_count"))
+        // Nothing reported for them, so nothing about them moves.
+        val synced = KlipperConfigFile.withSynced(phoneConfig, pcConfig)
+        assertTrue(synced.contains("#*# pid_ki = 1.566"))
+        assertTrue(synced.contains("pressure_advance_smooth_time: 0.03"))
+        assertTrue(synced.contains("max_velocity: 300"))
+        assertTrue(synced.contains("#*# x_count = 3"))
+        // And a file synced from itself is the file it was, byte for byte.
+        assertEquals(phoneConfig, KlipperConfigFile.withSynced(phoneConfig, phoneConfig))
+        assertEquals(pcConfig, KlipperConfigFile.withSynced(pcConfig, pcConfig))
+    }
 }
+
 

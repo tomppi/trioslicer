@@ -69,4 +69,31 @@ class MoonrakerConfigFilesTest {
             server.stop(0)
         }
     }
+
+    @Test
+    fun theHostIsAskedToRestartAfterItsConfigurationIsWritten() {
+        // A written configuration is not the running one until the host reads it again, and
+        // reading it again is a restart. Moonraker's own endpoint rather than the RESTART
+        // command, because the configuration can be written for the computer while the app is
+        // driving the phone - and then there is no klippy connection to that computer to send
+        // the command down.
+        val method = AtomicReference<String>()
+        val path = AtomicReference<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/printer/restart") { exchange ->
+            method.set(exchange.requestMethod)
+            path.set(exchange.requestURI.path)
+            val body = """{"result": "ok"}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            assertTrue(MoonrakerFiles("127.0.0.1", server.address.port).restart())
+            assertEquals("POST", method.get())
+            assertEquals("/printer/restart", path.get())
+        } finally {
+            server.stop(0)
+        }
+    }
 }

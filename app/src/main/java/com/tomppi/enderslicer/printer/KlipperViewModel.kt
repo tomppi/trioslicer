@@ -435,6 +435,18 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     /** Put the shipped configuration back, keeping what the printer has saved. */
     suspend fun restoreShippedConfig(): Boolean = repository.restoreShippedConfig()
 
+    /**
+     * What the two hosts' configurations disagree about: the sync card's preview.
+     *
+     * Both are read whichever route the app is on, because both files exist whichever host is
+     * printing - the phone's own is in the app's storage and the computer's is on the network.
+     */
+    internal suspend fun syncDifferences(): KlipperSyncResult = repository.syncDifferences()
+
+    /** Copy the printer's own settings from one host's configuration to the other. */
+    internal suspend fun syncConfiguration(from: KlipperSyncSource): KlipperSyncResult =
+        repository.syncConfiguration(from)
+
     /** The tail of klippy's own log, for the Machine screen. */
     suspend fun readLog(): String? = repository.readHostLog()
 
