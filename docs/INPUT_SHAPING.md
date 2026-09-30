@@ -20,10 +20,10 @@ fidelity to Klipper's own generator are described in [KLIPPER_UI.md](KLIPPER_UI.
 
 ### 1. Put the phone where it can feel the axis
 
-**On the gantry for X, on the base for Y.** Not on the toolhead and not on the bed: there its own
+**On the gantry for X, on the bed for Y.** Not on the toolhead: there its own
 weight would change the resonance it is measuring. On the gantry the phone is measuring what the
-toolhead reacts against; on the base it is measuring what the moving bed excites. It has to be
-heavy against something rigid rather than sitting on the part that moves.
+toolhead reacts against; on the bed it is loading the moving mass itself, which is what the
+figures below correct for - a stock glass bed weighed about 550 g, the magnetic sheet and
 
 ### 2. Tell it the masses
 

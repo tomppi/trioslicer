@@ -170,10 +170,12 @@ internal fun KlipperShapingTab(state: KlipperPrinterState, viewModel: KlipperVie
             subtitle = "The accelerometer the printer has not got",
         ) {
             KlipperNote(
-                "Put the phone on the gantry for X, or on the base for Y. Not on the toolhead " +
-                    "and not on the bed: there its own weight would change the resonance it is " +
-                    "trying to measure. The gantry is the best of them, being the rail the " +
-                    "toolhead reacts against and heavy enough that 253 grams barely moves it.",
+                "Put the phone on the gantry for X, or on the bed for Y. Not on the toolhead: " +
+                    "there its own weight would change the resonance it is trying to measure. " +
+                    "The gantry is the rail the toolhead reacts against, and heavy enough that " +
+                    "253 grams barely moves it. The bed is the other way round - light enough " +
+                    "that the phone's weight does matter, which is what the moving mass below " +
+                    "is for.",
             )
             KlipperNote(
                 "The printer then plays Klipper's own sweep while the phone records itself, " +
