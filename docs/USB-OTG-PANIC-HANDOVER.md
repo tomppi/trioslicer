@@ -56,7 +56,7 @@ fatal. It is a race, which is why it is intermittent and why the delay varies.
 | file | where |
 | --- | --- |
 | \`last-kmsg-previous-boot.log\` - the raw 2MB capture, 17608 lines | /sdcard/Download/dsh-agent/ on the phone, and on the machine that read it |
-| \`usb-otg-pwr-event-storm.log\` - the 1342 dwc3 events, **filtered to USB lines** | /sdcard/Download/dsh-agent/ and docs/logs/ |
+| \`usb-otg-pwr-event-storm.log\` - the 1342 dwc3 events, **filtered to USB lines** | /sdcard/Download/dsh-agent/ |
 | \`kernel-panic-pm-get-wakeup-count.log\` - the sequence and timeline | same copy on the phone |
 
 ## Ruled out
