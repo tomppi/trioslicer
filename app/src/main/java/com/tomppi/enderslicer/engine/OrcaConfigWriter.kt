@@ -129,10 +129,28 @@ object OrcaConfigWriter {
         val rendered = render(settings, printer, startGcode, endGcode)
         directory.mkdirs()
         return Files(
-            printer = File(directory, "orca-printer.ini").apply { writeText(rendered.printer) },
-            print = File(directory, "orca-print.ini").apply { writeText(rendered.print) },
-            filament = File(directory, "orca-filament.ini").apply { writeText(rendered.filament) },
+            printer = writeWhole(File(directory, "orca-printer.ini"), rendered.printer),
+            print = writeWhole(File(directory, "orca-print.ini"), rendered.print),
+            filament = writeWhole(File(directory, "orca-filament.ini"), rendered.filament),
         )
+    }
+
+    /**
+     * Writes [text] whole or not at all.
+     *
+     * The engine is handed these paths immediately afterwards, so a write interrupted by a
+     * crash would leave a truncated ini that is read as a configuration rather than as a
+     * mistake. The rename is within one directory, so it is atomic.
+     */
+    private fun writeWhole(target: File, text: String): File {
+        val temporary = File(target.parentFile, target.name + ".writing")
+        temporary.writeText(text)
+        if (!temporary.renameTo(target)) {
+            // The previous file stays in place rather than being replaced by half of one.
+            temporary.delete()
+            throw IllegalStateException("could not write " + target.name)
+        }
+        return target
     }
 
     /**

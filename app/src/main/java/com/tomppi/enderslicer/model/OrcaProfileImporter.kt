@@ -222,7 +222,13 @@ object OrcaProfileImporter {
                     // A preset that states nothing for a key has not asked for it to change.
                     value.isBlank() -> ignored++
                     key in AllSettingsCatalogs.ORCA_BLOCKED_KEYS -> ignored++
-                    !specs.containsKey(key) -> ignored++
+                    // An empty catalogue means the asset could not be read, not that the profile names
+                // nothing this app knows. Every override would be dropped in silence and the
+                // import would still report success.
+                specs.isEmpty() -> throw IllegalArgumentException(
+                    "the setting catalogue could not be read, so the settings in this profile cannot be applied",
+                )
+                !specs.containsKey(key) -> ignored++
                     rejectReason(key, value, specs[key]) != null -> refused += key
                     else -> extras[key] = value
                 }
@@ -342,6 +348,14 @@ object OrcaProfileImporter {
             }
             val text = scalar(json.opt(key)) ?: continue
             values[key] = text
+        }
+        // The one imported number no engine can act on. A layer of nothing slices to empty
+        // G-code and the failure arrives as a blank preview rather than a complaint. An absurd
+        // speed or a negative temperature is refused by the firmware or clamped by the printer's
+        // own limits, so those are left to the machine that owns them.
+        val layerHeight = values["layer_height"]?.toDoubleOrNull()
+        require(layerHeight == null || layerHeight > 0.0) {
+            "the profile states a layer height of " + layerHeight + "; it must be greater than zero"
         }
         return DocumentValues(values, metadata)
     }

@@ -278,6 +278,10 @@ object ExtraSettingValidation {
         value.any { it.isISOControl() } -> "the value contains a line break or control character"
         '=' in value -> "the value contains '='"
         spec?.numeric == true && value.toDoubleOrNull()?.isFinite() != true -> "the value must be a number"
+        // The catalogue's minimum and maximum are the setting screen's slider bounds, not a
+        // validity contract: enforcing them here refused a value this app writes and reads back
+        // (ironing_angle carries a negative sentinel meaning automatic), which a round-trip test
+        // caught. What is enforced instead is what no engine can act on: see the importers.
         else -> null
     }
 

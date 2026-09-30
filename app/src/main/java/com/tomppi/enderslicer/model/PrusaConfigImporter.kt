@@ -33,14 +33,21 @@ object PrusaConfigImporter {
     /** Duplicate keys across sections: machine settings must win over print/filament ones. */
     private val SECTION_PRIORITY = listOf("printer", "filament", "print", "flat")
 
+    /** Settings every PrusaSlicer configuration states, used to recognise one. */
+    private val MARKER_KEYS = setOf(
+        "layer_height", "perimeters", "fill_density", "bed_shape", "printer_model", "start_gcode",
+    )
+
     fun parse(text: String): Result {
         var section = "flat"
+        val sections = mutableSetOf<String>()
         val values = linkedMapOf<String, Pair<String, String>>()
         for (rawLine in text.lineSequence()) {
             val line = rawLine.trim()
             if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) continue
             if (line.startsWith("[") && line.endsWith("]")) {
                 section = line.substring(1, line.length - 1).trim().lowercase()
+                sections += section
                 continue
             }
             val index = line.indexOf('=')
@@ -53,6 +60,16 @@ object PrusaConfigImporter {
                     values[key] = section to value
                 }
             }
+        }
+
+        // A PrusaSlicer configuration has sections, or at least the keys this importer reads.
+        // Anything else used to parse into defaults and be installed over the user's settings as
+        // a successful import.
+        val recognised = SECTION_PRIORITY.any { it in sections } ||
+            MARKER_KEYS.any { it in values }
+        require(recognised) {
+            "this does not look like a PrusaSlicer configuration: it has no section and none of " +
+                "the settings an import would read"
         }
 
         fun value(key: String): String? = values[key]?.second
