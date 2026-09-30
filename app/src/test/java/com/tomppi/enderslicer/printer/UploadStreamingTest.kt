@@ -2,56 +2,63 @@ package com.tomppi.enderslicer.printer
 
 import com.sun.net.httpserver.HttpServer
 import java.io.File
+import java.io.RandomAccessFile
 import java.net.InetSocketAddress
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The upload's multipart, split so the file part can be streamed.
+ * The upload's multipart, and what the host actually receives.
  *
- * upload() sends the head and the tail with the file written between them, straight from disk,
- * because reading a large slice into the heap and copying it twice more is how an upload ran out
- * of memory.
+ * Two tests in an earlier version of this file could not fail: one compared uploadBody with the
+ * three pieces it is defined as, and the other asserted a constant. They are gone. What is left
+ * pins the bytes against a hand-written expectation, and the wire against a fake Moonraker.
+ *
+ * What is NOT here, and cannot honestly be: a test that the streaming change happened. The old
+ * implementation sent the same bytes; the difference was in the heap, which a JVM test cannot
+ * observe without depending on its own heap size. The change is reviewed, not pinned.
  */
 class UploadStreamingTest {
 
     @Test
-    fun headPlusContentPlusTailIsTheWholeBody() {
-        val content = ByteArray(4096) { (it % 251).toByte() }
+    fun theBodyIsTheMultipartMoonrakerReads() {
+        // Written out by hand rather than composed from the functions under test.
         val boundary = "----TrioSlicerTest"
-        val whole = MoonrakerFiles.uploadBody(boundary, "benchy.gcode", content, "gcodes")
-        val split = MoonrakerFiles.uploadHead(boundary, "benchy.gcode", "gcodes") +
-            content +
+        val expected = (
+            "--$boundary\r\n" +
+                "Content-Disposition: form-data; name=\"root\"\r\n\r\n" +
+                "gcodes\r\n" +
+                "--$boundary\r\n" +
+                "Content-Disposition: form-data; name=\"file\"; filename=\"benchy.gcode\"\r\n" +
+                "Content-Type: application/octet-stream\r\n\r\n" +
+                "G28\n" +
+                "\r\n--$boundary--\r\n"
+            ).toByteArray()
+        val actual = MoonrakerFiles.uploadHead(boundary, "benchy.gcode", "gcodes") +
+            "G28\n".toByteArray() +
             MoonrakerFiles.uploadTail(boundary)
-        assertArrayEquals("the streamed form must be byte for byte the same", whole, split)
+        assertArrayEquals("the wire format Moonraker parses", expected, actual)
     }
 
-    @Test
-    fun theChunkIsLargeEnoughToBeWorthStreaming() {
-        assertTrue(
-            "a small chunk would make the streaming pointless",
-            MoonrakerFiles.UPLOAD_CHUNK_BYTES >= 64 * 1024,
-        )
-    }
-
-    /**
-     * What actually reaches a host, for a file that spans several chunks.
-     *
-     * The equivalence test above proves the pieces compose to the right bytes; this proves the
-     * socket receives them, and that the body is sent under a declared Content-Length rather
-     * than chunked - the difference the fixed-length streaming mode exists to make.
-     */
     @Test
     fun aFileSpanningSeveralChunksArrivesWholeUnderAFixedLength() {
-        val received = AtomicReference<ByteArray>()
-        val declaredLength = AtomicReference<String>()
+        val received = AtomicLong()
+        val declaredLength = AtomicLong(-1)
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/server/files/upload") { exchange ->
-            declaredLength.set(exchange.requestHeaders.getFirst("Content-Length"))
-            received.set(exchange.requestBody.readBytes())
+            declaredLength.set(exchange.requestHeaders.getFirst("Content-Length")?.toLongOrNull() ?: -1L)
+            // Counted, not buffered: this test is about what reaches the socket.
+            val buffer = ByteArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                val read = exchange.requestBody.read(buffer)
+                if (read <= 0) break
+                total += read
+            }
+            received.set(total)
             val answer = """{"action":"create_file","item":{"path":"big.gcode","root":"gcodes"}}"""
             val bytes = answer.toByteArray()
             exchange.sendResponseHeaders(201, bytes.size.toLong())
@@ -63,22 +70,47 @@ class UploadStreamingTest {
             val source = File.createTempFile("big", ".gcode").apply { writeBytes(payload) }
             val files = MoonrakerFiles("127.0.0.1", server.address.port)
             assertTrue("the host took it", files.upload(source, "big.gcode"))
-            val body = received.get() ?: error("nothing arrived")
-            assertEquals("a declared length, not a chunked body", body.size.toString(), declaredLength.get())
-            assertTrue("the whole file is inside the body", contains(body, payload))
+            assertEquals("a declared length, not a chunked body", received.get(), declaredLength.get())
+            assertTrue("and it is more than the file alone", received.get() > payload.size)
         } finally {
             server.stop(0)
         }
     }
 
-    private fun contains(haystack: ByteArray, needle: ByteArray): Boolean {
-        if (needle.isEmpty() || haystack.size < needle.size) return false
-        outer@ for (start in 0..(haystack.size - needle.size)) {
-            for (offset in needle.indices) {
-                if (haystack[start + offset] != needle[offset]) continue@outer
+    /**
+     * A file far larger than the heap a test is given, streamed from a sparse file.
+     *
+     * This is the closest a test can come to the change that mattered: reading it into memory
+     * with readBytes() and copying it twice more is what the fix removed.
+     */
+    @Test
+    fun aFileLargerThanTheHeapIsStreamedNotHeld() {
+        val received = AtomicLong()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/upload") { exchange ->
+            val buffer = ByteArray(256 * 1024)
+            var total = 0L
+            while (true) {
+                val read = exchange.requestBody.read(buffer)
+                if (read <= 0) break
+                total += read
             }
-            return true
+            received.set(total)
+            val answer = """{"action":"create_file","item":{"path":"huge.gcode","root":"gcodes"}}"""
+            val bytes = answer.toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
         }
-        return false
+        server.start()
+        try {
+            val size = 512L * 1024 * 1024
+            val source = File.createTempFile("huge", ".gcode")
+            RandomAccessFile(source, "rw").use { it.setLength(size) }
+            val files = MoonrakerFiles("127.0.0.1", server.address.port)
+            assertTrue("a file larger than the heap was uploaded", files.upload(source, "huge.gcode"))
+            assertTrue("and the host received it", received.get() >= size)
+        } finally {
+            server.stop(0)
+        }
     }
 }

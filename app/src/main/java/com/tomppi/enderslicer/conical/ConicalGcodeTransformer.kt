@@ -73,6 +73,10 @@ internal object ConicalGcodeTransformer {
         // afford. Nothing here keeps more than a line in memory.
         val staged = File(file.parentFile, file.name + ".conical.stage")
         val stagedWriter = staged.bufferedWriter()
+        // Walk 1 can refuse the file - an arc, no printable layers, nothing to translate - and
+        // everything below the try that deletes the stage comes after it. Without this, a refusal
+        // leaves a full copy of the G-code, unclosed, beside the user's output.
+        try {
 
         fun appendRaw(line: String) {
             stagedWriter.write(line)
@@ -334,6 +338,11 @@ internal object ConicalGcodeTransformer {
             staged.delete()
         }
         return diagnostics
+        } catch (error: Throwable) {
+            runCatching { stagedWriter.close() }
+            staged.delete()
+            throw error
+        }
     }
 
     /** Applies X/Y shift and lifts the print so its lowest extruded Z is the first-layer height. */

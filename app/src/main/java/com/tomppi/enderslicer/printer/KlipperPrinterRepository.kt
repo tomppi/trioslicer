@@ -1111,13 +1111,16 @@ class KlipperPrinterRepository(
             }
         }
         if (!before.isNullOrBlank()) {
-            val previous = File(application.cacheDir, "previous.printer.cfg")
+            // A name of its own per write: two writers sharing cacheDir/printer.cfg could upload
+            // each other's configuration, with a restart behind it.
+            val previous = File.createTempFile("previous", ".printer.cfg", application.cacheDir)
             previous.writeText(before)
             // Kept on the host as well: a backup that only exists on the phone cannot be
             // restored there by hand, which is the point of keeping it beside the file.
             remote.uploadConfig(previous, name = "previous.printer.cfg")
+            previous.delete()
         }
-        val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
+        val staged = File.createTempFile("staged", ".printer.cfg", application.cacheDir)
         staged.writeText(text)
         val written = remote.uploadConfig(staged)
         // Moonraker's own endpoint rather than the RESTART command down the connection: a
@@ -1125,6 +1128,7 @@ class KlipperPrinterRepository(
         // when a broken one needs replacing - and then there is no connection to send it down.
         // This is MoonrakerFiles.restart()'s own reasoning, and why it exists.
         if (written) remote.restart()
+        staged.delete()
         written
     }
 
@@ -1216,11 +1220,13 @@ class KlipperPrinterRepository(
         before: String,
     ): Boolean = withContext(Dispatchers.IO) {
         if (before.isNotBlank()) {
-            val previous = File(application.cacheDir, "previous.printer.cfg")
+            // A name of its own per write: two writers sharing cacheDir/printer.cfg could upload
+            // each other's configuration, with a restart behind it.
+            val previous = File.createTempFile("previous", ".printer.cfg", application.cacheDir)
             previous.writeText(before)
             files.uploadConfig(previous, name = "previous.printer.cfg")
         }
-        val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
+        val staged = File.createTempFile("staged", ".printer.cfg", application.cacheDir)
         staged.writeText(text)
         if (!files.uploadConfig(staged)) {
             throw IllegalStateException("the computer refused the configuration")
