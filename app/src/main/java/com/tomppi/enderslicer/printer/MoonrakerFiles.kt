@@ -162,6 +162,18 @@ internal class MoonrakerFiles(
     fun restart(): Boolean = request(RESTART_PATH, "POST") != null
 
     /**
+     * What the host's print is doing, or null when it cannot be asked.
+     *
+     * One query rather than a subscription: a sync needs to know whether replacing the
+     * configuration would end a print, and Moonraker answers that over HTTP without an open
+     * connection - which matters, because the host being written to is not necessarily the one
+     * the app is driving.
+     */
+    fun printState(): String? = request("/printer/objects/query?print_stats", "GET")
+        ?.optJSONObject("result")?.optJSONObject("status")
+        ?.optJSONObject("print_stats")?.optString("state")?.takeIf { it.isNotBlank() }
+
+    /**
      * A file's own numbers and thumbnail, as the host read them from the file.
      *
      * Asked for one file at a time, on the screen that shows one file: the list call does not

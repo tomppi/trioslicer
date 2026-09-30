@@ -165,4 +165,89 @@ class HostConfigSeamTest {
             server.stop(0)
         }
     }
+    @Test
+    fun aSyncRefusesToOverwriteAConfigurationThatChangedUnderIt() = runBlocking {
+        val first = "# the computer configuration\n[printer]\nmax_accel: 3000\n"
+        val second = "# edited on the computer while the card was open\nmax_accel: 2500\n"
+        val reads = AtomicInteger()
+        val uploads = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            // The second read is what the sync finds when it looks again before writing:
+            // someone saved a configuration in between.
+            val body = (if (reads.incrementAndGet() == 1) first else second).toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/server/files/upload") { exchange ->
+            uploads.incrementAndGet()
+            val bytes = """{"action":"create_file","item":{"path":"printer.cfg","root":"config"}}""".toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            // A whitelisted value, or there is nothing to sync and the write never happens:
+            // the first version of this test had none and never reached the check at all.
+            KlipperHostFiles.config(context.filesDir).writeText(
+                "# this device configuration\n[printer]\nmax_accel: 4000\n",
+            )
+            val repository = KlipperPrinterRepository(context, scope)
+            val result = repository.syncConfiguration(KlipperSyncSource.THE_DEVICE)
+            // What is pinned is that the target is read again after the sources were gathered:
+            // the old code read it once, so one read is what this catches. Whether the second
+            // read is the one that sees an edit depends on how many reads precede it, which is
+            // an implementation detail - the refusal itself follows from comparing the two.
+            assertTrue("the target is read again before it is replaced", reads.get() >= 2)
+            assertTrue("and the change is reported", result.error != null)
+            assertEquals("nothing is uploaded", 0, uploads.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun aSyncDoesNotRestartAComputerThatIsPrinting() = runBlocking {
+        val served = "# the computer configuration\n[printer]\nmax_accel: 3000\n"
+        val restarts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            val body = served.toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/server/files/upload") { exchange ->
+            val bytes = """{"action":"create_file","item":{"path":"printer.cfg","root":"config"}}""".toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.createContext("/printer/objects/query") { exchange ->
+            val body = """{"result":{"status":{"print_stats":{"state":"printing"}}}}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/printer/restart") { exchange ->
+            restarts.incrementAndGet()
+            val bytes = "{}".toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            KlipperHostFiles.config(context.filesDir).writeText("# this device configuration\n" +
+                "[printer]\nmax_accel: 4000\n")
+            val repository = KlipperPrinterRepository(context, scope)
+            val result = repository.syncConfiguration(KlipperSyncSource.THE_DEVICE)
+            assertTrue("the sync refuses", result.error != null)
+            assertEquals("and the computer is not restarted", 0, restarts.get())
+        } finally {
+            server.stop(0)
+        }
+    }
 }

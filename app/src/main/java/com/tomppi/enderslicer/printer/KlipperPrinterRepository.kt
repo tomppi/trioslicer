@@ -694,11 +694,31 @@ class KlipperPrinterRepository(
                         val synced = KlipperConfigFile.withSynced(target, source)
                         when {
                             synced == target -> KlipperSyncResult(differences = differences)
-                            toComputer -> KlipperSyncResult(
-                                differences = differences,
-                                copied = differences,
-                                restarted = writeRemoteConfig(sources.files, synced, sources.remote),
-                            )
+                            toComputer -> {
+                                // Read when the card was prepared, written now: a SAVE_CONFIG on
+                                // the computer, an edit in Fluidd or another screen of this app
+                                // in between would be silently overwritten by a whole-file
+                                // replace. Reading it once more is the check that costs a read.
+                                val now = when (val read = sources.files.readConfig()) {
+                                    is MoonrakerFiles.ConfigRead.Found -> read.text
+                                    MoonrakerFiles.ConfigRead.Missing -> ""
+                                    MoonrakerFiles.ConfigRead.Unreachable ->
+                                        throw IllegalStateException(
+                                            "the computer stopped answering before it could be written to",
+                                        )
+                                }
+                                if (now != sources.remote) {
+                                    throw IllegalStateException(
+                                        "the computer's configuration changed while this was being " +
+                                            "prepared; look at the differences again and repeat",
+                                    )
+                                }
+                                KlipperSyncResult(
+                                    differences = differences,
+                                    copied = differences,
+                                    restarted = writeRemoteConfig(sources.files, synced, sources.remote),
+                                )
+                            }
                             else -> {
                                 writeDeviceConfig(synced)
                                 KlipperSyncResult(differences = differences, copied = differences)
@@ -1253,6 +1273,14 @@ class KlipperPrinterRepository(
             }
         // Its own endpoint rather than RESTART down the connection: the computer being written
         // to is not necessarily the one the app is connected to.
+            // A restart ends a print on that computer, and the app may not be driving it. Ask.
+            // An unknown state is not a reason to refuse; a known print is.
+            val state = files.printState()?.lowercase()
+            if (state == "printing" || state == "paused") {
+                throw IllegalStateException(
+                    "the computer is " + state + ": syncing would restart it and end the print",
+                )
+            }
             files.restart()
         } finally {
             staged.delete()
