@@ -68,16 +68,23 @@ internal object ConicalGcodeTransformer {
         var extrusionMoves = 0
         var travelMoves = 0
 
-        val backtransformed = ArrayList<String>()
+        // Walk 1's output is staged in a file beside the source rather than a list: the whole
+        // G-code used to be held three times over as boxed Strings, which a long print cannot
+        // afford. Nothing here keeps more than a line in memory.
+        val staged = File(file.parentFile, file.name + ".conical.stage")
+        val stagedWriter = staged.bufferedWriter()
 
-        fun appendRaw(line: String) = backtransformed.add(line)
+        fun appendRaw(line: String) {
+            stagedWriter.write(line)
+            stagedWriter.newLine()
+        }
 
         fun writeMetadata() {
             if (metadataWritten) return
             metadataWritten = true
-            backtransformed.add(";ENDERSLICER_CONICAL:EasyConical-Android-v${ConicalSettingsStore.BACKEND_VERSION}")
-            backtransformed.add(";ENDERSLICER_CONICAL_ANGLE:${format(safe.coneAngleDegrees)}")
-            backtransformed.add(";ENDERSLICER_CONICAL_TYPE:${safe.coneType.name.lowercase()}")
+            appendRaw(";ENDERSLICER_CONICAL:EasyConical-Android-v${ConicalSettingsStore.BACKEND_VERSION}")
+            appendRaw(";ENDERSLICER_CONICAL_ANGLE:${format(safe.coneAngleDegrees)}")
+            appendRaw(";ENDERSLICER_CONICAL_TYPE:${safe.coneType.name.lowercase()}")
         }
 
         fun processLine(rawLine: String) {
@@ -306,34 +313,37 @@ internal object ConicalGcodeTransformer {
             }
         }
 
-        val lines = ArrayList<String>()
-        file.forEachLine { lines.add(it) }
-        lines.forEach(::processLine)
+        file.forEachLine { processLine(it) }
         writeMetadata()
+        stagedWriter.flush()
 
         require(emittedMoves > 0) { "Conical slicing found no printable G-code moves to back-transform" }
 
-        val translated = translate(backtransformed, safe)
-        val diagnostics = validate(translated, printerEnvelope, sourceMoves, emittedMoves, subdividedMoves, extrusionMoves, travelMoves)
-
-        try {
+        val diagnostics = try {
             temporary.bufferedWriter().use { output ->
-                translated.forEach { output.appendLine(it) }
+                translate(staged, safe) { output.appendLine(it) }
             }
+            val checked = validate(
+                temporary, printerEnvelope, sourceMoves, emittedMoves, subdividedMoves,
+                extrusionMoves, travelMoves,
+            )
             publishAtomic(temporary, file, "conical G-code")
+            checked
         } finally {
             temporary.delete()
+            staged.delete()
         }
         return diagnostics
     }
 
     /** Applies X/Y shift and lifts the print so its lowest extruded Z is the first-layer height. */
-    private fun translate(lines: List<String>, settings: ConicalSettings): List<String> {
+    private fun translate(staged: File, settings: ConicalSettings, write: (String) -> Unit) {
         val zDesired = settings.firstLayerHeightMm
         var zMin = Double.POSITIVE_INFINITY
         var zInitialized = false
         var printable = false
         var afterEnd = false
+        staged.useLines { lines ->
         for (line in lines) {
             val trimmed = line.trimStart()
             if (trimmed == ConicalRuntime.MACHINE_END_SENTINEL) {
@@ -359,44 +369,46 @@ internal object ConicalGcodeTransformer {
                 zInitialized = true
             }
         }
+        }
         val zTranslate = if (zInitialized) zDesired - zMin else 0.0
 
-        val result = ArrayList<String>(lines.size)
+        printable = false
         printable = false
         afterEnd = false
+        staged.useLines { lines ->
         for (line in lines) {
             val trimmed = line.trimStart()
             if (trimmed == ConicalRuntime.MACHINE_END_SENTINEL) {
                 afterEnd = true
-                result.add(line)
+                write(line)
                 continue
             }
             if (afterEnd) {
-                result.add(line)
+                write(line)
                 continue
             }
             if (trimmed.startsWith(";LAYER:")) {
                 printable = true
-                result.add(line)
+                write(line)
                 continue
             }
             if (trimmed.startsWith(";End of Gcode", ignoreCase = true) || trimmed.startsWith(";END_OF_PRINT")) {
                 printable = false
-                result.add(line)
+                write(line)
                 continue
             }
             val command = GcodeCommand.parse(line)
             if (command == null || (command.opcode != "G0" && command.opcode != "G1")) {
-                result.add(line)
+                write(line)
                 continue
             }
             if (!printable) {
-                result.add(line)
+                write(line)
                 continue
             }
             val hasSpatial = command.has('X') || command.has('Y') || command.has('Z')
             if (!hasSpatial) {
-                result.add(line)
+                write(line)
                 continue
             }
             val comment = line.substringAfter(';', "").takeIf { ';' in line }
@@ -407,13 +419,13 @@ internal object ConicalGcodeTransformer {
             command.value('E')?.let { builder.append(" E").append(format(it)) }
             command.value('F')?.let { builder.append(" F").append(format(it)) }
             if (comment != null) builder.append(" ;").append(comment)
-            result.add(builder.toString())
+            write(builder.toString())
         }
-        return result
+        }
     }
 
     private fun validate(
-        lines: List<String>,
+        staged: File,
         printerEnvelope: PrinterEnvelope,
         sourceMoves: Int,
         emittedMoves: Int,
@@ -428,6 +440,7 @@ internal object ConicalGcodeTransformer {
         var currentX = 0.0
         var currentY = 0.0
         var currentZ = 0.0
+        staged.useLines { lines ->
         for (line in lines) {
             lineNumber++
             val trimmed = line.trimStart()
@@ -452,6 +465,7 @@ internal object ConicalGcodeTransformer {
             )
             minimumZ = minOf(minimumZ, currentZ)
             maximumZ = maxOf(maximumZ, currentZ)
+        }
         }
         require(minimumZ >= -0.02) { "Conical slicing generated a path below the build plate: ${format(minimumZ)} mm" }
         require(maximumZ <= printerEnvelope.heightMm + 0.02) {
