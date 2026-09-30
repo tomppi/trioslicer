@@ -6,7 +6,7 @@ few chrome elements. Follow the rules below for new or modified screens.
 
 The current visual language ("engineering cockpit", dark-first) and the
 information architecture it implements are specified in
-[docs/ux-redesign/DESIGN_PROPOSAL.md](../ux-redesign/DESIGN_PROPOSAL.md) -
+[docs/ux-redesign/DESIGN_PROPOSAL.md](ux-redesign/DESIGN_PROPOSAL.md) -
 read that document before starting a new screen.
 
 ## Navigation
