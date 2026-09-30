@@ -1035,52 +1035,12 @@ shutdown, and the next start reports "Can not update MCU 'mcu' config as it is
 shutdown" - a state Klipper recovers from with FIRMWARE_RESTART, over the same API
 socket the app's own front end will use.
 
-## Unplugging the printer could panic the phone - solved, and it was the kernel
-
-**Resolved: the fault was in the phone's own custom kernel build.** Its KPM (Kernel
-Patch Module) support broke USB OTG, so removing the cable could take the phone down;
-removing KPM fixed it. The forensics are kept because they are what narrowed it down,
-and because the traps in reading them apply to the next fault - but do not read what
-follows as a live problem.
-
-    [ 2675.823969] Unable to handle kernel paging request at virtual address 1ec0000000000000
-    [ 2675.824051] Internal error: Oops: 0000000096000004 [#1] PREEMPT SMP
-    [ 2675.824991] pc : pm_get_wakeup_count+0x114/0x248
-    [ 2675.825628] Kernel panic - not syncing: Oops: Fatal exception
-    [ 2676.483049] gh-watchdog: Causing a QCOM Apps Watchdog bite!
-
-On a binder thread of pid 1108 - system_server - reading /sys/power/wakeup_count, which
-Android's power manager does routinely. That read walks the global list of wakeup
-sources under the wakeup-source lock; unplugging a USB device unregisters that device's
-wakeup sources. When the two land together the walk follows an entry that is gone, into
-an address in neither the user nor the kernel range, and a translation fault in
-interrupt context is fatal. Kernel 5.15.209-g1e6986e67a48-dirty, Samsung's.
-
-So the unplug is the trigger and not the cause, and it is a race - which is why it does
-not happen every time and why the delay after the removal varies. The hook that was
-doing the damage is in the middle of that very trace, where it should have been caught:
-
-    [ 2675.825266] ==== Start KernelPatch for Kernel panic ====
-    [ 2675.825422] KP hook panic rc: 0
-
-That is KPM, not a Samsung mechanism, and it was the phone's own build. The full
-sequence and the log are in
-`kernel-panic-pm-get-wakeup-count.log` (kept on the phone at `/sdcard/Download/dsh-agent/`);
-the raw capture is on the phone as last-kmsg-previous-boot.log.
-
 ## After a phone reboot: the USB port comes back dead
 
-**Probably the same cause, now gone.** The dead host port appeared in the same kernel
-build, and with KPM removed it has not been seen again - though it was never reproduced
-deliberately, so that is an absence of evidence rather than a proof. The rebind below
-stays as the fallback if it ever returns.
-
-The kernel log of one of these is kept at
-`usb-otg-pwr-event-storm.log` (kept on the phone at `/sdcard/Download/dsh-agent/`): 1342
-"unexpected PWR_EVNT" events over eight and a half minutes, with the link reporting
-state 0x0005, and nothing in it an application did. It is not a panic - the phone's own
-boot reason is `reboot` and `/sys/fs/pstore` is empty - which is why the workaround is
-to re-probe the charger IC rather than to reboot again.
+**Seen once, on an older kernel build, and not since.** The dead host port appeared on
+that build and has not been seen again since it was replaced - though it was never
+reproduced deliberately, so that is an absence of evidence rather than a proof. The
+rebind below stays as the fallback if it ever returns.
 
 Measured, twice, and worth writing down because nothing in the app can cause or fix
 it. After the phone rebooted, host mode never came up again on its own:
