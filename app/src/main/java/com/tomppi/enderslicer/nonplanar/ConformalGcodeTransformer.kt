@@ -1002,9 +1002,9 @@ internal object ConformalGcodeTransformer {
                         }
                     }
 
-                    val lines = ArrayList<String>()
-                    input.forEachLine { lines.add(it) }
-                    for (rawLine in lines) {
+                    // Read line by line: the list this used to build held the whole G-code
+                    // in memory only to iterate it once.
+                    input.forEachLine { rawLine ->
                         checkCancellation(emittedMoves, "Conformal processing")
                         processLine(rawLine)
                     }
