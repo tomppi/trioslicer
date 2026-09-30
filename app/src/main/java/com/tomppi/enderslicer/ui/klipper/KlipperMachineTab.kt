@@ -55,7 +55,7 @@ private const val MCU_STATS_WINDOW_SECONDS = 5.0
 internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var confirmRestart by remember { mutableStateOf(false) }
     // Import and Restore write this phone's own configuration - its pty, its gcode directory -
-    // so they belong to This device. Export, Start and Stop follow whichever host is chosen.
+    // so they belong to Phone Klipper. Export, Start and Stop follow whichever host is chosen.
     val onDevice = state.remoteHost == null
     val scope = rememberCoroutineScope()
     var config by remember { mutableStateOf<String?>(null) }
@@ -127,8 +127,8 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             if (!onDevice) {
                 Spacer(Modifier.height(8.dp))
                 KlipperNote(
-                    "Start and Stop drive the Klipper host on this phone. On the PC Klipper " +
-                        "route the computer runs it, so they are not offered here.",
+                    "Start and Stop run Phone Klipper's host. On the PC Klipper route the PC " +
+                        "runs it, so they are not offered here.",
                 )
             }
             if (state.saveConfigPending) {
@@ -167,7 +167,7 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
         }
         state.mcus.forEach { mcu -> McuCard(mcu) }
 
-        KlipperCard(title = "This device") {
+        KlipperCard(title = "Phone Klipper") {
             val stats = state.systemStats
             if (stats == null) {
                 KlipperNote("The host has not reported its own load yet.")
@@ -251,7 +251,7 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             onHide = { config = null },
             actions = {
                 // Import and Restore write this phone's own configuration: they belong to
-                // This device, and the card says so rather than offering them here.
+                // Phone Klipper, and the card says so rather than offering them here.
                 if (configDiffers && onDevice) {
                     KlipperNote(
                         "This is not the configuration this version of the app ships. " +
@@ -273,8 +273,8 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                 if (!onDevice) {
                     Spacer(Modifier.height(8.dp))
                     KlipperNote(
-                        "Import and Restore write this phone own configuration. Switch to " +
-                            "This device on the Print tab to use them.",
+                        "Import and Restore write Phone Klipper's own configuration. Switch " +
+                            "to Phone Klipper on the Print tab to use them.",
                     )
                 }
             },
@@ -440,7 +440,7 @@ private fun SyncCard(viewModel: KlipperViewModel) {
     LaunchedEffect(Unit) { preview = viewModel.syncDifferences() }
 
     KlipperCard(
-        title = "Sync with the other host",
+        title = "Sync Phone Klipper and PC Klipper",
         subtitle = "The printer's own settings, from one host's printer.cfg to the other's",
         trailing = {
             KlipperButton("Check again", enabled = !busy) {
@@ -457,7 +457,7 @@ private fun SyncCard(viewModel: KlipperViewModel) {
         }
         val result = preview
         when {
-            result == null -> KlipperNote("Reading the other host's configuration…")
+            result == null -> KlipperNote("Reading PC Klipper's configuration…")
             result.error != null -> KlipperNote(
                 text = "Nothing could be compared: " + result.error,
                 color = MaterialTheme.colorScheme.error,
@@ -474,12 +474,12 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                     mine != null && theirs != null && mine > theirs
                 ) "  \u2014 newer" else ""
                 KlipperValue(
-                    label = "This device, written",
+                    label = "Phone Klipper, written",
                     value = describeConfigAge(now, deviceChanged) +
                         mark(deviceChanged, remoteChanged),
                 )
                 KlipperValue(
-                    label = "The other host, written",
+                    label = "PC Klipper, written",
                     value = describeConfigAge(now, remoteChanged) +
                         mark(remoteChanged, deviceChanged),
                 )
@@ -490,7 +490,7 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                             "host's serial port, gcodes directory, boards and includes stay its own.",
                     )
                 } else {
-                    KlipperNote("This device's value first, the other host's second.")
+                    KlipperNote("Phone Klipper's value first, PC Klipper's second.")
                     Spacer(Modifier.height(4.dp))
                     result.differences.forEach { difference ->
                         KlipperValue(
@@ -500,10 +500,10 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                     }
                     Spacer(Modifier.height(8.dp))
                     KlipperButtons {
-                        KlipperButton("Copy to the other host", enabled = !busy) {
+                        KlipperButton("Copy to PC Klipper", enabled = !busy) {
                             direction = KlipperSyncSource.THE_DEVICE
                         }
-                        KlipperButton("Copy from the other host", enabled = !busy) {
+                        KlipperButton("Copy to Phone Klipper", enabled = !busy) {
                             direction = KlipperSyncSource.THE_REMOTE_HOST
                         }
                     }
@@ -516,25 +516,25 @@ private fun SyncCard(viewModel: KlipperViewModel) {
         val fromComputer = from == KlipperSyncSource.THE_REMOTE_HOST
         KlipperConfirmDialog(
             title = if (fromComputer) {
-                "Copy the other host's settings here?"
+                "Copy PC Klipper's settings to Phone Klipper?"
             } else {
-                "Copy this device's settings to the other host?"
+                "Copy Phone Klipper's settings to PC Klipper?"
             },
             text = if (fromComputer) {
-                "The printer's own settings in the computer's printer.cfg replace this " +
-                    "device's: the calibrations klippy saved, the extruder's rotation distance " +
-                    "and pressure advance, the motion limits. This device's serial port, its " +
-                    "gcodes directory and its [include app.cfg] are left exactly as they are. " +
-                    "Nothing restarts here by itself: the host reads the new file the next time " +
-                    "it is restarted from this screen."
+                "The printer's own settings in PC Klipper's printer.cfg replace Phone " +
+                    "Klipper's: the calibrations klippy saved, the extruder's rotation " +
+                    "distance and pressure advance, the motion limits. Phone Klipper's serial " +
+                    "port, its gcodes directory and its [include app.cfg] are left exactly as " +
+                    "they are. Nothing restarts here by itself: the host reads the new file " +
+                    "the next time it is restarted from this screen."
             } else {
-                "The printer's own settings in this device's printer.cfg replace the " +
-                    "computer's. Everything that describes the computer rather than the " +
-                    "printer - its serial port, its gcodes directory, its [mcu rpi] section, " +
-                    "its includes - is left exactly as it is. The computer is asked to restart, " +
+                "The printer's own settings in Phone Klipper's printer.cfg replace PC " +
+                    "Klipper's. Everything that describes the PC rather than the printer - " +
+                    "its serial port, its gcodes directory, its [mcu rpi] section, its " +
+                    "includes - is left exactly as it is. PC Klipper is asked to restart, " +
                     "which a print in progress there does not survive."
             },
-            confirmLabel = if (fromComputer) "Copy here" else "Copy there",
+            confirmLabel = if (fromComputer) "Copy to Phone Klipper" else "Copy to PC Klipper",
             onConfirm = {
                 scope.launch {
                     busy = true
@@ -555,9 +555,9 @@ private fun syncOutcome(result: KlipperSyncResult, fromComputer: Boolean): Strin
     result.copied.isEmpty() -> "Nothing was copied: the two agree already."
     fromComputer -> countCopied(result.copied.size) +
         " into this device's printer.cfg. The host here reads it the next time it restarts."
-    result.restarted -> countCopied(result.copied.size) + " to the other host, which has been " +
+    result.restarted -> countCopied(result.copied.size) + " to PC Klipper, which has been " +
         "asked to restart."
-    else -> countCopied(result.copied.size) + " to the other host. It could not be asked to " +
+    else -> countCopied(result.copied.size) + " to PC Klipper. It could not be asked to " +
         "restart, so it is still running the configuration it had."
 }
 

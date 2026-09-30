@@ -119,7 +119,7 @@ internal fun PrinterTabContent(
 
 /** The ways this app reaches a printer. */
 private enum class Route(val label: String) {
-    DEVICE("This device"),
+    DEVICE("Phone Klipper"),
     PC("PC Klipper"),
     OCTOPRINT("OctoPrint"),
 }

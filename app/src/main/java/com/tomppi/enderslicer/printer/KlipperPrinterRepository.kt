@@ -711,12 +711,12 @@ class KlipperPrinterRepository(
                                     MoonrakerFiles.ConfigRead.Missing -> ""
                                     MoonrakerFiles.ConfigRead.Unreachable ->
                                         throw IllegalStateException(
-                                            "the computer stopped answering before it could be written to",
+                                            "PC Klipper stopped answering before it could be written to",
                                         )
                                 }
                                 if (now != sources.remote) {
                                     throw IllegalStateException(
-                                        "the computer's configuration changed while this was being " +
+                                        "PC Klipper's configuration changed while this was being " +
                                             "prepared; look at the differences again and repeat",
                                     )
                                 }
@@ -1210,10 +1210,10 @@ class KlipperPrinterRepository(
     private suspend fun syncSources(): SyncSources {
         val device = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
             ?: return SyncSources.Failed(
-                "this device has no printer.cfg yet: start the host here once, or import one",
+                "Phone Klipper has no printer.cfg yet: start it once here, or import one",
             )
         val files = remoteHostFiles() ?: return SyncSources.Failed(
-            "no computer is set as the other host: connect to one under PC Klipper on the Print tab",
+            "no PC Klipper is set yet: choose PC Klipper on the Print tab and connect it",
         )
         // readConfig, not configText: a computer with no configuration yet is a computer to
         // send this one to. Collapsing that into null made the card say the computer did not
@@ -1223,7 +1223,7 @@ class KlipperPrinterRepository(
             is MoonrakerFiles.ConfigRead.Found -> read.text
             MoonrakerFiles.ConfigRead.Missing -> ""
             MoonrakerFiles.ConfigRead.Unreachable -> return SyncSources.Failed(
-                "the computer at " + hostChoice.load().host.trim() +
+                "PC Klipper at " + hostChoice.load().host.trim() +
                     " did not answer with its configuration",
             )
         }
@@ -1292,7 +1292,7 @@ class KlipperPrinterRepository(
         try {
             staged.writeText(text)
             if (!files.uploadConfig(staged)) {
-                throw IllegalStateException("the computer refused the configuration")
+                throw IllegalStateException("PC Klipper refused the configuration")
             }
         // Its own endpoint rather than RESTART down the connection: the computer being written
         // to is not necessarily the one the app is connected to.
@@ -1301,7 +1301,7 @@ class KlipperPrinterRepository(
             val state = files.printState()?.lowercase()
             if (state == "printing" || state == "paused") {
                 throw IllegalStateException(
-                    "the computer is " + state + ": syncing would restart it and end the print",
+                    "PC Klipper is " + state + ": syncing would restart it and end the print",
                 )
             }
             files.restart()
@@ -1397,7 +1397,7 @@ class KlipperPrinterRepository(
             return@withContext Result.failure(
                 IllegalStateException(
                     "importing rewrites the configuration for this phone, so it only applies to " +
-                        "This device: switch to it on the Print tab first",
+                        "Phone Klipper: switch to it on the Print tab first",
                 ),
             )
         }

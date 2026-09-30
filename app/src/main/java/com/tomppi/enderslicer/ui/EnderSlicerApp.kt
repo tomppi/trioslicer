@@ -163,7 +163,7 @@ internal enum class AppTab(
     SETTINGS("Print settings", "Settings", { "Apply immediately" }),
     // The destination offers both, and the built-in host is the default: it said
     // "OctoPrint session" while showing a printer this device was driving itself.
-    PRINT("Print", "Print", { "This device, or OctoPrint" }),
+    PRINT("Print", "Print", { "Phone Klipper, PC Klipper, or OctoPrint" }),
     MORE("More", "More", { "Everything outside the plate" }),
 }
 
