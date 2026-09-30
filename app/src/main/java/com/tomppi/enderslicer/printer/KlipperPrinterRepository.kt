@@ -555,8 +555,13 @@ class KlipperPrinterRepository(
     internal suspend fun saveShapers(settings: List<KlipperConfigFile.ShaperSetting>): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
-                val text = readHostConfig() ?: return@runCatching false
-                writeHostConfig(KlipperConfigFile.withInputShaper(text, settings))
+                val text = readHostConfig() ?: run {
+                    reportConfigWriteFailure("the input shaper")
+                    return@runCatching false
+                }
+                val ok = writeHostConfig(KlipperConfigFile.withInputShaper(text, settings))
+                if (!ok) reportConfigWriteFailure("the input shaper")
+                ok
             }.getOrDefault(false)
         }
 
@@ -592,7 +597,10 @@ class KlipperPrinterRepository(
     internal suspend fun savePressureAdvance(advance: Double, smoothTime: Double? = null): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
-                val text = readHostConfig() ?: return@runCatching false
+                val text = readHostConfig() ?: run {
+                    reportConfigWriteFailure("the pressure advance")
+                    return@runCatching false
+                }
                 var written = KlipperConfigFile.withOption(
                     text,
                     "extruder",
@@ -608,7 +616,9 @@ class KlipperPrinterRepository(
                     )
                 }
                 if (written == text) return@runCatching false
-                writeHostConfig(written)
+                val ok = writeHostConfig(written)
+                if (!ok) reportConfigWriteFailure("the pressure advance")
+                ok
             }.getOrDefault(false)
         }
 
@@ -616,7 +626,10 @@ class KlipperPrinterRepository(
     internal suspend fun saveRotationDistance(distance: Double): Boolean =
         withContext(Dispatchers.IO) {
             runCatching {
-                val text = readHostConfig() ?: return@runCatching false
+                val text = readHostConfig() ?: run {
+                    reportConfigWriteFailure("the rotation distance")
+                    return@runCatching false
+                }
                 val written = KlipperConfigFile.withOption(
                     text,
                     "extruder",
@@ -624,7 +637,9 @@ class KlipperPrinterRepository(
                     String.format(java.util.Locale.ROOT, "%.3f", distance),
                 )
                 if (written == text) return@runCatching false
-                writeHostConfig(written)
+                val ok = writeHostConfig(written)
+                if (!ok) reportConfigWriteFailure("the rotation distance")
+                ok
             }.getOrDefault(false)
         }
 
@@ -730,13 +745,25 @@ class KlipperPrinterRepository(
      */
     internal suspend fun addStarterMacros(): List<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val text = readHostConfig() ?: return@runCatching emptyList()
+            val text = readHostConfig() ?: run {
+
+                reportConfigWriteFailure("the starter macros")
+
+                return@runCatching emptyList()
+
+            }
             val missing = KlipperMacroLibrary.missingFrom(text)
             if (missing.isEmpty()) return@runCatching emptyList()
             val written = writeHostConfig(
                 KlipperConfigFile.withSections(text, missing.map { it.section }),
             )
-            if (!written) return@runCatching emptyList()
+            if (!written) {
+
+                reportConfigWriteFailure("the starter macros")
+
+                return@runCatching emptyList()
+
+            }
             missing.map { it.name }
         }.getOrDefault(emptyList())
     }
@@ -1039,6 +1066,18 @@ class KlipperPrinterRepository(
             deviceText = { deviceConfigText() },
             remoteText = { remote?.configText() },
         )
+    }
+
+    /**
+     * A configuration write that did not happen must not read like one with nothing to change.
+     *
+     * Every caller discarded the Boolean: a refused or failed write looked exactly like a file
+     * that was already in order, so the screen said nothing and the value was silently not saved.
+     */
+    private fun reportConfigWriteFailure(what: String) {
+        _state.update {
+            it.copy(error = "$what was not written: the configuration of the host in use was not updated")
+        }
     }
 
     /** This device's own configuration, or null when it has none yet. */

@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.printer.KlipperHeater
+import com.tomppi.enderslicer.printer.isMaterialHeater
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.genericFans
 import com.tomppi.enderslicer.printer.KlipperTemperatureSample
@@ -174,10 +175,14 @@ private fun HeaterCard(
         KlipperButtons {
             KlipperButton("Off", enabled = enabled) { onSet(0) }
             // The two the app already offered, plus the one most printers end up using.
-            val hot = heater.name != "heater_bed"
-            KlipperButton("PLA", enabled = enabled) { onSet(if (hot) 200 else 60) }
-            KlipperButton("PETG", enabled = enabled) { onSet(if (hot) 240 else 80) }
-            KlipperButton("ABS", enabled = enabled) { onSet(if (hot) 250 else 100) }
+            // Material presets only for the heaters they mean something for: a chamber heater or
+            // a temperature fan would otherwise be commanded to a hotend figure.
+            if (isMaterialHeater(heater.name)) {
+                val hot = heater.name != "heater_bed"
+                KlipperButton("PLA", enabled = enabled) { onSet(if (hot) 200 else 60) }
+                KlipperButton("PETG", enabled = enabled) { onSet(if (hot) 240 else 80) }
+                KlipperButton("ABS", enabled = enabled) { onSet(if (hot) 250 else 100) }
+            }
             if (heater.name == "extruder" || heater.name == "heater_bed") {
                 KlipperButton("Tune PID", enabled = enabled, onClick = onCalibrate)
             }

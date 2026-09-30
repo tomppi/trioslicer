@@ -540,3 +540,14 @@ internal fun JSONObject?.int(name: String): Int? =
 /** The element at [index], or null when the array is shorter than that. */
 internal fun JSONArray.getOrNull(index: Int): Double? =
     if (index < length()) optDouble(index) else null
+
+/**
+ * True for the heaters a material preset means something for.
+ *
+ * A printer can publish any number of things with a temperature: a chamber heater, a
+ * temperature fan, a second extruder. The presets carry hotend figures, and offering them
+ * for everything with a target once meant commanding a chamber to 250 C.
+ */
+internal fun isMaterialHeater(name: String): Boolean =
+    name == "heater_bed" || name == "extruder" ||
+        (name.startsWith("extruder") && name.removePrefix("extruder").toIntOrNull() != null)

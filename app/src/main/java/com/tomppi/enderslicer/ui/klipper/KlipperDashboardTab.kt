@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
+import com.tomppi.enderslicer.printer.isMaterialHeater
 import com.tomppi.enderslicer.printer.KlipperFileLimits
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
@@ -438,13 +439,16 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
         state.heaters.forEach { heater ->
             HeaterReadoutRow(heater)
             if (heater.isHeater) {
+                // Off for anything with a target; material figures only where they mean something.
                 KlipperButtons {
                     KlipperButton("Off") { viewModel.setHeaterTemperature(heater.name, 0) }
-                    KlipperButton("PLA") {
-                        viewModel.setHeaterTemperature(heater.name, if (heater.name == "heater_bed") 60 else 200)
-                    }
-                    KlipperButton("PETG") {
-                        viewModel.setHeaterTemperature(heater.name, if (heater.name == "heater_bed") 80 else 240)
+                    if (isMaterialHeater(heater.name)) {
+                        KlipperButton("PLA") {
+                            viewModel.setHeaterTemperature(heater.name, if (heater.name == "heater_bed") 60 else 200)
+                        }
+                        KlipperButton("PETG") {
+                            viewModel.setHeaterTemperature(heater.name, if (heater.name == "heater_bed") 80 else 240)
+                        }
                     }
                 }
             }

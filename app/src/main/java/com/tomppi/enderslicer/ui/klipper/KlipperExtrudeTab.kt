@@ -194,17 +194,19 @@ internal fun KlipperExtrudeTab(state: KlipperPrinterState, viewModel: KlipperVie
                 }
                 Spacer(Modifier.height(8.dp))
                 KlipperButtons {
-                    KlipperButton("Apply now", enabled = state.isReady && moved > 0.0) {
+                    KlipperButton("Apply now", enabled = state.isReady && !state.isPrinting && moved > 0.0) {
                         viewModel.applyRotationDistance(corrected)
                     }
-                    KlipperButton("Save to printer.cfg", enabled = moved > 0.0) {
+                    KlipperButton("Save to printer.cfg", enabled = state.isReady && !state.isPrinting && moved > 0.0) {
                         scope.launch { viewModel.saveRotationDistance(corrected) }
                     }
                 }
                 KlipperNote(
                     "Applying takes effect at once and lasts until the host restarts; saving " +
                         "writes it into the configuration so the restart keeps it. Push the " +
-                        "same length again afterwards to confirm the measurement.",
+                        "same length again afterwards to confirm the measurement. On the PC route a " +
+                        "save also restarts that host, which ends a print in progress, so neither " +
+                        "button is offered while the printer is printing."
                 )
             }
         }
