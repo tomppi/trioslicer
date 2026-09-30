@@ -151,6 +151,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 
 - [docs/TECHNICAL.md](docs/TECHNICAL.md) - building it, where the five engines come from, the verification tasks, CI, and how releases are signed
 - [keystore/README.md](keystore/README.md) - the release key and how to verify a downloaded APK
+- [Calibrating the input shaper with a phone](docs/INPUT_SHAPING.md)
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
 - [webviewdp](https://github.com/tomppi/webviewdp) - a minimal Android WebView app that wraps a harness's own web UI for the same phone
