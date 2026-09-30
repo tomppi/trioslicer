@@ -1065,7 +1065,7 @@ doing the damage is in the middle of that very trace, where it should have been 
 
 That is KPM, not a Samsung mechanism, and it was the phone's own build. The full
 sequence and the log are in
-[docs/logs/kernel-panic-pm-get-wakeup-count.log](logs/kernel-panic-pm-get-wakeup-count.log);
+`kernel-panic-pm-get-wakeup-count.log` (kept on the phone at `/sdcard/Download/dsh-agent/`);
 the raw capture is on the phone as last-kmsg-previous-boot.log.
 
 ## After a phone reboot: the USB port comes back dead
@@ -1076,7 +1076,7 @@ deliberately, so that is an absence of evidence rather than a proof. The rebind 
 stays as the fallback if it ever returns.
 
 The kernel log of one of these is kept at
-[docs/logs/usb-otg-pwr-event-storm.log](logs/usb-otg-pwr-event-storm.log): 1342
+`usb-otg-pwr-event-storm.log` (kept on the phone at `/sdcard/Download/dsh-agent/`): 1342
 "unexpected PWR_EVNT" events over eight and a half minutes, with the link reporting
 state 0x0005, and nothing in it an application did. It is not a panic - the phone's own
 boot reason is `reboot` and `/sys/fs/pstore` is empty - which is why the workaround is
