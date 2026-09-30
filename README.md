@@ -68,6 +68,12 @@ a modified Creality Ender 3 V2.
 </p>
 
 <p align="center">
+  <img src="docs/screenshots/shaping.png" width="220" alt="Shaping screen: the phone's own accelerometer measuring the resonance of the printer">
+  <br>
+  <em>Shaping: the phone is the accelerometer, and the printer's own sweep is the test</em>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/modelling.jpg" width="220" alt="Modelling screen: the model with the agent's report in the chat below it">
   <img src="docs/screenshots/modelling-result.jpg" width="220" alt="The model the agent handed back, waiting on the plate">
   <br>
