@@ -139,7 +139,6 @@ resolved settings before a critical print.
 - Smart Infill, thermal FEA, arc/wave overhangs and the smart overhang strategy need broader physical print validation
 - High-density models and fine FEA grids may exceed the Android heap; thermal FEA lacks transient conduction and creep
 - Non-planar slicing and conical slicing buffer the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
-- OctoPrint needs broader real-server validation; printer-specific firmware commands must be checked against the installed firmware
 - The PrusaSlicer engine is packaged for **arm64-v8a** only; the x86_64 build was dropped because the shipped ABI is what device validation covers
 - Cura previews estimate bead widths from the extrusion delta (Cura G-code carries no width markers), so a previewed width can differ slightly from what the engine planned
 - The AI assistant is a client to a DeepSeek harness you run yourself, and photo-to-3D additionally needs a GPU box; neither is bundled, and replies are read from a polling projection rather than streamed
