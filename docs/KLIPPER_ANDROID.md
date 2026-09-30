@@ -847,7 +847,7 @@ reason the library route exists.
 The service starts, extracts, and the interpreter runs it. From logcat, verbatim:
 
     extracting klipper payload to /data/user/0/com.tomppi.enderslicercura/files/klipper
-    payload extracted: 1025 files
+    payload extracted: 959 files
     linked libpython3.11.so.1.0 to /data/app/.../lib/arm64/libpython3.11.so
     exec /data/app/.../lib/arm64/libklipper_exec.so PYTHONHOME=/data/user/0/.../files/klipper
     klipper: python 3.11.4
