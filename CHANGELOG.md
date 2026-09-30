@@ -26,6 +26,9 @@ that list is the fastest way to know what this app does and does not do.
   copies one way or the other. What describes the *host* rather than the printer - the serial
   port, the gcodes directory, the `[mcu]` sections, the includes - is never touched, in either
   direction.
+- **A written procedure for calibrating the input shaper**, in
+  [docs/INPUT_SHAPING.md](docs/INPUT_SHAPING.md): where to put the phone and why, what the mass
+  correction is worth, why two runs beat one, and how to try it by eye with no phone at all.
 - **Each configuration says when it was last written.** With two files in play, "which of these
   is the right value" is usually "which one did I set yesterday", and a setting carries no date.
   The sync card now shows both files' times in words and marks the newer of the two. The date is
@@ -75,6 +78,10 @@ that list is the fastest way to know what this app does and does not do.
 - **A stopped or cancelled print left the layer height and the Z frame disagreeing**, because the
   tracker the height is measured from was the one piece of parser state a `G28` or `G92 Z` did not
   reset.
+- **The Shaping screen said not to put the phone on the bed**, while the note under its own
+  moving-mass field explained that a phone on the bed very nearly restores a stock bed's
+  weight - and the measurements are taken from the bed. It now says gantry for X, bed for Y,
+  and why the bed is the one whose weight matters.
 
 ### Notes
 
