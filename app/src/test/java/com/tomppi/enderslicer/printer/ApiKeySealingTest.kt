@@ -26,4 +26,12 @@ class ApiKeySealingTest {
     fun aPlaintextValueFromAnOlderBuildStillWorks() {
         assertEquals("legacy-key", apiKeyFromStored("legacy-key") { null })
     }
+
+    @Test
+    fun aSealedValueThisDeviceCannotOpenIsNotSentAsTheKey() {
+        // A restore or a rotated Keystore entry leaves a sealed blob nothing can open. It is not
+        // the key: sending it earns a 401, and re-sealing the blob would destroy what was there.
+        assertEquals("", apiKeyFromStored("sealed:AAAA") { null })
+    }
+
 }

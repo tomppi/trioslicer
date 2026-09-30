@@ -19,8 +19,15 @@ internal enum class KlipperHostMode { DEVICE, PC }
  * is, and sealed the next time the choice is saved. A value that cannot be opened is treated
  * the same way - one this app cannot read is not a reason to refuse to connect.
  */
-internal fun apiKeyFromStored(stored: String, open: (String) -> String?): String =
-    if (stored.isBlank()) "" else open(stored) ?: stored
+internal fun apiKeyFromStored(stored: String, open: (String) -> String?): String {
+    if (stored.isBlank()) return ""
+    // Plaintext, from a build before this was sealed: used as it is and sealed on the next save.
+    if (!stored.startsWith(SealedValue.FORMAT_PREFIX)) return stored
+    // Sealed, and this device cannot open it - a restored backup, a Keystore entry that is gone.
+    // The blob is not the key: sending it earns a 401, and saving would seal the blob again and
+    // destroy what was there. Empty is better than something wrong, and the user is asked.
+    return open(stored).orEmpty()
+}
 
 /** The host the app is pointed at, and how to reach it. */
 internal data class KlipperHostChoice(

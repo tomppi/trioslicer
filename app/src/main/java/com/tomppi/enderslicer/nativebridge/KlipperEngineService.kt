@@ -253,6 +253,11 @@ class KlipperEngineService : Service() {
             Log.i(TAG, "starting klippy: ${pb.command().joinToString(" ")}")
             val proc = pb.start()
             process = proc
+            // The claim is over the moment the process exists. Clearing it when launchLocked()
+            // returns would hold it for the whole life of the run, because it blocks reading
+            // klippy's output - and a restart in the meantime would find it set, stop the host
+            // and start nothing at all.
+            starting = false
             started = proc
             // klippy's API is what the app's front end talks to, so it is proved here
             // as soon as klippy opens it. This runs on its own thread because the one
