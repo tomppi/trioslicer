@@ -123,6 +123,18 @@ The post-audit regression suite covers:
 
 ## Attribution and implementation scope
 
-The original **CurviSlicer: Slightly Curved Slicing for 3-Axis Printers** research prototype is maintained by the MFX/Inria team at `mfx-inria/curvislicer` and is licensed under AGPL-3.0. EnderSlicerCura is also AGPL-3.0-or-later.
+The method implemented here is **Daniel Ahlers'**: *Non-planar slicing*, his 2018 MSc thesis in the
+TAMS group at the University of Hamburg
+(<https://tams.informatik.uni-hamburg.de/publications/2018/MSc_Daniel_Ahlers.pdf>). Its approach is the
+one this app follows, and the code says so where it is named: detect the near-horizontal top surfaces
+automatically, check them for collisions, print the structure below them as ordinary planar layers,
+and lay a non-planar toolpath over the top of that. Ahlers' implementation modifies Slic3r (GPLv3,
+`Zip-o-mat/Slic3r`, branch `nonplanar`); this one carries the same idea out on CuraEngine and the
+app's own transformers.
 
-The Android backend is a clean Android-oriented implementation of the flatten/slice/inverse-map concept. It does not package the desktop Wine/TetWild automation or claim numerical identity with the original tetrahedral OSQP/Gurobi optimizer. This design avoids a desktop runtime dependency and keeps the complete process offline on ARM64 Android devices.
+It is **not** CurviSlicer (Etienne et al., *Slightly Curved Slicing for 3-Axis Printers*), which solves
+for curved layer surfaces directly, nor a reimplementation of it.
+
+The Android backend is a clean Android-oriented implementation of the flatten/slice/inverse-map
+concept. It does not package a desktop slicer or its automation, and it claims no numerical identity
+with any other implementation. That keeps the whole process offline on an ARM64 Android device.
