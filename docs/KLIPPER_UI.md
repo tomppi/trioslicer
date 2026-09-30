@@ -410,3 +410,34 @@ file. It survives an app update: the Machine screen says when the running config
 is no longer the one this version ships, and restoring it takes the app's default and
 puts the saved block back underneath - so a new default arrives without costing the user
 a PID calibration or a mesh profile.
+
+## Moving settings between the two hosts
+
+The printer's own settings belong to the printer, not to whichever computer or phone is driving
+it: the BLTouch offset, the PID terms, the bed meshes, the extruder's rotation distance and
+pressure advance, the input shaper, the motion limits. Two hosts driving one machine drift apart
+as you calibrate - a `SAVE_CONFIG` on one is invisible to the other - and the Machine screen has a
+card that compares them and copies one way or the other.
+
+**What moves.** The `#*#` block klippy writes (`[bltouch] z_offset`, the PID terms, the bed
+meshes) and the body options the app knows are the printer's: the extruder's own figures, the
+input shaper per axis, and the motion limits.
+
+**What never moves.** Everything that describes the *host* rather than the printer: the serial
+port, the gcodes directory, the `[mcu]` sections, the includes. A sync cannot make one host reach
+for the other's board, which is the failure that would make this feature dangerous.
+
+**Which value is right.** The card shows both files' modification times and marks the newer. That
+is the *file's* time, not the setting's: a `SAVE_CONFIG` rewrites the whole file, so a PID tune
+makes every value in it look that new. The difference list itself is usually the better guide.
+
+**What it refuses.** A host that cannot be read is not written to, rather than being guessed at.
+A PC with no `printer.cfg` yet is a *target* - the first sync a new host needs - and not an error.
+The target is read again immediately before it is replaced, and the sync refuses if it changed
+while the card was open. And the PC is asked for its print state over Moonraker's own HTTP query:
+copying to it restarts it, so a print in progress there is refused rather than ended.
+
+**The phone does not restart.** Its own file is written and the host reads it the next time it is
+restarted from the Machine screen; the PC is asked to restart, because the configuration is not
+the running one until it does.
+
