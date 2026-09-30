@@ -47,6 +47,9 @@ internal data class KlipperSyncResult(
     val copied: List<KlipperConfigFile.Difference> = emptyList(),
     val error: String? = null,
     val restarted: Boolean = false,
+    /** When each configuration file was last written, so the two dates can be compared. */
+    val deviceChangedAtMillis: Long? = null,
+    val remoteChangedAtMillis: Long? = null,
 )
 
 /**
@@ -657,6 +660,8 @@ class KlipperPrinterRepository(
                 is SyncSources.Failed -> KlipperSyncResult(error = sources.reason)
                 is SyncSources.Both -> KlipperSyncResult(
                     differences = KlipperConfigFile.differences(sources.device, sources.remote),
+                    deviceChangedAtMillis = sources.deviceChangedAtMillis,
+                    remoteChangedAtMillis = sources.remoteChangedAtMillis,
                 )
             }
         }.getOrElse { error ->
@@ -692,7 +697,9 @@ class KlipperPrinterRepository(
                         // in the other order would read as the arrow pointing the wrong way.
                         val differences = KlipperConfigFile.differences(source, target)
                         val synced = KlipperConfigFile.withSynced(target, source)
-                        when {
+                        // Every outcome carries both files' times, so the card can say which one
+                        // was written last whichever branch this takes.
+                        val outcome = when {
                             synced == target -> KlipperSyncResult(differences = differences)
                             toComputer -> {
                                 // Read when the card was prepared, written now: a SAVE_CONFIG on
@@ -724,6 +731,10 @@ class KlipperPrinterRepository(
                                 KlipperSyncResult(differences = differences, copied = differences)
                             }
                         }
+                        outcome.copy(
+                            deviceChangedAtMillis = sources.deviceChangedAtMillis,
+                            remoteChangedAtMillis = sources.remoteChangedAtMillis,
+                        )
                     }
                 }
             }.getOrElse { error ->
@@ -1179,6 +1190,8 @@ class KlipperPrinterRepository(
             val device: String,
             val remote: String,
             val files: MoonrakerFiles,
+            val deviceChangedAtMillis: Long?,
+            val remoteChangedAtMillis: Long?,
         ) : SyncSources
 
         data class Failed(val reason: String) : SyncSources
@@ -1214,7 +1227,17 @@ class KlipperPrinterRepository(
                     " did not answer with its configuration",
             )
         }
-        return SyncSources.Both(device, remote, files)
+        // This device's own file carries its time on disk. The other host is asked, because a
+        // clock the app cannot see is the one it cannot report.
+        val deviceChanged = KlipperHostFiles.config(application.filesDir).lastModified()
+            .takeIf { it > 0L }
+        return SyncSources.Both(
+            device = device,
+            remote = remote,
+            files = files,
+            deviceChangedAtMillis = deviceChanged,
+            remoteChangedAtMillis = files.configModified(),
+        )
     }
 
     /**

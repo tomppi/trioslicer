@@ -32,6 +32,7 @@ import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperSyncResult
 import com.tomppi.enderslicer.printer.KlipperSyncSource
 import com.tomppi.enderslicer.printer.KlipperViewModel
+import com.tomppi.enderslicer.printer.describeConfigAge
 import com.tomppi.enderslicer.printer.endstops
 import com.tomppi.enderslicer.printer.mcus
 import com.tomppi.enderslicer.printer.saveConfigPending
@@ -461,26 +462,50 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                 text = "Nothing could be compared: " + result.error,
                 color = MaterialTheme.colorScheme.error,
             )
-            result.differences.isEmpty() -> KlipperNote(
-                "Nothing differs: the two agree about every setting this copies. Each host's " +
-                    "serial port, gcodes directory, boards and includes stay its own.",
-            )
             else -> {
-                KlipperNote("This device's value first, the other host's second.")
-                Spacer(Modifier.height(4.dp))
-                result.differences.forEach { difference ->
-                    KlipperValue(
-                        label = difference.section + " " + difference.option,
-                        value = difference.valueA + "  \u2192  " + difference.valueB,
-                    )
-                }
+                // Which file was written last, because "which of these is the right value" is
+                // usually "which one did I set more recently" - and a setting carries no date of
+                // its own. A file's time is the whole file's: a SAVE_CONFIG rewrites all of it,
+                // so a PID tune makes every value in the file look that new.
+                val now = System.currentTimeMillis()
+                val deviceChanged = result.deviceChangedAtMillis
+                val remoteChanged = result.remoteChangedAtMillis
+                fun mark(mine: Long?, theirs: Long?) = if (
+                    mine != null && theirs != null && mine > theirs
+                ) "  \u2014 newer" else ""
+                KlipperValue(
+                    label = "This device, written",
+                    value = describeConfigAge(now, deviceChanged) +
+                        mark(deviceChanged, remoteChanged),
+                )
+                KlipperValue(
+                    label = "The other host, written",
+                    value = describeConfigAge(now, remoteChanged) +
+                        mark(remoteChanged, deviceChanged),
+                )
                 Spacer(Modifier.height(8.dp))
-                KlipperButtons {
-                    KlipperButton("Copy to the other host", enabled = !busy) {
-                        direction = KlipperSyncSource.THE_DEVICE
+                if (result.differences.isEmpty()) {
+                    KlipperNote(
+                        "Nothing differs: the two agree about every setting this copies. Each " +
+                            "host's serial port, gcodes directory, boards and includes stay its own.",
+                    )
+                } else {
+                    KlipperNote("This device's value first, the other host's second.")
+                    Spacer(Modifier.height(4.dp))
+                    result.differences.forEach { difference ->
+                        KlipperValue(
+                            label = difference.section + " " + difference.option,
+                            value = difference.valueA + "  \u2192  " + difference.valueB,
+                        )
                     }
-                    KlipperButton("Copy from the other host", enabled = !busy) {
-                        direction = KlipperSyncSource.THE_REMOTE_HOST
+                    Spacer(Modifier.height(8.dp))
+                    KlipperButtons {
+                        KlipperButton("Copy to the other host", enabled = !busy) {
+                            direction = KlipperSyncSource.THE_DEVICE
+                        }
+                        KlipperButton("Copy from the other host", enabled = !busy) {
+                            direction = KlipperSyncSource.THE_REMOTE_HOST
+                        }
                     }
                 }
             }

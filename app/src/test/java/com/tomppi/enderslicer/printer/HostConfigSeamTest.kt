@@ -250,4 +250,36 @@ class HostConfigSeamTest {
             server.stop(0)
         }
     }
+    @Test
+    fun theSyncSaysWhenEachConfigurationWasWritten() = runBlocking {
+        val remoteModified = 1_700_000_000.5
+        val served = "# the computer configuration\n[printer]\nmax_accel: 3000\n"
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            val body = served.toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/server/files/list") { exchange ->
+            // What Moonraker reports for a file: seconds with a fraction.
+            val body = (
+                """{"result":[{"path":"printer.cfg","size":57,"modified":$remoteModified}]}"""
+                ).toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            KlipperHostFiles.config(context.filesDir).writeText(served)
+            val repository = KlipperPrinterRepository(context, scope)
+            val result = repository.syncDifferences()
+            assertEquals("the host's time reaches the card", 1_700_000_000_500L, result.remoteChangedAtMillis)
+            assertTrue("and so does this device's", (result.deviceChangedAtMillis ?: 0L) > 0L)
+        } finally {
+            server.stop(0)
+        }
+    }
 }

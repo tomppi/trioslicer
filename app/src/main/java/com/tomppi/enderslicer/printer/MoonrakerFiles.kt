@@ -162,6 +162,25 @@ internal class MoonrakerFiles(
     fun restart(): Boolean = request(RESTART_PATH, "POST") != null
 
     /**
+     * When the host last wrote one of its configuration files, in milliseconds, or null when it
+     * cannot be asked.
+     *
+     * The listing the file screen already uses, asked of the config root. It is the file's own
+     * time, not any one setting's: a SAVE_CONFIG touches the whole file, so this says when the
+     * file was last written and nothing finer than that.
+     */
+    fun configModified(name: String = KlipperHostFiles.CONFIG): Long? {
+        val answer = request(listPath(CONFIG_ROOT), "GET") ?: return null
+        val items = answer.optJSONArray("result") ?: return null
+        return (0 until items.length())
+            .mapNotNull { items.optJSONObject(it) }
+            .firstOrNull { item ->
+                item.optString("path").trimStart('/').substringAfterLast('/') == name
+            }
+            ?.let { item -> (item.optDouble("modified") * 1000.0).toLong() }
+    }
+
+    /**
      * What the host's print is doing, or null when it cannot be asked.
      *
      * One query rather than a subscription: a sync needs to know whether replacing the
@@ -293,7 +312,7 @@ internal class MoonrakerFiles(
         private const val READ_TIMEOUT_MS = 60_000
 
         /** The list, as the host serves it. */
-        fun listPath(): String = "/server/files/list?root=" + ROOT
+        fun listPath(root: String = ROOT): String = "/server/files/list?root=" + root
 
         /** One file, by the name the host knows it by. */
         fun filePath(name: String): String = "/server/files/" + ROOT + "/" + encodePath(name)
