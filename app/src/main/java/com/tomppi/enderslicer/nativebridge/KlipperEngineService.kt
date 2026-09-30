@@ -389,6 +389,9 @@ class KlipperEngineService : Service() {
                 Log.w(TAG, "link wedged: retransmits climbing for " +
                     (climbing * MARGIN_POLL_MS / 1000) + "s, now " + retransmits +
                     "; restarting the host")
+                // Assigned here: the cooldown is read above, and a value that is never set reads as
+                // always satisfied - which is how a climbing link restarted klippy every 20 seconds.
+                lastRestart = now
                 restartHost()
                 return
             }
