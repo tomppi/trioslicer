@@ -75,7 +75,7 @@ the print settings, exactly as they do in OrcaSlicer's own window.
 
 Non-planar slicing is OrcaSlicer's own Z-layer contouring: enabling it sets `zaa_enabled=1` in the
 print configuration, which varies Z inside a layer so top-facing surfaces follow the model. The
-CurviSlicer relief-field options in the sheet belong to the CuraEngine path and do not apply here;
+Non-planar relief-field options in the sheet belong to the CuraEngine path and do not apply here;
 `zaa_min_z` and `zaa_minimize_perimeter_height` keep OrcaSlicer's defaults unless All settings
 overrides them. Conical slicing is refused on this engine: it is the app's own G-code transform,
 wired into the CuraEngine pipeline.

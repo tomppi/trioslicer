@@ -49,7 +49,7 @@ The transformer, sanitizer, layer-event materializer, immutable publisher, and P
 
 Numeric drafts are preserved across configuration recreation. Save is disabled until every visible value is valid and within its displayed range. Both decimal point and decimal comma input are accepted.
 
-Changing any CurviSlicer option invalidates previously published G-code. Export, Layers and Path remain unavailable until a fresh slice exists for the current configuration.
+Changing any non-planar option invalidates previously published G-code. Export, Layers and Path remain unavailable until a fresh slice exists for the current configuration.
 
 ## Engines
 
@@ -88,7 +88,7 @@ The slice fails without replacing or publishing G-code when:
 - any final emitted segment exceeds the effective slope limit;
 - any spatial motion leaves the configured machine envelope or build height;
 - the move budget would be exceeded;
-- any arc, spline, unmodeled motion, coordinate-system change, or unsupported command is present while CurviSlicer is active;
+- any arc, spline, unmodeled motion, coordinate-system change, or unsupported command is present while non-planar slicing is active;
 - a coordinate reset would make printable-path transformation ambiguous;
 - adaptive-wall modifier volumes are active, because they are generated from bend detection on the un-warped model and would misalign;
 - a Smart Infill package is active while modifier warping is disabled;
