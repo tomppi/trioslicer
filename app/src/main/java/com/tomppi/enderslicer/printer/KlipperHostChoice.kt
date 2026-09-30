@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.printer
 
 import android.content.Context
+import com.tomppi.enderslicer.storage.SealedValue
 
 /**
  * Which Klipper host this app is driving.
@@ -10,6 +11,16 @@ import android.content.Context
  * the choice is a transport and a label - see [transportFor].
  */
 internal enum class KlipperHostMode { DEVICE, PC }
+
+/**
+ * The API key to use, given what the preferences hold.
+ *
+ * A key written before this was sealed is plaintext and has to keep working: it is used as it
+ * is, and sealed the next time the choice is saved. A value that cannot be opened is treated
+ * the same way - one this app cannot read is not a reason to refuse to connect.
+ */
+internal fun apiKeyFromStored(stored: String, open: (String) -> String?): String =
+    if (stored.isBlank()) "" else open(stored) ?: stored
 
 /** The host the app is pointed at, and how to reach it. */
 internal data class KlipperHostChoice(
@@ -61,7 +72,9 @@ internal class KlipperHostChoiceStore(context: Context) {
             mode = mode,
             host = preferences.getString(KEY_HOST, "").orEmpty(),
             port = preferences.getInt(KEY_PORT, MoonrakerTransport.DEFAULT_PORT),
-            apiKey = preferences.getString(KEY_API_KEY, "").orEmpty(),
+            apiKey = apiKeyFromStored(preferences.getString(KEY_API_KEY, "").orEmpty()) {
+                SealedValue.open(API_KEY_ALIAS, it)
+            },
         )
     }
 
@@ -70,7 +83,10 @@ internal class KlipperHostChoiceStore(context: Context) {
             .putString(KEY_MODE, choice.mode.name)
             .putString(KEY_HOST, choice.host.trim())
             .putInt(KEY_PORT, choice.port)
-            .putString(KEY_API_KEY, choice.apiKey.trim())
+            .putString(
+                KEY_API_KEY,
+                if (choice.apiKey.isBlank()) "" else SealedValue.seal(API_KEY_ALIAS, choice.apiKey.trim()),
+            )
             .apply()
     }
 
@@ -80,5 +96,8 @@ internal class KlipperHostChoiceStore(context: Context) {
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
         const val KEY_API_KEY = "apiKey"
+
+        /** The Keystore entry the key is sealed with: one per use, never shared. */
+        const val API_KEY_ALIAS = "enderslicercura_moonraker_api_key"
     }
 }
