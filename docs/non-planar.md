@@ -1,6 +1,7 @@
-# Non-planar CurviSlicer
+# Non-planar slicing
 
-EnderSlicerCura includes an Android-native non-planar pipeline inspired by the CurviSlicer research method. It is available under **More → Experimental → Non-planar slicing** and is disabled by default.
+EnderSlicerCura includes an Android-native non-planar pipeline of its own - a relief-field flatten and an
+inverse mapping, not the CurviSlicer method it began from, and not a reimplementation of it. It is available under **More → Experimental → Non-planar slicing** and is disabled by default.
 
 ## Pipeline
 
@@ -19,10 +20,9 @@ EnderSlicerCura includes an Android-native non-planar pipeline inspired by the C
 The final file contains these markers:
 
 ```gcode
-;ENDERSLICER_NON_PLANAR:CurviSlicer-Android-v1
-;ENDERSLICER_CURVI_STRENGTH:...
-;ENDERSLICER_CURVI_MAX_DISPLACEMENT:...
-;ENDERSLICER_CURVI_GRID:...
+;ENDERSLICER_NON_PLANAR:ConformalSurface-Android-v1
+;ENDERSLICER_CONFORMAL_REGIONS:...
+;ENDERSLICER_CONFORMAL_SHELLS:...
 ;ENDERSLICER_MACHINE_END_BEGIN
 ```
 

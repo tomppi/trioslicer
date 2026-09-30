@@ -2001,7 +2001,7 @@ private fun MoreScreen(
             MoreRow(
                 icon = AppIcons.Layers,
                 title = "Non-planar slicing",
-                subtitle = if (nonPlanarEnabled) "CurviSlicer relief-field · enabled" else "CurviSlicer relief-field print",
+                subtitle = if (nonPlanarEnabled) "Non-planar slicing · enabled" else "Non-planar slicing print",
                 enabled = !state.isBusy,
                 badge = if (nonPlanarEnabled) "ON" else "OFF",
                 onClick = onNonPlanar,

@@ -191,7 +191,7 @@ reviewer has to bring.
 - Engines: [CURAENGINE_ANDROID.md](CURAENGINE_ANDROID.md), [PRUSASLICER_ANDROID.md](PRUSASLICER_ANDROID.md), [ORCAENGINE_ANDROID.md](ORCAENGINE_ANDROID.md)
 - Blender wrapper: [native/blender/README.md](../native/blender/README.md)
 - Smart Infill and thermal FEA: [smart-infill.md](smart-infill.md), [native-smart-infill-handover.md](native-smart-infill-handover.md)
-- Non-planar slicing: [non-planar-curvislicer.md](non-planar-curvislicer.md)
+- Non-planar slicing: [non-planar.md](non-planar.md)
 - OctoPrint: [octoprint-integration.md](octoprint-integration.md)
 - The assistant and its harness: [AI_ASSISTANT.md](../AI_ASSISTANT.md), [skills/](skills/)
 - UI conventions: [ui-style-guide.md](ui-style-guide.md)

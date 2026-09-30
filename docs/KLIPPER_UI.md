@@ -69,7 +69,7 @@ configuration is missing says so instead.
 ## What the app asks klippy for
 
 The subscription is decided at every connection from the printer's own object list
-(`objects/list`), not from a list compiled into the app. A chamber sensor, a second
+(`objects/list`) - a list compiled into the app, filtered against what the printer publishes. A chamber sensor, a second
 micro-controller, a fan someone named: each is a section in `printer.cfg`, so each
 appears in the screens without this app being told about it. An object the printer has
 never heard of answers with an empty status rather than an error - `webhooks.py` returns
@@ -139,8 +139,8 @@ captures.
 
 So the app carries one file of its own inside the staged payload:
 `native/klipper-playback/resonance_playback.py`, which adds `PLAY_RESONANCES AXIS=X`. It
-mirrors `ResonanceTestExecutor.run_test` line for line — the same generator (5→135 Hz at
-1 Hz/s, `accel_per_hz` 60, alternating half periods), the same `M204` per segment, the same
+mirrors `ResonanceTestExecutor.run_test` line for line — the same generator (20→120 Hz at
+2 Hz/s, `accel_per_hz` 60, alternating half periods), the same `M204` per segment, the same
 explicit velocities passed to `toolhead.move()`, and the same disabling of input shaping for
 the duration. That fidelity is not decoration: the moves are `toolhead.move()` calls with
 velocities G-code cannot express, so a sweep sent as `G1`s would be planned as its own
@@ -177,7 +177,7 @@ generator advances the frequency by `2 · (0.25 / f) · hz_per_sec` every half p
 half period lasts `0.25 / f`, so the two cancel to `df/dt = hz_per_sec` exactly — the band is
 crossed linearly, at the rate its name says.
 
-The phone goes on the printer's base, never on the toolhead or the bed: it weighs 230 g,
+The phone goes on the gantry for X and on the bed for Y, not on the toolhead: it weighs 253 g,
 and on the moving mass that would change the machine being measured. What it hears from the
 base is the frame's response, which is the same path the ringing is audible through.
 
@@ -210,7 +210,7 @@ toolhead and 15% on the bed. And for the toolhead's own mode, mass on the gantry
 change the moving mass at all: the toolhead still weighs what it weighed, so what the
 reading gives is that mode seen through the beam's response.
 
-**The base is the place for Y**, where the reaction path runs from the bed through the Y
+**The bed is the place for Y**, where the reaction path runs from the bed through the Y
 belt and its motor mount into the frame. The gantry is coupled to it as well, being bolted
 through the uprights, but further from where the bed's force enters.
 
@@ -238,7 +238,7 @@ comes to roughly 350 g against the stock machine's 210. A 253 g phone on top of 
 increase in the moving mass, and `f ∝ √(k/m)` therefore reads about 24% low: a true 90 Hz
 would be measured near 68.
 
-The screen has a **Phone on the toolhead** mode for this, and it does three things:
+The screen has a **Phone on the moving part** mode for this, and it does three things:
 
 - **Half the excitation** (`ACCEL_PER_HZ=30`). The sweep asks for `accel_per_hz * f`, which is
   7200 mm/s² at the top of the band; with 253 g added to the carriage that is more force than
@@ -251,7 +251,7 @@ The screen has a **Phone on the toolhead** mode for this, and it does three thin
 - **The phone's weight corrected for**, from a moving mass the screen lets you set, and a note
   saying the correction is a single-mass estimate rather than a calibration.
 
-It also refuses a clipped recording: the commanded motion alone reaches three quarters of a g
+It also warns about a clipped recording: the commanded motion alone reaches three quarters of a g
 at the top of the band, against a sensor that rails at its own limit, and a saturated
 recording would otherwise have produced confident nonsense.
 

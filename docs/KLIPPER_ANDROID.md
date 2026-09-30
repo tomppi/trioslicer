@@ -22,8 +22,8 @@ without root. Verified on the device, from klippy's log and the app's:
 | the resonance sweep, played on the printer | `PLAY_RESONANCES AXIS=X ...` runs the sweep Klipper's own resonance test uses - the app's module loaded through its own `[include app.cfg]`, the toolhead driven by `toolhead.move()` with explicit velocities, and the velocity limits and input shaper restored at the end. Reported working by the user on 27 September 2026 |
 | the print record the app keeps | History shows that print after the fact - file, printing time, filament, how it ended - written by the app at the moment the print stopped, which is the only moment klippy reports those numbers |
 
-**The printer's front end is the app's own ten screens**: dashboard, temperatures,
-move, extrude, macros, files, console, mesh, history and machine - see
+**The printer's front end is the app's own twelve screens**: dashboard, temperatures,
+move, extrude, macros, files, console, Z probe, shaping, mesh, history and machine - see
 [KLIPPER_UI.md](KLIPPER_UI.md). They are fed from the objects the printer publishes
 rather than from a list compiled into the app, and the configuration file no longer
 lives with the extracted payload, so what `SAVE_CONFIG` writes survives a restart and

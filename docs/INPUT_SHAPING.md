@@ -27,8 +27,8 @@ figures below correct for - a stock glass bed weighed about 550 g, the magnetic 
 
 ### 2. Tell it the masses
 
-The phone rides the structure, so its weight lowers the frequency it reports. The screen asks for
-**the phone's mass** (weigh it, or take the figure from the phone's own specification) and **the
+The phone rides the structure, so its weight lowers the frequency it reports. The phone's own mass is
+fixed at 253 g, and **the
 moving mass** - the toolhead and everything on it for X, the bed with its plate, heater, carriage,
 wheels and whatever is sitting on top for Y.
 
@@ -47,7 +47,7 @@ clear of it.
 Where the phone is standing decides which peaks are loud, so a single run is not evidence. Run
 each axis twice: the screen lists the peaks and says how many measurements each was seen in.
 "Seen in 2 of 2 measurements" is the one to take. Each peak is also shown against the machine's
-own noise - **3x the machine's own noise** is a real peak, 1x is the floor.
+own noise - **2x the machine's own noise** is a real peak, 1x is the floor.
 
 ### 5. Apply, one axis at a time
 

@@ -138,7 +138,7 @@ resolved settings before a critical print.
 - Single printable model, single extruder; no duplicate/auto-arrange workflow or Cura plugins
 - Smart Infill, thermal FEA, arc/wave overhangs and the smart overhang strategy need broader physical print validation
 - High-density models and fine FEA grids may exceed the Android heap; thermal FEA lacks transient conduction and creep
-- Non-planar slicing (CurviSlicer and conical) buffers the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
+- Non-planar slicing and conical slicing buffer the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
 - OctoPrint needs broader real-server validation; printer-specific firmware commands must be checked against the installed firmware
 - The PrusaSlicer engine is packaged for **arm64-v8a** only; the x86_64 build was dropped because the shipped ABI is what device validation covers
 - Cura previews estimate bead widths from the extrusion delta (Cura G-code carries no width markers), so a previewed width can differ slightly from what the engine planned
@@ -156,7 +156,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
 - [webviewdp](https://github.com/tomppi/webviewdp) - a minimal Android WebView app that wraps a harness's own web UI for the same phone
-- [docs/smart-infill.md](docs/smart-infill.md), [docs/non-planar-curvislicer.md](docs/non-planar-curvislicer.md), [docs/ui-style-guide.md](docs/ui-style-guide.md) - feature and UI notes
+- [docs/smart-infill.md](docs/smart-infill.md), [docs/non-planar.md](docs/non-planar.md), [docs/ui-style-guide.md](docs/ui-style-guide.md) - feature and UI notes
 - [CHANGELOG.md](CHANGELOG.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
 ## License
