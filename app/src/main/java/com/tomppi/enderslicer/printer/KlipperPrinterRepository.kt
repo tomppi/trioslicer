@@ -687,7 +687,10 @@ class KlipperPrinterRepository(
                         val toComputer = from == KlipperSyncSource.THE_DEVICE
                         val target = if (toComputer) sources.remote else sources.device
                         val source = if (toComputer) sources.device else sources.remote
-                        val differences = KlipperConfigFile.differences(target, source)
+                        // In the preview's order, not the writer's: source first, whichever
+                        // direction this is. Only the count is shown today, but a list rendered
+                        // in the other order would read as the arrow pointing the wrong way.
+                        val differences = KlipperConfigFile.differences(source, target)
                         val synced = KlipperConfigFile.withSynced(target, source)
                         when {
                             synced == target -> KlipperSyncResult(differences = differences)
@@ -1179,10 +1182,18 @@ class KlipperPrinterRepository(
         val files = remoteHostFiles() ?: return SyncSources.Failed(
             "no computer is set as the other host: connect to one under PC Klipper on the Print tab",
         )
-        val remote = files.configText() ?: return SyncSources.Failed(
-            "the computer at " + hostChoice.load().host.trim() +
-                " did not answer with its configuration",
-        )
+        // readConfig, not configText: a computer with no configuration yet is a computer to
+        // send this one to. Collapsing that into null made the card say the computer did not
+        // answer, and with no differences to show there were no buttons to press either - a
+        // dead end on the very first sync a new host needs.
+        val remote = when (val read = files.readConfig()) {
+            is MoonrakerFiles.ConfigRead.Found -> read.text
+            MoonrakerFiles.ConfigRead.Missing -> ""
+            MoonrakerFiles.ConfigRead.Unreachable -> return SyncSources.Failed(
+                "the computer at " + hostChoice.load().host.trim() +
+                    " did not answer with its configuration",
+            )
+        }
         return SyncSources.Both(device, remote, files)
     }
 
@@ -1220,20 +1231,32 @@ class KlipperPrinterRepository(
         before: String,
     ): Boolean = withContext(Dispatchers.IO) {
         if (before.isNotBlank()) {
-            // A name of its own per write: two writers sharing cacheDir/printer.cfg could upload
-            // each other's configuration, with a restart behind it.
+            // A name of its own per write, and deleted afterwards: these are staging files, not
+            // a cache, and a write that fails should not leave them behind either.
             val previous = File.createTempFile("previous", ".printer.cfg", application.cacheDir)
-            previous.writeText(before)
-            files.uploadConfig(previous, name = "previous.printer.cfg")
+            try {
+                previous.writeText(before)
+                // Not discarded: a backup that silently did not happen is the thing a backup
+                // exists to prevent.
+                if (!files.uploadConfig(previous, name = "previous.printer.cfg")) {
+                    reportConfigWriteFailure("the previous configuration")
+                }
+            } finally {
+                previous.delete()
+            }
         }
         val staged = File.createTempFile("staged", ".printer.cfg", application.cacheDir)
-        staged.writeText(text)
-        if (!files.uploadConfig(staged)) {
-            throw IllegalStateException("the computer refused the configuration")
-        }
+        try {
+            staged.writeText(text)
+            if (!files.uploadConfig(staged)) {
+                throw IllegalStateException("the computer refused the configuration")
+            }
         // Its own endpoint rather than RESTART down the connection: the computer being written
         // to is not necessarily the one the app is connected to.
-        files.restart()
+            files.restart()
+        } finally {
+            staged.delete()
+        }
     }
 
     /**
