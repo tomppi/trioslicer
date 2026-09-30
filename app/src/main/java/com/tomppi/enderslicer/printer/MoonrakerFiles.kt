@@ -94,24 +94,50 @@ internal class MoonrakerFiles(
      * rotation distance, the starter macros - and when the host is another machine, this is
      * that machine's file rather than a copy of it in this app's storage.
      */
-    fun configText(name: String = KlipperHostFiles.CONFIG): String? {
+    fun configText(name: String = KlipperHostFiles.CONFIG): String? =
+        (readConfig(name) as? ConfigRead.Found)?.text
+
+    /**
+     * The host's configuration, and why there is none when there is none.
+     *
+     * A 404 means the host has no such file yet, which is a host to write to rather than one
+     * that cannot be reached; a refusal or a timeout means nothing may be written at all. Both
+     * used to be null, so a first write to a fresh host was refused as though it were
+     * unreachable - and a read that failed was once answered with this device's own file.
+     */
+    fun readConfig(name: String = KlipperHostFiles.CONFIG): ConfigRead {
         val connection = runCatching {
             URL(urlFor(configPath(name))).openConnection() as HttpURLConnection
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: return ConfigRead.Unreachable
         return runCatching {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             apiKey?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Api-Key", it) }
             val code = connection.responseCode
-            val text = if (code in 200..299) {
-                connection.inputStream.bufferedReader().use { it.readText() }
-            } else {
-                Log.i(TAG, "the host answered $code for its configuration")
-                null
+            val read = when {
+                code in 200..299 -> ConfigRead.Found(
+                    connection.inputStream.bufferedReader().use { it.readText() },
+                )
+                code == 404 -> ConfigRead.Missing
+                else -> {
+                    Log.i(TAG, "the host answered $code for its configuration")
+                    ConfigRead.Unreachable
+                }
             }
             connection.disconnect()
-            text
-        }.getOrNull()
+            read
+        }.getOrDefault(ConfigRead.Unreachable)
+    }
+
+    /** What asking a host for its configuration produced. */
+    internal sealed interface ConfigRead {
+        class Found(val text: String) : ConfigRead
+
+        /** No such file on the host yet. A host to write to, not one that is unreachable. */
+        object Missing : ConfigRead
+
+        /** Could not be asked, or refused to answer. Nothing may be written on this. */
+        object Unreachable : ConfigRead
     }
 
     /**

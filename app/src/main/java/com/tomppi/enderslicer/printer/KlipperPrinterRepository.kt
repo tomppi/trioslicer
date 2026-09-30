@@ -1098,13 +1098,25 @@ class KlipperPrinterRepository(
             writeDeviceConfig(text)
             return@withContext true
         }
-        // Read the configuration from the same host this write is aimed at, and refuse the
-        // write when it cannot be read. Falling back to this device's own file is how a
-        // phone's configuration once landed on the computer, with a restart to follow it.
-        val before = readHostConfig()
-        if (before.isNullOrBlank()) return@withContext false
-        val previous = File(application.cacheDir, "previous.printer.cfg")
-        previous.writeText(before)
+        // Ask the same host this write is aimed at for its configuration. A host with none yet
+        // is a host to write to; one that cannot be asked is not, and refusing there is what
+        // stops a failed read becoming this device's file on the computer with a restart
+        // behind it.
+        val before = when (val read = remote.readConfig()) {
+            is MoonrakerFiles.ConfigRead.Found -> read.text
+            MoonrakerFiles.ConfigRead.Missing -> null
+            MoonrakerFiles.ConfigRead.Unreachable -> {
+                reportConfigWriteFailure("the configuration")
+                return@withContext false
+            }
+        }
+        if (!before.isNullOrBlank()) {
+            val previous = File(application.cacheDir, "previous.printer.cfg")
+            previous.writeText(before)
+            // Kept on the host as well: a backup that only exists on the phone cannot be
+            // restored there by hand, which is the point of keeping it beside the file.
+            remote.uploadConfig(previous, name = "previous.printer.cfg")
+        }
         val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
         staged.writeText(text)
         val written = remote.uploadConfig(staged)

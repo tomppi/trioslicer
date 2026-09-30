@@ -9,7 +9,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -93,5 +95,68 @@ class HostConfigSeamTest {
 
         val repository = KlipperPrinterRepository(context, scope)
         assertEquals(device, repository.readConfigFile())
+    }
+    @Test
+    fun aWriteKeepsTheHostOwnConfigurationBesideItAndRestarts() = runBlocking {
+        val served = "# the computer configuration\n[extruder]\nrotation_distance: 4.643\n"
+        val uploads = CopyOnWriteArrayList<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            val body = served.toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/server/files/upload") { exchange ->
+            uploads.add(String(exchange.requestBody.readBytes(), Charsets.UTF_8))
+            val answer = """{"action":"create_file","item":{"path":"printer.cfg","root":"config"}}"""
+            val bytes = answer.toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            val repository = KlipperPrinterRepository(context, scope)
+            assertTrue("the write went through", repository.saveRotationDistance(4.700))
+            assertTrue(
+                "the host own configuration is kept on the host, not only on the phone",
+                uploads.any { it.contains("previous.printer.cfg") },
+            )
+            assertTrue("with what was there", uploads.any { it.contains("rotation_distance: 4.643") })
+            assertTrue("and the new value", uploads.any { it.contains("rotation_distance: 4.700") })
+            // The restart itself is a G-code RESTART over the transport, not this HTTP path;
+            // MoonrakerFiles.restart() is the other one and is not what a write uses.
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun anUnreachableHostIsNotWrittenTo() = runBlocking {
+        val uploads = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            exchange.sendResponseHeaders(500, -1)
+            exchange.close()
+        }
+        server.createContext("/server/files/upload") { exchange ->
+            uploads.incrementAndGet()
+            val bytes = "{}".toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            val repository = KlipperPrinterRepository(context, scope)
+            assertFalse("a host that cannot be read is not written to", repository.saveRotationDistance(4.700))
+            assertEquals("and nothing was uploaded", 0, uploads.get())
+        } finally {
+            server.stop(0)
+        }
     }
 }
