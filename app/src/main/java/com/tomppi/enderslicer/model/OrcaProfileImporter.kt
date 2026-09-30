@@ -126,7 +126,13 @@ object OrcaProfileImporter {
          * this app prints with one extruder, so a second slot has nowhere to go.
          */
         private fun text(key: String): String? =
-            values[key]?.substringBefore(',')?.trim()?.takeIf { it.isNotEmpty() }
+            values[key]?.substringBefore(',')?.trim()?.takeIf { value ->
+                // A value is written into an ini line by the config writer, so a newline in one
+                // would not be part of that value: it would add a key of its own, and a later
+                // duplicate wins - which is how an imported profile could set something the app
+                // manages itself. Extras already refuse control characters; fields did not.
+                value.isNotEmpty() && value.none { it.isISOControl() }
+            }
 
         private fun number(key: String): Double? =
             text(key)?.removeSuffix("%")?.trim()?.toDoubleOrNull()?.takeIf { it.isFinite() }
@@ -344,7 +350,9 @@ object OrcaProfileImporter {
     private fun scalar(value: Any?): String? = when (value) {
         null, JSONObject.NULL -> null
         is String -> value
-        is Boolean -> if (value) "1" else "0"
+        // Spelled as the engine spells it, not as a number: "1" made a Boolean a parseable
+        // layer height, so `"layer_height": true` imported as 1 mm instead of being refused.
+        is Boolean -> if (value) "true" else "false"
         is Number -> text(value)
         is JSONArray -> (0 until value.length()).mapNotNull { scalar(value.opt(it)) }.joinToString(",")
         else -> value.toString()

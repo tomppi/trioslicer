@@ -58,7 +58,15 @@ object PrusaConfigImporter {
         fun value(key: String): String? = values[key]?.second
         fun double(key: String): Double? = value(key)?.replace(",", ".")?.trimEnd('%')?.toDoubleOrNull()
         fun int(key: String): Int? = value(key)?.toIntOrNull()
-        fun bool(key: String): Boolean? = value(key)?.let { it == "1" || it.equals("true", true) }
+        fun bool(key: String): Boolean? = value(key)?.trim()?.lowercase()?.let { token ->
+            // Only the tokens that mean something. Everything else used to become false, so a
+            // profile saying `thin_walls = yes` silently turned the setting off.
+            when (token) {
+                "1", "true", "yes", "on" -> true
+                "0", "false", "no", "off" -> false
+                else -> null
+            }
+        }
 
         val defaults = PrusaSliceSettings()
 
@@ -149,7 +157,13 @@ object PrusaConfigImporter {
         val maxX = xs.maxOrNull()!!
         val minY = ys.minOrNull()!!
         val maxY = ys.maxOrNull()!!
-        return Triple(maxX - minX, maxY - minY, minX < 0.0 || minY < 0.0)
+        // A size, not two corners: a file that gives one point has an extent of zero, and a
+        // zero machine size is only caught much later, at slice time. A bed shape this cannot
+        // read is no answer at all, and null keeps whatever the user already had.
+        val width = maxX - minX
+        val depth = maxY - minY
+        if (width <= 0.0 || depth <= 0.0) return Triple(null, null, false)
+        return Triple(width, depth, minX < 0.0 || minY < 0.0)
     }
 
     private fun unquote(raw: String): String {
