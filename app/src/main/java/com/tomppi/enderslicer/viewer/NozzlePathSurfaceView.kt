@@ -374,11 +374,18 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         beadLineWidthMm: Float,
         filamentDiameterMm: Float,
     ) {
-        if (path === value && beadHeight == beadHeightMm) return
+        val area = (Math.PI.toFloat() * (filamentDiameterMm.coerceIn(0.5f, 4.0f) / 2f).let { it * it })
+        // Line width and filament diameter change the ribbon as much as the bead height does:
+        // comparing only the first two let the geometry and the readout disagree.
+        if (path === value && beadHeight == beadHeightMm && beadLineWidth == beadLineWidthMm &&
+            filamentArea == area
+        ) {
+            return
+        }
         path = value
         beadHeight = beadHeightMm.coerceIn(0.02f, 2.0f)
         beadLineWidth = beadLineWidthMm.coerceIn(0.10f, 2.0f)
-        filamentArea = (Math.PI.toFloat() * (filamentDiameterMm.coerceIn(0.5f, 4.0f) / 2f).let { it * it })
+        filamentArea = area
         selectedMoveIndex = if (value.moveCount <= 0) 0 else selectedMoveIndex.coerceIn(0, value.moveCount - 1)
         lastReportedMove = 0
         onBuildProgress?.invoke(0f)

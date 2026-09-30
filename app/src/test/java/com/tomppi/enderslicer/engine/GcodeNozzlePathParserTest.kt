@@ -117,4 +117,34 @@ class GcodeNozzlePathParserTest {
             writeText(contents)
             deleteOnExit()
         }
+    @Test
+    fun aZHopIsNotTheLayerHeight() {
+        // 0.12 mm layers with a 0.2 mm hop: the hop sits inside any window wide enough for a real
+        // layer height, so the height the preview reports used to become the hop's rise and stay
+        // there for the rest of the layer - which is what made the bead width and flow read out
+        // from it wrong by about half.
+        val file = temporaryGcode(
+            """
+            G90
+            M82
+            G92 X0 Y0 Z0 E0
+            G1 Z0.12 F600
+            G1 X10 Y0 E1 F1200
+            G1 Z0.32 F600
+            G1 X20 Y0 F6000
+            G1 Z0.12 F600
+            G1 X30 Y0 E2 F1200
+            """.trimIndent(),
+        )
+
+        val path = GcodeNozzlePathParser.parse(file)
+
+        val last = (path.moveCount - 1) * GcodeNozzlePath.VALUES_PER_MOVE
+        assertEquals(
+            "the layer height is the extrusion layer, not the hop",
+            0.12f,
+            path.moves[last + GcodeNozzlePath.LAYER_HEIGHT],
+            0.0001f,
+        )
+    }
 }

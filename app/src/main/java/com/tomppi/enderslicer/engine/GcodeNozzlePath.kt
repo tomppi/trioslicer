@@ -92,6 +92,8 @@ object GcodeNozzlePathParser {
         var extrusionMoves = 0
         var travelMoves = 0
         var retainedPreviousZ = 0.0
+        // The Z of the last move that extruded, which is what a layer height is measured from.
+        var retainedPreviousExtrusionZ = 0.0
         var currentLayerHeight = 0.0
         var hasRetainedZ = false
         var minX = Float.POSITIVE_INFINITY
@@ -171,7 +173,15 @@ object GcodeNozzlePathParser {
                         // Layer height for this move: the z rise of the current
                         // layer (captures adaptive layer heights), guarded against
                         // z-hop travel spikes. 0 means unknown until the first rise.
-                        val rise = nextZ - retainedPreviousZ
+                        // Measured from the last move that extruded: a z-hop is a travel, and at
+                        // 0.2 mm it sits inside any window wide enough for real layer heights, so
+                        // it used to be recorded as one - which is what made the preview's bead
+                        // height, and the width read out from it, wrong whenever z-hop was on.
+                        val rise = if (kind == GcodeNozzlePath.Kind.EXTRUSION) {
+                            nextZ - retainedPreviousExtrusionZ
+                        } else {
+                            0.0
+                        }
                         val moveLayerHeight = when {
                             !hasRetainedZ -> currentLayerHeight
                             rise > LAYER_HEIGHT_MIN_MM && rise <= LAYER_HEIGHT_MAX_MM -> {
@@ -182,6 +192,9 @@ object GcodeNozzlePathParser {
                         }
                         retainedPreviousZ = nextZ
                         hasRetainedZ = true
+                        if (kind == GcodeNozzlePath.Kind.EXTRUSION) {
+                            retainedPreviousExtrusionZ = nextZ
+                        }
                         accumulator.add(
                             sx, sy, sz, ex, ey, ez,
                             (feedRateMmPerMinute / 60.0 * speedFactor).coerceAtLeast(0.0).toFloat(),

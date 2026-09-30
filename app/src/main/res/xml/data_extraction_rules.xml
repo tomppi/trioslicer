@@ -10,6 +10,7 @@
              business with a host the restored device has never spoken to. -->
         <exclude domain="sharedpref" path="octoprint_client.xml" />
         <exclude domain="sharedpref" path="harness_config.xml" />
+        <exclude domain="sharedpref" path="klipper-host.xml" />
         <exclude domain="file" path="smart-infill/" />
         <!-- Everything else the app writes under files/ stays behind too: none
              of it is worth restoring on another device, and most of it is far
@@ -52,6 +53,7 @@
              device, and what is left names a host this device knows. -->
         <exclude domain="sharedpref" path="octoprint_client.xml" />
         <exclude domain="sharedpref" path="harness_config.xml" />
+        <exclude domain="sharedpref" path="klipper-host.xml" />
         <exclude domain="file" path="smart-infill/" />
         <!-- And the printer side, which the Klipper work added afterwards: gcodes/
              holds a copy of everything printed, never reaped, and klipper-host/ the

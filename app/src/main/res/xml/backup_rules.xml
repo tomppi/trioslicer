@@ -18,6 +18,7 @@
     <exclude domain="file" path="printer-pty" />
     <exclude domain="sharedpref" path="octoprint_client.xml" />
     <exclude domain="sharedpref" path="harness_config.xml" />
+    <exclude domain="sharedpref" path="klipper-host.xml" />
     <exclude domain="file" path="smart-infill/" />
     <!-- Everything else the app writes under files/ as well: the engine tree
          (blender/, ~480 MB, MCP token included), the imported and staged models

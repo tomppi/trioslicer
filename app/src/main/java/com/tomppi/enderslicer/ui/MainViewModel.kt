@@ -1643,6 +1643,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        // Layer events go into the file the Cura pipeline writes. The other engines slice
+        // without them and report none, which used to replace the user's list with nothing:
+        // editing them off Cura was refused with this same reasoning, and slicing was not.
+        if (sliceEngine != SlicerEngine.CURA &&
+            snapshot.layerEvents.any { it.source == LayerEventSource.USER }
+        ) {
+            showOperationFailure(
+                IllegalStateException(
+                    "Layer events are a Cura feature; switch to CuraEngine to keep them, or " +
+                        "remove them before slicing with another engine",
+                ),
+            )
+            return
+        }
         // Engine capabilities, checked before the slice rather than discovered after
         // it. OrcaSlicer has its own non-planar implementation (Z-layer contouring),
         // PrusaSlicer has none, and conical slicing is the app's own G-code

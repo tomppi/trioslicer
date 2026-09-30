@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.printer
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**

@@ -194,6 +194,10 @@ fun ModellingPreview(
             targetZ = target[2],
             width = width,
             height = height,
+            // Carried, not left at the default: the pan maths scales by this fov while the frame
+            // the agent draws uses the published one, so leaving it out moved the model by the
+            // wrong amount for the picture actually on the screen.
+            fovDeg = fov,
             owner = if (interactive) CameraOwner.USER else CameraOwner.AGENT,
         )
     }

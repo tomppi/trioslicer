@@ -2034,6 +2034,8 @@ private fun MoreScreen(
                 // in the one place a user checks it.
                 subtitle = "Version " + BuildConfig.VERSION_NAME + " · AGPL-3.0-or-later",
                 onClick = {},
+                // Nothing to open: a chevron and a ripple promise otherwise.
+                enabled = false,
             )
             MoreDivider()
             MoreRow(
@@ -2041,6 +2043,8 @@ private fun MoreScreen(
                 title = "Safety notes",
                 subtitle = "Inspect every model, setting and generated G-code before printing",
                 onClick = {},
+                // Nothing to open: a chevron and a ripple promise otherwise.
+                enabled = false,
             )
         }
         Spacer(modifier = Modifier.height(12.dp))

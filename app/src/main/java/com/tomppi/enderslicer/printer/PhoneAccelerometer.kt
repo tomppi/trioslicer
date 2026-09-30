@@ -103,7 +103,10 @@ class PhoneAccelerometer(private val context: Context) {
             delay((seconds * 1000).toLong())
         } finally {
             manager.unregisterListener(listener)
+            // quitSafely drains what is queued but does not wait for it: the reads below raced
+            // the callbacks still being delivered, and the tail of every recording was lost.
             thread.quitSafely()
+            thread.join(2_000)
         }
         if (magnitudes.size < 32) return@withContext null
         val span = (timestamps.last() - timestamps.first()) / 1_000_000_000.0

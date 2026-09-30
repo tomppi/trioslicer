@@ -143,7 +143,11 @@ class FilaSimEngine private constructor(
     ): FilaSimOptimization = coroutineScope {
         val poller = launch(Dispatchers.Default) {
             while (isActive) {
-                runCatching { onProgress(FilaSimProgress.fromJson(JSONObject(FilaSimNative.progress(control)))) }
+                runCatching {
+                    withContext(Dispatchers.Default) {
+                        FilaSimProgress.fromJson(JSONObject(FilaSimNative.progress(control)))
+                    }
+                }.onSuccess { onProgress(it) }
                 delay(PROGRESS_POLL_MILLIS)
             }
         }
@@ -152,7 +156,11 @@ class FilaSimEngine private constructor(
                 FilaSimNative.optimize(session, options.toJson())
             }
             lastOptions = options
-            readOptimization(JSONObject(summary), options)
+            // Reading the result clones native region meshes, and the Smart Infill panel calls
+            // this from Dispatchers.Main.immediate: only the blocking call itself was wrapped.
+            withContext(Dispatchers.Default) {
+                readOptimization(JSONObject(summary), options)
+            }
         } finally {
             poller.cancel()
             runCatching { onProgress(FilaSimProgress.fromJson(JSONObject(FilaSimNative.progress(control)))) }
