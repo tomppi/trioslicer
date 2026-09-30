@@ -218,29 +218,35 @@ internal class MoonrakerFiles(
     ): JSONObject? = runCatching {
         val connection = URL("http://" + host.trim() + ":" + port + path).openConnection()
             as HttpURLConnection
-        connection.requestMethod = method
-        connection.connectTimeout = CONNECT_TIMEOUT_MS
-        connection.readTimeout = READ_TIMEOUT_MS
-        apiKey?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Api-Key", it) }
-        if (body != null || bodyWriter != null) {
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", contentType ?: "application/octet-stream")
-            connection.setFixedLengthStreamingMode(
-                if (body != null) body.size.toLong() else contentLength,
-            )
-            connection.outputStream.use { out ->
-                if (body != null) out.write(body) else bodyWriter?.invoke(out)
+        // Disconnected on every path. Writing a body can throw - a file that vanished under a
+        // streamed upload, a connection lost mid-write - and so can reading the answer, and a
+        // connection that is never disconnected is a socket kept until the collector finds it.
+        try {
+            connection.requestMethod = method
+            connection.connectTimeout = CONNECT_TIMEOUT_MS
+            connection.readTimeout = READ_TIMEOUT_MS
+            apiKey?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Api-Key", it) }
+            if (body != null || bodyWriter != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", contentType ?: "application/octet-stream")
+                connection.setFixedLengthStreamingMode(
+                    if (body != null) body.size.toLong() else contentLength,
+                )
+                connection.outputStream.use { out ->
+                    if (body != null) out.write(body) else bodyWriter?.invoke(out)
+                }
             }
-        }
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        connection.disconnect()
-        if (code !in 200..299) {
-            Log.i(TAG, "$method $path answered $code: " + text.take(200))
-            null
-        } else {
-            runCatching { JSONObject(text) }.getOrNull()
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) {
+                Log.i(TAG, "$method $path answered $code: " + text.take(200))
+                null
+            } else {
+                runCatching { JSONObject(text) }.getOrNull()
+            }
+        } finally {
+            connection.disconnect()
         }
     }.onFailure { Log.i(TAG, "$method $path failed: ${it.message}") }.getOrNull()
 
