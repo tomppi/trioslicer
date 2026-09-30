@@ -112,7 +112,8 @@ apksigner verify --print-certs TrioSlicer-1.6.4.apk
 ```
 
 The signer's certificate digest must be
-`e4d88ac927ecb945e256e783ae431254785fd110fa9c78559f89d832128ea5d7`. The key itself, and how CI is
+`e4d88ac927ecb945e256e783ae431254785fd110fa9c78559f89d832128ea5d7` (older `apksigner` prints
+the same digest as `E4:D8:8A:C9:...`; the bytes are what matter). The key itself, and how CI is
 given it, are in [keystore/README.md](keystore/README.md).
 
 ## Importing your setup
