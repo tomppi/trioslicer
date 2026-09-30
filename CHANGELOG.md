@@ -4,6 +4,89 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.4] - 2026-09-30
+
+Two rounds of looking for bugs on purpose, everything they found, and a card that copies the
+printer's own settings from one host to the other.
+
+Most of this release exists because of the first sentence. Five audits of the whole app found
+twenty-three defects; five further rounds then audited the fixes themselves and found twenty
+more. Three of those were regressions introduced by the first round's repairs - a restart that
+stopped the host and started nothing at all, a sealed API key that was sent as its sealed blob,
+a layer tracker that survived a Z reset. Every finding, its fix and its commit is recorded in
+[docs/bug-audits/2026-09-30-five-round-audit.md](docs/bug-audits/2026-09-30-five-round-audit.md), including the ones no test can reach and why. Reading
+that list is the fastest way to know what this app does and does not do.
+
+### Added
+
+- **The printer's own settings can be copied between the two hosts.** klippy's saved
+  calibrations - the BLTouch offset, the PID terms, the bed meshes - belong to the printer, not
+  to whichever computer or phone happens to be driving it, and the two files drift apart as you
+  calibrate. The Machine screen now shows what differs, both files' values side by side, and
+  copies one way or the other. What describes the *host* rather than the printer - the serial
+  port, the gcodes directory, the `[mcu]` sections, the includes - is never touched, in either
+  direction.
+- **Each configuration says when it was last written.** With two files in play, "which of these
+  is the right value" is usually "which one did I set yesterday", and a setting carries no date.
+  The sync card now shows both files' times in words and marks the newer of the two. The date is
+  the file's, not the setting's: a `SAVE_CONFIG` rewrites the whole file, and the card says so.
+
+### Changed
+
+- **The two hosts are called Phone Klipper and PC Klipper** wherever they are read about. "This
+  device" and "the other host" were accurate and easy to mix up, which is the one thing a name
+  must not be.
+- **A configuration written to the PC asks it to restart, and refuses while it is printing.**
+  Restarting ends a print there, and the app may not even be driving that host, so it asks the
+  host itself over Moonraker's own HTTP query rather than assuming.
+- **Whole files are no longer held in memory.** The upload, the conical transform and the
+  conformal transform read and write a line or a chunk at a time; a long print used to be held
+  three times over as boxed strings, which a large model cannot afford.
+- **The Moonraker API key is sealed with the Android Keystore** rather than stored as plaintext.
+  A sealed key this device can no longer open is treated as no key rather than sent as a blob,
+  and the app asks for it again.
+
+### Fixed
+
+- **A restart could stop the host and start nothing.** The claim that keeps two starts from
+  racing was held for the whole life of a run, so the restart that follows a configuration write
+  found it set and returned. A restart left the printer with no host at all - worse than the
+  silence it replaced.
+- **A launch could outrun the service being destroyed**, opening a pty and starting a host that
+  nothing could stop, with the phone pinned awake. The flags are checked again immediately before
+  the process starts, and the wake lock goes back when a start does not happen.
+- **A relaunch after klippy exits could be swallowed**, and the host simply did not come back.
+- **Configuration changes went to the wrong host, or nowhere.** Reads, backups and writes follow
+  the host doing the printing, including the Machine screen's operations; a host that cannot be
+  read is refused rather than guessed at, and the previous configuration is kept beside the new
+  one on the host itself.
+- **An imported profile could set a setting the app manages itself.** A value containing a line
+  break was written into the ini as a line of its own, and a later duplicate wins. Imported
+  values now refuse control characters, a Boolean is no longer a number, an unknown boolean token
+  no longer means *off*, a bed shape with one corner no longer produces a zero-sized machine, and
+  a file that is not a PrusaSlicer configuration is refused instead of installed.
+- **A profile whose setting catalogue could not be read dropped every override in silence** and
+  reported success. It is refused with a reason, and the generated ini is written whole or not at
+  all rather than truncated under a crash.
+- **Three transformers and one upload leaked or lied**: the conical stage file and its output
+  file are both cleaned up on every path, a failed HTTP request disconnects its socket, and two
+  tests that could not fail were replaced with ones that can - including a 512 MB sparse-file
+  upload, larger than the heap a test is given.
+- **A stopped or cancelled print left the layer height and the Z frame disagreeing**, because the
+  tracker the height is measured from was the one piece of parser state a `G28` or `G92 Z` did not
+  reset.
+
+### Notes
+
+The audits are worth reading for what they say about the fixes rather than the bugs: five of the
+repairs and four of the tests written for them were incomplete in the same way - correct where
+they looked, wrong or empty one step to the side. The conical stage file but not the output file.
+One writer's temporary files but not the other's. The write path's "no config yet" but not the
+sync's. None of that was visible in a green test suite.
+
+What has no test is stated rather than hidden: the service that owns the klippy process, the
+Compose guards, the GL surfaces, the accelerometer and the Keystore each need a process, a
+screen, a GL thread, a sensor or an Android Keystore, and every such case is named in its commit.
 ## [1.6.1] - 2026-09-28
 
 A day of printing on the computer-hosted side, and everything it turned up.

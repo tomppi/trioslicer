@@ -29,6 +29,13 @@ a modified Creality Ender 3 V2.
   retraction, camera, message and guarded custom G-code, placed as layer events.
 - **Automatic mesh leveling (AML)** for mriscoc firmware: the probe sequence covers the model footprint
   instead of the whole bed, so leveling takes seconds.
+- **Drives a Klipper printer itself, from either end.** The board can be driven by a Klipper host
+  running inside the app (**Phone Klipper**) or by a computer on the network running Moonraker
+  (**PC Klipper**); the Print screen switches between them beside OctoPrint. Everything that
+  belongs to the printer rather than the host - the saved calibrations, the bed meshes, the
+  motion limits - can be compared between the two and copied one way or the other, and each
+  file's date is shown so the newer setting is known. The two G-code routes, Marlin for
+  OctoPrint and Klipper for the hosts, are separate code with a guard that keeps them so.
 - **BumpMesh texturing, offline.** Planar, triplanar, cubic or cylindrical displacement mapping,
   100k-8M triangles.
 - **Modelling with Blender 3.6 inside the app.** An AI agent drives the embedded engine over a local
