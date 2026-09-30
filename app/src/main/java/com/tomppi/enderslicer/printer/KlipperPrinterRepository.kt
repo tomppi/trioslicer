@@ -1033,11 +1033,12 @@ class KlipperPrinterRepository(
      * saved, confirmed by the app, and nowhere near the printer.
      */
     private suspend fun readHostConfig(): String? = withContext(Dispatchers.IO) {
-        // The host in use is the only source. A computer that is configured but does not answer
-        // must fail the operation, not hand back this device's file: that file was once uploaded
-        // over the computer's own configuration and followed by a restart.
-        val remote = remoteFiles() ?: return@withContext deviceConfigText()
-        remote.configText()
+        val remote = remoteFiles()
+        resolveConfigText(
+            remoteConfigured = remote != null,
+            deviceText = { deviceConfigText() },
+            remoteText = { remote?.configText() },
+        )
     }
 
     /** This device's own configuration, or null when it has none yet. */
@@ -1203,11 +1204,8 @@ class KlipperPrinterRepository(
      * parsed and not the file they came from - comments and all, which is what a person
      * editing it is looking at.
      */
-    suspend fun readConfigFile(): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
-        }.getOrNull()
-    }
+    /** The configuration of the host being driven, which is the one the card is about. */
+    suspend fun readConfigFile(): String? = readHostConfig()
 
     /** Where the running configuration came from, as the service left it. */
     private fun readConfigSource(): KlipperConfigSource = runCatching {
@@ -1233,6 +1231,9 @@ class KlipperPrinterRepository(
      * the one running.
      */
     suspend fun configDiffersFromShipped(): Boolean = withContext(Dispatchers.IO) {
+        // The shipped configuration is this device's own starting point. Comparing a computer's
+        // file against it would offer a restore that writes the wrong machine's configuration.
+        if (hostChoice.load().isRemote) return@withContext false
         runCatching {
             val running = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }
                 ?.readText() ?: return@runCatching false
@@ -1257,7 +1258,15 @@ class KlipperPrinterRepository(
      */
     suspend fun importConfig(uris: List<Uri>): Result<KlipperImportResult> = withContext(Dispatchers.IO) {
         runCatching {
-            if (uris.isEmpty()) throw IllegalArgumentException("no file was chosen")
+            if (hostChoice.load().isRemote) {
+            return@withContext Result.failure(
+                IllegalStateException(
+                    "importing rewrites the configuration for this phone, so it only applies to " +
+                        "This device: switch to it on the Print tab first",
+                ),
+            )
+        }
+        if (uris.isEmpty()) throw IllegalArgumentException("no file was chosen")
             val files = uris.map { uri ->
                 val name = fileNameOf(uri)
                 name to (readText(uri) ?: throw IllegalStateException("could not read $name"))
@@ -1298,8 +1307,7 @@ class KlipperPrinterRepository(
     /** Write the running configuration out where the user asked for it. */
     suspend fun exportConfig(uri: Uri): Boolean = withContext(Dispatchers.IO) {
         runCatching {
-            val text = KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }
-                ?.readText() ?: return@runCatching false
+            val text = readHostConfig() ?: return@runCatching false
             application.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
                 writer.write(text)
             } ?: return@runCatching false
@@ -1318,6 +1326,9 @@ class KlipperPrinterRepository(
      * a user who brought their own and restored the app's has the app's again.
      */
     suspend fun restoreShippedConfig(): Boolean = withContext(Dispatchers.IO) {
+        // This writes the app's own shipped configuration, which names this phone's pty and its
+        // gcode directory: it belongs to the device route and to no other.
+        if (hostChoice.load().isRemote) return@withContext false
         runCatching {
             val config = KlipperHostFiles.config(application.filesDir)
             val shipped = KlipperHostFiles.shipped(application.filesDir)
@@ -1430,3 +1441,17 @@ class KlipperPrinterRepository(
         const val DEFAULT_EXTRUDE_FEEDRATE = 120
     }
 }
+
+/**
+ * The text a configuration operation works from.
+ *
+ * A configured computer is the only source when it is configured: if its configuration cannot be
+ * be read the answer is null, never this device's own file. Returning that file was how a phone's
+ * configuration once reached the computer, with a restart to follow it.
+ */
+internal fun resolveConfigText(
+    remoteConfigured: Boolean,
+    deviceText: () -> String?,
+    remoteText: () -> String?,
+): String? = if (remoteConfigured) remoteText() else deviceText()
+

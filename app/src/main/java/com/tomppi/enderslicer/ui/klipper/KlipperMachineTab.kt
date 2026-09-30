@@ -233,13 +233,12 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
         }
 
         TextFileCard(
-            title = "Configuration",
-            subtitle = configSource.describe(),
-            text = config,
-            onLoad = { scope.launch { config = viewModel.readConfig() } },
-            onHide = { config = null },
             actions = {
-                if (configDiffers) {
+                // Import and Restore write this phone's own configuration - shipped defaults,
+                // its pty, its gcode directory - so they belong to This device. Export follows
+                // whichever host the card is showing.
+                val onDevice = state.remoteHost == null
+                if (configDiffers && onDevice) {
                     KlipperNote(
                         "This is not the configuration this version of the app ships. " +
                             "Restoring it keeps the values klippy has saved, and replaces " +
@@ -249,14 +248,22 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                     Spacer(Modifier.height(8.dp))
                 }
                 KlipperButtons {
-                    KlipperButton("Import") { importLauncher.launch(arrayOf("*/*")) }
+                    if (onDevice) {
+                        KlipperButton("Import") { importLauncher.launch(arrayOf("*/*")) }
+                    }
                     KlipperButton("Export") { exportLauncher.launch("printer.cfg") }
-                    KlipperButton("Restore the app's configuration") { confirmRestore = true }
+                    if (onDevice) {
+                        KlipperButton("Restore the app's configuration") { confirmRestore = true }
+                    }
+                }
+                if (!onDevice) {
+                    Spacer(Modifier.height(8.dp))
+                    KlipperNote(
+                        "Import and Restore write this phone's own configuration. " +
+                            "Switch to This device on the Print tab to use them.",
+                    )
                 }
             },
-        )
-
-        SyncCard(viewModel)
 
         TextFileCard(
             title = "Log",
