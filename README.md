@@ -36,6 +36,10 @@ a modified Creality Ender 3 V2.
   motion limits - can be compared between the two and copied one way or the other, and each
   file's date is shown so the newer setting is known. The two G-code routes, Marlin for
   OctoPrint and Klipper for the hosts, are separate code with a guard that keeps them so.
+- **Input shaping, measured with the phone.** The printer plays Klipper's own resonance sweep
+  while the phone records itself as the accelerometer Klipper has not got, and the peaks that
+  survive a change of position are the machine's rather than the phone's. Step by step in
+  [docs/INPUT_SHAPING.md](docs/INPUT_SHAPING.md).
 - **BumpMesh texturing, offline.** Planar, triplanar, cubic or cylindrical displacement mapping,
   100k-8M triangles.
 - **Modelling with Blender 3.6 inside the app.** An AI agent drives the embedded engine over a local
