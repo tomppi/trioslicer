@@ -53,6 +53,9 @@ private const val MCU_STATS_WINDOW_SECONDS = 5.0
 @Composable
 internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var confirmRestart by remember { mutableStateOf(false) }
+    // Import and Restore write this phone's own configuration - its pty, its gcode directory -
+    // so they belong to This device. Export, Start and Stop follow whichever host is chosen.
+    val onDevice = state.remoteHost == null
     val scope = rememberCoroutineScope()
     var config by remember { mutableStateOf<String?>(null) }
     var log by remember { mutableStateOf<String?>(null) }
@@ -113,8 +116,8 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             KlipperButtons {
                 // The host is a process this app starts and stops; everything about the
                 // printer is downstream of it being up.
-                KlipperButton("Start") { viewModel.startHost() }
-                KlipperButton("Stop") { viewModel.stopHost() }
+                KlipperButton("Start", enabled = onDevice) { viewModel.startHost() }
+                KlipperButton("Stop", enabled = onDevice) { viewModel.stopHost() }
                 KlipperButton("Restart") { confirmRestart = true }
                 KlipperButton("Firmware restart", enabled = state.connected) {
                     viewModel.firmwareRestart()
@@ -233,11 +236,14 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
         }
 
         TextFileCard(
+            title = "Configuration",
+            subtitle = configSource.describe(),
+            text = config,
+            onLoad = { scope.launch { config = viewModel.readConfig() } },
+            onHide = { config = null },
             actions = {
-                // Import and Restore write this phone's own configuration - shipped defaults,
-                // its pty, its gcode directory - so they belong to This device. Export follows
-                // whichever host the card is showing.
-                val onDevice = state.remoteHost == null
+                // Import and Restore write this phone's own configuration: they belong to
+                // This device, and the card says so rather than offering them here.
                 if (configDiffers && onDevice) {
                     KlipperNote(
                         "This is not the configuration this version of the app ships. " +
@@ -259,11 +265,14 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                 if (!onDevice) {
                     Spacer(Modifier.height(8.dp))
                     KlipperNote(
-                        "Import and Restore write this phone's own configuration. " +
-                            "Switch to This device on the Print tab to use them.",
+                        "Import and Restore write this phone own configuration. Switch to " +
+                            "This device on the Print tab to use them.",
                     )
                 }
             },
+        )
+
+        SyncCard(viewModel)
 
         TextFileCard(
             title = "Log",

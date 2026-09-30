@@ -151,13 +151,33 @@ class KlipperEngineService : Service() {
      */
     private val launchLock = Any()
 
+    /** True between claiming a start and that start finishing, so two starts cannot overlap. */
+    @Volatile
+    private var starting = false
+
+    /** Set when the service is destroyed: a start after that would be a host nothing can stop. */
+    @Volatile
+    private var destroyed = false
+
     private fun launch() {
+        // The lock covers the decision only. Holding it while the process ran was how a restart
+        // parked for ever: restartHost waited on the same monitor the running host was holding,
+        // and klippy exits by itself only after SAVE_CONFIG or a crash.
         synchronized(launchLock) {
-            if (process != null) {
+            if (destroyed) {
+                Log.i(TAG, "the service is gone; a host will not be started")
+                return
+            }
+            if (process != null || starting) {
                 Log.i(TAG, "a host is already running; ignoring the start")
                 return
             }
+            starting = true
+        }
+        try {
             launchLocked()
+        } finally {
+            starting = false
         }
     }
 
@@ -505,10 +525,10 @@ class KlipperEngineService : Service() {
      */
     private fun restartHost() {
         Log.i(TAG, "restarting the host")
-        synchronized(launchLock) {
-            stopEngine()
-            launch()
-        }
+        // Deliberately not under launchLock: stopEngine is safe on its own, and launch claims the
+        // lock for its decision only. Wrapping both is what made this wait on the running host.
+        stopEngine()
+        launch()
     }
 
     private fun bridgePrinter(masterFd: Int) {
@@ -649,6 +669,7 @@ class KlipperEngineService : Service() {
     override fun onDestroy() {
         runCatching { unregisterReceiver(usbPermission) }
         stopEngine()
+        destroyed = true
         super.onDestroy()
     }
 
