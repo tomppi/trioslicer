@@ -123,11 +123,18 @@ object GcodeNozzlePathParser {
                         x = 0.0
                         y = 0.0
                         z = 0.0
+                        // The layer height is measured from the last move that extruded, so
+                        // a reset of the Z frame resets that as well: a stale tracker spans
+                        // the reset and makes the next layer report nothing sensible.
+                        retainedPreviousExtrusionZ = 0.0
                     }
                     "G92" -> {
                         command.value('X')?.let { x = it }
                         command.value('Y')?.let { y = it }
-                        command.value('Z')?.let { z = it }
+                        command.value('Z')?.let {
+                            z = it
+                            retainedPreviousExtrusionZ = it
+                        }
                         command.value('E')?.let { e = it }
                     }
                     "G0", "G1" -> {

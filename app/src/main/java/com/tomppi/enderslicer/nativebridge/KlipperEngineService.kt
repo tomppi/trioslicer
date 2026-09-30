@@ -251,6 +251,13 @@ class KlipperEngineService : Service() {
             env["LD_LIBRARY_PATH"] = "${libexec.absolutePath}:${nativeDir.absolutePath}"
             env["PYTHONDONTWRITEBYTECODE"] = "1"
             Log.i(TAG, "starting klippy: ${pb.command().joinToString(" ")}")
+            // Checked again here, not only when this launch claimed the lock: onDestroy may have
+            // run in between, and a klippy started after it would hold the pty with no service,
+            // no notification, and nothing able to stop it.
+            if (destroyed || stopping) {
+                Log.i(TAG, "the service is stopping; klippy will not be started")
+                return
+            }
             val proc = pb.start()
             process = proc
             // The claim is over the moment the process exists. Clearing it when launchLocked()
@@ -294,7 +301,13 @@ class KlipperEngineService : Service() {
             // next process before this one has finished unwinding, and clearing the
             // field here would leave the service believing nothing is running -
             // while a klippy it can no longer stop keeps the printer.
-            if (process === started) process = null
+            if (process === started) {
+                process = null
+                // Only a run that is ending for good releases it. A launch that gave up early -
+                // the service stopping, the pty refused - would otherwise leave the phone pinned
+                // awake with no host to show for it.
+                if (stopping || destroyed) wakeLock?.let { if (it.isHeld) it.release() }
+            }
         }
     }
 
@@ -676,8 +689,11 @@ class KlipperEngineService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(usbPermission) }
+        // Marked under the lock a launch decides under, and before the stop: a launch that has
+        // already passed its check must not start a host after this has stopped one - nothing
+        // would be left to stop it.
+        synchronized(launchLock) { destroyed = true }
         stopEngine()
-        destroyed = true
         super.onDestroy()
     }
 
