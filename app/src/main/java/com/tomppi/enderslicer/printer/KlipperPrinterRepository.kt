@@ -1120,7 +1120,11 @@ class KlipperPrinterRepository(
         val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
         staged.writeText(text)
         val written = remote.uploadConfig(staged)
-        if (written) restartHost()
+        // Moonraker's own endpoint rather than the RESTART command down the connection: a
+        // configuration can be written for a host this app is not driving - which is exactly
+        // when a broken one needs replacing - and then there is no connection to send it down.
+        // This is MoonrakerFiles.restart()'s own reasoning, and why it exists.
+        if (written) remote.restart()
         written
     }
 

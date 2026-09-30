@@ -100,11 +100,18 @@ class HostConfigSeamTest {
     fun aWriteKeepsTheHostOwnConfigurationBesideItAndRestarts() = runBlocking {
         val served = "# the computer configuration\n[extruder]\nrotation_distance: 4.643\n"
         val uploads = CopyOnWriteArrayList<String>()
+        val restarts = AtomicInteger()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/server/files/config/printer.cfg") { exchange ->
             val body = served.toByteArray()
             exchange.sendResponseHeaders(200, body.size.toLong())
             exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/printer/restart") { exchange ->
+            restarts.incrementAndGet()
+            val bytes = "{}".toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
         }
         server.createContext("/server/files/upload") { exchange ->
             uploads.add(String(exchange.requestBody.readBytes(), Charsets.UTF_8))
@@ -126,8 +133,7 @@ class HostConfigSeamTest {
             )
             assertTrue("with what was there", uploads.any { it.contains("rotation_distance: 4.643") })
             assertTrue("and the new value", uploads.any { it.contains("rotation_distance: 4.700") })
-            // The restart itself is a G-code RESTART over the transport, not this HTTP path;
-            // MoonrakerFiles.restart() is the other one and is not what a write uses.
+            assertTrue("the host is asked to read it again", restarts.get() > 0)
         } finally {
             server.stop(0)
         }
