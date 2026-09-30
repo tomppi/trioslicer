@@ -47,12 +47,28 @@ internal class MoonrakerFiles(
      */
     fun upload(source: File, name: String, root: String = ROOT): Boolean {
         val boundary = "----TrioSlicer" + UUID.randomUUID().toString().replace("-", "")
-        val body = uploadBody(boundary, name, source.readBytes(), root)
+        // The file part is streamed straight from disk: a slice can be hundreds of megabytes and
+        // the heap is already holding the rest of the app.
+        val head = uploadHead(boundary, name, root)
+        val tail = uploadTail(boundary)
+        val body = head
         val answer = request(
             path = UPLOAD_PATH,
             method = "POST",
-            body = body,
             contentType = "multipart/form-data; boundary=" + boundary,
+            contentLength = head.size.toLong() + source.length() + tail.size.toLong(),
+            bodyWriter = { out ->
+                out.write(head)
+                source.inputStream().use { input ->
+                    val buffer = ByteArray(UPLOAD_CHUNK_BYTES)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count <= 0) break
+                        out.write(buffer, 0, count)
+                    }
+                }
+                out.write(tail)
+            },
         ) ?: return false
         //
         // Moonraker answers with the item it created. Not wrapped in "result" the way its
@@ -171,6 +187,8 @@ internal class MoonrakerFiles(
         method: String,
         body: ByteArray? = null,
         contentType: String? = null,
+        contentLength: Long = -1L,
+        bodyWriter: ((java.io.OutputStream) -> Unit)? = null,
     ): JSONObject? = runCatching {
         val connection = URL("http://" + host.trim() + ":" + port + path).openConnection()
             as HttpURLConnection
@@ -178,11 +196,15 @@ internal class MoonrakerFiles(
         connection.connectTimeout = CONNECT_TIMEOUT_MS
         connection.readTimeout = READ_TIMEOUT_MS
         apiKey?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("X-Api-Key", it) }
-        if (body != null) {
+        if (body != null || bodyWriter != null) {
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", contentType ?: "application/octet-stream")
-            connection.setFixedLengthStreamingMode(body.size)
-            connection.outputStream.use { it.write(body) }
+            connection.setFixedLengthStreamingMode(
+                if (body != null) body.size.toLong() else contentLength,
+            )
+            connection.outputStream.use { out ->
+                if (body != null) out.write(body) else bodyWriter?.invoke(out)
+            }
         }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -264,12 +286,11 @@ internal class MoonrakerFiles(
          * keep, and the root has to be a separate field. Getting any of that wrong is a 400 with
          * nothing on screen to say why.
          */
-        fun uploadBody(
-            boundary: String,
-            name: String,
-            content: ByteArray,
-            root: String = ROOT,
-        ): ByteArray {
+        /** How much of a file is read at a time on its way to the host. */
+        const val UPLOAD_CHUNK_BYTES = 128 * 1024
+
+        /** The multipart preamble: the root field, then the file part's own headers. */
+        fun uploadHead(boundary: String, name: String, root: String = ROOT): ByteArray {
             val head = StringBuilder()
             head.append("--").append(boundary).append("\r\n")
             head.append("Content-Disposition: form-data; name=\"root\"\r\n\r\n")
@@ -278,11 +299,20 @@ internal class MoonrakerFiles(
             head.append("Content-Disposition: form-data; name=\"file\"; filename=\"")
             head.append(name.replace("\"", "")).append("\"\r\n")
             head.append("Content-Type: application/octet-stream\r\n\r\n")
-            val tail = "\r\n--" + boundary + "--\r\n"
-            return head.toString().toByteArray(StandardCharsets.UTF_8) +
-                content +
-                tail.toByteArray(StandardCharsets.UTF_8)
+            return head.toString().toByteArray(StandardCharsets.UTF_8)
         }
+
+        /** The multipart terminator. */
+        fun uploadTail(boundary: String): ByteArray =
+            ("\r\n--" + boundary + "--\r\n").toByteArray(StandardCharsets.UTF_8)
+
+        /** The whole body in memory, for callers that already hold the bytes. */
+        fun uploadBody(
+            boundary: String,
+            name: String,
+            content: ByteArray,
+            root: String = ROOT,
+        ): ByteArray = uploadHead(boundary, name, root) + content + uploadTail(boundary)
 
         /** A path segment, percent-encoded so a name with a space survives the trip. */
         fun encodePath(name: String): String =

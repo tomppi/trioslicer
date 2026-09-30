@@ -138,5 +138,5 @@ internal object KlipperWebSocket {
     const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     /** A frame larger than this is not something a printer control channel should be sent. */
-    private const val MAX_FRAME_BYTES = 8L * 1024 * 1024
+    internal const val MAX_FRAME_BYTES = 8L * 1024 * 1024
 }

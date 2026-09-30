@@ -45,7 +45,10 @@ data class GcodeNozzlePath(
 }
 
 object GcodeNozzlePathParser {
-    private const val DEFAULT_MAX_MOVES = 1_000_000
+    // 50_000 moves is a rich preview - a Benchy is about four thousand - and it holds the
+    // nozzle-path ribbons to roughly 80 MB of native memory and the same again in GPU buffers.
+    // The million this allowed needed about 800 MB of native memory at 792 bytes a move.
+    private const val DEFAULT_MAX_MOVES = 50_000
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
     private const val LAYER_HEIGHT_MAX_MM = 0.500

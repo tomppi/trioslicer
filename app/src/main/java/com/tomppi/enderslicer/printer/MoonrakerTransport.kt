@@ -146,12 +146,21 @@ internal class MoonrakerTransport(
         }
         if (count < 0) return false
         partial += chunk.copyOfRange(0, count)
+        // decode() leaves a frame longer than the protocol allows unconsumed, so without this the
+        // buffer grows for as long as the peer keeps sending.
+        if (partial.size > KlipperWebSocket.MAX_FRAME_BYTES) {
+            throw IllegalStateException("the host sent more than a frame's worth of bytes")
+        }
         val (frames, rest) = KlipperWebSocket.decode(partial)
         partial = rest
         for (frame in frames) {
             val payload = when {
                 frame.opcode == KlipperWebSocket.OPCODE_CONTINUATION -> {
+                    // Fragments are legal protocol, so this grows as fast as the peer sends them.
                     assembling += frame.payload
+                    if (assembling.size > KlipperWebSocket.MAX_FRAME_BYTES) {
+                        throw IllegalStateException("the host sent a message past the size limit")
+                    }
                     if (!frame.fin) continue
                     val whole = assembling
                     assembling = ByteArray(0)

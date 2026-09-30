@@ -113,6 +113,9 @@ class KlipperClient internal constructor(
     }
 
     /** Read until at least one complete message has arrived, and return them all. */
+    /** The most that may sit in the buffer while a complete message is awaited. */
+    private val MAX_PENDING_BYTES = KlipperWebSocket.MAX_FRAME_BYTES
+
     private fun readMessages(): List<JSONObject> {
         // Blocking reads, which is why this runs on its own thread.
         while (true) {
@@ -123,6 +126,10 @@ class KlipperClient internal constructor(
             val read = transport.read(chunk)
             if (read < 0) throw IllegalStateException("klippy closed the connection")
             pending += chunk.copyOfRange(0, read)
+            // A peer that never completes a message must not be able to grow this without limit.
+            if (pending.size > MAX_PENDING_BYTES) {
+                throw IllegalStateException("klippy sent " + pending.size + " bytes without a complete message")
+            }
         }
     }
 

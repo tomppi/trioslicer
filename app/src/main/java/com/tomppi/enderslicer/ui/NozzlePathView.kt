@@ -104,7 +104,7 @@ internal fun NozzlePathView(
             }
             Log.i(
                 "NozzlePathView",
-                "parsed " + parsed.moveCount + " moves in " + (SystemClock.uptimeMillis() - startedAt) + " ms",
+                "parsed " + parsed.moveCount + (if (parsed.truncated) " sampled" else "") + " moves in " + (SystemClock.uptimeMillis() - startedAt) + " ms",
             )
             NozzlePathLoadState.Ready(parsed)
         } catch (cancelled: CancellationException) {
