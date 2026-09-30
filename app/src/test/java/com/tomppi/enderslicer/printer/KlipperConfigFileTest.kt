@@ -701,6 +701,39 @@ class KlipperConfigFileTest {
         assertEquals(phoneConfig, KlipperConfigFile.withSynced(phoneConfig, phoneConfig))
         assertEquals(pcConfig, KlipperConfigFile.withSynced(pcConfig, pcConfig))
     }
+    @Test
+    fun everySecondBoardGoesAndNothingElseDoes() {
+        // Two extra boards, one removal loop: the old snapshot-and-remove left the second
+        // index stale, which deleted the fan below it and kept the second board.
+        val text = listOf(
+            "[mcu]", "serial: /dev/ttyUSB0", "",
+            "[mcu rpi]", "serial: /tmp/klipper_host_mcu", "",
+            "[mcu sb2040]", "canbus_uuid: 1234", "",
+            "[fan]", "pin: PA0", "",
+            "[printer]", "kinematics: cartesian", "",
+        ).joinToString("\n")
+        val result = KlipperConfigFile.forDevice(
+            text = text,
+            serialPath = "/data/app/printer-pty",
+            gcodeDirectory = "/data/app/gcodes",
+            availableFiles = emptySet(),
+        )
+        assertFalse("the Linux host board is gone", result.text.contains("[mcu rpi]"))
+        assertFalse("the CAN toolhead board is gone", result.text.contains("[mcu sb2040]"))
+        assertTrue("the fan is not a board and stays", result.text.contains("[fan]"))
+        assertTrue("its pin stays with it", result.text.contains("pin: PA0"))
+        assertTrue("the printer section stays", result.text.contains("[printer]"))
+    }
+
+    @Test
+    fun anIncludeIsOnlyKeptWhenTheFileIsThereUnderExactlyThatName() {
+        val text = listOf("[include macros.cfg]", "[printer]", "kinematics: cartesian", "")
+            .joinToString("\n")
+        val kept = KlipperConfigFile.forDevice(text, "/pty", "/gcodes", setOf("macros.cfg"))
+        assertFalse("the file is there under that name", kept.text.contains("# [include macros.cfg]"))
+        val renamed = KlipperConfigFile.forDevice(text, "/pty", "/gcodes", setOf("macroscfg"))
+        assertTrue("written under another name is not there", renamed.text.contains("# [include macros.cfg]"))
+        val otherCase = KlipperConfigFile.forDevice(text, "/pty", "/gcodes", setOf("Macros.cfg"))
+        assertTrue("a case difference is a different file", otherCase.text.contains("# [include macros.cfg]"))
+    }
 }
-
-

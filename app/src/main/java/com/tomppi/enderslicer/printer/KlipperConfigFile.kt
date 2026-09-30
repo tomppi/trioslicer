@@ -204,9 +204,12 @@ internal object KlipperConfigFile {
         // A second micro-controller is a Linux host board or a CAN toolhead board. There
         // is neither on a phone, and klippy refuses to start while a section names a board
         // it cannot reach - so it goes, and the screen says it went.
-        additionalMcuSections(lines).forEach { (header, section) ->
-            removeSection(lines, header)
-            changes += "removed $section: there is no second board for the app to reach"
+        // Highest index first, recomputed after each removal: a snapshot of indices goes
+        // stale the moment the first section is cleared out of the list those indices describe.
+        while (true) {
+            val next = additionalMcuSections(lines).maxByOrNull { it.first } ?: break
+            removeSection(lines, next.first)
+            changes += "removed ${next.second}: there is no second board for the app to reach"
         }
 
         // A board on this connection is reset by command, not by DTR.
@@ -266,7 +269,7 @@ internal object KlipperConfigFile {
         // start if it is not there. One that came along is left alone; one that did not is
         // commented out here, where the user is being told about it.
         includesOf(text).forEach { name ->
-            val known = availableFiles.any { it.equals(name, ignoreCase = true) }
+            val known = availableFiles.contains(name)
             if (known) return@forEach
             val at = lines.indexOfFirst { INCLUDE.matches(it.trim()) && INCLUDE.find(it.trim())?.groupValues?.get(1)?.trim() == name }
             if (at >= 0) lines[at] = "# " + lines[at].trim() + "   # not imported: the app has no such file"

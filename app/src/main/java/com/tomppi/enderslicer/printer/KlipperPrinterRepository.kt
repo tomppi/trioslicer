@@ -1033,9 +1033,16 @@ class KlipperPrinterRepository(
      * saved, confirmed by the app, and nowhere near the printer.
      */
     private suspend fun readHostConfig(): String? = withContext(Dispatchers.IO) {
-        remoteFiles()?.configText()
-            ?: KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
+        // The host in use is the only source. A computer that is configured but does not answer
+        // must fail the operation, not hand back this device's file: that file was once uploaded
+        // over the computer's own configuration and followed by a restart.
+        val remote = remoteFiles() ?: return@withContext deviceConfigText()
+        remote.configText()
     }
+
+    /** This device's own configuration, or null when it has none yet. */
+    private fun deviceConfigText(): String? =
+        KlipperHostFiles.config(application.filesDir).takeIf { it.isFile }?.readText()
 
     /**
      * Write a configuration where the host will read it, and make the host read it.
@@ -1051,11 +1058,13 @@ class KlipperPrinterRepository(
             writeDeviceConfig(text)
             return@withContext true
         }
-        readHostConfig()?.takeIf { it.isNotBlank() }?.let { before ->
-            val previous = File(application.cacheDir, "previous.printer.cfg")
-            previous.writeText(before)
-            remote.uploadConfig(previous, name = "previous.printer.cfg")
-        }
+        // Read the configuration from the same host this write is aimed at, and refuse the
+        // write when it cannot be read. Falling back to this device's own file is how a
+        // phone's configuration once landed on the computer, with a restart to follow it.
+        val before = readHostConfig()
+        if (before.isNullOrBlank()) return@withContext false
+        val previous = File(application.cacheDir, "previous.printer.cfg")
+        previous.writeText(before)
         val staged = File(application.cacheDir, KlipperHostFiles.CONFIG)
         staged.writeText(text)
         val written = remote.uploadConfig(staged)
@@ -1267,7 +1276,9 @@ class KlipperPrinterRepository(
                 text = main.second,
                 serialPath = KlipperHostFiles.pty(application.filesDir).absolutePath,
                 gcodeDirectory = gcodeDirectory().absolutePath,
-                availableFiles = companions.map { it.first }.toSet(),
+                // The names on disk, not the picked ones: safeFileName drops characters, and
+                // an include believed present but written under another name stops klippy starting.
+                availableFiles = companions.map { safeFileName(it.first) }.toSet(),
             )
             val config = KlipperHostFiles.config(application.filesDir)
             if (config.isFile) config.copyTo(KlipperHostFiles.previous(application.filesDir), overwrite = true)

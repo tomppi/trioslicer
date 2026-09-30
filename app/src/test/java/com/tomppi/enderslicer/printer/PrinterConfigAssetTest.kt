@@ -51,16 +51,15 @@ class PrinterConfigAssetTest {
     }
 
     @Test
-    fun restartMethodIsNotSetBecauseAPtyHasNoBaudRate() {
-        // klippy does not read restart_method when it connects through connect_pipe,
-        // and rejects the whole section for containing an option it did not consume.
-        // The header comment says as much, so this looks for a live line rather than
-        // for the word.
-        val live = config.lineSequence()
-            .map { it.trim() }
-            .filterNot { it.startsWith("#") }
-            .filter { it.startsWith("restart_method") }
-            .toList()
-        assertEquals(emptyList<String>(), live)
+    fun theBoardIsResetByCommandOnThisConnection() {
+        // klippy reads restart_method on this connection: only /dev/rpmsg_* and
+        // /tmp/klipper_host_* are pipe ports with no baud rate. Toggling DTR for the arduino
+        // method cannot reach the board through the app's pty, so the board is asked to reset
+        // itself. An earlier revision of this file asserted the opposite and cost the phone
+        // route its only working FIRMWARE_RESTART.
+        assertTrue(
+            "the shipped [mcu] asks the board to reset itself",
+            config.contains("restart_method: command"),
+        )
     }
 }
