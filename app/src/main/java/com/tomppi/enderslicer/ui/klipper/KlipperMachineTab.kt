@@ -123,6 +123,13 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                     viewModel.firmwareRestart()
                 }
             }
+            if (!onDevice) {
+                Spacer(Modifier.height(8.dp))
+                KlipperNote(
+                    "Start and Stop drive the Klipper host on this phone. On the PC Klipper " +
+                        "route the computer runs it, so they are not offered here.",
+                )
+            }
             if (state.saveConfigPending) {
                 Spacer(Modifier.height(8.dp))
                 KlipperNote(

@@ -339,8 +339,11 @@ internal object ConicalGcodeTransformer {
         }
         return diagnostics
         } catch (error: Throwable) {
+            // Both files, not just the stage: a refusal before the output was written leaves an
+            // empty <name>.conical.tmp beside the user's G-code as well.
             runCatching { stagedWriter.close() }
             staged.delete()
+            temporary.delete()
             throw error
         }
     }
