@@ -289,6 +289,11 @@ class KlipperEngineService : Service() {
                 Log.i(TAG, "starting the host again in ${RELAUNCH_DELAY_MS}ms")
                 Thread.sleep(RELAUNCH_DELAY_MS)
                 if (process === proc && !stopping) {
+                    // Cleared before the relaunch is asked for, not after it: launch() refuses
+                    // while a process is still assigned, and the finally that clears it runs
+                    // after this thread is already on its way - a race in which the host simply
+                    // does not come back.
+                    process = null
                     Thread({ launch() }, "klipper-launch").start()
                 }
             }
@@ -303,6 +308,10 @@ class KlipperEngineService : Service() {
             // while a klippy it can no longer stop keeps the printer.
             if (process === started) {
                 process = null
+                // A launch that never got as far as a process - the payload missing, the pty
+                // refused - must put the lock back: nothing is holding the phone awake for a host
+                // that does not exist.
+                if (started == null) wakeLock?.let { if (it.isHeld) it.release() }
                 // Only a run that is ending for good releases it. A launch that gave up early -
                 // the service stopping, the pty refused - would otherwise leave the phone pinned
                 // awake with no host to show for it.
