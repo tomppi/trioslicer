@@ -4,12 +4,13 @@
 
 # TrioSlicer
 
-TrioSlicer (formerly DuoSlicer, and EnderSlicerCura before that) is an Android-first front end for
-**CuraEngine, PrusaSlicer and OrcaSlicer** - importing, preparing, slicing, previewing and sending 3D
-prints from a phone or foldable. It is **1.6.4** and runs on Android 10+ on **ARM64**, with all three
+TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
+preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
+or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
+an embedded **Blender 3.6**. It is **1.6.4** and runs on Android 10+ on **ARM64**, with all three
 engines cross-compiled for the phone together with their own upstream profile systems: CuraEngine
-**5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline is
-a modified Creality Ender 3 V2.
+**5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline
+is a modified Creality Ender 3 V2.
 
 > This is development software, not a complete Cura or PrusaSlicer replacement. Inspect every model, setting and generated G-code before printing.
 
