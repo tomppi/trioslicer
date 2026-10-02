@@ -4,6 +4,56 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.5] - 2026-10-02
+
+Adaptive meshing inside the printer's own menus, and a bed mesh you can look at from any side.
+
+KAMP ships with the app's Klipper host: a slice can measure only the ground its objects stand
+on, purging can follow the print instead of a fixed corner, and a new screen in the printer's
+menus turns that on, tunes it and says what the connected host is running. The mesh screen
+grew a surface you can turn right over - black underneath, so the underside cannot be mistaken
+for the bed - and a probe count that is yours to set rather than fixed at five by five.
+
+### Added
+
+- **KAMP ships with the app's Klipper host.** The adaptive meshing and purging macros are in
+  the payload, included from the configuration, and installed beside it for a configuration
+  that already exists - files only when missing, so an edited `KAMP_Settings.cfg` survives an
+  app update. KAMP replaces `BED_MESH_CALIBRATE`, so a host that has it meshes the ground the
+  objects stand on, and falls back to the ordinary mesh when a file declares no objects.
+- **Adaptive meshing for the Klipper route, off by default.** A switch on the new KAMP screen
+  has the app check each sliced file: if the start script already measures a mesh, or the
+  printer was never homed before the first extruding move, the file is untouched; otherwise
+  `BED_MESH_CALIBRATE` is inserted, marked, immediately before that move, so every object
+  definition the slicer wrote is already known to the printer. A `max_extrude_cross_section: 5`
+  in the shipped `[extruder]` is what lets KAMP's purge run.
+- **A KAMP screen in the printer's menus.** It carries the adaptive meshing switch, reports
+  whether the connected host has KAMP, shows the values it runs with - mesh margin, fuzz,
+  purge amount, margin and height, flow rate, verbose - and sets them with
+  `SET_GCODE_VARIABLE`.
+- **The bed mesh drawn as a surface.** The Mesh screen turns the probed grid into a surface
+  you rotate with a drag: turn it right over and the underside is drawn black, and the caption
+  says so, because a mesh seen from behind has its heights mirrored. The projection is
+  orthographic, painted far to near, coloured by height through the viewer's own ramp, and held
+  in place by a fit that does not change with the angle - a fit that did made every turn look
+  like a zoom. Sixteen tests cover the camera conventions, the wrapping angles and the fit.
+- **Mesh probe points are adjustable.** The Mesh screen reads `[bed_mesh] probe_count` from the
+  configuration and writes a new one (3 to 13 per axis) to whichever host the app is driving,
+  through the same configuration write as the pressure-advance and rotation-distance saves.
+  KAMP measures its adaptive mesh with that count, which is the knob its own README points at.
+
+### Fixed
+
+- The KAMP screen asked the printer state for `_KAMP_Settings` - the name
+  `SET_GCODE_VARIABLE` takes - while the object klippy publishes is
+  `gcode_macro _KAMP_Settings`. The lookup answered nothing on every printer, healthy or not,
+  and the screen told the user their machine had no KAMP while it was running it. A test now
+  holds the name the screen reads to the list the app subscribes to.
+- The surface view's first camera had the up axis and the depth axis swapped: the bed was drawn
+  upside down and painted back to front at once, which read as the underside of the printer.
+- The same view classified the underside per quad instead of by the camera, so the steep faces
+  of a real - and heavily exaggerated - bed were blanked black.
+
 ## [1.6.4] - 2026-09-30
 
 Two rounds of looking for bugs on purpose, everything they found, and a card that copies the

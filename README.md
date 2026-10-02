@@ -7,7 +7,7 @@
 TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
 preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
 or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
-an embedded **Blender 3.6**. It is **1.6.4** and runs on Android 10+ on **ARM64**, with all three
+an embedded **Blender 3.6**. It is **1.6.5** and runs on Android 10+ on **ARM64**, with all three
 engines cross-compiled for the phone together with their own upstream profile systems: CuraEngine
 **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline
 is a modified Creality Ender 3 V2.
@@ -35,8 +35,11 @@ is a modified Creality Ender 3 V2.
   (**PC Klipper**); the Print screen switches between them beside OctoPrint. Everything that
   belongs to the printer rather than the host - the saved calibrations, the bed meshes, the
   motion limits - can be compared between the two and copied one way or the other, and each
-  file's date is shown so the newer setting is known. The two G-code routes, Marlin for
-  OctoPrint and Klipper for the hosts, are separate code with a guard that keeps them so.
+  file's date is shown so the newer setting is known. **KAMP** ships with the phone host, with a
+  switch on its own screen in the printer's menus: when a start script measures no mesh of its
+  own, the app inserts one before the first extruding move, and KAMP fits it to the printed area.
+  The two G-code routes, Marlin for OctoPrint and Klipper for the hosts, are separate code with
+  a guard that keeps them so.
 - **Input shaping, measured with the phone.** The printer plays Klipper's own resonance sweep
   while the phone records itself as the accelerometer Klipper has not got, and the peaks that
   survive a change of position are the machine's rather than the phone's. Step by step in
@@ -93,11 +96,11 @@ is a modified Creality Ender 3 V2.
 
 ## Install
 
-Download `TrioSlicer-1.6.4.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
+Download `TrioSlicer-1.6.5.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
 and open it on the phone, or install it over adb:
 
 ```sh
-adb install TrioSlicer-1.6.4.apk
+adb install TrioSlicer-1.6.5.apk
 ```
 
 Android 10+ on arm64-v8a. It is a **release** build - `android:debuggable` is off - signed with the
@@ -109,7 +112,7 @@ To check that a downloaded APK is ours (`apksigner` ships in the Android SDK's b
 carries a v2 signature, which `keytool -printcert -jarfile` cannot read):
 
 ```sh
-apksigner verify --print-certs TrioSlicer-1.6.4.apk
+apksigner verify --print-certs TrioSlicer-1.6.5.apk
 ```
 
 The signer's certificate digest must be
@@ -152,6 +155,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [keystore/README.md](keystore/README.md) - the release key and how to verify a downloaded APK
 - [Calibrating the input shaper with a phone](docs/INPUT_SHAPING.md)
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine
+- [docs/KLIPPER_UI.md](docs/KLIPPER_UI.md) - the printer's screens, KAMP among them, and what each reads from klippy
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
 - [webviewdp](https://github.com/tomppi/webviewdp) - a minimal Android WebView app that wraps a harness's own web UI for the same phone
 - [docs/smart-infill.md](docs/smart-infill.md), [docs/non-planar.md](docs/non-planar.md), [docs/ui-style-guide.md](docs/ui-style-guide.md) - feature and UI notes
