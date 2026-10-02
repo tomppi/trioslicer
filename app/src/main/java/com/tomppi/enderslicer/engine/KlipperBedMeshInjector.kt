@@ -1,35 +1,33 @@
 package com.tomppi.enderslicer.engine
 
-import java.io.File
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 
 /**
  * Gives a Klipper start script a mesh to measure, when it has none.
  *
- * KAMP - the adaptive meshing macros this app ships for its Klipper host - replaces
- * BED_MESH_CALIBRATE. When that command is called, the macro reads the objects the slicer
- * declared and meshes only the ground they stand on. What it therefore needs from a file is
- * not a parameter but a call: BED_MESH_CALIBRATE, after the objects are defined. A start
- * script that measures its own mesh already has one, and one that only loads a saved profile
- * - or measures nothing at all, which is what a Klipper profile carried over from Marlin
- * often does - leaves KAMP with nothing to react to.
+ * KAMP - the adaptive meshing macros the app ships for its Klipper host - replaces
+ * BED_MESH_CALIBRATE. When that command is called, the macro reads the objects the slicer declared
+ * and meshes only the ground they stand on. What it needs from a slice is therefore not a
+ * parameter but a call, in front of the first extrusion.
  *
- * So this scans the start of the file up to the first extruding move, which is the last point
- * at which a mesh can still be measured before plastic goes down, and:
+ * The call goes into the **start script**, and that is the whole point of this file's shape. It
+ * was written into the sliced file first, after the engines had run, and every slice then failed:
+ * [GcodeSanitizer] checks engine output against the file's dialect - Cura, Prusa and Orca are all
+ * Marlin-family - and BED_MESH_CALIBRATE is not a Marlin command, so the file was rejected and
+ * withheld, with the engine's own exit code sitting at 0 in the log. A start script is the user's
+ * own text and is trusted by that check, which is what makes the call legal here.
  *
- *   - leaves the file alone if BED_MESH_CALIBRATE or G29 is already in front of that point,
- *   - leaves it alone if no G28 came before it either - Klipper refuses to probe an unhomed
- *     printer, so the line would turn a print into an error rather than into a mesh,
- *   - otherwise writes the call in, marked, immediately before that move.
- *
- * As late as possible is deliberate: object definitions come from the slicer and can sit
- * anywhere in the start script, and every one of them already read when the mesh runs is one
- * more object the mesh can be fitted to.
- *
- * The marker doubles as the idempotence check, so every post-slice path can call this without
- * counting calls - the same arrangement [GcodeProbePauseInjector] makes.
+ * So this answers with a script rather than editing a file: the same script, or the same script
+ * with the call added in front of its first extruding move - which is the last point at which a
+ * mesh can still be measured before plastic goes down, and the point past which the slicer's own
+ * object definitions cannot help anyway. It adds nothing when the script already measures a mesh
+ * (BED_MESH_CALIBRATE or this printer's G29 macro), nothing when the printer was never homed -
+ * Klipper refuses to probe an unhomed printer, and a line that errors turns a print into a
+ * failure rather than into a mesh - and nothing when its own marker is already there, so a script
+ * that is passed through twice does not collect two calls.
  */
 internal object KlipperBedMeshInjector {
-    /** Written above the inserted call, and what makes a second run a no-op. */
+    /** Written above the inserted call, and what makes a second pass a no-op. */
     const val MARKER = ";ENDERSLICER_KAMP_MESH"
 
     /** The call KAMP reacts to. No parameters: KAMP reads its own settings and the objects. */
@@ -39,74 +37,40 @@ internal object KlipperBedMeshInjector {
     private val MEASURING = setOf("BED_MESH_CALIBRATE", "G29")
 
     /**
-     * Inserts the call when the file needs it, and answers whether it did.
+     * The start script to slice with, given the switch and the printer's flavour.
      *
-     * False is not a failure. It is "this file already measures a mesh", "the printer was
-     * never homed", or "the marker is already there".
+     * Both gates are here rather than at the call sites so that the three engines cannot disagree
+     * about when this applies, which is how a Klipper command ended up in a Marlin file once
+     * already.
      */
-    fun inject(file: File): Boolean {
-        require(file.isFile && file.length() > 0L) { "Sliced G-code is unavailable" }
+    fun withMeshCallIfWanted(enabled: Boolean, flavor: String, startGcode: String): String =
+        if (enabled && GcodeRoute.isKlipperFlavor(flavor)) withMeshCall(startGcode) else startGcode
 
+    /** The script with the call added, or the script unchanged when it is not needed. */
+    fun withMeshCall(startGcode: String): String {
+        if (startGcode.isBlank()) return startGcode
+        val lines = startGcode.lines()
         var homed = false
         var insertAt = -1
-        var index = 0
-        file.bufferedReader().use { reader ->
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.trim() == MARKER) return false
-                // By name, not by parser: BED_MESH_CALIBRATE is a Klipper command with no
-                // G or M number, and GcodeCommand only knows the numbered forms - which is
-                // how a file that already measures its own mesh first slipped past this.
-                val word = commandWord(line)
-                if (word in MEASURING) return false
-                if (word == "G28") homed = true
-                val command = GcodeCommand.parse(line)
-                if (command != null && extrudes(command)) {
-                    insertAt = index
-                    break
-                }
-                index++
+        for ((index, line) in lines.withIndex()) {
+            if (line.trim() == MARKER) return startGcode
+            // By name, not by parser: BED_MESH_CALIBRATE is a Klipper command with no G or M
+            // number, and GcodeCommand only knows the numbered forms.
+            val word = commandWord(line)
+            if (word in MEASURING) return startGcode
+            if (word == "G28") homed = true
+            if (pushesFilament(line)) {
+                insertAt = index
+                break
             }
         }
-        // No extrusion to hang it on, or nothing has been homed: either way the file is
-        // left exactly as the slicer wrote it.
-        if (insertAt < 0 || !homed) return false
-
-        val temporary = File(file.parentFile, "${file.name}.kamp-mesh.tmp")
-        temporary.delete()
-        try {
-            file.bufferedReader().use { reader ->
-                temporary.bufferedWriter().use { writer ->
-                    var current = 0
-                    while (true) {
-                        val line = reader.readLine() ?: break
-                        if (current == insertAt) {
-                            writer.write(MARKER)
-                            writer.newLine()
-                            writer.write(MESH_COMMAND)
-                            writer.newLine()
-                        }
-                        writer.write(line)
-                        writer.newLine()
-                        current++
-                    }
-                }
-            }
-            try {
-                java.nio.file.Files.move(
-                    temporary.toPath(),
-                    file.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                )
-            } catch (_: java.io.IOException) {
-                check(temporary.renameTo(file) || temporary.copyTo(file, overwrite = true).let { temporary.delete(); true }) {
-                    "Unable to publish the KAMP mesh G-code"
-                }
-            }
-        } finally {
-            temporary.delete()
-        }
-        return true
+        if (insertAt < 0 || !homed) return startGcode
+        val result = ArrayList<String>(lines.size + 2)
+        result.addAll(lines.subList(0, insertAt))
+        result.add(MARKER)
+        result.add(MESH_COMMAND)
+        result.addAll(lines.subList(insertAt, lines.size))
+        return result.joinToString("\n")
     }
 
     /**
@@ -118,6 +82,8 @@ internal object KlipperBedMeshInjector {
         line.substringBefore(';').trim().substringBefore(' ').uppercase(java.util.Locale.US)
 
     /** A move that pushes filament forward: the first one is where the print really starts. */
-    private fun extrudes(command: GcodeCommand.Parsed): Boolean =
-        command.opcode.firstOrNull() == 'G' && (command.value('E') ?: 0.0) > 0.0
+    private fun pushesFilament(line: String): Boolean {
+        val command = GcodeCommand.parse(line) ?: return false
+        return command.opcode.firstOrNull() == 'G' && (command.value('E') ?: 0.0) > 0.0
+    }
 }

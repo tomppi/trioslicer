@@ -40,8 +40,6 @@ internal object CuraEnginePostProcessor {
         amlEnabled: Boolean = false,
         amlMarginMm: Double = 5.0,
         amlGridPoints: Int = AdaptiveBedMeshInjector.DEFAULT_GRID_POINTS,
-        /** KAMP adaptive meshing: the Klipper host's equivalent of [amlEnabled]. */
-        kampEnabled: Boolean = false,
     ): Result {
         val workspace = outputFile.parentFile
             ?: error("CuraEngine output path has no parent workspace")
@@ -106,16 +104,10 @@ internal object CuraEnginePostProcessor {
         // layer marker, so the sanitizer accepts it as startup G-code.
         val amlInjected = amlEnabled &&
             AdaptiveBedMeshInjector.inject(outputFile, effectiveEnvelope, amlMarginMm, amlGridPoints)
-        // The Klipper half of the same idea, and never both in one file: KAMP meshes from
-        // the objects the slicer declared, while AML writes Marlin's probe region, so the
-        // flavour decides which of them a file can take.
-        val kampInjected = kampEnabled &&
-            GcodeRoute.isKlipperFlavor(effectiveEnvelope.gcodeFlavor) &&
-            KlipperBedMeshInjector.inject(outputFile)
-        val validatedTransport = when {
-            amlInjected -> "$effectiveTransport+adaptive-mesh-leveling"
-            kampInjected -> "$effectiveTransport+kamp-adaptive-mesh"
-            else -> effectiveTransport
+        val validatedTransport = if (amlInjected) {
+            "$effectiveTransport+adaptive-mesh-leveling"
+        } else {
+            effectiveTransport
         }
 
         val baseSummary = GcodeSanitizer.validateAndRepair(

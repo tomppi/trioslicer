@@ -7,7 +7,7 @@
 TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
 preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
 or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
-an embedded **Blender 3.6**. It is **1.6.6** and runs on Android 10+ on **ARM64**, with all three
+an embedded **Blender 3.6**. It is **1.6.5** and runs on Android 10+ on **ARM64**, with all three
 engines cross-compiled for the phone together with their own upstream profile systems: CuraEngine
 **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline
 is a modified Creality Ender 3 V2.
@@ -96,11 +96,11 @@ is a modified Creality Ender 3 V2.
 
 ## Install
 
-Download `TrioSlicer-1.6.6.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
+Download `TrioSlicer-1.6.5.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
 and open it on the phone, or install it over adb:
 
 ```sh
-adb install TrioSlicer-1.6.6.apk
+adb install TrioSlicer-1.6.5.apk
 ```
 
 Android 10+ on arm64-v8a. It is a **release** build - `android:debuggable` is off - signed with the
@@ -112,7 +112,7 @@ To check that a downloaded APK is ours (`apksigner` ships in the Android SDK's b
 carries a v2 signature, which `keytool -printcert -jarfile` cannot read):
 
 ```sh
-apksigner verify --print-certs TrioSlicer-1.6.6.apk
+apksigner verify --print-certs TrioSlicer-1.6.5.apk
 ```
 
 The signer's certificate digest must be

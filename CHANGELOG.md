@@ -4,20 +4,6 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.6] - 2026-10-02
-
-The mesh surface now turns the way every other 3D view in the app turns.
-
-### Fixed
-
-- **The bed surface followed the camera, not the finger.** Dragging vertically moved the
-  point of view instead of the bed: pulling up climbed above the bed and looked down on it,
-  which reads backwards to a finger that is holding the thing. It now uses the viewers' own
-  turntable - the signs, the 0.35 degrees per pixel and the opening yaw of -28 that the
-  plate, layer and nozzle-path views have always used - so the bed moves with the drag and a
-  gesture learned in one view is right in all of them. Two tests hold the direction: pulling
-  up must lower the tilt towards the underside, pulling down must raise it.
-
 ## [1.6.5] - 2026-10-02
 
 Adaptive meshing inside the printer's own menus, and a bed mesh you can look at from any side.
@@ -57,6 +43,21 @@ for the bed - and a probe count that is yours to set rather than fixed at five b
   KAMP measures its adaptive mesh with that count, which is the knob its own README points at.
 
 ### Fixed
+
+- **A Klipper slice could not be exported once the adaptive mesh switch was on.** The
+  mesh call was written into the engine's output, and that output is checked against a
+  short list of textual commands that did not include `BED_MESH_CALIBRATE` - Klipper's
+  own. The engine reported success and the app withheld every file. The command is now
+  allowed for a Klipper host, and the call is added to the *start script* - the user's
+  own text - in front of the first extruding move, rather than to the sliced file
+  afterwards, which is also the only version of it the safety check trusts.
+- **The bed surface followed the camera, not the finger.** Dragging vertically moved the
+  point of view instead of the bed: pulling up climbed above the bed and looked down on it,
+  which reads backwards to a finger that is holding the thing. It now uses the viewers' own
+  turntable - the signs, the 0.35 degrees per pixel and the opening yaw of -28 that the
+  plate, layer and nozzle-path views have always used - so the bed moves with the drag and a
+  gesture learned in one view is right in all of them. Two tests hold the direction: pulling
+  up must lower the tilt towards the underside, pulling down must raise it.
 
 - The KAMP screen asked the printer state for `_KAMP_Settings` - the name
   `SET_GCODE_VARIABLE` takes - while the object klippy publishes is

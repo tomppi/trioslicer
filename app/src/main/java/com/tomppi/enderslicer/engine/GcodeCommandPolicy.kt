@@ -146,6 +146,11 @@ internal object GcodeCommandPolicy {
         val flavor = gcodeFlavor.lowercase(Locale.US)
         val pressureAdvance = KLIPPER_PRESSURE_ADVANCE.matchEntire(command)
         val retraction = if (pressureAdvance == null) KLIPPER_RETRACTION.matchEntire(command) else null
+        val mesh = if (pressureAdvance == null && retraction == null) {
+            KLIPPER_MESH.matchEntire(command)
+        } else {
+            null
+        }
         val safe = "klipper" in flavor && when {
             pressureAdvance != null -> {
                 val advance = pressureAdvance.groupValues[1].toDoubleOrNull()
@@ -157,6 +162,7 @@ internal object GcodeCommandPolicy {
                 length != null && length.isFinite() && length in KLIPPER_RETRACT_LENGTH_MIN..KLIPPER_RETRACT_LENGTH_MAX &&
                     speed != null && speed.isFinite() && speed in KLIPPER_RETRACT_SPEED_MIN..KLIPPER_RETRACT_SPEED_MAX
             }
+            mesh != null -> true
             else -> false
         }
         require(safe) {
@@ -446,6 +452,24 @@ internal object GcodeCommandPolicy {
     private val READ_ONLY_ARGUMENT = Regex(
         "([A-Za-z])([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))?",
     )
+    /**
+     * Klipper's own bed mesh commands, which are textual rather than numbered.
+     *
+     * BED_MESH_CALIBRATE takes named parameters where a G-code takes letter addresses, so the
+     * numeric parser cannot model it - and a file containing one was rejected outright.
+     * Refusing it is refusing the command a Klipper start script asks for a mesh with, which
+     * is what KAMP is called by, and what this app writes into the start script itself.
+     *
+     * Parameters are held to Klipper's spelling - a capitalised name, an equals sign and
+     * numbers, or for the profile commands a name - rather than accepting any text after the
+     * command, which is the freedom this check exists to withhold.
+     */
+    private val KLIPPER_MESH = Regex(
+        "^BED_MESH_(CALIBRATE|CLEAR|OUTPUT|MAP)(\\s+[A-Z][A-Z0-9_]*=[-+]?[0-9.,]+)*$|" +
+            "^BED_MESH_PROFILE\\s+(LOAD|SAVE|REMOVE)=[A-Za-z0-9_-]+$",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val KLIPPER_PRESSURE_ADVANCE = Regex(
         "^SET_PRESSURE_ADVANCE\\s+ADVANCE=[+]?(\\d+(?:\\.\\d*)?|\\.\\d+)$",
         RegexOption.IGNORE_CASE,

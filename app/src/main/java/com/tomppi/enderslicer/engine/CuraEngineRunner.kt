@@ -118,7 +118,14 @@ class CuraEngineRunner(private val context: Context) {
                 modelFile,
                 printer,
                 settings,
-                startGcode,
+                // The Klipper route's mesh call is added here, to the user's own start script:
+                // engine output is checked against the file's Marlin-family dialect, and
+                // BED_MESH_CALIBRATE is not part of it.
+                KlipperBedMeshInjector.withMeshCallIfWanted(
+                    KampPreference.isEnabled(context),
+                    printer.gcodeFlavor,
+                    startGcode,
+                ),
                 endGcode,
                 profile,
                 machineId,
@@ -323,7 +330,6 @@ class CuraEngineRunner(private val context: Context) {
                 amlEnabled = effectiveSettings.adaptiveMeshLevelingEnabled,
                 amlMarginMm = effectiveSettings.amlMarginMm,
                 amlGridPoints = effectiveSettings.amlGridPoints,
-                kampEnabled = KampPreference.isEnabled(context),
             )
             throwIfInterrupted()
 

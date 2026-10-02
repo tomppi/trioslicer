@@ -167,7 +167,18 @@ private val datadir = File(context.filesDir, "prusa/datadir")
         onProgress: (Int) -> Unit = {},
     ): SliceResult = runInterruptible(Dispatchers.IO) {
         sliceBlocking(
-            modelFile, printer, settings, machineSettings, startGcode, endGcode, presets, onProgress,
+            modelFile,
+            printer,
+            settings,
+            machineSettings,
+            KlipperBedMeshInjector.withMeshCallIfWanted(
+                KampPreference.isEnabled(context),
+                printer.gcodeFlavor,
+                startGcode,
+            ),
+            endGcode,
+            presets,
+            onProgress,
         )
     }
 
@@ -254,13 +265,6 @@ private val datadir = File(context.filesDir, "prusa/datadir")
             )
             if (machineSettings.adaptiveMeshLevelingEnabled) {
                 AdaptiveBedMeshInjector.inject(workspace.output, printerEnvelope, machineSettings.amlMarginMm, machineSettings.amlGridPoints)
-            }
-            // KAMP measures from the objects the file declares, so it only has a say on a
-            // Klipper host - and only when the start script did not already measure a mesh.
-            if (KampPreference.isEnabled(context) &&
-                GcodeRoute.isKlipperFlavor(printerEnvelope.gcodeFlavor)
-            ) {
-                KlipperBedMeshInjector.inject(workspace.output)
             }
             val prusaEstimateSeconds = parsePrusaEstimateSeconds(workspace.output) ?: summary.estimatedSeconds
             val preview = runCatching {
