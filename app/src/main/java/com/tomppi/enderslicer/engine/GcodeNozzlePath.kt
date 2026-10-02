@@ -70,7 +70,13 @@ object GcodeNozzlePathParser {
     // The million this allowed needed about 800 MB of native memory at 792 bytes a move.
     // A memory limit, not a sampling knob. When it bites, moves are merged into their
     // neighbours - never dropped. Read the note at the top of this file before touching it.
-    private const val DEFAULT_MAX_MOVES = 50_000
+    // A last-resort memory guard, sized so that a real print never reaches it: a Benchy is about
+    // 80,000 moves and a dense plate a few hundred thousand. It is not a sampling policy - see
+    // the note at the top of this file, and the folding rule below.
+    private const val DEFAULT_MAX_MOVES = 400_000
+
+    /** How straight a run has to be before a move may be folded into it, as a dot product. */
+    private const val FOLD_COLLINEAR_DOT = 0.995
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
     private const val LAYER_HEIGHT_MAX_MM = 0.500
@@ -122,10 +128,29 @@ object GcodeNozzlePathParser {
         // skipping moves to meet it cuts a gap into every wall and curve it decimates - which is
         // what the preview looked like: beads with holes between them, and plates up close.
         var merging = false
+        var mergingKind = GcodeNozzlePath.Kind.TRAVEL.code
+        var mergingDirX = 0.0
+        var mergingDirY = 0.0
         var mergingStartX = 0.0
         var mergingStartY = 0.0
         var mergingStartZ = 0.0
         var mergingDeltaE = 0.0
+
+        /** Whether this move continues the run being folded, so it may be folded in too. */
+        fun folds(sx: Double, sy: Double, ex: Double, ey: Double, deltaE: Double): Boolean {
+            if (!merging) return true
+            val kind = if (deltaE > EXTRUSION_EPSILON) {
+                GcodeNozzlePath.Kind.EXTRUSION.code
+            } else {
+                GcodeNozzlePath.Kind.TRAVEL.code
+            }
+            if (kind != mergingKind) return false
+            val dx = ex - sx
+            val dy = ey - sy
+            val length = sqrt(dx * dx + dy * dy)
+            if (length <= 0.0) return true
+            return (dx / length) * mergingDirX + (dy / length) * mergingDirY >= FOLD_COLLINEAR_DOT
+        }
         var x = 0.0
         var y = 0.0
         var z = 0.0
@@ -206,7 +231,13 @@ object GcodeNozzlePathParser {
 
                         if (!isSpatialMove(startX, startY, startZ, nextX, nextY, nextZ)) return@forEach
                         val retainedSourceIndex = sourceIndex
-                        val keep = shouldRetain(retainedSourceIndex, sourceMoveCount, maxMoves)
+                        val requested = shouldRetain(retainedSourceIndex, sourceMoveCount, maxMoves)
+                        // The budget is a memory guard, not a sampling policy: a move is folded
+                        // into the previous one only when it genuinely continues it - the same kind
+                        // of move, in the same direction. Folding across a corner cuts the corner,
+                        // and folding a travel into an extrusion draws a straight line across the
+                        // part that the printer never made. Anything else is kept, budget or not.
+                        val keep = requested || !folds(startX, startY, nextX, nextY, deltaE)
                         sourceIndex++
                         val sx = startX.toFloat()
                         val sy = startY.toFloat()
@@ -223,6 +254,18 @@ object GcodeNozzlePathParser {
                         if (!keep) {
                             if (!merging) {
                                 merging = true
+                                mergingKind = if (deltaE > EXTRUSION_EPSILON) {
+                                    GcodeNozzlePath.Kind.EXTRUSION.code
+                                } else {
+                                    GcodeNozzlePath.Kind.TRAVEL.code
+                                }
+                                val foldX = nextX - startX
+                                val foldY = nextY - startY
+                                val foldLength = sqrt(foldX * foldX + foldY * foldY)
+                                if (foldLength > 0.0) {
+                                    mergingDirX = foldX / foldLength
+                                    mergingDirY = foldY / foldLength
+                                }
                                 mergingStartX = startX
                                 mergingStartY = startY
                                 mergingStartZ = startZ

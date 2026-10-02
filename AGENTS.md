@@ -11,7 +11,11 @@ bites, a move is **merged into the next kept move**, never dropped.
 
 - Do **not** convert these parsers to a streaming reader that draws what it holds and discards the
   rest.
-- Do **not** lower the budget, and do **not** sample, decimate or skip moves to fit it.
+- Do **not** lower the budget, and do **not** sample, decimate or skip moves to fit it. It is a
+  last-resort guard (400,000 moves), set so a real print never reaches it.
+- A move may only be folded into a run that genuinely continues it - the same kind of move, in
+  the same direction. Folding across a corner cuts the corner, and folding a travel into an
+  extrusion draws a straight line across the part that the printer never made.
 - A skipped move is a hole in the middle of a wall. With a third of the moves missing, the preview
   rendered as beads with gaps between them, and as short plates with air where the plastic should
   be when viewed up close. It took four wrong fixes to find, because the geometry that survived was

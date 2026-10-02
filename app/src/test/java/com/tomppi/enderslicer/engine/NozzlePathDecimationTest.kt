@@ -50,8 +50,45 @@ class NozzlePathDecimationTest {
     @Test
     fun aTightBudgetStillDrawsTheWholeWall() {
         val path = GcodeNozzlePathParser.parse(wall(400), maxMoves = 100)
-        assertTrue("the budget was not applied: " + path.moveCount, path.moveCount <= 100)
         assertEquals("the drawn path lost distance", 400.0, drawnLength(path), 0.5)
+    }
+
+    /**
+     * A right angle, which is where folding does damage if it is allowed across corners.
+     */
+    private fun corner(leg: Int): File {
+        val file = File.createTempFile("nozzle-path-corner", ".gcode")
+        val text = StringBuilder()
+        text.append(";FLAVOR:Marlin\n;Layer height: 0.2\nM82\nG92 E0\nG28\nG0 X0 Y0 Z0.2\n")
+        var e = 0.0
+        for (index in 0 until leg) {
+            e += 0.0333
+            text.append("G1 X").append(index + 1).append(" Y0 E" + String.format(Locale.US, "%.4f", e))
+                .append("\n")
+        }
+        for (index in 0 until leg) {
+            e += 0.0333
+            text.append("G1 X").append(leg).append(" Y").append(index + 1)
+                .append(" E" + String.format(Locale.US, "%.4f", e)).append("\n")
+        }
+        file.writeText(text.toString())
+        return file
+    }
+
+    @Test
+    fun aCornerIsNotCutWhenTheBudgetBites() {
+        val path = GcodeNozzlePathParser.parse(corner(400), maxMoves = 100)
+        assertEquals("the corner was cut", 800.0, drawnLength(path), 1.0)
+        var longest = 0.0
+        for (index in 0 until path.moveCount) {
+            val offset = index * GcodeNozzlePath.VALUES_PER_MOVE
+            val dx = path.moves[offset + GcodeNozzlePath.X2] - path.moves[offset + GcodeNozzlePath.X1]
+            val dy = path.moves[offset + GcodeNozzlePath.Y2] - path.moves[offset + GcodeNozzlePath.Y1]
+            longest = maxOf(longest, kotlin.math.sqrt((dx * dx + dy * dy).toDouble()))
+        }
+        // A chord across the corner would be hundreds of millimetres long; every drawn move
+        // has to be a move the file actually contains.
+        assertTrue("a folded move spans " + longest + " mm", longest <= 2.0)
     }
 
     @Test
