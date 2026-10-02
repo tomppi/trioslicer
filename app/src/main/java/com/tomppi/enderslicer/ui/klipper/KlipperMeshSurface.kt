@@ -46,11 +46,11 @@ internal fun KlipperMeshSurface(mesh: KlipperMesh, modifier: Modifier = Modifier
                 .height(260.dp)
                 .pointerInput(Unit) {
                     detectDragGestures { _, drag ->
-                        yaw = MeshSurfaceGeometry.wrapYaw(yaw + drag.x * 0.4f)
+                        yaw = MeshSurfaceGeometry.yawAfterDrag(yaw, drag.x)
                         // Free to turn right over: the underside is the view you want when a
                         // first layer will not stick, and it is drawn black so it cannot be
-                        // mistaken for the bed.
-                        pitch = MeshSurfaceGeometry.wrapPitch(pitch - drag.y * 0.4f)
+                        // mistaken for the bed. The bed follows the finger, not the camera.
+                        pitch = MeshSurfaceGeometry.pitchAfterDrag(pitch, drag.y)
                     }
                 },
         ) {
@@ -111,8 +111,19 @@ internal data class ProjectedPoint(val x: Double, val y: Double, val depth: Doub
  * bed is invisible otherwise. The caption gives the range, so the shape is read as a shape.
  */
 internal object MeshSurfaceGeometry {
-    const val DEFAULT_YAW_DEG = -35f
-    const val DEFAULT_PITCH_DEG = 55f
+    // The viewers' own opening yaw (ModelSurfaceView.DEFAULT_YAW), so the mesh opens over the
+    // same corner of the bed as the plate does.
+    const val DEFAULT_YAW_DEG = -28f
+
+    /**
+     * The opening tilt, as the camera elevation this screen solves for.
+     *
+     * The viewers rotate the object and hold the camera at a fixed 0.62 elevation - 31.8
+     * degrees, looking from -Y with +Z up. This screen solves for the elevation directly, so
+     * its angle is that 31.8 plus the object's; this value is the sum for a bed seen at a
+     * readable slant rather than from straight above.
+     */
+    const val DEFAULT_PITCH_DEG = 58f
 
     /** How much of the drawing's box the height range may take. */
     private const val HEIGHT_FRACTION = 0.35
@@ -127,6 +138,40 @@ internal object MeshSurfaceGeometry {
      */
     private const val REACH_X = 0.75f
     private const val REACH_Y = 0.78f
+
+    /**
+     * Degrees of turn per pixel of drag.
+     *
+     * The model, layer and nozzle-path viewers all use 0.35 and the same signs: see
+     * ModelSurfaceView's gesture calling rotate(dx * 0.35f, dy * 0.35f), which adds both to
+     * the object's own angles. This screen is a fourth turntable and behaves like the others,
+     * so a drag learned in one of them is right in all of them.
+     */
+    const val DRAG_DEGREES_PER_PIXEL = 0.35f
+
+    /**
+     * The tilt after a vertical drag, which moves the bed rather than the camera: dragging
+     * down lays it flat towards the reader and shows the top, dragging up lifts its near edge
+     * and turns the underside towards them. Written the way the viewers write it - the angle
+     * plus the drag, with down being the positive direction of a screen.
+     *
+     * Dragging up lifts the near edge, so the bed turns its underside towards you; dragging
+     * down lowers it and shows the top. The other way round - what this did first - is the
+     * camera moving instead: up means climbing above the bed and looking down on it, which
+     * feels backwards to a finger that is holding the thing.
+     *
+     * A drag arrives in screen pixels, where down is positive, hence the addition.
+     */
+    fun pitchAfterDrag(pitchDeg: Float, dragY: Float): Float =
+        wrapPitch(pitchDeg + dragY * DRAG_DEGREES_PER_PIXEL)
+
+    /**
+     * The turn after a horizontal drag. The bed follows the finger and the camera does not
+     * move, which is the whole of the difference between dragging an object and dragging the
+     * view of it - and is what the other viewers already do.
+     */
+    fun yawAfterDrag(yawDeg: Float, dragX: Float): Float =
+        wrapYaw(yawDeg + dragX * DRAG_DEGREES_PER_PIXEL)
 
     /** Turns an angle back into (-180, 180], so a drag cannot walk it away. */
     fun wrapYaw(yaw: Float): Float = wrap(yaw)

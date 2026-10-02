@@ -105,6 +105,25 @@ class MeshSurfaceGeometryTest {
     }
 
     @Test
+    fun draggingUpTurnsTheBedTowardsItsUnderside() {
+        // The finger holds the bed, not the camera: pulling the near edge up lifts it, and
+        // pulling it down lays it flat again and then shows the top.
+        val start = 55f
+        val pulledUp = MeshSurfaceGeometry.pitchAfterDrag(start, -100f)
+        val pushedDown = MeshSurfaceGeometry.pitchAfterDrag(start, 100f)
+        assertTrue("up went to $pulledUp", pulledUp < start)
+        assertTrue("down went to $pushedDown", pushedDown > start)
+        assertTrue(MeshSurfaceGeometry.isFromBelow(MeshSurfaceGeometry.pitchAfterDrag(start, -400f)))
+    }
+
+    @Test
+    fun draggingSidewaysTurnsTheBedTheSameWay() {
+        assertTrue(MeshSurfaceGeometry.yawAfterDrag(0f, 100f) > 0f)
+        assertTrue(MeshSurfaceGeometry.yawAfterDrag(0f, -100f) < 0f)
+        assertEquals(100f * MeshSurfaceGeometry.DRAG_DEGREES_PER_PIXEL, MeshSurfaceGeometry.yawAfterDrag(0f, 100f), 0.001f)
+    }
+
+    @Test
     fun aSteepMeshViewedFromAboveIsNotMistakenForItsUnderside() {
         // Heights exaggerated until the top of the bed is cliffs, which is what the real
         // exaggeration does. Judging each quad by its own facing blackened half of them, and
