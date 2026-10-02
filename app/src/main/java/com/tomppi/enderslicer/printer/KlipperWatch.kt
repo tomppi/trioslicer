@@ -27,6 +27,9 @@ internal object KlipperWatch {
         // Everything else a tab reads.
         "gcode_move", "motion_report", "fan", "idle_timeout", "pause_resume", "display_status",
         "bed_mesh", "exclude_object", "configfile", "system_stats", "query_endstops",
+        // KAMP's settings, when the printer runs KAMP: the KAMP screen is that macro's
+        // variables. Filtered out like everything else here when the section is absent.
+        "gcode_macro _KAMP_Settings",
         // The probe and the calibration that is waiting for a piece of paper under it.
         "probe", "manual_probe",
     )

@@ -45,6 +45,17 @@ internal object KlipperHostFiles {
      */
     const val APP_CONFIG = "app.cfg"
 
+    /**
+     * KAMP's macros, and the settings file that includes them.
+     *
+     * Shipped with the app rather than fetched: this host has no network of its own, and
+     * a printer that came up without them would mesh the whole bed for a print that
+     * occupies a corner of it. The directory mirrors the layout upstream expects, because
+     * KAMP_Settings.cfg includes its files by relative path.
+     */
+    const val KAMP = "KAMP"
+    const val KAMP_SETTINGS = "KAMP_Settings.cfg"
+
     /** Printed files, which the configuration's virtual SD card points at. */
     const val GCODES = "gcodes"
 
@@ -56,4 +67,6 @@ internal object KlipperHostFiles {
     fun pty(filesDir: File): File = File(filesDir, PTY_LINK)
     fun gcodes(filesDir: File): File = File(filesDir, GCODES)
     fun appConfig(filesDir: File): File = File(directory(filesDir), APP_CONFIG)
+    fun kamp(filesDir: File): File = File(directory(filesDir), KAMP)
+    fun kampSettings(filesDir: File): File = File(directory(filesDir), KAMP_SETTINGS)
 }

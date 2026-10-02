@@ -427,7 +427,7 @@ class AppStateStore(context: Context) {
         private const val MAX_IMPORT_NAME_CHARS = 512
         private val IMPORT_BUNDLE_MAGIC = "ESCIMP2\n".toByteArray(Charsets.US_ASCII)
 
-        private const val PREFERENCES_NAME = "enderslicer-state"
+        internal const val PREFERENCES_NAME = "enderslicer-state"
         private const val KEY_IMPORT_KIND = "import-kind"
         private const val KEY_IMPORT_NAME = "import-name"
         private const val KEY_SETTINGS = "settings-json"

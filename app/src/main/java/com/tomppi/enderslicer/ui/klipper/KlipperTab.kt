@@ -25,6 +25,9 @@ internal enum class KlipperTab(val label: String) {
     ZPROBE("Z probe"),
     SHAPING("Shaping"),
     MESH("Mesh"),
+    // The mesh KAMP measures for the app's own host: next to the mesh screen, because the
+    // two answer the same question - what the bed looks like - for two different hosts.
+    KAMP("KAMP"),
     HISTORY("History"),
     MACHINE("Machine"),
     ;
@@ -49,6 +52,7 @@ internal val KlipperTab.icon: ImageVector
         KlipperTab.ZPROBE -> AppIcons.Probe
         KlipperTab.SHAPING -> AppIcons.Wave
         KlipperTab.MESH -> AppIcons.Mesh
+        KlipperTab.KAMP -> AppIcons.Sparkle
         KlipperTab.HISTORY -> AppIcons.History
         KlipperTab.MACHINE -> AppIcons.Wrench
     }

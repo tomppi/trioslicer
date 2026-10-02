@@ -114,6 +114,7 @@ internal fun KlipperScreen(
                     KlipperTab.ZPROBE -> KlipperZProbeTab(state, viewModel)
                     KlipperTab.SHAPING -> KlipperShapingTab(state, viewModel)
                     KlipperTab.MESH -> KlipperMeshTab(state, viewModel)
+                    KlipperTab.KAMP -> KlipperKampTab(state, viewModel)
                     KlipperTab.HISTORY -> KlipperHistoryTab(viewModel)
                     KlipperTab.MACHINE -> KlipperMachineTab(state, viewModel)
                 }

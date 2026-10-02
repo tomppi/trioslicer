@@ -87,6 +87,13 @@ internal interface GcodeRoute {
             return if (trimmed == text(theirs).trim()) text(mine) else stored
         }
 
+        /**
+         * Whether a profile's flavour is a Klipper host, for callers that only need the
+         * answer - the post-slice injectors, which add Klipper's mesh call and must not
+         * touch a Marlin file.
+         */
+        internal fun isKlipperFlavor(rawFlavor: String): Boolean = isKlipper(rawFlavor.trim())
+
         private fun isKlipper(flavor: String): Boolean =
             "klipper" in flavor.lowercase(java.util.Locale.US)
     }

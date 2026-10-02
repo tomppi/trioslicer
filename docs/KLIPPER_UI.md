@@ -24,6 +24,7 @@ Moonraker speaks to.
 | Z probe | The probe's offset, and the calibration that sets it | `probe`, `manual_probe`, `configfile` |
 | Shaping | Input shaping, per axis | `configfile` (klippy publishes no status for the input shaper) |
 | Mesh | The bed as the probe found it | `bed_mesh` |
+| KAMP | Adaptive meshing and purging: whether the host has KAMP, and the values it runs with | `gcode_macro _KAMP_Settings` |
 | History | What this app has printed | Its own record, written when a print ends |
 | Machine | The host, the boards, the configuration and the log | `info`, `mcu`, `system_stats`, `query_endstops`, `configfile` |
 
@@ -65,6 +66,27 @@ Pausing brings them back, which is what a filament change needs.
 Every screen is always present, whether or not the printer has the section it describes.
 A tab that appears and disappears is a tab nobody learns to find; a screen whose
 configuration is missing says so instead.
+
+### Adaptive meshing (KAMP)
+
+KAMP is the one screen that is about a macro pack rather than a section of the configuration.
+The app's own Klipper host ships [KAMP](https://github.com/kyleisah/Klipper-Adaptive-Meshing-Purging)
+and includes it at every start, so the printer has `_KAMP_Settings`, a `BED_MESH_CALIBRATE` that
+meshes only where the objects are, and a `LINE_PURGE` that purges beside them. The screen reads
+that macro's variables - `mesh_margin`, `fuzz_amount`, `purge_amount`, `purge_margin`,
+`purge_height`, `flow_rate`, `verbose_enable` - and sets them with `SET_GCODE_VARIABLE`, which
+changes the running host: what it starts with is in `KAMP_Settings.cfg`, and an existing copy of
+that file is never overwritten by an app update.
+
+Whether a slice asks for a mesh at all is the other half, and it is the switch at the top of
+this screen - `KampPreference`, stored on its own rather than in the print settings, because
+`SlicerSettings` is at the JVM's limit for the `copy` kotlinc generates and because a machine
+switch is not a profile setting. With it on, the app inserts `BED_MESH_CALIBRATE`
+before the first extruding move when the start script measures no mesh of its own - and inserts
+nothing when it already does, when the printer was never homed, or when the marker it writes is
+already in the file. A host without KAMP says so on the screen rather than offering fields that
+would do nothing, and CuraEngine-sliced files, which declare no objects, get the ordinary full
+mesh with a five-second note from KAMP saying why.
 
 ## What the app asks klippy for
 

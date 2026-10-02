@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.engine
 
 import android.content.Context
 import com.tomppi.enderslicer.conical.ConicalPreparations
+import com.tomppi.enderslicer.data.KampPreference
 import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
@@ -322,6 +323,7 @@ class CuraEngineRunner(private val context: Context) {
                 amlEnabled = effectiveSettings.adaptiveMeshLevelingEnabled,
                 amlMarginMm = effectiveSettings.amlMarginMm,
                 amlGridPoints = effectiveSettings.amlGridPoints,
+                kampEnabled = KampPreference.isEnabled(context),
             )
             throwIfInterrupted()
 

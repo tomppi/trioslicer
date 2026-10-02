@@ -2,6 +2,8 @@ package com.tomppi.enderslicer.engine
 
 import android.content.Context
 import android.content.res.AssetManager
+import com.tomppi.enderslicer.data.KampPreference
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerSettings
@@ -193,6 +195,13 @@ class OrcaEngineRunner(private val context: Context) {
             )
             if (machineSettings.adaptiveMeshLevelingEnabled) {
                 AdaptiveBedMeshInjector.inject(workspace.output, printerEnvelope, machineSettings.amlMarginMm, machineSettings.amlGridPoints)
+            }
+            // KAMP measures from the objects the file declares, so it only has a say on a
+            // Klipper host - and only when the start script did not already measure a mesh.
+            if (KampPreference.isEnabled(context) &&
+                GcodeRoute.isKlipperFlavor(printerEnvelope.gcodeFlavor)
+            ) {
+                KlipperBedMeshInjector.inject(workspace.output)
             }
             val estimateSeconds = parseEstimateSeconds(workspace.output) ?: summary.estimatedSeconds
             val preview = runCatching {

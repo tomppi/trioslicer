@@ -491,20 +491,57 @@ class KlipperEngineService : Service() {
         // including for a configuration somebody brought, which is the point of doing it
         // here rather than at import.
         KlipperHostFiles.appConfig(filesDir).writeText("[resonance_playback]\n")
+        installKamp()
         val config = File(directory, KlipperHostFiles.CONFIG)
         if (!config.isFile || config.readText().isBlank()) {
-            config.writeText(KlipperConfigFile.withAppInclude(resolved))
+            config.writeText(withHostIncludes(resolved))
             Log.i(TAG, "seeded ${config.absolutePath}")
         } else {
             val existing = config.readText()
-            val included = KlipperConfigFile.withAppInclude(existing)
+            val included = withHostIncludes(existing)
             if (included != existing) {
                 config.writeText(included)
-                Log.i(TAG, "added the app include to ${config.absolutePath}")
+                Log.i(TAG, "added the includes this host needs to ${config.absolutePath}")
             }
         }
         Log.i(TAG, "printer config ${config.absolutePath}: serial $serialPath")
         return config
+    }
+
+    /**
+     * The configuration with the includes this host needs: the app's own sections, and
+     * KAMP's macros.
+     *
+     * Both go above the saved block and neither is added twice, so this can run at every
+     * start - which is what makes it work for a configuration somebody brought, and not
+     * only for the one the app seeds.
+     */
+    private fun withHostIncludes(text: String): String =
+        KlipperConfigFile.withAppInclude(
+            KlipperConfigFile.withAppInclude(text),
+            name = KlipperHostFiles.KAMP_SETTINGS,
+        )
+
+    /**
+     * Put KAMP's files beside the configuration, writing only what is missing.
+     *
+     * Nothing here changes a print on its own: KAMP overrides BED_MESH_CALIBRATE, so it
+     * only acts when a file asks for a mesh, and it falls back to the ordinary mesh when
+     * that file defined no objects. KAMP_Settings.cfg is where KAMP's own margins and
+     * purge amounts are set, so an existing copy is never replaced - a new default
+     * shipped by an app update must not undo somebody's tuning.
+     */
+    private fun installKamp() {
+        val kamp = KlipperHostFiles.kamp(filesDir).apply { mkdirs() }
+        for (name in KAMP_FILES) copyAssetIfMissing(ASSET_KAMP + name, File(kamp, name))
+        copyAssetIfMissing(ASSET_KAMP_SETTINGS, KlipperHostFiles.kampSettings(filesDir))
+    }
+
+    /** Copy one asset to a path, unless a file is already there. */
+    private fun copyAssetIfMissing(assetPath: String, target: File) {
+        if (target.isFile && target.length() > 0L) return
+        target.parentFile?.mkdirs()
+        assets.open(assetPath).use { source -> target.outputStream().use { source.copyTo(it) } }
     }
 
     /**
@@ -760,6 +797,16 @@ class KlipperEngineService : Service() {
         private const val ACTION_USB_PERMISSION = "com.tomppi.enderslicercura.USB_PERMISSION"
         private const val NOTIF_ID = 4711
         private const val CHANNEL_ID = "klipper_host"
+
+        /** KAMP's shipped files: the macros, and the settings file that includes them. */
+        private const val ASSET_KAMP = "klipper-host/KAMP/"
+        private const val ASSET_KAMP_SETTINGS = "klipper-host/KAMP_Settings.cfg"
+        private val KAMP_FILES = listOf(
+            "Adaptive_Meshing.cfg",
+            "Line_Purge.cfg",
+            "Voron_Purge.cfg",
+            "Smart_Park.cfg",
+        )
 
         /** What a start request is asking for, when it is asking for more than a start. */
         private const val EXTRA_ACTION = "klipper_action"
