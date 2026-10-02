@@ -120,6 +120,10 @@ class RibbonPathGeometryTest {
         // The shared corners really are the mitre offsets, not zero.
         assertEquals(width * 0.5f, aC.second, 1e-5f)
         assertEquals(-width * 0.5f, aD.second, 1e-5f)
-        assertTrue("height carried on the top face", aC.third > height - 1e-5f)
+        // Cura's convention, and the printer's: the path Z is the top of the bead and the bead
+        // hangs one layer below it, so the top face carries the path Z and the bottom corners
+        // carry it minus the height.
+        assertEquals("top face at the path Z", 0f, aC.third, 1e-5f)
+        assertEquals("bottom one height below", -height, corner(a, 6).third, 1e-5f)
     }
 }

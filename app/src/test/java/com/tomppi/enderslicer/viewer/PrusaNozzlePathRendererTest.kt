@@ -110,8 +110,9 @@ class PrusaNozzlePathRendererTest {
         val dBot = vert(v, 0, 7)
         val aBot = vert(v, 0, 6)
         // Start cap: a/b are the two sides, exactly half-width apart.
-        assertNear(floatArrayOf(0f, -half, height), aTop, 1e-4f, "aTop")
-        assertNear(floatArrayOf(0f, half, height), bTop, 1e-4f, "bTop")
+        // The path Z is the top of the bead (Cura's rule), so the cap sits at the path Z.
+        assertNear(floatArrayOf(0f, -half, 0f), aTop, 1e-4f, "aTop")
+        assertNear(floatArrayOf(0f, half, 0f), bTop, 1e-4f, "bTop")
         // Top face quad must be a rectangle: b-a is the width axis, c-b the
         // segment axis, and they must be orthogonal (twisted pairing makes
         // c-b diagonal and the dot product non-zero).
@@ -206,13 +207,14 @@ class PrusaNozzlePathRendererTest {
         assertEquals(6, windowCount) // 3 A + 3 B, travel draws no ribbon
         // A's LAST window (index 2): move (2,0)->(3,0); end cap must be
         // perpendicular to its own segment: offset by perp(1,0)=(0,1).
-        assertNear(floatArrayOf(3f, half, height), vert(v, 2, 2), 1e-4f, "A end c")
-        assertNear(floatArrayOf(3f, -half, height), vert(v, 2, 5), 1e-4f, "A end d")
-        assertNear(floatArrayOf(3f, -half, 0f), vert(v, 2, 7), 1e-4f, "A end dBot")
+        // Cura's rule: the path Z is the bead's top face and the bead hangs a layer below it.
+        assertNear(floatArrayOf(3f, half, 0f), vert(v, 2, 2), 1e-4f, "A end c")
+        assertNear(floatArrayOf(3f, -half, 0f), vert(v, 2, 5), 1e-4f, "A end d")
+        assertNear(floatArrayOf(3f, -half, -height), vert(v, 2, 7), 1e-4f, "A end dBot")
         // B's FIRST window (index 3): move (4,3)->(4,4); start cap must be
         // perpendicular to perp(0,1)=(-1,0): a = s - p = (4.22, 3), b = (3.78, 3).
-        assertNear(floatArrayOf(4f + half, 3f, height), vert(v, 3, 0), 1e-4f, "B start a")
-        assertNear(floatArrayOf(4f - half, 3f, height), vert(v, 3, 1), 1e-4f, "B start b")
-        assertNear(floatArrayOf(4f + half, 3f, 0f), vert(v, 3, 6), 1e-4f, "B start aBot")
+        assertNear(floatArrayOf(4f + half, 3f, 0f), vert(v, 3, 0), 1e-4f, "B start a")
+        assertNear(floatArrayOf(4f - half, 3f, 0f), vert(v, 3, 1), 1e-4f, "B start b")
+        assertNear(floatArrayOf(4f + half, 3f, -height), vert(v, 3, 6), 1e-4f, "B start aBot")
     }
 }

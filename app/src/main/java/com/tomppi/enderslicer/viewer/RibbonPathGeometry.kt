@@ -253,21 +253,30 @@ internal object RibbonPathGeometry {
             }
         }
 
+        // Where the bead sits, which is Cura's rule and the printer's: the path Z is the TOP of
+        // the bead and the body hangs one layer below it - the nozzle at Z0.4 lays plastic from
+        // 0.2 to 0.4. Drawing the bead above the path instead put every layer where the next one
+        // belongs, so the stack grew into slabs that overlapped the layer above.
+        val startTop = sz
+        val endTop = ez
+        val startBottom = sz - height
+        val endBottom = ez - height
+
         // Top face, normal +Z.
-        vertex += ax; vertex += ay; vertex += sz + height
-        vertex += bx; vertex += by; vertex += sz + height
-        vertex += cx; vertex += cy; vertex += ez + height
-        vertex += ax; vertex += ay; vertex += sz + height
-        vertex += cx; vertex += cy; vertex += ez + height
-        vertex += dxd; vertex += dyd; vertex += ez + height
+        vertex += ax; vertex += ay; vertex += startTop
+        vertex += bx; vertex += by; vertex += startTop
+        vertex += cx; vertex += cy; vertex += endTop
+        vertex += ax; vertex += ay; vertex += startTop
+        vertex += cx; vertex += cy; vertex += endTop
+        vertex += dxd; vertex += dyd; vertex += endTop
         repeat(6) { normals += 0f; normals += 0f; normals += 1f }
         pushColor(6)
         repeat(6) { ambient += topAmbient }
 
         // Left side face (- normal).
-        vertex += ax; vertex += ay; vertex += sz
-        vertex += dxd; vertex += dyd; vertex += ez
-        vertex += dxd; vertex += dyd; vertex += ez + height
+        vertex += ax; vertex += ay; vertex += startBottom
+        vertex += dxd; vertex += dyd; vertex += endBottom
+        vertex += dxd; vertex += dyd; vertex += endTop
         normals += -startNx; normals += -startNy; normals += 0f
         normals += -endNx; normals += -endNy; normals += 0f
         normals += -endNx; normals += -endNy; normals += 0f
@@ -276,9 +285,9 @@ internal object RibbonPathGeometry {
         ambient += sideBaseAmbient
         ambient += sideTopAmbient
 
-        vertex += ax; vertex += ay; vertex += sz
-        vertex += dxd; vertex += dyd; vertex += ez + height
-        vertex += ax; vertex += ay; vertex += sz + height
+        vertex += ax; vertex += ay; vertex += startBottom
+        vertex += dxd; vertex += dyd; vertex += endTop
+        vertex += ax; vertex += ay; vertex += startTop
         normals += -startNx; normals += -startNy; normals += 0f
         normals += -endNx; normals += -endNy; normals += 0f
         normals += -startNx; normals += -startNy; normals += 0f
@@ -288,9 +297,9 @@ internal object RibbonPathGeometry {
         ambient += sideTopAmbient
 
         // Right side face (+ normal).
-        vertex += bx; vertex += by; vertex += sz
-        vertex += cx; vertex += cy; vertex += ez
-        vertex += cx; vertex += cy; vertex += ez + height
+        vertex += bx; vertex += by; vertex += startBottom
+        vertex += cx; vertex += cy; vertex += endBottom
+        vertex += cx; vertex += cy; vertex += endTop
         normals += startNx; normals += startNy; normals += 0f
         normals += endNx; normals += endNy; normals += 0f
         normals += endNx; normals += endNy; normals += 0f
@@ -299,9 +308,9 @@ internal object RibbonPathGeometry {
         ambient += sideBaseAmbient
         ambient += sideTopAmbient
 
-        vertex += bx; vertex += by; vertex += sz
-        vertex += cx; vertex += cy; vertex += ez + height
-        vertex += bx; vertex += by; vertex += sz + height
+        vertex += bx; vertex += by; vertex += startBottom
+        vertex += cx; vertex += cy; vertex += endTop
+        vertex += bx; vertex += by; vertex += startTop
         normals += startNx; normals += startNy; normals += 0f
         normals += endNx; normals += endNy; normals += 0f
         normals += startNx; normals += startNy; normals += 0f
