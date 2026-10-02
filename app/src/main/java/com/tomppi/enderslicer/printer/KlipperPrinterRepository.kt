@@ -647,6 +647,34 @@ class KlipperPrinterRepository(
         }
 
     /**
+     * Write the mesh's probe count into printer.cfg, where the next start reads it.
+     *
+     * A configuration option rather than a command: klippy builds the probe grid from it when
+     * the file is read, so this is the only way to change it and the change waits for the
+     * restart that follows a configuration write. The mesh area is a separate pair of options
+     * and is left as it is.
+     */
+    internal suspend fun saveMeshProbeCount(points: Int): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val text = readHostConfig() ?: run {
+                    reportConfigWriteFailure("the mesh probe count")
+                    return@runCatching false
+                }
+                val written = KlipperConfigFile.withOption(
+                    text,
+                    "bed_mesh",
+                    "probe_count",
+                    "$points,$points",
+                )
+                if (written == text) return@runCatching false
+                val ok = writeHostConfig(written)
+                if (!ok) reportConfigWriteFailure("the mesh probe count")
+                ok
+            }.getOrDefault(false)
+        }
+
+    /**
      * What the two hosts' configurations disagree about.
      *
      * Both are read whichever host the app is driving: this phone's own file is in the app's

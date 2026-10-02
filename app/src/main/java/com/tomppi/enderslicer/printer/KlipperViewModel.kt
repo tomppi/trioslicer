@@ -399,6 +399,8 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     fun extrudeForCalibration(lengthMm: Double) = repository.extrudeForCalibration(lengthMm)
     fun applyRotationDistance(distance: Double) = repository.applyRotationDistance(distance)
     fun askRotationDistance() = repository.askRotationDistance()
+    internal suspend fun saveMeshProbeCount(points: Int): Boolean = repository.saveMeshProbeCount(points)
+
     internal suspend fun saveRotationDistance(distance: Double): Boolean =
         repository.saveRotationDistance(distance)
 

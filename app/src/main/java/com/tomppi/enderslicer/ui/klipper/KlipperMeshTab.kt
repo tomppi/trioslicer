@@ -21,7 +21,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.Text
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import org.json.JSONArray
 import com.tomppi.enderslicer.printer.KlipperMesh
 import com.tomppi.enderslicer.printer.KlipperPrinterState
 import com.tomppi.enderslicer.printer.KlipperViewModel
@@ -39,6 +43,10 @@ import com.tomppi.enderslicer.printer.macros
  * The profiles are klippy's own saved meshes, so loading one is a command and saving one
  * is a name: nothing here is kept by the app.
  */
+/** The probe counts a bed mesh can usefully have: three is a plane, thirteen is a lot of probing. */
+private const val MIN_PROBE_POINTS = 3
+private const val MAX_PROBE_POINTS = 13
+
 @Composable
 internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     var confirmCalibrate by remember { mutableStateOf(false) }
@@ -109,6 +117,53 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
                 // only reaches the console - so the button waits, as the Z probe screen's does.
                 KlipperButton("Probe the bed", enabled = state.isReady && state.isHomed) {
                     confirmCalibrate = true
+                }
+            }
+        }
+
+        if (mesh?.isLoaded == true) {
+            KlipperCard(
+                title = "Surface",
+                subtitle = "The same heights, turned - drag to look from another side",
+            ) {
+                KlipperMeshSurface(mesh)
+            }
+        }
+
+        // The probe grid is a configuration option, not a command: klippy builds it when it
+        // reads the file, which is why this writes the file and says so rather than pretending
+        // the change is live. KAMP's own README recommends at least 5,5 and never changes it.
+        val configuredPoints = state.configSections?.optJSONObject("bed_mesh")
+            ?.opt("probe_count")
+            ?.let { value -> if (value is JSONArray) value.optInt(0).takeIf { it > 1 } else null }
+        var probePoints by remember(configuredPoints) {
+            mutableStateOf((configuredPoints ?: 5).toString())
+        }
+        val scope = rememberCoroutineScope()
+        KlipperCard(
+            title = "Probe points",
+            subtitle = configuredPoints?.let { "$it x $it in printer.cfg" }
+                ?: "not in the configuration",
+        ) {
+            KlipperNote(
+                "How many points Klipper probes across the mesh area. More points describe a " +
+                    "warped bed better and take longer to measure - an adaptive mesh from KAMP " +
+                    "probes the same count over a smaller area. Written into [bed_mesh] " +
+                    "probe_count, so it applies when the host next reads its configuration.",
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                KlipperNumberField("Points per axis", probePoints, { probePoints = it })
+                KlipperButton(
+                    "Save",
+                    enabled = state.isReady &&
+                        (probePoints.toIntOrNull() ?: 0) in MIN_PROBE_POINTS..MAX_PROBE_POINTS,
+                ) {
+                    val points = probePoints.toIntOrNull() ?: return@KlipperButton
+                    scope.launch { viewModel.saveMeshProbeCount(points) }
                 }
             }
         }
