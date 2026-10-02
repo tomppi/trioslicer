@@ -95,6 +95,15 @@ object GcodeNozzlePathParser {
         val accumulator = FloatAccumulator(GcodeNozzlePath.VALUES_PER_MOVE * retainedCount)
         val sourceIndices = IntAccumulator(retainedCount)
         val modalState = GcodeModalState()
+        // A move the budget cannot keep is folded into the next one it can, rather than
+        // discarded. The budget exists because the ribbons cost roughly 800 bytes a move, but
+        // skipping moves to meet it cuts a gap into every wall and curve it decimates - which is
+        // what the preview looked like: beads with holes between them, and plates up close.
+        var merging = false
+        var mergingStartX = 0.0
+        var mergingStartY = 0.0
+        var mergingStartZ = 0.0
+        var mergingDeltaE = 0.0
         var x = 0.0
         var y = 0.0
         var z = 0.0
@@ -189,7 +198,17 @@ object GcodeNozzlePathParser {
                         maxX = maxOf(maxX, sx, ex)
                         maxY = maxOf(maxY, sy, ey)
                         maxZ = maxOf(maxZ, sz, ez)
-                        if (!keep) return@forEach
+                        if (!keep) {
+                            if (!merging) {
+                                merging = true
+                                mergingStartX = startX
+                                mergingStartY = startY
+                                mergingStartZ = startZ
+                                mergingDeltaE = 0.0
+                            }
+                            mergingDeltaE += deltaE
+                            return@forEach
+                        }
 
                         val kind = if (deltaE > EXTRUSION_EPSILON) {
                             extrusionMoves++
@@ -236,11 +255,19 @@ object GcodeNozzlePathParser {
                         if (kind == GcodeNozzlePath.Kind.EXTRUSION) {
                             retainedPreviousExtrusionZ = nextZ
                         }
+                        // The merged move runs from where the last kept move ended - the start of
+                        // the first dropped one - to where this one ends.
+                        val emitStartX = if (merging) mergingStartX else startX
+                        val emitStartY = if (merging) mergingStartY else startY
+                        val emitStartZ = if (merging) mergingStartZ else startZ
+                        val emitDeltaE = deltaE + mergingDeltaE
+                        merging = false
+                        mergingDeltaE = 0.0
                         accumulator.add(
-                            sx, sy, sz, ex, ey, ez,
+                            emitStartX.toFloat(), emitStartY.toFloat(), emitStartZ.toFloat(), ex, ey, ez,
                             (feedRateMmPerMinute / 60.0 * speedFactor).coerceAtLeast(0.0).toFloat(),
-                            kind.code,
-                            deltaE.toFloat(),
+                            (if (emitDeltaE > EXTRUSION_EPSILON) GcodeNozzlePath.Kind.EXTRUSION else kind).code,
+                            emitDeltaE.toFloat(),
                             moveLayerHeight.toFloat(),
                         )
                         sourceIndices.add(retainedSourceIndex)
