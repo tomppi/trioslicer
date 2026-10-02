@@ -217,7 +217,13 @@ object GcodeNozzlePathParser {
                         val agrees = currentLayerHeight <= 0.0 ||
                             (difference <= currentLayerHeight * LAYER_HEIGHT_TOLERANCE &&
                                 difference >= -currentLayerHeight * LAYER_HEIGHT_TOLERANCE)
-                        val moveLayerHeight = when {
+                        val moveLayerHeight = if (kind == GcodeNozzlePath.Kind.TRAVEL) {
+                            // A travel lays down nothing, so it is drawn as a line rather than as a
+                            // bead: zero thickness, as Cura's own reader puts it ("Travels are set as
+                            // zero thickness lines"). Giving a travel the layer height drew a ribbon
+                            // of plastic that was never extruded, and a slice has thousands of them.
+                            0f
+                        } else when {
                             !hasRetainedZ -> currentLayerHeight.coerceAtLeast(LAYER_HEIGHT_MIN_MM)
                             rise > LAYER_HEIGHT_MIN_MM && rise <= LAYER_HEIGHT_MAX_MM && agrees -> {
                                 currentLayerHeight = rise

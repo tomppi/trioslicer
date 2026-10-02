@@ -45,6 +45,21 @@ class NozzlePathBeadHeightTest {
     }
 
     @Test
+    fun aTravelIsDrawnAsALineAndNotAsABead() {
+        val path = GcodeNozzlePathParser.parse(opening())
+        val moves = path.moves
+        var travels = 0
+        for (index in 0 until path.moveCount) {
+            val offset = index * GcodeNozzlePath.VALUES_PER_MOVE
+            if (moves[offset + GcodeNozzlePath.KIND] != GcodeNozzlePath.Kind.TRAVEL.code) continue
+            val thickness = moves[offset + GcodeNozzlePath.LAYER_HEIGHT]
+            assertEquals("travel $index is drawn with thickness " + thickness, 0f, thickness, 1e-6f)
+            travels++
+        }
+        assertTrue("the fixture contains no travel", travels > 0)
+    }
+
+    @Test
     fun theFirstBeadUsesTheHeightTheSlicerStated() {
         val path = GcodeNozzlePathParser.parse(opening())
         val moves = path.moves
