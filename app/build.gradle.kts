@@ -57,10 +57,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        // 60 with the 1.6.5 name: the hotfix build of that release, so an installed 1.6.5
-        // takes it as an update while the version it reports stays the one that was published.
-        versionCode = 60
-        versionName = "1.6.5"
+        versionCode = 61
+        versionName = "1.6.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -4,6 +4,49 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.6] - 2026-10-03
+
+The nozzle-path preview draws the whole file again, and bead geometry follows Cura's own layer
+view rather than our own conventions.
+
+### Fixed
+
+- **The preview dropped a third of a long slice.** Past its move budget the parser skipped moves,
+  and a skipped move is a hole in the middle of a wall: a 79,000-move slice rendered as beads with
+  gaps between them, and up close as short plates with air where the plastic should be. The budget
+  is a memory guard, not a sampling policy - it now folds a move into the run it continues, and
+  only when the kind of move and the direction agree, so a corner is never cut and a travel is
+  never drawn as a straight line across the part.
+- **The bead height came from the wrong move.** It was derived from Z rises, and the first rise it
+  met was the priming line at Z0.3, so a 0.2 mm layer was drawn 33% narrow - and the odd/even
+  layer tint, which counts layers by dividing Z by that height, banded irregularly. The height now
+  comes from the `;Layer height:` header the slicer writes, with the rise-based path kept for
+  adaptive layers.
+- **The bead was drawn above the path instead of below it.** Cura's layer view puts the bead's top
+  face on the layer line and hangs the body one layer down, which is where the printer puts it;
+  ours floated a layer high and stacked into the layer above.
+- **Travels were drawn as beads.** A travel lays down nothing, so it is a line: zero thickness,
+  as Cura's reader sets it.
+- **PrusaSlicer and OrcaSlicer slices could not be exported to a Klipper host.**
+  `SET_VELOCITY_LIMIT` and the `EXCLUDE_OBJECT_*` definitions were refused as malformed commands.
+  The object definitions are also what KAMP reads to mesh only the ground the print stands on, so
+  refusing them refused adaptive meshing on those two routes as well.
+
+### Added
+
+- **The adaptive mesh switch writes into your own start script.** Machine settings -> Adaptive
+  meshing (Klipper) puts `BED_MESH_CALIBRATE` into the custom Klipper start G-code - after homing,
+  in front of the first extruding move - and takes it out again when switched off. Nothing is
+  rewritten behind the slicer's back, and the call is the user's own text, which is the part the
+  export check trusts.
+- `AGENTS.md`, holding the rules a change has already broken once: every move comes through, and
+  bead geometry follows Cura.
+
+### Changed
+
+- The shipped Klipper host config raises `max_accel` to 10000, `max_z_velocity` to 10 and
+  `max_z_accel` to 200.
+
 ## [1.6.5] - 2026-10-02
 
 Adaptive meshing inside the printer's own menus, and a bed mesh you can look at from any side.
