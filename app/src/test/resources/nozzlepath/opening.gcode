@@ -1,0 +1,60 @@
+;FLAVOR:Marlin
+;ENDERSLICER_VERSION:1.6.5
+;ENDERSLICER_COORDINATE_TRANSPORT:original-stl-full-affine-pre-round
+;ENDERSLICER_SETTINGS_TRANSPORT:fallback-command
+;TIME:2296
+;Filament used: 6.3568m
+;Layer height: 0.2
+;MINX:85.196
+;MINY:99.688
+;MINZ:0.28
+;MAXX:144.754
+;MAXY:130.308
+;MAXZ:47.88
+;TARGET_MACHINE.NAME:Modified Ender 3 V2
+
+;Generated with Cura_SteamEngine 5.14.0-alpha.0
+M140 S60
+M105
+M190 S60
+M104 S230
+M105
+M109 S230
+; Ender 3 Custom Start G-code
+G92 E0 ; Reset Extruder
+G28 ; Home all axes
+G1 Z2.0 F3000 ; Move Z Axis up little to prevent scratching of Heat Bed
+G1 X0.1 Y20 Z0.3 F5000.0 ; Move to start position
+;ENDERSLICER_KAMP_MESH
+BED_MESH_CALIBRATE
+G1 X0.1 Y200.0 Z0.3 F1500.0 E15 ; Draw the first line
+G1 X0.4 Y200.0 Z0.3 F5000.0 ; Move to side a little
+G1 X0.4 Y20 Z0.3 F1500.0 E30 ; Draw the second line
+G92 E0 ; Reset Extruder
+G1 Z2.0 F3000 ; Move Z Axis up little to prevent scratching of Heat Bed
+G1 X5 Y20 Z0.3 F5000.0 ; Move over to prevent blob squish
+M82 ;absolute extrusion mode
+G92 E0
+G92 E0
+G1 F7200 E-1.5
+;LAYER_COUNT:239
+;LAYER:0
+M107
+;MESH:/data/user/0/com.tomppi.enderslicercura/cache/curaengine/requests/slice-1790970055967-4c98d116-2e42-4585-8fef-18adafd15fa1/model.stl
+G0 F1200 X108.134 Y116.27 Z0.28
+;TYPE:WALL-INNER
+G1 F7200 E0
+G1 F1200 X108.616 Y116.159 E0.02303
+G1 X108.791 Y115.972 E0.03496
+G1 X108.947 Y115.595 E0.05396
+G1 X109.003 Y115.177 E0.07359
+G1 X108.992 Y114.611 E0.09995
+G1 X108.91 Y114.153 E0.12162
+G1 X108.733 Y113.823 E0.13906
+G1 X108.493 Y113.708 E0.15145
+G1 X107.722 Y113.649 E0.18745
+G1 X107.725 Y116.285 E0.3102
+G1 X108.134 Y116.27 E0.32925
+G0 X107.433 Y116.698
+;TYPE:WALL-OUTER
+G1 X108.175 Y116.668 E0.36383
