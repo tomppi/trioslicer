@@ -3,7 +3,27 @@ package com.tomppi.enderslicer.engine
 import java.io.File
 import kotlin.math.sqrt
 
-/** Ordered spatial moves used by the start-to-finish nozzle-path preview. */
+/**
+ * Ordered spatial moves used by the start-to-finish nozzle-path preview.
+ *
+ * **Every move has to come through. Do not stream this and do not limit it.**
+ *
+ * This parser must not be turned into a reader that draws whatever it happens to be holding,
+ * and the move budget must never be met by skipping moves. The preview is a picture of the
+ * file, so a skipped move is a hole in the middle of a wall: with a third of the moves dropped
+ * the render read as beads with gaps between them, and as short plates with air where the
+ * plastic should be when seen up close. That is what this view looked like until the budget was
+ * made to merge instead of drop, and it is why the rule is written here rather than in a
+ * commit message.
+ *
+ * The budget itself may stay - the ribbons cost roughly 800 bytes a move, and that is a real
+ * limit on a phone. What it buys is fewer, longer moves: when it bites, a move is folded into
+ * the next one that is kept, so the drawn path still covers exactly the distance the file
+ * describes. [NozzlePathDecimationTest] fails if that stops being true.
+ *
+ * Cura's layer view is the reference for this screen, and it draws every line it reads
+ * (github.com/Ultimaker/Cura: plugins/GCodeReader, plugins/SimulationView).
+ */
 data class GcodeNozzlePath(
     val moves: FloatArray,
     val sourceMoveIndices: IntArray,
@@ -48,6 +68,8 @@ object GcodeNozzlePathParser {
     // 50_000 moves is a rich preview - a Benchy is about four thousand - and it holds the
     // nozzle-path ribbons to roughly 80 MB of native memory and the same again in GPU buffers.
     // The million this allowed needed about 800 MB of native memory at 792 bytes a move.
+    // A memory limit, not a sampling knob. When it bites, moves are merged into their
+    // neighbours - never dropped. Read the note at the top of this file before touching it.
     private const val DEFAULT_MAX_MOVES = 50_000
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
