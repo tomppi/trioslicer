@@ -26,6 +26,22 @@ class KlipperMeshCommandPolicyTest {
     }
 
     @Test
+    fun theCommandsTheEnginesEmitForAKlipperHostAreAllowed() {
+        // Both of these came back as "Unsupported textual or malformed command" from real
+        // slices: OrcaSlicer's corner shaping, and the object definitions PrusaSlicer writes -
+        // which are also exactly what KAMP reads, so refusing them refused adaptive meshing.
+        check("SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250", "Klipper")
+        check("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=5", "Klipper")
+        check(
+            "EXCLUDE_OBJECT_DEFINE NAME='model_stl' CENTER=113.391,114.999 " +
+                "POLYGON=[[120.814,99.500],[124.039,99.655],[124.841,99.782]]",
+            "Klipper",
+        )
+        check("EXCLUDE_OBJECT_START NAME='model_stl'", "Klipper")
+        check("EXCLUDE_OBJECT_END NAME='model_stl'", "Klipper")
+    }
+
+    @Test
     fun itIsStillRefusedForAMarlinPrinter() {
         assertThrows(IllegalArgumentException::class.java) { check("BED_MESH_CALIBRATE", "Marlin") }
     }

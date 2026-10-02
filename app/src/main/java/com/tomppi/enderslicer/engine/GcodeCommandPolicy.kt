@@ -151,6 +151,12 @@ internal object GcodeCommandPolicy {
         } else {
             null
         }
+        val velocity = if (mesh == null) KLIPPER_VELOCITY_LIMIT.matchEntire(command) else null
+        val objects = if (mesh == null && velocity == null) {
+            KLIPPER_EXCLUDE_OBJECT.matchEntire(command)
+        } else {
+            null
+        }
         val safe = "klipper" in flavor && when {
             pressureAdvance != null -> {
                 val advance = pressureAdvance.groupValues[1].toDoubleOrNull()
@@ -163,6 +169,8 @@ internal object GcodeCommandPolicy {
                     speed != null && speed.isFinite() && speed in KLIPPER_RETRACT_SPEED_MIN..KLIPPER_RETRACT_SPEED_MAX
             }
             mesh != null -> true
+            velocity != null -> true
+            objects != null -> true
             else -> false
         }
         require(safe) {
@@ -467,6 +475,21 @@ internal object GcodeCommandPolicy {
     private val KLIPPER_MESH = Regex(
         "^BED_MESH_(CALIBRATE|CLEAR|OUTPUT|MAP)(\\s+[A-Z][A-Z0-9_]*=[-+]?[0-9.,]+)*$|" +
             "^BED_MESH_PROFILE\\s+(LOAD|SAVE|REMOVE)=[A-Za-z0-9_-]+$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * The other Klipper commands a slice for a Klipper host contains.
+     *
+     * SET_VELOCITY_LIMIT is how these engines shape corners for Klipper, and the
+     * EXCLUDE_OBJECT_* calls are the object definitions themselves - what KAMP reads to mesh
+     * only the ground the print stands on. They are named here with their arguments left as
+     * data (`\S+` runs) because the argument is a polygon, a centre, a name or a speed, and
+     * the name is the part that has to be recognised.
+     */
+    private val KLIPPER_VELOCITY_LIMIT = Regex("^SET_VELOCITY_LIMIT(\\s+\\S+)*$", RegexOption.IGNORE_CASE)
+    private val KLIPPER_EXCLUDE_OBJECT = Regex(
+        "^EXCLUDE_OBJECT_(DEFINE|START|END)(\\s+\\S+)*$",
         RegexOption.IGNORE_CASE,
     )
 

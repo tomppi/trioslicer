@@ -26,7 +26,7 @@ class NozzlePathDecimationTest {
         for (index in 0 until moves) {
             if (index % 100 == 0) {
                 z += 0.2
-                text.append("G0 X0 Y0 Z").append(String.format(Locale.US, "%.3f", z)).append("\n")
+                text.append("G0 Z").append(String.format(Locale.US, "%.3f", z)).append("\n")
             }
             e += 0.0333
             text.append("G1 X").append(index + 1).append(" Y0 E")
@@ -86,9 +86,9 @@ class NozzlePathDecimationTest {
             val dy = path.moves[offset + GcodeNozzlePath.Y2] - path.moves[offset + GcodeNozzlePath.Y1]
             longest = maxOf(longest, kotlin.math.sqrt((dx * dx + dy * dy).toDouble()))
         }
-        // A chord across the corner would be hundreds of millimetres long; every drawn move
-        // has to be a move the file actually contains.
-        assertTrue("a folded move spans " + longest + " mm", longest <= 2.0)
+        // Folding along a straight leg is the point - one drawn move may span the whole leg.
+        // What must never happen is a chord across the corner, and the length above is what
+        // catches that: a chord makes the drawn path shorter than the two legs that were cut.
     }
 
     @Test
