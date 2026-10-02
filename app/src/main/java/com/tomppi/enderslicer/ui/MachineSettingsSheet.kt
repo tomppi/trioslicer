@@ -32,6 +32,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.engine.KlipperBedMeshInjector
+import com.tomppi.enderslicer.engine.gcode.GcodeRoute
 import com.tomppi.enderslicer.model.SlicerSettings
 
 /**
@@ -313,6 +315,39 @@ internal fun MachineSettingsContent(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Use the official AML start G-code (recommended)")
+                }
+            }
+        }
+
+        Section("Adaptive meshing (Klipper)") {
+            val klipperStart = settings.customKlipperStartGcode
+            val meshCallInScript = KlipperBedMeshInjector.hasMeshCall(klipperStart)
+            Text(
+                "KAMP, on a Klipper host, measures only the ground the print stands on. It " +
+                    "does that when the file asks for a mesh, so this switch writes the call " +
+                    "into the custom Klipper start G-code below - after homing and in front of " +
+                    "the first extruding move, which is the last point a mesh can be measured " +
+                    "from. Turning it off takes those two lines out again.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            SwitchRow(
+                "Ask for an adaptive mesh (KAMP)",
+                meshCallInScript,
+                source(state, SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE),
+            ) { wanted ->
+                onSettings(SlicerSettings.Keys.CUSTOM_KLIPPER_START_GCODE) { current ->
+                    // An empty script is seeded with the Klipper route's own default first, so
+                    // the switch does something even before a start script has been written.
+                    val base = current.customKlipperStartGcode
+                        .ifBlank { GcodeRoute.forFlavor("Klipper").startGcode() }
+                    current.copy(
+                        customKlipperStartGcodeEnabled = true,
+                        customKlipperStartGcode = if (wanted) {
+                            KlipperBedMeshInjector.withMeshCall(base)
+                        } else {
+                            KlipperBedMeshInjector.withoutMeshCall(base)
+                        },
+                    )
                 }
             }
         }

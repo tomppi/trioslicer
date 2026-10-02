@@ -52,6 +52,19 @@ object GcodeNozzlePathParser {
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
     private const val LAYER_HEIGHT_MAX_MM = 0.500
+
+    /**
+     * How far a rise may differ from the height the print has been using and still set it.
+     *
+     * A rise on its own is not evidence of a layer height. The start script primes at one Z and
+     * the first layer prints at another, a Z move between them is negative, and any of those
+     * latched as the bead height changes the width of every bead after it - a bead whose height
+     * is zero, or a third of the real one, is not the bead the slicer asked for.
+     */
+    private const val LAYER_HEIGHT_TOLERANCE = 0.25
+
+    /** The slicer's own statement of the layer height, which beats any of it being guessed. */
+    private const val LAYER_HEIGHT_HEADER = ";Layer height:"
     private const val EXTRUSION_EPSILON = 1e-7
     private const val CANCELLATION_INTERVAL = 2_048
     fun parse(file: File): GcodeNozzlePath = parse(file, DEFAULT_MAX_MOVES, GcodeDialect.CURA)
@@ -111,6 +124,14 @@ object GcodeNozzlePathParser {
                 linesRead++
                 checkCancellation(linesRead)
                 if (prusaRegion.beforePrint(rawLine)) return@forEach
+                // The slicer states the layer height in the header; taking it beats deriving
+                // it from Z rises, which the start script's prime and Z moves confuse.
+                if (currentLayerHeight <= 0.0 && rawLine.startsWith(LAYER_HEIGHT_HEADER)) {
+                    val stated = rawLine.substringAfter(':').substringBefore(',').trim().toDoubleOrNull()
+                    if (stated != null && stated > LAYER_HEIGHT_MIN_MM && stated <= LAYER_HEIGHT_MAX_MM) {
+                        currentLayerHeight = stated
+                    }
+                }
                 val command = GcodeCommand.parse(rawLine) ?: return@forEach
                 GcodeCommandPolicy.requirePreviewSafe(command, sourceIndex)
                 GcodeCommandPolicy.speedFactor(command)?.let {
@@ -189,13 +210,20 @@ object GcodeNozzlePathParser {
                         } else {
                             0.0
                         }
+                        // A rise only sets the height when it agrees with the height the print
+                        // has been using: the first rise belongs to the prime line, and the move
+                        // from there to the first layer is downwards.
+                        val difference = rise - currentLayerHeight
+                        val agrees = currentLayerHeight <= 0.0 ||
+                            (difference <= currentLayerHeight * LAYER_HEIGHT_TOLERANCE &&
+                                difference >= -currentLayerHeight * LAYER_HEIGHT_TOLERANCE)
                         val moveLayerHeight = when {
-                            !hasRetainedZ -> currentLayerHeight
-                            rise > LAYER_HEIGHT_MIN_MM && rise <= LAYER_HEIGHT_MAX_MM -> {
+                            !hasRetainedZ -> currentLayerHeight.coerceAtLeast(LAYER_HEIGHT_MIN_MM)
+                            rise > LAYER_HEIGHT_MIN_MM && rise <= LAYER_HEIGHT_MAX_MM && agrees -> {
                                 currentLayerHeight = rise
                                 rise
                             }
-                            else -> currentLayerHeight
+                            else -> currentLayerHeight.coerceAtLeast(LAYER_HEIGHT_MIN_MM)
                         }
                         retainedPreviousZ = nextZ
                         hasRetainedZ = true

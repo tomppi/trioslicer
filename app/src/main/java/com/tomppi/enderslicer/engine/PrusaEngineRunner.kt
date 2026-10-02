@@ -171,11 +171,7 @@ private val datadir = File(context.filesDir, "prusa/datadir")
             printer,
             settings,
             machineSettings,
-            KlipperBedMeshInjector.withMeshCallIfWanted(
-                KampPreference.isEnabled(context),
-                printer.gcodeFlavor,
-                startGcode,
-            ),
+            startGcode,
             endGcode,
             presets,
             onProgress,

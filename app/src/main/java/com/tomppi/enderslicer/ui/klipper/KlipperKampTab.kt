@@ -91,36 +91,9 @@ internal fun KlipperKampTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             }
         }
 
-        // The slicer's half of KAMP, and the one thing on this screen that is not a printer
-        // value: whether a slice should give KAMP a mesh to measure at all. It is stored as
-        // its own switch because it belongs to this machine rather than to a print profile.
-        val context = LocalContext.current
-        var askForMesh by remember { mutableStateOf(KampPreference.isEnabled(context)) }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Ask for an adaptive mesh", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "After slicing for a Klipper host, the app inserts BED_MESH_CALIBRATE " +
-                            "when the start script measures no mesh of its own, so KAMP can fit " +
-                            "the mesh to the objects. A script that already measures one, or a " +
-                            "printer that was never homed, is left alone.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = askForMesh,
-                    onCheckedChange = {
-                        askForMesh = it
-                        KampPreference.setEnabled(context, it)
-                    },
-                )
-            }
-        }
+        // The switch that writes the mesh call lives with the setting it edits:
+        // Machine settings -> Adaptive meshing (Klipper). This screen is the printer's
+        // own KAMP values, read from the host that is connected.
 
         if (settings == null) return@Column
 

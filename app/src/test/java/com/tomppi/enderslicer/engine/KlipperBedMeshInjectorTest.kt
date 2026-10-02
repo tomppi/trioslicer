@@ -73,6 +73,25 @@ class KlipperBedMeshInjectorTest {
     }
 
     @Test
+    fun aScriptWithCrlfEndingsIsStillUnderstood() {
+        // A profile imported from a Windows editor, or one of the Creality start scripts, ends
+        // its lines with CRLF. The parser reads a trailing carriage return as part of the last
+        // parameter, so the extruding move went unrecognised and nothing was added in front of
+        // it - the call was silently missing on the printer this was built for.
+        val crlf = startScript.replace("\n", "\r\n")
+        val result = KlipperBedMeshInjector.withMeshCall(crlf)
+        val out = result.lines()
+        val marker = out.indexOf(KlipperBedMeshInjector.MARKER)
+        assertTrue("the marker is missing", marker >= 0)
+        assertEquals("BED_MESH_CALIBRATE", out[marker + 1])
+        assertTrue(
+            "the call has to precede the extrusion",
+            marker < out.indexOfFirst { it.startsWith("G1 X20 Y20 E") },
+        )
+        assertFalse("a carriage return survived into the output", result.contains("\r"))
+    }
+
+    @Test
     fun theSwitchAndTheRouteBothHaveToAgree() {
         assertEquals(
             startScript,

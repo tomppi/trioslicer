@@ -108,11 +108,7 @@ class OrcaEngineRunner(private val context: Context) {
             printer,
             settings,
             machineSettings,
-            KlipperBedMeshInjector.withMeshCallIfWanted(
-                KampPreference.isEnabled(context),
-                printer.gcodeFlavor,
-                startGcode,
-            ),
+            startGcode,
             endGcode,
             onProgress,
         )

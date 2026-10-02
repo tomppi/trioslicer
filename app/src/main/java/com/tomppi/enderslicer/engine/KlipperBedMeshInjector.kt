@@ -46,10 +46,38 @@ internal object KlipperBedMeshInjector {
     fun withMeshCallIfWanted(enabled: Boolean, flavor: String, startGcode: String): String =
         if (enabled && GcodeRoute.isKlipperFlavor(flavor)) withMeshCall(startGcode) else startGcode
 
+    /** Whether a script already carries the call this app writes, which is what the switch shows. */
+    fun hasMeshCall(startGcode: String): Boolean =
+        startGcode.lineSequence().any { it.trim() == MARKER }
+
+    /**
+     * The script with the call taken out again, so the switch can be turned back off.
+     *
+     * The pair this app writes is removed and nothing else: a line that is not the mesh command
+     * is left alone even if it sits where the call would be.
+     */
+    fun withoutMeshCall(startGcode: String): String {
+        val lines = startGcode.replace("\r\n", "\n").lines()
+        val marker = lines.indexOfFirst { it.trim() == MARKER }
+        if (marker < 0) return startGcode
+        val callFollows = lines.getOrNull(marker + 1)?.trim().equals(MESH_COMMAND, ignoreCase = true) == true
+        val end = if (callFollows) marker + 2 else marker + 1
+        val result = ArrayList<String>(lines.size)
+        result.addAll(lines.subList(0, marker))
+        result.addAll(lines.subList(minOf(end, lines.size), lines.size))
+        return result.joinToString("\n")
+    }
+
     /** The script with the call added, or the script unchanged when it is not needed. */
     fun withMeshCall(startGcode: String): String {
         if (startGcode.isBlank()) return startGcode
-        val lines = startGcode.lines()
+        // A start script that came from a Windows editor, or from one of the profiles this app
+        // imports, can end its lines with CRLF. The command parser reads such a line's last
+        // parameter as part of the carriage return, so an extruding move looked like no extruding
+        // move and the scan quietly found nothing to inject in front of - which is exactly how
+        // the call went missing on a profile whose start script had CRLF endings.
+        val normalized = startGcode.replace("\r\n", "\n")
+        val lines = normalized.lines()
         var homed = false
         var insertAt = -1
         for ((index, line) in lines.withIndex()) {

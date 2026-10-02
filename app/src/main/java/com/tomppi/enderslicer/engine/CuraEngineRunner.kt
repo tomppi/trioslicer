@@ -121,11 +121,7 @@ class CuraEngineRunner(private val context: Context) {
                 // The Klipper route's mesh call is added here, to the user's own start script:
                 // engine output is checked against the file's Marlin-family dialect, and
                 // BED_MESH_CALIBRATE is not part of it.
-                KlipperBedMeshInjector.withMeshCallIfWanted(
-                    KampPreference.isEnabled(context),
-                    printer.gcodeFlavor,
-                    startGcode,
-                ),
+                startGcode,
                 endGcode,
                 profile,
                 machineId,
