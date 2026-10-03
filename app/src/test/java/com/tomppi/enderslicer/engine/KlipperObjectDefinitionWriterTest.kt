@@ -54,6 +54,18 @@ class KlipperObjectDefinitionWriterTest {
     }
 
     @Test
+    fun theAppsUnsetSentinelIsNotABound() {
+        // Before the sanitizer rewrites them, the header bounds carry this sentinel. A definition
+        // built from it declared a two-million-millimetre object, and KAMP clamped the mesh back
+        // to the whole bed - the cube printed with a full-bed mesh and no error to show for it.
+        val text = ";FLAVOR:Marlin\n;MINX:2147478.0\n;MINY:2147478.0\n;MAXX:2147478.0\n" +
+            ";MAXY:2147478.0\nG28\nBED_MESH_CALIBRATE\n"
+        val target = file(text)
+        assertFalse(KlipperObjectDefinitionWriter.inject(target))
+        assertEquals(text, target.readText())
+    }
+
+    @Test
     fun aFileWithoutBoundsIsLeftAlone() {
         val text = ";FLAVOR:Marlin\nG28\nBED_MESH_CALIBRATE\n"
         val target = file(text)

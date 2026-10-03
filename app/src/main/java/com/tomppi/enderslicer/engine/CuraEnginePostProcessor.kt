@@ -104,13 +104,6 @@ internal object CuraEnginePostProcessor {
         // layer marker, so the sanitizer accepts it as startup G-code.
         val amlInjected = amlEnabled &&
             AdaptiveBedMeshInjector.inject(outputFile, effectiveEnvelope, amlMarginMm, amlGridPoints)
-        // CuraEngine declares no objects, so KAMP would have nothing to mesh around and would
-        // fall back to the whole bed ("No objects detected!"). The print's footprint is in the
-        // header this file already carries, so the definition is written from the file itself,
-        // in front of the mesh call, which is when Klipper has to have read it. Nothing happens
-        // on a file that already declares its objects or asks for no mesh.
-        KlipperObjectDefinitionWriter.inject(outputFile)
-
         val validatedTransport = if (amlInjected) {
             "$effectiveTransport+adaptive-mesh-leveling"
         } else {
@@ -122,6 +115,13 @@ internal object CuraEnginePostProcessor {
             settingsTransport = validatedTransport,
             printerEnvelope = effectiveEnvelope,
         )
+        // CuraEngine declares no objects, so KAMP would have nothing to mesh around and would
+        // fall back to the whole bed. This runs *after* the sanitizer, and that order is the
+        // whole point: the sanitizer is what corrects the header bounds from the real moves, and
+        // before it those lines still carry the app's unset sentinel - which is how a cube came
+        // to be declared as an object two million millimetres across.
+        KlipperObjectDefinitionWriter.inject(outputFile)
+
         outputFile.copyTo(baseGcodeFile, overwrite = true)
         check(baseGcodeFile.isFile && baseGcodeFile.length() > 0L) {
             "Unable to retain original sliced G-code"

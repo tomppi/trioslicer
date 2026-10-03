@@ -66,11 +66,22 @@ internal object KlipperObjectDefinitionWriter {
         return true
     }
 
+    /**
+     * A header bound, or null when the file does not state a usable one.
+     *
+     * The magnitude check is not decoration: before the sanitizer rewrites these lines they hold
+     * the app's unset sentinel, and a definition built from that declared an object millions of
+     * millimetres across, which KAMP then clamped straight back to the full bed.
+     */
     private fun header(lines: List<String>, prefix: String): Double? =
         lines.firstOrNull { it.startsWith(prefix) }
             ?.removePrefix(prefix)
             ?.trim()
             ?.toDoubleOrNull()
+            ?.takeIf { it.isFinite() && kotlin.math.abs(it) <= MAX_BOUND_MM }
+
+    /** No printer in this app is bigger than this, so a larger value is a sentinel, not a bound. */
+    private const val MAX_BOUND_MM = 1000.0
 
     private fun number(value: Double): String = String.format(Locale.US, "%.3f", value)
 }
