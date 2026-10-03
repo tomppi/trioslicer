@@ -104,6 +104,13 @@ internal object CuraEnginePostProcessor {
         // layer marker, so the sanitizer accepts it as startup G-code.
         val amlInjected = amlEnabled &&
             AdaptiveBedMeshInjector.inject(outputFile, effectiveEnvelope, amlMarginMm, amlGridPoints)
+        // CuraEngine declares no objects, so KAMP would have nothing to mesh around and would
+        // fall back to the whole bed ("No objects detected!"). The print's footprint is in the
+        // header this file already carries, so the definition is written from the file itself,
+        // in front of the mesh call, which is when Klipper has to have read it. Nothing happens
+        // on a file that already declares its objects or asks for no mesh.
+        KlipperObjectDefinitionWriter.inject(outputFile)
+
         val validatedTransport = if (amlInjected) {
             "$effectiveTransport+adaptive-mesh-leveling"
         } else {
