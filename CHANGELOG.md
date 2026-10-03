@@ -34,6 +34,12 @@ view rather than our own conventions.
 
 ### Added
 
+- **KAMP knows where the objects are on a Cura slice.** CuraEngine declares no objects at all,
+  so the macro answered "No objects detected!" and measured the whole bed however well the rest
+  of it worked. The app writes the definition itself, from the print's own bounds in the file,
+  immediately in front of the mesh call. It does that *after* the sanitizer has corrected those
+  bounds from the real moves, and refuses to write one at all while they still hold the unset
+  sentinel - which is what declared a 20 mm cube as an object two million millimetres across.
 - **The adaptive mesh switch writes into your own start script.** Machine settings -> Adaptive
   meshing (Klipper) puts `BED_MESH_CALIBRATE` into the custom Klipper start G-code - after homing,
   in front of the first extruding move - and takes it out again when switched off. Nothing is
