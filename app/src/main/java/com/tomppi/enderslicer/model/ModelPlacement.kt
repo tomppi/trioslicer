@@ -159,16 +159,41 @@ data class ModelPlacement(
 
     fun droppedToBed(): ModelPlacement = copy(baseZmm = 0.0, source = "Dropped to build plate")
 
+    /**
+     * The uniform scale the linear transform applies, as a percentage of the
+     * source mesh. A rotation does not change a basis vector's length, so this
+     * survives any sequence of rotations and scales. A 3MF that brings its own
+     * non-uniform transform reads as its X axis, which is the same
+     * approximation the rest of this panel makes.
+     */
+    val scalePercent: Double
+        get() = 100.0 * sqrt(linear[0] * linear[0] + linear[3] * linear[3] + linear[6] * linear[6])
+
+    /** Scales the model BY [percent] - a step, relative to the size it is now. */
     fun scaled(percent: Double): ModelPlacement {
         require(percent.isFinite() && percent > 0.0) { "Scale percentage must be positive and finite" }
         val factor = percent / 100.0
         val scale = listOf(factor, 0.0, 0.0, 0.0, factor, 0.0, 0.0, 0.0, factor)
-        val label = if (percent == percent.toLong().toDouble()) {
-            percent.toLong().toString()
-        } else {
-            String.format(java.util.Locale.US, "%.3f", percent).trimEnd('0').trimEnd('.')
-        }
-        return copy(linear = multiply(scale, linear), source = "Scaled to $label%")
+        return copy(linear = multiply(scale, linear), source = "Scaled to ${scaleLabel(percent)}%")
+    }
+
+    /**
+     * Scales the model TO [percent] of the source mesh. The Scale field names a
+     * size, not a step: setting 145% twice leaves the model at 145%, where
+     * [scaled] would leave it at 210%. The label reports the size that was asked
+     * for rather than the factor that reached it.
+     */
+    fun scaledTo(percent: Double): ModelPlacement {
+        require(percent.isFinite() && percent > 0.0) { "Scale percentage must be positive and finite" }
+        val current = scalePercent
+        require(current > 0.0) { "Model transform has no scale to replace" }
+        return scaled(100.0 * percent / current).copy(source = "Scaled to ${scaleLabel(percent)}%")
+    }
+
+    private fun scaleLabel(percent: Double): String = if (percent == percent.toLong().toDouble()) {
+        percent.toLong().toString()
+    } else {
+        String.format(java.util.Locale.US, "%.3f", percent).trimEnd('0').trimEnd('.')
     }
 
     fun rotated(axis: Axis, degrees: Double): ModelPlacement {

@@ -4,6 +4,56 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The Model tools panel now says how to reach the gizmo.** Pressing and holding the model opens Move,
+  Rotate and Scale over it, and nothing said so - the panel's three groups read as the only way in, so the
+  gesture stayed invisible. A tip under the bar names it.
+- **Interface scale: draw the whole app bigger or smaller.** More > Display > Interface scale opens a
+  slider from 75% to 150%. Text, controls, spacing and icons grow together, the way Android's own Display
+  size does, because the root multiplies the Compose density and the font scale together rather than only
+  one of them. The setting is stored on its own, away from engine settings, so a configuration snapshot
+  restored on another phone does not carry someone else's text size.
+  The scale is applied when the drag ends, not on every frame. Resizing the interface mid-drag re-lays-out
+  the whole tree, and that recomposition cancelled the slider's own gesture after the first touch: the
+  value only ever jumped to wherever the finger landed and never followed it. The sheet also re-provides
+  the density the device reports, so the track cannot grow as the value rises and move the value under the
+  finger that raised it.
+  Only the DENSITY is multiplied, never the font scale as well. Compose resolves text as
+  `sp * fontScale * density`, so scaling both applied the percentage twice to every label and once to the
+  controls: a "138%" setting drew the More title 1.62x larger instead of 1.38x, and text outran its rows.
+  Measured against the same title, 75 / 150% now read 104 / 209 px - a ratio of 2.010 for a 2x range, where
+  the doubled version gave 3.241.
+
+### Fixed
+
+- **The settings catalogue showed the engine's printf escapes.** OrcaSlicer writes a literal percent
+  sign as `%%` in its own option descriptions, and its `--dump-settings` output carries that through, so
+  the catalogue read "adjusted to this %% of acceleration" and "For 100%% overhang". The escape is
+  collapsed where the catalogue is read.
+- **The Blender engine booted at every app launch, and pinned the CPU with it.** `EnderSlicerApplication`
+  started the engine and its keeper service unconditionally in `onCreate`: a 1.3 GB library load, ~480 MB
+  of asset extraction and a ten-minute partial wake lock for every user who opened the app, including
+  everyone who never touches Blender, and the lock outlived the screen going off. Nothing starts it at
+  launch now - handing a model over, opening the modelling view and a preview command each ask for it.
+- **The Blender engine could never load where the APK's native libraries are extracted.** `libblender_exec.so` needs `hdTiny.so`,
+  `sdrGlslfx.so` and `usdShaders.so` - the names those three libraries also carry as their SONAME. The
+  build ships copies under exactly those names, and Android extracts only `lib*.so` from an APK's
+  `lib/<abi>/`, so they reached the APK and never reached the app's native library directory. dlopen
+  answered `library "hdTiny.so" not found` and the app reported it as "not packaged for this ABI", so the
+  engine was dead on the one ABI it is built for. The bridge now loads each dependency through its
+  lib-prefixed file name first, which registers its SONAME, and the linker resolves the engine's NEEDED
+  entries from the libraries already loaded.
+- **Model tools scaled relatively, so 145% became the new 100%.** The Scale field multiplied the model
+  by the percentage and then reset the field to 100, which made every scale read as a fresh baseline:
+  applying 145% twice produced 210%, and the header could never say what size the model actually was.
+  The field now names a size - 145% sets the model to 145% of the model as imported, and saying it twice
+  leaves it there. The header reports the model's real scale from its transform, so it stays truthful
+  while the field holds an unapplied edit. The pinch gizmo on the plate keeps its step behaviour, which
+  is what a pinch means.
+
 ## [1.6.6] - 2026-10-03
 
 The nozzle-path preview draws the whole file again, and bead geometry follows Cura's own layer

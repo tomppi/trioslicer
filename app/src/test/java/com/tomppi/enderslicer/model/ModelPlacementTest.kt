@@ -184,6 +184,51 @@ class ModelPlacementTest {
     }
 
     @Test
+    fun scaledToSetsTheSizeRatherThanSteppingIt() {
+        val mesh = triangleMesh(
+            floatArrayOf(
+                0f, 0f, 0f,
+                10f, 0f, 0f,
+                0f, 0f, 10f,
+            ),
+        )
+        val initial = ModelPlacement.centeredOnBed(mesh, 230.0, 230.0)
+        val before = initial.transformed(mesh)
+
+        val once = initial.scaledTo(145.0)
+        val twice = once.scaledTo(145.0)
+
+        assertEquals(1.45 * before.bounds.width.toDouble(), once.transformed(mesh).bounds.width.toDouble(), 1e-4)
+        // Setting 145% again keeps the size; it does not step on to 210%.
+        assertEquals(1.45 * before.bounds.width.toDouble(), twice.transformed(mesh).bounds.width.toDouble(), 1e-4)
+        assertEquals(145.0, twice.scalePercent, 1e-3)
+        assertTrue(once.source.contains("145%"))
+    }
+
+    @Test
+    fun scalePercentSurvivesRotationsAndLabelsTheSizeAskedFor() {
+        val mesh = triangleMesh(
+            floatArrayOf(
+                0f, 0f, 0f,
+                10f, 0f, 0f,
+                0f, 0f, 10f,
+            ),
+        )
+        val initial = ModelPlacement.centeredOnBed(mesh, 230.0, 230.0)
+        val rotated = initial
+            .scaledTo(300.0)
+            .rotated(ModelPlacement.Axis.Z, 90.0)
+            .rotated(ModelPlacement.Axis.X, 30.0)
+
+        // Rotations do not change the reported size...
+        assertEquals(300.0, rotated.scalePercent, 1e-3)
+        // ...and the label names the size asked for, not the factor that reached it.
+        val restated = rotated.scaledTo(300.0)
+        assertEquals(300.0, restated.scalePercent, 1e-3)
+        assertTrue(restated.source.contains("300%"))
+    }
+
+    @Test
     fun largePlacedMeshKeepsVertexDataOffHeap() {
         val triangleCount = 200_000
         val interleaved = FloatArray(triangleCount * 18)

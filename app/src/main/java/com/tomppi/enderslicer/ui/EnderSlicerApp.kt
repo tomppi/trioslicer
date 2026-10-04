@@ -182,6 +182,8 @@ fun EnderSlicerApp(
     viewModel: MainViewModel = viewModel(),
     engine: SlicerEngine = SlicerEngine.CURA,
     onEngineChange: (SlicerEngine) -> Unit = {},
+    uiScalePercent: Int = UiScale.DEFAULT_PERCENT,
+    onUiScaleChange: (percent: Int, commit: Boolean) -> Unit = { _, _ -> },
     sliceBlockedReason: String? = null,
     plateOverflowItems: @Composable (() -> Unit) -> Unit = { _ -> },
     moreExtraItems: @Composable () -> Unit = {},
@@ -216,6 +218,7 @@ fun EnderSlicerApp(
     var modelHintsDismissed by rememberSaveable { mutableStateOf(false) }
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
+    var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var nonPlanarOpen by rememberSaveable { mutableStateOf(false) }
     var allSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var conicalOpen by rememberSaveable { mutableStateOf(false) }
@@ -707,6 +710,9 @@ fun EnderSlicerApp(
 
     fun openModelling() {
         modellingOpen = true
+        // The modelling view shows the engine's own scene, so opening it is the
+        // request that starts the engine - nothing boots it at app launch now.
+        viewModel.startBlenderEngine()
         if (modellingChat.get() == null) {
             if (aiConfigured) {
                 connectHarness()
@@ -789,6 +795,7 @@ fun EnderSlicerApp(
     BackHandler(enabled = nonPlanarOpen) { nonPlanarOpen = false }
     BackHandler(enabled = conicalOpen) { conicalOpen = false }
     BackHandler(enabled = meshLimitOpen) { meshLimitOpen = false }
+    BackHandler(enabled = uiScaleOpen) { uiScaleOpen = false }
     BackHandler(enabled = profilesOpen) { profilesOpen = false }
     BackHandler(
         enabled = layerEventsOpen && state.layerPreview != null && state.hasCurrentGcode(),
@@ -1344,7 +1351,7 @@ fun EnderSlicerApp(
                                     plateHeight = plateHeightDp,
                                     onMove = viewModel::moveModel,
                                     onRotate = viewModel::rotateModel,
-                                    onScale = viewModel::scaleModel,
+                                    onScale = viewModel::scaleModelTo,
                                     onDropToBed = viewModel::dropModelToBed,
                                     onLayFlat = viewModel::layModelFlat,
                                     onReset = viewModel::resetModelTransform,
@@ -1517,6 +1524,8 @@ fun EnderSlicerApp(
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
+                        uiScalePercent = uiScalePercent,
+                        onUiScale = { uiScaleOpen = true },
                         extraItems = moreExtraItems,
                         modifier = Modifier
                             .fillMaxSize()
@@ -1565,6 +1574,18 @@ fun EnderSlicerApp(
                 modifier = Modifier
                     .fillMaxHeight(0.94f)
                     .navigationBarsPadding(),
+            )
+        }
+    }
+
+    if (uiScaleOpen) {
+        AppBottomSheet(
+            onDismissRequest = { uiScaleOpen = false },
+        ) {
+            UiScaleSheet(
+                currentPercent = uiScalePercent,
+                onChange = onUiScaleChange,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
@@ -1933,6 +1954,8 @@ private fun MoreScreen(
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
+    uiScalePercent: Int,
+    onUiScale: () -> Unit,
     extraItems: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -2022,6 +2045,18 @@ private fun MoreScreen(
                 subtitle = "Max triangles for viewer and texturizer",
                 enabled = !state.isBusy,
                 onClick = onMeshLimit,
+            )
+        }
+
+        MoreSectionLabel("Display")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            MoreRow(
+                icon = AppIcons.Settings,
+                title = "Interface scale",
+                subtitle = "Draw text, controls and spacing at $uiScalePercent%",
+                enabled = !state.isBusy,
+                badge = if (uiScalePercent == UiScale.DEFAULT_PERCENT) null else "$uiScalePercent%",
+                onClick = onUiScale,
             )
         }
 

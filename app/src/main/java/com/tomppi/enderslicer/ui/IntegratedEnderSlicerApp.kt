@@ -80,6 +80,8 @@ fun IntegratedEnderSlicerApp(
     klipperViewModel: KlipperViewModel,
     engine: SlicerEngine,
     onEngineChange: (SlicerEngine) -> Unit,
+    uiScalePercent: Int,
+    onUiScaleChange: (percent: Int, commit: Boolean) -> Unit,
 ) {
     val slicerState by slicerViewModel.uiState.collectAsStateWithLifecycle()
     val octoPrintState by octoPrintViewModel.state.collectAsStateWithLifecycle()
@@ -621,6 +623,8 @@ fun IntegratedEnderSlicerApp(
         viewModel = slicerViewModel,
         engine = engine,
         onEngineChange = onEngineChange,
+        uiScalePercent = uiScalePercent,
+        onUiScaleChange = onUiScaleChange,
         sliceBlockedReason = when {
             smartInfillImporting -> "Smart Infill import is still being committed"
             smartInfillValidating -> "Smart Infill is being validated for the current model"

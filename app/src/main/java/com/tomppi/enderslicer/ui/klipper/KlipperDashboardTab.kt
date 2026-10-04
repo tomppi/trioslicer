@@ -58,6 +58,9 @@ import com.tomppi.enderslicer.printer.speeds
 import com.tomppi.enderslicer.printer.zOffset
 import com.tomppi.enderslicer.ui.formatPrintTime
 import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.layout.ContentScale
 
 /**
  * What the machine is doing, and everything that changes it while it does.
@@ -96,9 +99,11 @@ internal fun KlipperDashboardTab(
             TemperaturesCard(state, viewModel)
             ExcludedObjectsCard(state, onExclude = { confirmExclude = it })
         }
-        // The camera, when the host publishes one - above the numbers, because a picture of
-        // the thing is the first check anybody makes.
-        state.webcams.firstOrNull()?.let { camera -> KlipperCameraCard(camera, viewModel) }
+        // The camera, above the numbers, because a picture of the thing is the first check
+        // anybody makes. The card is drawn whether or not the host has published a camera: it
+        // used to be emitted only when one existed, so the card appeared once Moonraker answered
+        // and everything below it moved up - on a screen that is read while it updates.
+        KlipperCameraCard(state.webcams.firstOrNull(), viewModel)
 
         LimitsCard(state, localGcodePath, viewModel)
         PositionCard(state, viewModel)
@@ -246,32 +251,37 @@ private fun JobCard(
             state.displayMessage?.let { message ->
                 Text(message, style = MaterialTheme.typography.bodySmall)
             }
-            state.printProgress?.let { progress ->
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { progress.coerceIn(0.0, 1.0).toFloat() },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(4.dp))
-                KlipperValue("Print progress", "%.1f%% of the file".format(progress * 100))
-            }
+            // Every row here is drawn whether or not its value is known, with a dash when it is
+            // not. A row that disappears takes its height with it, and on this screen that moves
+            // the camera and every card below - while the values themselves come and go with each
+            // status update.
+            val progress = state.printProgress
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(
+                progress = { progress?.coerceIn(0.0, 1.0)?.toFloat() ?: 0f },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(4.dp))
+            KlipperValue(
+                "Print progress",
+                progress?.let { "%.1f%% of the file".format(it * 100) } ?: "—",
+            )
             val seconds = state.printDurationSeconds
-            if (seconds != null) {
-                KlipperValue("Print time so far", formatPrintTime(seconds.roundToInt()))
-                // Only worth showing once there is enough of the print to extrapolate
-                // from: a minute in, the estimate is the noise in the progress figure.
-                val progress = state.printProgress
-                if (progress != null && progress > 0.02 && state.isPrinting) {
-                    val remaining = seconds / progress - seconds
-                    KlipperValue("Time left", formatPrintTime(remaining.roundToInt()))
-                }
+            KlipperValue("Print time so far", seconds?.let { formatPrintTime(it.roundToInt()) } ?: "—")
+            // The estimate is only worth stating once there is enough of the print to extrapolate
+            // from: a minute in, it is the noise in the progress figure - so it shows a dash.
+            val knownProgress = state.printProgress
+            val remaining = if (seconds != null && knownProgress != null && knownProgress > 0.02 && state.isPrinting) {
+                seconds / knownProgress - seconds
+            } else {
+                null
             }
-            state.printLayers?.let { layers ->
-                KlipperValue("Layer", "${layers.current} of ${layers.total}")
-            }
-            filamentMetres(state)?.let { metres ->
-                KlipperValue("Filament used", "%.2f m".format(metres))
-            }
+            KlipperValue("Time left", remaining?.let { formatPrintTime(it.roundToInt()) } ?: "—")
+            KlipperValue(
+                "Layer",
+                state.printLayers?.let { "${it.current} of ${it.total}" } ?: "—",
+            )
+            KlipperValue("Filament used", filamentMetres(state)?.let { "%.2f m".format(it) } ?: "—")
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
                 if (state.isPaused) {
@@ -465,29 +475,41 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
  * frame a second is a first layer you can watch.
  */
 @Composable
-private fun KlipperCameraCard(camera: KlipperWebcam, viewModel: KlipperViewModel) {
-    var frame by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(camera.snapshotUrl) {
+private fun KlipperCameraCard(camera: KlipperWebcam?, viewModel: KlipperViewModel) {
+    var frame by remember(camera?.snapshotUrl) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(camera?.snapshotUrl) {
+        val url = camera?.snapshotUrl ?: return@LaunchedEffect
         while (true) {
-            viewModel.webcamSnapshot(camera.snapshotUrl)?.let { bytes ->
+            viewModel.webcamSnapshot(url)?.let { bytes ->
                 frame = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
             }
             delay(CAMERA_REFRESH_MS)
         }
     }
-    KlipperCard(title = camera.name, subtitle = "The print camera") {
+    KlipperCard(title = camera?.name ?: "Camera", subtitle = "The print camera") {
+        // One shape for every state - no camera, no frame yet, or a frame - because a card that
+        // grows when the first picture arrives moves the whole dashboard underneath it. The frame
+        // is cropped into that shape rather than stretched.
         val picture = frame
-        if (picture == null) {
-            KlipperNote("Waiting for a frame from the camera.")
-        } else {
-            Image(
+        when {
+            camera == null -> Box(modifier = Modifier.fillMaxWidth().aspectRatio(CAMERA_ASPECT)) {
+                KlipperNote("No camera is configured on this host.")
+            }
+            picture == null -> Box(modifier = Modifier.fillMaxWidth().aspectRatio(CAMERA_ASPECT)) {
+                KlipperNote("Waiting for a frame from the camera.")
+            }
+            else -> Image(
                 bitmap = picture,
                 contentDescription = "The printer, from its camera",
-                modifier = Modifier.fillMaxWidth(),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(CAMERA_ASPECT),
             )
         }
     }
 }
+
+/** The camera card's shape, held whatever the frame's own proportions are. */
+private const val CAMERA_ASPECT = 16f / 9f
 
 /** A frame a second: enough to watch a first layer, cheap enough to leave open. */
 private const val CAMERA_REFRESH_MS = 1_000L

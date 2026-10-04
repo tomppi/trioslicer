@@ -10,10 +10,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
@@ -26,6 +29,7 @@ import com.tomppi.enderslicer.ui.MainViewModel
 import com.tomppi.enderslicer.ui.OnboardingScreen
 import com.tomppi.enderslicer.ui.OnboardingStore
 import com.tomppi.enderslicer.ui.SlicerEngineStore
+import com.tomppi.enderslicer.ui.UiScale
 
 class MainActivity : ComponentActivity() {
     private val slicerViewModel by viewModels<MainViewModel>()
@@ -58,6 +62,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MeshTriangleLimits.initialize(this)
+        UiScale.initialize(this)
         enableEdgeToEdge()
         requestNotificationPermission()
         startKlipperHostIfPrinterAttached(intent)
@@ -66,32 +71,46 @@ class MainActivity : ComponentActivity() {
             var engine by remember { mutableStateOf(engineStore.load()) }
             EnderSlicerTheme(engine = engine) {
                 val state by slicerViewModel.uiState.collectAsStateWithLifecycle()
-                // First-run onboarding (skippable, one-shot): sets the machine
-                // values that drive the engine and the build-plate viewer.
-                var onboardingDone by remember {
-                    mutableStateOf(OnboardingStore(applicationContext).isComplete())
-                }
-                if (!onboardingDone) {
-                    OnboardingScreen(
-                        state = state,
-                        onSettings = slicerViewModel::updateSettings,
-                        onDone = {
-                            OnboardingStore(applicationContext).complete()
-                            onboardingDone = true
-                        },
-                    )
-                } else {
-                    IntegratedEnderSlicerApp(
-                        slicerViewModel = slicerViewModel,
-                        octoPrintViewModel = octoPrintViewModel,
-                        klipperViewModel = klipperViewModel,
-                        engine = engine,
-                        onEngineChange = {
-                            engineStore.save(it)
-                            engine = it
-                            slicerViewModel.onEngineChanged()
-                        },
-                    )
+                // Read before the provider below: inside it LocalDensity is already scaled.
+                val deviceDensity = LocalDensity.current
+                var uiScalePercent by remember { mutableIntStateOf(UiScale.current()) }
+                CompositionLocalProvider(
+                    LocalDensity provides UiScale.scaled(deviceDensity, uiScalePercent),
+                ) {
+                    // First-run onboarding (skippable, one-shot): sets the machine
+                    // values that drive the engine and the build-plate viewer.
+                    var onboardingDone by remember {
+                        mutableStateOf(OnboardingStore(applicationContext).isComplete())
+                    }
+                    if (!onboardingDone) {
+                        OnboardingScreen(
+                            state = state,
+                            onSettings = slicerViewModel::updateSettings,
+                            onDone = {
+                                OnboardingStore(applicationContext).complete()
+                                onboardingDone = true
+                            },
+                        )
+                    } else {
+                        IntegratedEnderSlicerApp(
+                            slicerViewModel = slicerViewModel,
+                            octoPrintViewModel = octoPrintViewModel,
+                            klipperViewModel = klipperViewModel,
+                            engine = engine,
+                            onEngineChange = {
+                                engineStore.save(it)
+                                engine = it
+                                slicerViewModel.onEngineChanged()
+                            },
+                            uiScalePercent = uiScalePercent,
+                            onUiScaleChange = { percent, commit ->
+                                uiScalePercent = UiScale.sanitize(percent)
+                                // Persist on release only: a drag would otherwise
+                                // write a preference per frame.
+                                if (commit) UiScale.save(applicationContext, percent)
+                            },
+                        )
+                    }
                 }
             }
         }

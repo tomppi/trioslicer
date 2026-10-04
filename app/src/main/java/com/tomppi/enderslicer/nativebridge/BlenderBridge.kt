@@ -24,6 +24,24 @@ object BlenderBridge {
     @Volatile private var loaded = false
 
     /**
+     * Three of the engine's NEEDED entries name their library WITHOUT the lib
+     * prefix - "hdTiny.so", "sdrGlslfx.so", "usdShaders.so" - and that name is
+     * also each one's SONAME.
+     *
+     * The Android package manager extracts only `lib*.so` from an APK's
+     * `lib/<abi>/`, so the copies the build ships under those exact names reach
+     * the APK and never reach the app's native library directory. dlopen then
+     * fails with 'library "hdTiny.so" not found: needed by libblender_exec.so',
+     * which this bridge reported as 'not packaged for this ABI' - so the engine
+     * could not start on any device, on the one ABI it is built for.
+     *
+     * Loading each dependency through its lib-prefixed FILE name first registers
+     * it under its SONAME, and the linker resolves the engine's NEEDED entries
+     * from the libraries already loaded. Order matters: dependencies first.
+     */
+    private val DEPENDENCIES = listOf("hdTiny", "sdrGlslfx", "usdShaders")
+
+    /**
      * Loads the engine library exactly once if it is present for this ABI.
      * Safe to call from any thread; no-op after the first attempt.
      */
@@ -33,6 +51,13 @@ object BlenderBridge {
             if (loadState != 0) return loaded
             loadState = 1
             try {
+                DEPENDENCIES.forEach { dependency ->
+                    runCatching { System.loadLibrary(dependency) }.onFailure { error ->
+                        // Not fatal on its own: the engine's own load reports which
+                        // name it could not resolve, and that message is the useful one.
+                        Log.w(TAG, "Blender dependency $dependency did not load (" + error.message + ")")
+                    }
+                }
                 System.loadLibrary("blender_exec")
                 loaded = true
             } catch (error: UnsatisfiedLinkError) {

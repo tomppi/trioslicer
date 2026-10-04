@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.model
 
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -57,5 +58,38 @@ class AllSettingsCatalogsTest {
         assertTrue(keys.contains("wall_line_count"))
         assertTrue(keys.contains("infill_spacing"))
         assertTrue(specs.any { it.label == "Layer Height" })
+    }
+
+    @Test
+    fun unescapePercentCollapsesTheEnginesPrintfEscape() {
+        assertEquals(
+            "Klipper's max_accel_to_decel will be adjusted to this % of acceleration.",
+            AllSettingsCatalogs.unescapePercent(
+                "Klipper's max_accel_to_decel will be adjusted to this %% of acceleration.",
+            ),
+        )
+        assertEquals(
+            "For 100% overhang, bridge speed is used.",
+            AllSettingsCatalogs.unescapePercent("For 100%% overhang, bridge speed is used."),
+        )
+    }
+
+    @Test
+    fun unescapePercentLeavesAnOrdinaryPercentAlone() {
+        assertEquals("15-25% of a layer height", AllSettingsCatalogs.unescapePercent("15-25% of a layer height"))
+        assertEquals("", AllSettingsCatalogs.unescapePercent(""))
+    }
+
+    @Test
+    fun theOrcaCatalogueHasNoDoubledPercentLeftInAnyDescription() {
+        val text = java.io.File("src/main/assets/orca/all-settings.json")
+            .takeIf { it.isFile }?.readText() ?: return
+        val descriptions = AllSettingsCatalogs.orcaFromJson(text).map { it.description }
+        assertTrue(descriptions.isNotEmpty())
+        assertTrue(
+            "a description still carries the printf escape: " +
+                descriptions.filter { it.contains("%%") }.take(3),
+            descriptions.none { it.contains("%%") },
+        )
     }
 }

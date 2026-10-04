@@ -304,6 +304,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 
+    /**
+     * Boots the Blender engine and its keeper service.
+     *
+     * Nothing starts the engine at app launch any more, so every path that
+     * needs it asks here first. Both calls are idempotent.
+     */
+    fun startBlenderEngine() {
+        BlenderEngine.ensureStarted(app)
+        BlenderEngineService.start(app)
+    }
+
     /** Explicitly ends the Blender engine and its keeper service. */
     fun stopBlenderEngine() {
         // Asked for exactly when the engine is busy - which is when it takes the
@@ -1183,15 +1194,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The pinch gizmo's step: [percent] is a factor applied to the size it is now. */
     fun scaleModel(percent: Double) {
-        val label = if (percent == percent.toLong().toDouble()) {
-            percent.toLong().toString()
-        } else {
-            String.format(java.util.Locale.US, "%.1f", percent).trimEnd('0').trimEnd('.')
-        }
-        changePlacement("Model scaled to $label%") { placement, _ ->
+        changePlacement("Model scaled by ${scaleLabel(percent)}%") { placement, _ ->
             placement.scaled(percent)
         }
+    }
+
+    /** The Scale field's target: [percent] is the model's size, not a step. */
+    fun scaleModelTo(percent: Double) {
+        changePlacement("Model scaled to ${scaleLabel(percent)}%") { placement, _ ->
+            placement.scaledTo(percent)
+        }
+    }
+
+    private fun scaleLabel(percent: Double): String = if (percent == percent.toLong().toDouble()) {
+        percent.toLong().toString()
+    } else {
+        String.format(java.util.Locale.US, "%.1f", percent).trimEnd('0').trimEnd('.')
     }
 
     fun dropModelToBed() {

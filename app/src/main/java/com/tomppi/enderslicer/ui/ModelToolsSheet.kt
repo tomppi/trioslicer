@@ -138,6 +138,19 @@ fun ModelToolsOverlay(
             onGroup = { group -> openGroup = if (openGroup == group) null else group },
             onClose = onClose,
         )
+        // Pressing and holding the model opens Move, Rotate and Scale as a gizmo
+        // over it, and nothing on the plate says so - the three groups above read
+        // as the only way in, so the gesture stays invisible until someone
+        // stumbles on it. The tip sits under the bar, where the eye already is
+        // after opening Model tools.
+        Text(
+            "Press and hold the model to open Move, Rotate and Scale over it.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .widthIn(max = 260.dp)
+                .padding(horizontal = 6.dp),
+        )
     }
 }
 
@@ -281,7 +294,12 @@ private fun ModelTransformTools(
     var xText by rememberSaveable(placement) { mutableStateOf(placement?.centerXmm?.formatPosition().orEmpty()) }
     var yText by rememberSaveable(placement) { mutableStateOf(placement?.centerYmm?.formatPosition().orEmpty()) }
     var zText by rememberSaveable(placement) { mutableStateOf(placement?.baseZmm?.formatPosition().orEmpty()) }
-    var scaleText by rememberSaveable(placement) { mutableStateOf("100") }
+    // The field is a size, not a step, so it opens on the size the model is
+    // already at rather than on 100. It used to reset to "100" on every
+    // placement change, which made each scale read as "the new 100".
+    var scaleText by rememberSaveable(placement) {
+        mutableStateOf(placement?.scalePercent?.formatPosition().orEmpty())
+    }
     // The placement stores a matrix, not Euler angles, so the Rotate summary
     // tallies the rotations applied from this panel instead of pretending to
     // decompose it.
@@ -426,12 +444,15 @@ private fun ModelTransformTools(
         }
 
         TransformSectionHeader(
-            text = "Scale: ${scaleText.ifBlank { "-" }}%",
+            // The model's real size, from the placement, so the header keeps
+            // telling the truth while the field below holds an unapplied edit.
+            text = "Scale: ${placement?.scalePercent?.formatPosition() ?: "-"}%",
             expanded = openSection == TransformSection.SCALE,
             onToggle = { toggle(TransformSection.SCALE) },
         ) {
             Text(
-                "Multiplies the current size around its position. 100% keeps the model unchanged; 200% doubles it.",
+                "Sets the model's size as a percentage of the size it was imported at, around its " +
+                    "position. 100% is the imported size; applying 145% twice leaves it at 145%.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
