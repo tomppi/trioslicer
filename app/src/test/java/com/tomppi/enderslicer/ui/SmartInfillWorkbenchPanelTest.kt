@@ -80,6 +80,7 @@ class SmartInfillWorkbenchPanelTest {
                 onExpandToSurface = {},
                 onUpdateCondition = onUpdate,
                 onSpotSize = {},
+                onBrushErase = {},
                 onConfiguration = onConfiguration,
                 onOptions = onOptions,
                 onCheck = {},
@@ -155,7 +156,8 @@ class SmartInfillWorkbenchPanelTest {
                 pickingConditionId = 7,
             ),
         )
-        compose.onNodeWithText("Tap the surface that", substring = true).assertExists()
+        // The brush replaced the tap, so the hint has to say drag.
+        compose.onNodeWithText("Drag on the model to choose the surface", substring = true).assertExists()
     }
 
     @Test
@@ -265,6 +267,7 @@ class SmartInfillWorkbenchPanelTest {
                     committed = value
                     state.value = state.value.copy(spotSizeMm = value)
                 },
+                onBrushErase = {},
                 onConfiguration = {},
                 onOptions = {},
                 onCheck = {},
@@ -277,7 +280,7 @@ class SmartInfillWorkbenchPanelTest {
                 onClose = {},
             )
         }
-        val field = compose.onNodeWithText("Tap radius mm").performScrollTo()
+        val field = compose.onNodeWithText("Radius mm").performScrollTo()
         field.performClick()
         field.performTextReplacement("")
         field.performTextInput("3")

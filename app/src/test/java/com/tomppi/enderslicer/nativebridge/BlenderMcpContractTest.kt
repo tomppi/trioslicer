@@ -8,10 +8,27 @@ import org.junit.Test
 /** Source-contract checks for the Blender MCP engine wiring (see BLENDER_MCP_INTEGRATION.md). */
 class BlenderMcpContractTest {
     @Test
-    fun applicationBootsEngineAndViewModelRegistersHandoff() {
+    fun engineStartsOnDemandAndViewModelRegistersHandoff() {
         val app = source("EnderSlicerApplication.kt")
         val viewModel = source("ui/MainViewModel.kt")
-        assertTrue(app.contains("BlenderEngine.ensureStarted(this)"))
+        val appUi = source("ui/EnderSlicerApp.kt")
+        // The engine is no longer booted at launch. Doing that loaded a 1.3 GB
+        // library and armed a ten-minute partial wake lock for every user who
+        // opened the app, including everyone who never touches Blender, and the
+        // lock outlived the screen going off. Every path that needs the engine
+        // asks for it, and the launch boot must not come back.
+        assertFalse(app.contains("BlenderEngine.ensureStarted(this)"))
+        assertTrue(viewModel.contains("fun startBlenderEngine()"))
+        assertTrue(viewModel.contains("BlenderEngine.ensureStarted(app)"))
+        assertTrue("opening the modelling view must start the engine", appUi.contains("viewModel.startBlenderEngine()"))
+        // modellingOpen is rememberSaveable, so the modelling screen is restored
+        // after the process is killed while openModelling - the call that started
+        // the engine - is not re-run. Without this the restored screen showed
+        // "failed to connect to /127.0.0.1 (port 9876) ... ECONNREFUSED".
+        assertTrue(
+            "a restored modelling screen must start the engine again",
+            appUi.contains("if (modellingOpen) viewModel.startBlenderEngine()"),
+        )
         assertTrue(viewModel.contains("BlenderEngine.onStlExported = { file -> importBlenderStl(file) }"))
         assertTrue(viewModel.contains("fun importBlenderStl(file: File)"))
         assertTrue(viewModel.contains("override fun onCleared()"))

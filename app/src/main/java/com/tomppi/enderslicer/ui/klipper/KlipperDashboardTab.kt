@@ -20,10 +20,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import android.hardware.usb.UsbManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.printer.KlipperPrint
+import com.tomppi.enderslicer.printer.PrinterUsb
 import com.tomppi.enderslicer.printer.isMaterialHeater
 import com.tomppi.enderslicer.printer.KlipperFileLimits
 import android.graphics.BitmapFactory
@@ -163,6 +166,20 @@ internal fun KlipperDashboardTab(
 /** Whether the host is up, and what it said if it is not. */
 @Composable
 private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
+    val context = LocalContext.current
+    // Whether there is a printer on the bus at all. With none, klippy reports the
+    // configuration error it was always going to report - "Option 'restart_method'
+    // is not valid in section 'mcu'", "Printer is halted" - which names a config
+    // problem where the cause is an absent machine, and sends the user looking for
+    // a mistake they did not make. The app can tell the two apart, so it does.
+    // Assuming attached on failure: a USB query that cannot answer must not
+    // produce a claim about the printer.
+    val printerAttached = remember(state.connected, state.state) {
+        runCatching {
+            val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
+            manager != null && PrinterUsb.findDrivers(manager).isNotEmpty()
+        }.getOrDefault(true)
+    }
     KlipperCard(title = "Printer", subtitle = "The Klipper host running in this app") {
         Text(
             text = when {
@@ -178,6 +195,16 @@ private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
         )
+        if (!printerAttached) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "No printer is attached, so there is nothing for the host to drive yet. " +
+                    "Plug one in and it is picked up; what follows is what klippy reports with " +
+                    "no board to talk to, not a mistake in your configuration.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (state.stateMessage.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
             Text(
@@ -186,21 +213,37 @@ private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (!state.connected && state.remoteHost == null) {
+        if (state.remoteHost == null) {
             Spacer(Modifier.height(12.dp))
             KlipperButtons {
-                // The host is normally started by the printer being plugged in; this is
-                // for when it is already plugged in, or was started before the app.
-                KlipperButton("Start the printer host") { viewModel.startHost() }
+                // "Connected" here means this app's own klippy is answering, not that
+                // a printer is attached - so it is also the only sign the host is up.
+                // The start button used to be the whole block, gated on NOT being
+                // connected, so the moment the host answered the control vanished and
+                // the only way to stop it was to force-stop the app.
+                if (state.connected) {
+                    KlipperButton("Stop the printer host") { viewModel.stopHost() }
+                } else {
+                    // The host is normally started by the printer being plugged in; this
+                    // is for when it is already plugged in, or was started before the app.
+                    KlipperButton("Start the printer host") { viewModel.startHost() }
+                }
             }
-            state.hostLogTail?.let { tail ->
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "The host stopped with:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                KlipperMono(tail, color = MaterialTheme.colorScheme.error)
+            // Only with something to show, and only once it has stopped: the label
+            // says the host stopped with this, which is not true while it is up. It
+            // used to be printed whenever the tail existed, and a blank tail rendered
+            // as "The host stopped with:" and then nothing - a reason that read as
+            // lost rather than one that was never written.
+            if (!state.connected) {
+                state.hostLogTail?.takeIf { it.isNotBlank() }?.let { tail ->
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "The host stopped with:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    KlipperMono(tail, color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

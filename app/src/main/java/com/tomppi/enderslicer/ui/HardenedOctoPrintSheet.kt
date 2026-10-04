@@ -1036,7 +1036,17 @@ private fun HardenedSetupPage(
     var pollSeconds by rememberSaveable(state.config.pollIntervalSeconds) { mutableStateOf(state.config.pollIntervalSeconds.toString()) }
     var confirmClear by remember { mutableStateOf(false) }
 
-    LaunchedEffect(state.config) {
+    // Keyed on the fields this form actually loads, not on the whole config.
+    // Discovery writes other parts of it - the webcam it finds, the connection
+    // it reports - and every one of those rewrote these four variables from the
+    // saved values, so a URL half-typed and a key half-entered vanished when
+    // something unrelated came back.
+    LaunchedEffect(
+        state.config.baseUrl,
+        state.config.username,
+        state.config.snapshotUrlOverride,
+        state.config.pollIntervalSeconds,
+    ) {
         baseUrl = state.config.baseUrl
         username = state.config.username
         snapshotUrl = state.config.snapshotUrlOverride

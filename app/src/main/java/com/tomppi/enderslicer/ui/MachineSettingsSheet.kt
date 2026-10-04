@@ -49,6 +49,7 @@ internal fun MachineSettingsContent(
     modifier: Modifier = Modifier,
 ) {
     val settings = state.settings
+    var confirmingReset by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -63,12 +64,23 @@ internal fun MachineSettingsContent(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedButton(
-                    onClick = onResetOverrides,
+                    onClick = { confirmingReset = true },
                     enabled = settings.overriddenSettingKeys.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Reset all app overrides")
                 }
+        if (confirmingReset) {
+            ResetConfirmDialog(
+                title = "Reset all app overrides?",
+                text = "Every machine setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported - including the build volume the viewer and CuraEngine use. There is no undo.",
+                onDismiss = { confirmingReset = false },
+                onConfirm = {
+                    confirmingReset = false
+                    onResetOverrides()
+                },
+            )
+        }
             }
         }
 

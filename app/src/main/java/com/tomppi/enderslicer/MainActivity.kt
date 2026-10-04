@@ -23,6 +23,7 @@ import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperViewModel
+import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.IntegratedEnderSlicerApp
 import com.tomppi.enderslicer.ui.MainViewModel
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         MeshTriangleLimits.initialize(this)
         UiScale.initialize(this)
+        Diagnostics.initialize(this)
         enableEdgeToEdge()
         requestNotificationPermission()
         startKlipperHostIfPrinterAttached(intent)

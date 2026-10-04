@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -58,6 +59,9 @@ internal fun OrcaSettingsSheet(
     // The engine's own min/max per key: an edit outside them is one the engine would
     // refuse. The catalogue is 200 KB of JSON, so it is parsed off the main thread.
     var ranges by remember { mutableStateOf<Map<String, ClosedFloatingPointRange<Double>>?>(null) }
+    // The reset is destructive and one tap: it throws away every OrcaSlicer
+    // setting, the presets and anything imported, and nothing brings it back.
+    var confirmingReset by remember { mutableStateOf(false) }
     val liveSettings = rememberUpdatedState(settings)
     LaunchedEffect(Unit) {
         val loaded = withContext(Dispatchers.IO) { AllSettingsCatalogs.orcaRanges(context.assets) }
@@ -103,10 +107,22 @@ internal fun OrcaSettingsSheet(
             Text("Add more settings (all settings)")
         }
         OutlinedButton(
-            onClick = { onSettings(OrcaSliceSettings.Keys.LAYER_HEIGHT) { OrcaSliceSettings() } },
+            onClick = { confirmingReset = true },
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Reset to engine defaults")
+        }
+        if (confirmingReset) {
+            ResetConfirmDialog(
+                title = "Reset to engine defaults?",
+                text = "Every OrcaSlicer setting goes back to the engine's own default, including the " +
+                    "presets above and anything a profile imported. There is no undo.",
+                onDismiss = { confirmingReset = false },
+                onConfirm = {
+                    confirmingReset = false
+                    onSettings(OrcaSliceSettings.Keys.LAYER_HEIGHT) { OrcaSliceSettings() }
+                },
+            )
         }
 
         Text("Quality", style = MaterialTheme.typography.titleMedium)

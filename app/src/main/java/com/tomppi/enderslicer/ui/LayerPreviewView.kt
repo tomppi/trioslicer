@@ -53,6 +53,13 @@ import kotlin.math.roundToInt
 @Composable
 internal fun LayerPreviewView(
     preview: GcodeLayerPreview,
+    /**
+     * The engine that actually sliced this file, for the layer marker's label.
+     * The number comes from the file's own ';LAYER:' comment, so naming a fixed
+     * engine there was wrong twice: it credited Cura with every slice, and the
+     * marker is not Cura's number even when Cura wrote it.
+     */
+    engineLabel: String?,
     selectedLayerIndex: Int,
     events: List<LayerEvent>,
     onLayerSelected: (Int) -> Unit,
@@ -132,7 +139,9 @@ internal fun LayerPreviewView(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "Layer ${safeIndex + 1}/${preview.layers.size} · Cura ${layer.number} · Z %.3f mm".format(layer.z),
+                            "Layer ${safeIndex + 1}/${preview.layers.size} · " +
+                                (engineLabel?.let { "$it " } ?: "") +
+                                "${layer.number} · Z %.3f mm".format(layer.z),
                             style = MaterialTheme.typography.titleSmall,
                         )
                         Text(

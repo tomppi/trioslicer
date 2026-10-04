@@ -82,6 +82,25 @@ import com.tomppi.enderslicer.viewer.DensityRamp
  * card scrolls on its own and both are capped, because the Plate's own session
  * cards share the right-hand edge.
  */
+/**
+ * Paint or Erase. A phone has no left and right button to tell them apart the
+ * way filaSim's brush does, so the live one has to be visible at a glance: the
+ * chosen mode is the filled button, and tapping it again is harmless.
+ */
+@Composable
+private fun BrushModeButton(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    if (selected) {
+        Button(onClick = onClick, enabled = enabled) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled) { Text(label) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 fun SmartInfillWorkbenchPanel(
@@ -96,6 +115,7 @@ fun SmartInfillWorkbenchPanel(
     onExpandToSurface: (Long) -> Unit,
     onUpdateCondition: (Long, FilaSimBoundaryCondition) -> Unit,
     onSpotSize: (Double) -> Unit,
+    onBrushErase: (Boolean) -> Unit,
     onConfiguration: (FilaSimConfiguration) -> Unit,
     onOptions: (FilaSimOptimizeOptions) -> Unit,
     onCheck: () -> Unit,
@@ -120,6 +140,7 @@ fun SmartInfillWorkbenchPanel(
             onExpandToSurface = onExpandToSurface,
             onUpdateCondition = onUpdateCondition,
             onSpotSize = onSpotSize,
+            onBrushErase = onBrushErase,
             onConfiguration = onConfiguration,
             onOptions = onOptions,
             onCheck = onCheck,
@@ -457,6 +478,7 @@ private fun AnalysisSection(
     onExpandToSurface: (Long) -> Unit,
     onUpdateCondition: (Long, FilaSimBoundaryCondition) -> Unit,
     onSpotSize: (Double) -> Unit,
+    onBrushErase: (Boolean) -> Unit,
     onConfiguration: (FilaSimConfiguration) -> Unit,
     onOptions: (FilaSimOptimizeOptions) -> Unit,
     onCheck: () -> Unit,
@@ -476,6 +498,7 @@ private fun AnalysisSection(
             onExpandToSurface = onExpandToSurface,
             onUpdateCondition = onUpdateCondition,
             onSpotSize = onSpotSize,
+            onBrushErase = onBrushErase,
             onConfiguration = onConfiguration,
         )
     }
@@ -505,6 +528,7 @@ private fun SetupSections(
     onExpandToSurface: (Long) -> Unit,
     onUpdateCondition: (Long, FilaSimBoundaryCondition) -> Unit,
     onSpotSize: (Double) -> Unit,
+    onBrushErase: (Boolean) -> Unit,
     onConfiguration: (FilaSimConfiguration) -> Unit,
 ) {
     val configuration = state.configuration
@@ -555,8 +579,8 @@ private fun SetupSections(
     }
     state.pickingCondition?.let { entry ->
         Text(
-            "Tap the surface that " + entry.label.lowercase() + " acts on — dragging still orbits " +
-                "the model.",
+            "Drag on the model to choose the surface that " + entry.label.lowercase() +
+                " acts on. Keep dragging to paint more; switch to Erase to take it back.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -645,16 +669,27 @@ private fun SetupSections(
         ) { Text("Mass 100 g") }
     }
 
-    Text("Selection", style = MaterialTheme.typography.titleSmall)
+    Text("Brush", style = MaterialTheme.typography.titleSmall)
     NumberRow(
-        label = "Tap radius mm",
+        label = "Radius mm",
         value = state.spotSizeMm,
         format = { fixed(it) },
         onValue = onSpotSize,
     )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        BrushModeButton("Paint", selected = !state.brushErase, enabled = enabled) {
+            onBrushErase(false)
+        }
+        BrushModeButton("Erase", selected = state.brushErase, enabled = enabled) {
+            onBrushErase(true)
+        }
+    }
     Text(
-        "A tap takes the surface within this radius of your finger — pick twice to add a " +
-            "second pad. \"Face\" widens a condition to the whole flat surface it sits on.",
+        "Arm a condition with \"Pick\", then drag on the model: the brush covers every " +
+            "triangle inside this radius at each sample along the stroke, and the stroke is " +
+            "kept when you lift your finger. Erase takes surface back the same way - a brush " +
+            "that reached past where you aimed is rubbed out rather than argued with. " +
+            "\"Face\" widens a condition to the whole flat surface it sits on.",
         style = MaterialTheme.typography.bodySmall,
     )
 

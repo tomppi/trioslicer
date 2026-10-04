@@ -189,6 +189,105 @@ class SmartInfillControllerTest {
 
     private fun settle() = runBlocking { delay(20) }
 
+    /**
+     * The brush. A stroke is many samples rather than one tap, so it must not
+     * disarm after the first of them, and the engine must not be told about
+     * each one: a stroke is tens of samples a second and every sync re-sends
+     * the condition's whole triangle list.
+     */
+    @Test
+    fun aBrushStrokePaintsEverySampleAndStaysArmed() {
+        val engine = FakeEngine(patches = intArrayOf(0, 0, 0, 0, 1, 1))
+        runBlocking {
+            val controller = SmartInfillController(engine, this)
+            val id = controller.addCondition(FilaSimBoundaryCondition.Fixed(IntArray(0)))
+            controller.armPicking(id)
+
+            controller.paintTriangles(id, intArrayOf(0), erase = false)
+            controller.paintTriangles(id, intArrayOf(1, 2), erase = false)
+            controller.paintTriangles(id, intArrayOf(3), erase = false)
+
+            val state = controller.state.value
+            assertArrayEquals(
+                "every sample along the stroke is kept",
+                intArrayOf(0, 1, 2, 3),
+                state.conditions.single().condition.triangles,
+            )
+            assertEquals(
+                "a stroke is one gesture: it must not disarm between samples",
+                id,
+                state.pickingConditionId,
+            )
+            assertEquals("the engine is not told once per sample", 0, engine.addedConditions.size)
+
+            controller.flushEngineConditions()
+            assertEquals(1, engine.addedConditions.size)
+            assertArrayEquals(
+                intArrayOf(0, 1, 2, 3),
+                engine.addedConditions.single().triangles,
+            )
+        }
+    }
+
+    /**
+     * The eraser is the answer to a brush that reached past where it was aimed.
+     * It takes back only what it covers and leaves the rest alone.
+     */
+    @Test
+    fun theEraserTakesBackOnlyWhatItCovers() {
+        val engine = FakeEngine(patches = intArrayOf(0, 0, 0, 0, 1, 1))
+        runBlocking {
+            val controller = SmartInfillController(engine, this)
+            val id = controller.addCondition(FilaSimBoundaryCondition.Fixed(IntArray(0)))
+            controller.armPicking(id)
+            controller.paintTriangles(id, intArrayOf(0, 1, 2, 3), erase = false)
+
+            controller.paintTriangles(id, intArrayOf(1, 2), erase = true)
+
+            assertArrayEquals(
+                "only the covered triangles go",
+                intArrayOf(0, 3),
+                controller.state.value.conditions.single().condition.triangles,
+            )
+            assertEquals(
+                "erasing leaves the brush armed for the next stroke",
+                id,
+                controller.state.value.pickingConditionId,
+            )
+        }
+    }
+
+    @Test
+    fun erasingSurfaceTheConditionNeverHadChangesNothing() {
+        val engine = FakeEngine(patches = intArrayOf(0, 0, 0, 0, 1, 1))
+        runBlocking {
+            val controller = SmartInfillController(engine, this)
+            val id = controller.addCondition(FilaSimBoundaryCondition.Fixed(IntArray(0)))
+            controller.armPicking(id)
+            controller.paintTriangles(id, intArrayOf(0, 1), erase = false)
+
+            controller.paintTriangles(id, intArrayOf(4, 5), erase = true)
+
+            assertArrayEquals(
+                intArrayOf(0, 1),
+                controller.state.value.conditions.single().condition.triangles,
+            )
+        }
+    }
+
+    @Test
+    fun theEraserModeIsStateThePanelAndTheFingerShare() {
+        runBlocking {
+            val controller = SmartInfillController(FakeEngine(), this)
+            assertFalse("paint is the mode a brush starts in", controller.state.value.brushErase)
+            controller.setBrushErase(true)
+            assertTrue(controller.state.value.brushErase)
+            controller.setBrushErase(false)
+            assertFalse(controller.state.value.brushErase)
+        }
+    }
+
+
     @Test
     fun addingAConditionArmsPickingForIt() {
         val engine = FakeEngine()

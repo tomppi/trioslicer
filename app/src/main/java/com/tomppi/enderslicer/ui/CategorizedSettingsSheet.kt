@@ -71,6 +71,7 @@ internal fun CategorizedSettingsSheet(
     modifier: Modifier = Modifier,
 ) {
     val settings = state.settings
+    var confirmingReset by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -121,12 +122,23 @@ internal fun CategorizedSettingsSheet(
                     Text("Warning: $warning", color = MaterialTheme.colorScheme.error)
                 }
                 OutlinedButton(
-                    onClick = onResetOverrides,
+                    onClick = { confirmingReset = true },
                     enabled = settings.overriddenSettingKeys.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Reset all app overrides")
                 }
+        if (confirmingReset) {
+            ResetConfirmDialog(
+                title = "Reset all app overrides?",
+                text = "Every setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported. There is no undo.",
+                onDismiss = { confirmingReset = false },
+                onConfirm = {
+                    confirmingReset = false
+                    onResetOverrides()
+                },
+            )
+        }
             }
         }
 

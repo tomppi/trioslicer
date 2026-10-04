@@ -76,6 +76,8 @@ fun ModellingScreen(
     owner: CameraOwner,
     /** False while the agent is working: the camera is the agent's until it stops. */
     canTakeCamera: Boolean,
+    /** Whether an agent is actually connected, for the caption under the view. */
+    agentConnected: Boolean,
     blenderDir: File,
     onSend: (String) -> Unit,
     onExit: () -> Unit,
@@ -137,6 +139,7 @@ fun ModellingScreen(
             blenderDir = blenderDir,
             initialCamera = incomingCamera,
             interactive = owner == CameraOwner.USER,
+            agentConnected = agentConnected,
 
             onScene = { scene = it },
             onCameraChanged = onCameraMoved,

@@ -50,6 +50,7 @@ import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.smartinfill.FilaSimBoundaryCondition
 import com.tomppi.enderslicer.smartinfill.FilaSimEngine
 import com.tomppi.enderslicer.smartinfill.SmartInfillActivity
+import com.tomppi.enderslicer.supportpaint.SupportPaintBrush
 import com.tomppi.enderslicer.smartinfill.SmartInfillController
 import com.tomppi.enderslicer.smartinfill.SmartInfillNativeExport
 import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
@@ -397,7 +398,8 @@ fun IntegratedEnderSlicerApp(
     DisposableEffect(smartInfillController) {
         val controller = smartInfillController
         onDispose {
-            slicerViewModel.setSmartInfillPickHandler(null)
+            slicerViewModel.setSmartInfillBrushHandler(null)
+            slicerViewModel.setSmartInfillStrokeEndHandler(null)
             slicerViewModel.setSmartInfillPicking(false)
             slicerViewModel.setSmartInfillOverlay(null)
             controller?.close()
@@ -413,14 +415,37 @@ fun IntegratedEnderSlicerApp(
         smartInfillController = null
     }
 
-    // While a condition is armed, a model tap belongs to Smart Infill.
+    // While a condition is armed, a stroke on the model paints it: filaSim's
+    // brush. The radius and the add/erase mode are read from the controller on
+    // every sample, so the panel and the finger can never disagree, and the
+    // engine is told once when the stroke ends rather than once per sample.
     LaunchedEffect(smartInfillController, nativeInfillState?.pickingConditionId) {
         val controller = smartInfillController
         if (controller == null) {
-            slicerViewModel.setSmartInfillPickHandler(null)
+            slicerViewModel.setSmartInfillBrushHandler(null)
+            slicerViewModel.setSmartInfillStrokeEndHandler(null)
             slicerViewModel.setSmartInfillPicking(false)
         } else {
-            slicerViewModel.setSmartInfillPickHandler(controller::pickAt)
+            slicerViewModel.setSmartInfillBrushHandler { hit ->
+                val mesh = slicerState.mesh
+                val id = controller.state.value.pickingConditionId
+                if (mesh != null && id != null) {
+                    val radius = controller.state.value.spotSizeMm.toFloat()
+                    val erase = controller.state.value.brushErase
+                    nativeInfillScope.launch {
+                        // The brush is a scan over every triangle - the same rule
+                        // filaSim paints with and the support-paint brush already
+                        // uses - so it runs where that one runs.
+                        val triangles = withContext(Dispatchers.Default) {
+                            SupportPaintBrush.expand(mesh, hit.x, hit.y, hit.z, radius)
+                        }
+                        if (triangles.isNotEmpty()) {
+                            controller.paintTriangles(id, triangles.toIntArray(), erase)
+                        }
+                    }
+                }
+            }
+            slicerViewModel.setSmartInfillStrokeEndHandler { controller.flushEngineConditions() }
             slicerViewModel.setSmartInfillPicking(nativeInfillState?.pickingConditionId != null)
         }
     }
@@ -644,7 +669,7 @@ fun IntegratedEnderSlicerApp(
                     ),
             )
         },
-        moreExtraItems = {
+        moreExtraItems = { onShowPlate ->
             MoreRow(
                 icon = AppIcons.Bolt,
                 title = smartInfillMenuLabel,
@@ -655,7 +680,13 @@ fun IntegratedEnderSlicerApp(
                 },
                 enabled = slicerState.mesh != null && !slicerState.isBusy && !smartInfillImporting,
                 badge = "EXP",
-                onClick = { smartInfillOpen = true },
+                onClick = {
+                    smartInfillOpen = true
+                    // The panel lives over the Plate, not here. Setting the flag
+                    // alone left the user on the More hub with no sign that
+                    // anything had happened - the control looked dead.
+                    onShowPlate()
+                },
             )
         },
         printTabContent = {
@@ -690,6 +721,7 @@ fun IntegratedEnderSlicerApp(
                         smartInfillController?.updateCondition(id, condition)
                     },
                     onSpotSize = { mm -> smartInfillController?.setSpotSize(mm) },
+                    onBrushErase = { erase -> smartInfillController?.setBrushErase(erase) },
                     onConfiguration = { configuration ->
                         smartInfillController?.setConfiguration(configuration)
                     },

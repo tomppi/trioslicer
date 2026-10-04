@@ -59,8 +59,15 @@ data class SmartInfillUiState(
     val pickingConditionId: Long? = null,
     val configuration: FilaSimConfiguration = FilaSimConfiguration(),
     val options: FilaSimOptimizeOptions = FilaSimOptimizeOptions(),
-    /** The radius a tap selects around the hit triangle, in mm. */
+    /** The radius the brush covers around the point under the finger, in mm. */
     val spotSizeMm: Double = SmartInfillController.DEFAULT_SPOT_MM,
+    /**
+     * Whether a brush stroke takes surface away instead of adding it.
+     *
+     * filaSim paints with the left button and erases with the right; a phone has
+     * neither, so the mode is a control of its own.
+     */
+    val brushErase: Boolean = false,
     /**
      * Density bin under each model triangle, as the last run reported it, and the
      * densities those bins stand for — the result view's tint on the part.
@@ -214,6 +221,40 @@ class SmartInfillController(
         _state.update { it.copy(pickingConditionId = null) }
     }
 
+    /** Add or erase: which way a brush stroke goes. */
+    fun setBrushErase(erase: Boolean) {
+        _state.update { it.copy(brushErase = erase) }
+    }
+
+    /**
+     * One sample of a brush stroke: the triangles the brush covered under the
+     * finger, added to the armed condition or taken out of it.
+     *
+     * Unlike [pickAt] this never disarms - a stroke is many samples and the
+     * next one belongs to the same gesture - and it takes the triangles rather
+     * than asking the engine for a region, so the brush, the eraser and the
+     * support-paint brush all select with the same rule.
+     */
+    fun paintTriangles(id: Long, triangles: IntArray, erase: Boolean) {
+        if (closed || triangles.isEmpty()) return
+        if (_state.value.conditions.none { it.id == id }) return
+        // No engine sync per sample. A stroke is tens of samples a second and
+        // each one would re-serialise the condition's whole triangle list
+        // through JNI - a list that grows with every sample. The engine is told
+        // once, by [flushEngineConditions] when the finger comes up.
+        if (erase) {
+            subtractTriangles(id, triangles, sync = false)
+        } else {
+            addTriangles(id, triangles, keepArmed = true, sync = false)
+        }
+    }
+
+    /** Hands the finished stroke's selections to the engine. */
+    fun flushEngineConditions() {
+        if (closed) return
+        syncEngineConditions()
+    }
+
     /**
      * A tap on the model. Returns true when Smart Infill consumed it: the
      * connected surface within [SmartInfillUiState.spotSizeMm] of the hit is
@@ -261,29 +302,57 @@ class SmartInfillController(
      * Adds a selection to a condition. Taps accumulate, so a support spread
      * over two pads is two taps rather than one oversized radius.
      */
-    private fun addTriangles(id: Long, triangles: IntArray) {
+    private fun addTriangles(
+        id: Long,
+        triangles: IntArray,
+        keepArmed: Boolean = false,
+        sync: Boolean = true,
+    ) {
         if (triangles.isEmpty()) return
         if (_state.value.conditions.none { it.id == id }) return
         val current = _state.value.conditions.first { it.id == id }.condition
         val merged = sortedUnion(current.triangles, triangles)
+        applySelection(id, current, merged, keepArmed, sync)
+    }
+
+    /**
+     * Takes triangles out of a condition. The eraser is the answer to a brush
+     * that reaches past where it was aimed, which no amount of distance
+     * arithmetic fixes: what the user wants is to rub it out and carry on.
+     */
+    private fun subtractTriangles(id: Long, triangles: IntArray, sync: Boolean = true) {
+        val current = _state.value.conditions.firstOrNull { it.id == id }?.condition ?: return
+        val removing = triangles.toHashSet()
+        val remaining = current.triangles.filterNot(removing::contains).toIntArray()
+        if (remaining.size == current.triangles.size) return
+        applySelection(id, current, remaining, keepArmed = true, sync = sync)
+    }
+
+    private fun applySelection(
+        id: Long,
+        current: FilaSimBoundaryCondition,
+        triangles: IntArray,
+        keepArmed: Boolean,
+        sync: Boolean,
+    ) {
         _state.update { state ->
             state.copy(
                 conditions = state.conditions.map { entry ->
                     if (entry.id == id) {
                         entry.copy(
-                            condition = snapMassCentroid(current, merged).withTriangles(merged),
+                            condition = snapMassCentroid(current, triangles).withTriangles(triangles),
                         )
                     } else {
                         entry
                     }
                 },
-                pickingConditionId = null,
+                pickingConditionId = if (keepArmed) state.pickingConditionId else null,
                 optimization = null,
                 error = null,
                 notice = null,
             )
         }
-        syncEngineConditions()
+        if (sync) syncEngineConditions()
     }
 
     /**

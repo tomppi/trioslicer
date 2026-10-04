@@ -121,6 +121,13 @@ fun ModellingPreview(
     initialCamera: ModellingCamera?,
     /** False while the agent owns the camera: gestures are refused, not queued. */
     interactive: Boolean,
+    /**
+     * Whether there is an agent on the other end at all. The caption below the
+     * view used to say "The agent has the camera" whenever the user did not,
+     * including on a screen simultaneously saying "Connect to the harness
+     * first" - naming an agent that did not exist.
+     */
+    agentConnected: Boolean,
     /** What the engine is holding, so the bar can name the real thing. */
     onScene: (SceneSummary) -> Unit = {},
     onCameraChanged: (ModellingCamera) -> Unit,
@@ -540,7 +547,7 @@ fun ModellingPreview(
         }
         if (!interactive) {
             Text(
-                text = "The agent has the camera",
+                text = if (agentConnected) "The agent has the camera" else "No agent is connected",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),

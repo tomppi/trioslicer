@@ -186,7 +186,7 @@ fun EnderSlicerApp(
     onUiScaleChange: (percent: Int, commit: Boolean) -> Unit = { _, _ -> },
     sliceBlockedReason: String? = null,
     plateOverflowItems: @Composable (() -> Unit) -> Unit = { _ -> },
-    moreExtraItems: @Composable () -> Unit = {},
+    moreExtraItems: @Composable (onShowPlate: () -> Unit) -> Unit = {},
     printTabContent: @Composable () -> Unit = {},
     plateOverlayContent: @Composable BoxScope.() -> Unit = {},
 ) {
@@ -194,6 +194,25 @@ fun EnderSlicerApp(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.PLATE) }
+
+    // A failure lands in the corner of the model viewer, and that corner is on
+    // the Plate. Everything the app does from another tab - importing a
+    // configuration snapshot, most of all - therefore reported into a surface
+    // the user was not looking at, which is how "importing an unusable snapshot
+    // is a silent no-op" survived a fix that gave it a log line. Anywhere but
+    // the Plate, the app says it out loud instead.
+    val latestAlert by Diagnostics.latestAlert.collectAsStateWithLifecycle()
+    var announcedAlertAt by remember { mutableStateOf(0L) }
+    LaunchedEffect(latestAlert, selectedTab) {
+        val entry = latestAlert ?: return@LaunchedEffect
+        if (selectedTab == AppTab.PLATE || entry.atMillis == announcedAlertAt) return@LaunchedEffect
+        announcedAlertAt = entry.atMillis
+        Toast.makeText(
+            context,
+            (if (entry.level == Diagnostics.Level.FAILURE) "Failed: " else "Warning: ") + entry.message,
+            Toast.LENGTH_LONG,
+        ).show()
+    }
     var importMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var plateOverflowExpanded by rememberSaveable { mutableStateOf(false) }
     var profilesOpen by rememberSaveable { mutableStateOf(false) }
@@ -219,6 +238,8 @@ fun EnderSlicerApp(
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
+    var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
+    val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
     var nonPlanarOpen by rememberSaveable { mutableStateOf(false) }
     var allSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var conicalOpen by rememberSaveable { mutableStateOf(false) }
@@ -775,6 +796,14 @@ fun EnderSlicerApp(
         val missingClient = (aiChatOpen && harnessChat.get() == null) ||
             (modellingOpen && modellingChat.get() == null)
         if (aiConfigured && missingClient) connectHarness()
+        // The engine needs the same treatment for the same reason, and it is the
+        // one thing that does NOT come back on its own: modellingOpen is
+        // rememberSaveable, so the screen is restored after the process is killed,
+        // while the start that opened it - openModelling - is not re-run. Before
+        // the engine stopped being booted at launch this was invisible; now a
+        // restored screen showed "failed to connect to /127.0.0.1 (port 9876)
+        // ... ECONNREFUSED" and stayed that way until it was left and re-entered.
+        if (modellingOpen) viewModel.startBlenderEngine()
     }
 
     // The standing brief waits for the connection its screen opened in the same
@@ -796,6 +825,7 @@ fun EnderSlicerApp(
     BackHandler(enabled = conicalOpen) { conicalOpen = false }
     BackHandler(enabled = meshLimitOpen) { meshLimitOpen = false }
     BackHandler(enabled = uiScaleOpen) { uiScaleOpen = false }
+    BackHandler(enabled = diagnosticsLogOpen) { diagnosticsLogOpen = false }
     BackHandler(enabled = profilesOpen) { profilesOpen = false }
     BackHandler(
         enabled = layerEventsOpen && state.layerPreview != null && state.hasCurrentGcode(),
@@ -1175,6 +1205,7 @@ fun EnderSlicerApp(
                         // Locked while the agent works: the camera is the agent's until
                         // it stops, which is the whole point of the lock.
                         canTakeCamera = !modellingBusy,
+                        agentConnected = modellingChatReady,
                         onSend = ::askModellingAgent,
                         onExit = { modellingOpen = false },
                         onTakeCamera = { setModellingOwner(CameraOwner.USER) },
@@ -1226,7 +1257,8 @@ fun EnderSlicerApp(
                             onLayerSelected = { selectedLayerIndex = it },
                             onEditLayerEvents = { layerEventsOpen = true },
                             onPaintHit = viewModel::paintAt,
-                            onSurfacePick = viewModel::pickSurfaceAt,
+                            onSurfacePick = viewModel::brushSurfaceAt,
+                            onSurfacePickEnd = viewModel::endSmartInfillStroke,
                             dragMove = modelDragMove,
                             onModelDrag = { deltaX, deltaY ->
                                 viewModel.nudgeModel(deltaX.toDouble(), deltaY.toDouble())
@@ -1274,6 +1306,7 @@ fun EnderSlicerApp(
                             onAnnotationZAdjust = viewModel::onAnnotationZAdjust,
                             onAnnotationZAdjustEnd = viewModel::endAnnotationZAdjust,
                             plateOverlayContent = plateOverlayContent,
+                            onOpenDiagnosticsLog = { diagnosticsLogOpen = true },
                             annotationActions = AnnotationActions(
                                 onLockSegment = viewModel::lockAnnotationSegment,
                                 onLockSeries = viewModel::lockAnnotationSeries,
@@ -1526,7 +1559,16 @@ fun EnderSlicerApp(
                         onMeshLimit = { meshLimitOpen = true },
                         uiScalePercent = uiScalePercent,
                         onUiScale = { uiScaleOpen = true },
-                        extraItems = moreExtraItems,
+                        diagnosticsOn = diagnosticsOn,
+                        onToggleDiagnostics = {
+                            // Applied at once rather than through a sheet: it is one
+                            // switch, and the badge on the row is its state.
+                            Diagnostics.setEnabled(context, !diagnosticsOn)
+                        },
+                        onOpenDiagnosticsLog = { diagnosticsLogOpen = true },
+                        // The slot can send the user to the Plate: what it adds there is
+                        // a control for a panel that lives over that surface.
+                        extraItems = { moreExtraItems { selectedTab = AppTab.PLATE } },
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),
@@ -1587,6 +1629,14 @@ fun EnderSlicerApp(
                 onChange = onUiScaleChange,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+
+    if (diagnosticsLogOpen) {
+        AppBottomSheet(
+            onDismissRequest = { diagnosticsLogOpen = false },
+        ) {
+            DiagnosticsLogSheet(onDismiss = { diagnosticsLogOpen = false })
         }
     }
 
@@ -1956,6 +2006,9 @@ private fun MoreScreen(
     onMeshLimit: () -> Unit,
     uiScalePercent: Int,
     onUiScale: () -> Unit,
+    diagnosticsOn: Boolean,
+    onToggleDiagnostics: () -> Unit,
+    onOpenDiagnosticsLog: () -> Unit,
     extraItems: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -2057,6 +2110,29 @@ private fun MoreScreen(
                 enabled = !state.isBusy,
                 badge = if (uiScalePercent == UiScale.DEFAULT_PERCENT) null else "$uiScalePercent%",
                 onClick = onUiScale,
+            )
+        }
+
+        MoreSectionLabel("Diagnostics")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            MoreRow(
+                icon = AppIcons.Wrench,
+                title = "App log",
+                subtitle = if (diagnosticsOn) {
+                    "Recording everything the app reports, failures in red"
+                } else {
+                    "Off · failures still appear in the viewer's corner"
+                },
+                enabled = !state.isBusy,
+                badge = if (diagnosticsOn) "ON" else "OFF",
+                onClick = onToggleDiagnostics,
+            )
+            MoreDivider()
+            MoreRow(
+                icon = AppIcons.Console,
+                title = "Open the app log",
+                subtitle = "Everything the app reported since it was last cleared",
+                onClick = onOpenDiagnosticsLog,
             )
         }
 
@@ -2240,6 +2316,7 @@ private fun ViewerPanel(
     onEditLayerEvents: () -> Unit,
     onPaintHit: (MeshPicker.Hit) -> Unit,
     onSurfacePick: (MeshPicker.Hit) -> Unit,
+    onSurfacePickEnd: () -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -2259,6 +2336,7 @@ private fun ViewerPanel(
     onRotatePreview: (ModelPlacement.Axis, Float) -> Unit,
     onRotateCommitted: (ModelPlacement.Axis, Float) -> Unit,
     onCloseSupportPaintUi: () -> Unit,
+    onOpenDiagnosticsLog: () -> Unit,
     onAnnotationTap: (AnnotationGesture) -> Unit,
     onAnnotationAdjust: (SegmentEnd, AnnotationGesture) -> Unit,
     onAnnotationZAdjustStart: (SegmentEnd) -> Unit,
@@ -2282,6 +2360,7 @@ private fun ViewerPanel(
         when {
             viewerMode == ViewerMode.LAYERS && preview != null -> LayerPreviewView(
                 preview = preview,
+                engineLabel = state.sliceEngine?.label,
                 selectedLayerIndex = selectedLayerIndex,
                 events = state.layerEvents,
                 onLayerSelected = onLayerSelected,
@@ -2376,6 +2455,7 @@ private fun ViewerPanel(
                         view.onRotateCommitted = onRotateCommitted
                         view.onPaintHit = onPaintHit
                         view.onSurfacePick = onSurfacePick
+                        view.onSurfacePickEnd = onSurfacePickEnd
                         view.annotationActive = state.annotationActive
                         view.onAnnotationTap = onAnnotationTap
                         view.onAnnotationAdjust = onAnnotationAdjust
@@ -2414,6 +2494,19 @@ private fun ViewerPanel(
         // Content the host app floats over the Plate — the native Smart Infill
         // workflow, which needs the model surface above it to stay tappable.
         plateOverlayContent()
+
+        // A failure lands in the corner of the viewer, which is where the user is
+        // looking when one happens - and it lands there whether or not the app log
+        // is switched on. It used to be written only to the status line, which
+        // lives in a card folded down to a chevron, so the outcome of every
+        // operation was invisible by default: a slice that failed looked exactly
+        // like a slice that was never asked for.
+        DiagnosticsCorner(
+            onOpenLog = onOpenDiagnosticsLog,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp),
+        )
 
         Column(
             modifier = Modifier

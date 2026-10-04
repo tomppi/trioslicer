@@ -151,17 +151,37 @@ class ModelSurfaceView(
     var onSurfacePick: ((MeshPicker.Hit) -> Unit)? = null
 
     /**
-     * When true, a tap picks the surface under the finger.
+     * When true, the finger paints the surface: a sample lands where it goes
+     * down and another at every move, until it lifts. This is filaSim's brush,
+     * and the same shape the support-paint brush already has.
      *
-     * Deliberately separate from [paintMode]: a drag still orbits the camera and
-     * only a tap inside the touch slop picks, so looking at a part never assigns
-     * a surface by accident.
+     * Deliberately separate from [paintMode]: they are two different paints, and
+     * a drag under either one is a stroke rather than an orbit.
      */
     var surfacePickActive: Boolean = false
 
+    /**
+     * The finger came up after a stroke. The host commits what the samples
+     * collected here rather than on every one of them.
+     */
+    var onSurfacePickEnd: (() -> Unit)? = null
+
+    /**
+     * The stroke's first sample decides whether the gesture paints or moves the
+     * camera: on the model it is a brush, beside it the camera, which is the
+     * hover gate filaSim uses. The answer comes from a pick off the UI thread, so
+     * the movement made while it is in flight is held and replayed as an orbit if
+     * the answer is "not on the model".
+     */
+    private var brushDeciding = false
+    private var brushDragging = false
+    private var brushAccumDx = 0f
+    private var brushAccumDy = 0f
+
+    /** True while the queued coordinate is the stroke's deciding probe. */
+    private val brushProbePending = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
-    private var surfacePickDownX = 0f
-    private var surfacePickDownY = 0f
 
     /**
      * When true, taps place annotation points and drags may move a handle.
@@ -322,8 +342,15 @@ class ModelSurfaceView(
                 previousY = event.y
                 panning = false
                 if (surfacePickActive) {
-                    surfacePickDownX = event.x
-                    surfacePickDownY = event.y
+                    // Ask whether this gesture began on the model. Until the answer
+                    // arrives the touch is held rather than guessed at.
+                    brushDeciding = true
+                    brushDragging = false
+                    brushAccumDx = 0f
+                    brushAccumDy = 0f
+                    brushProbePending.set(true)
+                    pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
+                    schedulePaintPick()
                 }
                 if (painting) {
                     pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
@@ -398,9 +425,19 @@ class ModelSurfaceView(
                     panning = true
                     requestRender()
                 } else if (!scaleDetector.isInProgress) {
-                    if (painting) {
+                    if (painting || brushDragging) {
+                        // A stroke sample. One slot, overwritten: the picker runs
+                        // off the UI thread and a slow sample must not queue up a
+                        // backlog of stale positions behind it.
                         pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
                         schedulePaintPick()
+                    } else if (brushDeciding) {
+                        // Held until the probe answers: replayed as an orbit if the
+                        // gesture turned out to be beside the model.
+                        brushAccumDx += event.x - previousX
+                        brushAccumDy += event.y - previousY
+                        previousX = event.x
+                        previousY = event.y
                     } else if (annotating && annotationDeciding) {
                         // Accumulate until the probe answers; the movement is
                         // applied as an orbit if it turns out not to be a handle.
@@ -494,16 +531,15 @@ class ModelSurfaceView(
                         scheduleAnnotationGesture()
                     }
                 }
-                if (surfacePickActive && !painting) {
-                    // A tap, not a drag: the surface is only assigned when the
-                    // finger stayed inside the slop.
-                    val dx = event.x - surfacePickDownX
-                    val dy = event.y - surfacePickDownY
-                    if (dx * dx + dy * dy <= touchSlopPx * touchSlopPx) {
-                        pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
-                        schedulePaintPick()
-                    }
+                if (brushDragging && !painting) {
+                    // The stroke is over: the host hands the finished selection to
+                    // the engine once, here, instead of on every sample.
+                    onSurfacePickEnd?.invoke()
                 }
+                brushDeciding = false
+                brushDragging = false
+                brushAccumDx = 0f
+                brushAccumDy = 0f
                 // The preview is deliberately left standing: the commit lands a
                 // moment later, and dropping it here would snap the model back to
                 // where it started in between. It goes when the new geometry
@@ -620,6 +656,32 @@ class ModelSurfaceView(
         post { listener(modelRenderer.orientation) }
     }
 
+    /**
+     * Settles what the stroke is: a brush on the model, or the camera beside it.
+     *
+     * This is filaSim's hover gate - over the part the gesture paints, beside it
+     * orbit and pan stay live - and it is what makes a brush usable without a
+     * mode to switch out of every time the view needs turning.
+     */
+    private fun applyBrushProbe(hit: MeshPicker.Hit?) {
+        brushDeciding = false
+        if (hit != null) {
+            brushDragging = true
+            onSurfacePick?.invoke(hit)
+            return
+        }
+        brushDragging = false
+        if (brushAccumDx != 0f || brushAccumDy != 0f) {
+            // The movement made while the answer was in flight becomes the orbit
+            // it would have been had the touch landed beside the model.
+            modelRenderer.rotate(brushAccumDx * 0.35f, brushAccumDy * 0.35f)
+            brushAccumDx = 0f
+            brushAccumDy = 0f
+            notifyOrientation()
+            requestRender()
+        }
+    }
+
     private fun schedulePaintPick() {
         synchronized(paintPickLock) {
             if (paintPickScheduled) return
@@ -629,7 +691,14 @@ class ModelSurfaceView(
             try {
                 while (true) {
                     val coordinates = pendingPaintCoordinates.getAndSet(null) ?: break
-                    val hit = modelRenderer.pickTriangle(coordinates[0], coordinates[1]) ?: continue
+                    val hit = modelRenderer.pickTriangle(coordinates[0], coordinates[1])
+                    // The stroke's first sample answers a question rather than
+                    // painting: a miss is an answer here, not a reason to skip.
+                    if (brushProbePending.getAndSet(false)) {
+                        post { applyBrushProbe(hit) }
+                        continue
+                    }
+                    if (hit == null) continue
                     post {
                         if (surfacePickActive) onSurfacePick?.invoke(hit) else onPaintHit?.invoke(hit)
                     }

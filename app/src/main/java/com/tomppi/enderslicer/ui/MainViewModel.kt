@@ -1257,17 +1257,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // path, but it is the sheet's session that knows what the tap means, so the
     // hit is offered to a handler it installs while picking is armed.
 
-    /** Consumes a tapped triangle index; true when Smart Infill took the tap. */
-    private var smartInfillPickHandler: ((Int) -> Boolean)? = null
+    /**
+     * The brush a stroke on the model paints with while a condition is armed.
+     * The host owns it: it has the mesh to expand the brush over and the
+     * controller that holds the radius and the add/erase mode.
+     */
+    private var smartInfillBrushHandler: ((MeshPicker.Hit) -> Unit)? = null
+
+    /** Runs once when the finger comes up, to commit the finished stroke. */
+    private var smartInfillStrokeEndHandler: (() -> Unit)? = null
 
     /** Arms or disarms tap-to-pick for the Smart Infill sheet. */
     fun setSmartInfillPicking(active: Boolean) {
         _uiState.update { it.copy(smartInfillPicking = active) }
     }
 
-    /** Installs (or clears with null) the handler a surface tap is offered to. */
-    fun setSmartInfillPickHandler(handler: ((Int) -> Boolean)?) {
-        smartInfillPickHandler = handler
+    /** Installs (or clears with null) the brush a surface stroke is offered to. */
+    fun setSmartInfillBrushHandler(handler: ((MeshPicker.Hit) -> Unit)?) {
+        smartInfillBrushHandler = handler
+    }
+
+    /** Installs (or clears with null) what a finished stroke commits. */
+    fun setSmartInfillStrokeEndHandler(handler: (() -> Unit)?) {
+        smartInfillStrokeEndHandler = handler
     }
 
     /**
@@ -1295,13 +1307,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** A surface tap while Smart Infill is picking. */
-    fun pickSurfaceAt(hit: MeshPicker.Hit) {
-        val handler = smartInfillPickHandler ?: return
-        if (handler(hit.triangleIndex)) {
-            // One tap is one surface; the sheet re-arms if it wants another.
-            setSmartInfillPicking(false)
-        }
+    /** One sample of a stroke while Smart Infill is armed. */
+    fun brushSurfaceAt(hit: MeshPicker.Hit) {
+        smartInfillBrushHandler?.invoke(hit)
+    }
+
+    /** The stroke ended: hand the finished selection to the engine, once. */
+    fun endSmartInfillStroke() {
+        smartInfillStrokeEndHandler?.invoke()
     }
 
     // ---- Annotation -------------------------------------------------------
@@ -1706,6 +1719,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             SlicerEngine.ORCA -> "OrcaSlicer is slicing…"
         }
         if (!beginOperation(slicingMessage)) return
+        Diagnostics.info("slice", "$slicingMessage ($sliceEngine)")
         if (NonPlanarRuntime.snapshot() != null && ConicalRuntime.snapshot() != null) {
             _uiState.update {
                 it.copy(
@@ -1915,6 +1929,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             if (result.layerEvents.isNotEmpty()) append(" · ${result.layerEvents.size} layer events")
                         },
                     )
+                }
+                // The same facts the status line carries, written down. A safety
+                // alert is a WARNING rather than a failure: the slice is good,
+                // and the one line about it must not read as "your slice broke".
+                Diagnostics.info(
+                    "slice",
+                    "Sliced " + formatFileSize(result.gcodeFile.length()) +
+                        " of validated G-code in " + formatDuration(result.elapsedMilliseconds),
+                )
+                result.nozzleCollisionAlert?.let { alert ->
+                    val zone = when (alert.worstViolationZone) {
+                        2 -> "the heating block"
+                        3 -> "the plate clearance"
+                        else -> "the nozzle cone"
+                    }
+                    val layers = alert.offendingLayers
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { " on layers " + it.sorted().joinToString(", ") }
+                        ?: ""
+                    Diagnostics.warning(
+                        "slice",
+                        "nozzle collision risk: up to %.1f mm into %s%s".format(alert.maximumViolationMm, zone, layers),
+                    )
+                }
+                result.collisionSweepFailure?.let { sweep ->
+                    Diagnostics.warning("slice", "nozzle collision sweep failed: " + sweep)
                 }
                 previousArtifactId
                     ?.takeIf { it != result.artifactId }
@@ -2895,6 +2935,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(isBusy = false, statusMessage = "Operation cancelled") }
             throw error
         }
+        // Every operation failure in the app arrives here, which is why the log
+        // can be a faithful record without a call at each of the call sites.
+        Diagnostics.failure("operation", error)
         _uiState.update { current ->
             current.copy(
                 isBusy = false,
@@ -2907,6 +2950,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(isBusy = false, statusMessage = "Slice cancelled") }
             throw error
         }
+        Diagnostics.failure("slice", error)
         _uiState.update { current ->
             current.copy(
                 isBusy = false,

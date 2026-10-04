@@ -12,6 +12,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.PrusaSliceSettings
@@ -36,6 +40,7 @@ internal fun PrusaSettingsSheet(
 ) {
     val settings = state.prusaSettings
     val selection = state.prusaPreset
+    var confirmingReset by remember { mutableStateOf(false) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -85,9 +90,9 @@ internal fun PrusaSettingsSheet(
         ) {
             Text("Add more settings (all settings)")
         }
-        OutlinedButton(
-            onClick = {
-                onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
+        // Extracted so the button and its confirmation run the same reset.
+        val resetEverything = {
+            onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
                     current.copy(
                         layerHeightMm = PrusaSliceSettings().layerHeightMm,
                         firstLayerHeightMm = PrusaSliceSettings().firstLayerHeightMm,
@@ -126,10 +131,28 @@ internal fun PrusaSettingsSheet(
                         extrusionMultiplierPercent = PrusaSliceSettings().extrusionMultiplierPercent,
                     )
                 }
-            },
+            }
+        OutlinedButton(
+            onClick = { confirmingReset = true },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Reset Prusa settings")
+            // Named for what it does, in the words the OrcaSlicer sheet already
+            // uses for the same action: both put every field back to the engine's
+            // own default. Cura's pair stays "Reset all app overrides", which is a
+            // different thing - it restores the imported profile.
+            Text("Reset to engine defaults")
+        }
+        if (confirmingReset) {
+            ResetConfirmDialog(
+                title = "Reset to engine defaults?",
+                text = "Every PrusaSlicer setting goes back to the engine's own default, including " +
+                    "the printer, print and filament presets above. There is no undo.",
+                onDismiss = { confirmingReset = false },
+                onConfirm = {
+                    confirmingReset = false
+                    resetEverything()
+                },
+            )
         }
 
         SettingsCategory("Quality", initiallyExpanded = true) {

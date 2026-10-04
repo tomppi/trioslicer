@@ -12,7 +12,8 @@
 //! 'JsValue', and the core's own cancellation/progress hooks instead of a
 //! SharedArrayBuffer.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -295,28 +296,47 @@ impl Session {
         let patch = self.patch_of_original_triangle();
         let target = patch[original as usize];
         let radius = if radius_mm.is_finite() { radius_mm.max(0.0) } else { 0.0 };
-        let seed = tri_centre(&self.mesh_orig.tris[original as usize]);
         self.ensure_pick_index();
         let index = self.pick_index.as_ref().expect("pick index is built");
-        let mut seen = vec![false; count];
+        // The radius is measured ALONG the surface, not straight through the
+        // model. On a flat face the two agree; at a fold they do not, and a
+        // fold is where this is used. A straight-line ball centred on the keel
+        // of a 3DBenchy reaches the hull on the other side of the crease - a
+        // millimetre away through the material, centimetres away across the
+        // surface - and paints it. Measured on a real 3DBenchy at the 2.37 mm
+        // radius the UI had set, the chord bound selected 3.7x too many
+        // triangles on average and 7.2x too many on the keel, scattered over
+        // folds the user never touched.
+        //
+        // Dijkstra over the same walk gives the metric the panel already
+        // promises: "a tap takes the surface within this radius of your finger".
+        let mut best = vec![f64::INFINITY; count];
         let mut selected = Vec::new();
-        let mut stack = vec![original];
-        seen[original as usize] = true;
-        while let Some(tri) = stack.pop() {
-            // The radius bounds the selection; a triangle outside it is not
-            // entered, so the walk never spills past the tap.
-            if !within(&tri_centre(&self.mesh_orig.tris[tri as usize]), &seed, radius) {
+        let mut heap: BinaryHeap<Reverse<(u64, u32)>> = BinaryHeap::new();
+        best[original as usize] = 0.0;
+        // A non-negative finite f64 orders the same as its bit pattern, so the
+        // bits key a min-heap without dragging in a float wrapper.
+        heap.push(Reverse((0.0f64.to_bits(), original)));
+        while let Some(Reverse((bits, tri))) = heap.pop() {
+            let travelled = f64::from_bits(bits);
+            if travelled > best[tri as usize] {
                 continue;
             }
             selected.push(tri);
+            let from = tri_centre(&self.mesh_orig.tris[tri as usize]);
             for corner in index.corners[tri as usize] {
                 let Some(neighbours) = index.incident.get(&corner) else {
                     continue;
                 };
                 for &other in neighbours {
-                    if !seen[other as usize] && patch[other as usize] == target {
-                        seen[other as usize] = true;
-                        stack.push(other);
+                    if patch[other as usize] != target {
+                        continue;
+                    }
+                    let step = travelled
+                        + distance_between(&from, &tri_centre(&self.mesh_orig.tris[other as usize]));
+                    if step <= radius && step < best[other as usize] {
+                        best[other as usize] = step;
+                        heap.push(Reverse((step.to_bits(), other)));
                     }
                 }
             }
@@ -1473,11 +1493,13 @@ fn tri_normal(t: &[f32; 9]) -> [f64; 3] {
         [0.0, 0.0, 0.0]
     }
 }
-fn within(point: &[f64; 3], centre: &[f64; 3], radius: f64) -> bool {
-    let dx = point[0] - centre[0];
-    let dy = point[1] - centre[1];
-    let dz = point[2] - centre[2];
-    dx * dx + dy * dy + dz * dz <= radius * radius
+/// One straight step between two triangle centres, accumulated along the walk
+/// to give the distance ALONG the surface.
+fn distance_between(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[cfg(test)]
@@ -1661,16 +1683,170 @@ mod tests {
         );
         let centre = tri_centre(&session.mesh_orig.tris[seed as usize]);
         for tri in &picked {
-            assert!(within(
-                &tri_centre(&session.mesh_orig.tris[*tri as usize]),
-                &centre,
-                3.0
-            ));
+            // Still inside the straight-line ball: a path across the surface is
+            // never shorter than the line through the material, so bounding by
+            // the surface distance can only make the selection tighter.
+            assert!(
+                distance_between(&tri_centre(&session.mesh_orig.tris[*tri as usize]), &centre) <= 3.0
+            );
         }
         // The radius is a real bound, not a decoration.
         assert!(session.region_around(seed, 6.0).len() > picked.len());
         // And a zero radius is exactly the tapped triangle.
         assert_eq!(session.region_around(seed, 0.0), vec![seed]);
+    }
+
+
+    /// Not a test of the code so much as a measurement of it: on a real model,
+    /// how much of the ball around the tap does the pick actually fill, and how
+    /// far does it reach?
+    #[test]
+    #[ignore]
+    fn measure_a_real_model_pick() {
+        let path = std::env::var("FILASIM_MEASURE_STL").unwrap_or_default();
+        if path.is_empty() { return; }
+        let bytes = std::fs::read(&path).expect("stl");
+        let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+        let mut tris: Vec<[f32; 9]> = Vec::with_capacity(n);
+        for i in 0..n {
+            let o = 84 + i * 50 + 12;
+            let mut t = [0f32; 9];
+            for k in 0..9 {
+                let b = &bytes[o + k * 4..o + k * 4 + 4];
+                t[k] = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            }
+            tris.push(t);
+        }
+        println!("MEASURE file triangles {}", n);
+        let mut session = Session::from_import(TriMesh::from_triangles(tris), 1, "benchy");
+        println!("MEASURE session triangles {} patches {}", session.original_triangle_count(), session.patch_count());
+        // A seed low on the hull, where the user tapped.
+        let seed = (0..session.original_triangle_count() as u32)
+            .min_by(|a, b| {
+                let ca = tri_centre(&session.mesh_orig.tris[*a as usize]);
+                let cb = tri_centre(&session.mesh_orig.tris[*b as usize]);
+                let da = (ca[0] + 20.0).powi(2) + (ca[1] - 2.0).powi(2) + (ca[2] - 6.0).powi(2);
+                let db = (cb[0] + 20.0).powi(2) + (cb[1] - 2.0).powi(2) + (cb[2] - 6.0).powi(2);
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap();
+        let centre = tri_centre(&session.mesh_orig.tris[seed as usize]);
+        println!("MEASURE seed {seed} at {centre:?}");
+        let radius = 3.31;
+        let picked = session.region_around(seed, radius);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut maxd: f64 = 0.0;
+        for t in &picked {
+            let c = tri_centre(&session.mesh_orig.tris[*t as usize]);
+            for j in 0..3 {
+                lo[j] = lo[j].min(c[j]);
+                hi[j] = hi[j].max(c[j]);
+            }
+            maxd = maxd.max(distance_between(&c, &centre));
+        }
+        // How many triangles have their centre inside the ball at all?
+        let mut in_ball = 0usize;
+        for t in 0..session.original_triangle_count() {
+            let c = tri_centre(&session.mesh_orig.tris[t]);
+            if distance_between(&c, &centre) <= radius { in_ball += 1; }
+        }
+        println!("MEASURE picked {} of {} in the ball -> {:.1}%",
+            picked.len(), in_ball, 100.0 * picked.len() as f64 / in_ball.max(1) as f64);
+        println!("MEASURE extent x {:.1} y {:.1} z {:.1} mm, furthest {:.2} mm of {:.2}",
+            hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2], maxd, radius);
+        let patch_of = session.patch_of_original_triangle();
+        let target = patch_of[seed as usize];
+        let face = session.original_triangles_of_patch(target).len();
+        println!("MEASURE the seed's patch holds {} triangles", face);
+    }
+
+    /// A hairpin: two flat runs 0.3 mm apart joined by a tight bend, all in one
+    /// plane so the crease finder sees a single patch.
+    fn hairpin_session() -> Session {
+        let mut tris: Vec<[f32; 9]> = Vec::new();
+        let mut x = 0.0f32;
+        while x < 6.0 {
+            let nx = (x + 0.5).min(6.0);
+            let mut y = 0.0f32;
+            while y < 2.0 {
+                let ny = (y + 0.5).min(2.0);
+                tris.push([x, y, 0.0, nx, y, 0.0, nx, ny, 0.0]);
+                tris.push([x, y, 0.0, nx, ny, 0.0, x, ny, 0.0]);
+                y = ny;
+            }
+            x = nx;
+        }
+        // The bend, and the return run 0.3 mm above the first.
+        let mut y = 0.0f32;
+        let mut x = 6.0f32;
+        while x < 6.5 {
+            let nx = (x + 0.5).min(6.5);
+            y = 0.0;
+            while y < 2.3 {
+                let ny = (y + 0.5).min(2.3);
+                tris.push([x, y, 0.0, nx, y, 0.0, nx, ny, 0.0]);
+                tris.push([x, y, 0.0, nx, ny, 0.0, x, ny, 0.0]);
+                y = ny;
+            }
+            x = nx;
+        }
+        let mut x = 0.5f32;
+        while x < 6.5 {
+            let nx = (x + 0.5).min(6.5);
+            let mut y = 2.3f32;
+            while y < 4.3 {
+                let ny = (y + 0.5).min(4.3);
+                tris.push([x, y, 0.0, nx, y, 0.0, nx, ny, 0.0]);
+                tris.push([x, y, 0.0, nx, ny, 0.0, x, ny, 0.0]);
+                y = ny;
+            }
+            x = nx;
+        }
+        Session::from_import(TriMesh::from_triangles(tris), 1, "hairpin")
+    }
+
+    /// The radius is measured ALONG the surface.
+    ///
+    /// At a hairpin the walk rounds the bend and comes back along the other run,
+    /// which is 0.3 mm away through the air for its whole length. Bounded by the
+    /// straight line, every triangle of that return run is inside the ball, so
+    /// the pick kept going along a face the user never touched - the "it
+    /// selected more than I wanted, and spread them out" report. Bounded by the
+    /// distance travelled, the budget is spent getting round the bend and only
+    /// the far end of the return run is in reach.
+    #[test]
+    fn a_bounded_pick_measures_along_the_surface_not_through_the_air() {
+        let mut session = hairpin_session();
+        assert_eq!(session.patch_count(), 1, "a coplanar hairpin is one patch");
+        // A triangle next to the bend, so the walk can round it inside the radius.
+        let seed = session
+            .mesh_orig
+            .tris
+            .iter()
+            .position(|t| {
+                let c = tri_centre(t);
+                c[0] > 5.0 && c[0] < 6.0 && c[1] < 0.6
+            })
+            .expect("a triangle beside the bend") as u32;
+        let picked = session.region_around(seed, 3.0);
+        assert!(picked.contains(&seed));
+        let seed_centre = tri_centre(&session.mesh_orig.tris[seed as usize]);
+        let mut reached_bend = false;
+        for tri in &picked {
+            let c = tri_centre(&session.mesh_orig.tris[*tri as usize]);
+            if c[1] > 2.3 {
+                reached_bend = true;
+                // Into the return run is fine - it is 2.5 mm along the surface.
+                // Marching back along it is not: that is a different face.
+                assert!(
+                    c[0] > 4.4,
+                    "the pick walked {:.1} mm back along the neighbouring run:                      {c:?} is 0.3 mm through the air from the seed at {seed_centre:?}",
+                    seed_centre[0] - c[0],
+                );
+            }
+        }
+        assert!(reached_bend, "the walk should still round the bend");
     }
 
     /// Connectivity still rules: a radius that reaches across a crease stops at

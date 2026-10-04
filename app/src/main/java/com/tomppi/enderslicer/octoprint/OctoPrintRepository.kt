@@ -99,8 +99,15 @@ class OctoPrintRepository(
             }.onSuccess { info ->
                 if (requestId != testRequestId || requestGeneration != generation) return@onSuccess
                 _state.update {
+                    // A test proves the server answers; it configures nothing. Saying
+                    // "Connected to <version>" here made the header contradict the
+                    // Status tab, which is gated on the SAVED configuration: the
+                    // version just read sat on one line and "Configure OctoPrint on
+                    // the Setup page" on the next.
+                    val answered = info.displayText ?: info.serverVersion ?: "OctoPrint"
                     it.copy(
-                        statusMessage = "Connected to ${info.displayText ?: info.serverVersion ?: "OctoPrint"}",
+                        statusMessage = "The server answered: " + answered +
+                            if (it.isReady) "" else " - save to connect",
                         errorMessage = null,
                     )
                 }

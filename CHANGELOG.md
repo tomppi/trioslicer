@@ -6,8 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-04
+
 ### Added
 
+- **A brush and an eraser for Smart Infill's boundary conditions.** Arming a condition with "Pick" and then
+  dragging paints it: a sample lands where the finger goes down and another at every move, and each covers
+  every triangle inside the brush radius - the same rule filaSim paints with, and the one the support-paint
+  brush already used, so the three agree. Erase takes surface back the same way, which is the real answer to
+  a brush that reached past where it was aimed: the condition's count is also the only readout, so rubbing
+  it out beats arguing with the geometry. The stroke is handed to the engine once, when the finger lifts,
+  rather than on every sample - each sync re-sends the condition's whole triangle list.
+  A tap is gone: a press with no movement is one dab, which is what a tap always was.
+- **The camera moves when the gesture starts beside the model.** The stroke's first sample decides: on the
+  part it paints, off it the camera orbits and pans, and the movement made while that answer is in flight is
+  replayed as an orbit. This is filaSim's own hover gate, and it is what makes a brush usable without a mode
+  to switch out of every time the view needs turning.
+- **An app log you can switch on, and failures in the model viewer's corner.** More > Diagnostics keeps
+  a log of what the app did and what it reported; the window lists it with failures red and bold and
+  warnings amber, and the log is off by default so nothing is recorded until it is asked for.
+  The corner is not the log. A failure or a safety warning lands in red in the lower-left of the viewer
+  with its message and time whether or not the log is on, because hiding it is what made the app look like
+  it ignored input. Failures also go to logcat at error level, banner-marked, so a capture shows them.
 - **The Model tools panel now says how to reach the gizmo.** Pressing and holding the model opens Move,
   Rotate and Scale over it, and nothing said so - the panel's three groups read as the only way in, so the
   gesture stayed invisible. A tip under the bar names it.
@@ -29,10 +49,71 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Phone Klipper could be started but never stopped from the UI.** The start button was the whole block,
+  gated on NOT being connected - and "connected" here means this app's own klippy is answering, not that a
+  printer is attached. So the moment the host came up the control vanished, and the only way to stop it was
+  to force-stop the app. It is Start when the host is down and Stop when it is up, and stopping really stops
+  it: klippy exits and the socket goes with it.
+- **With no printer attached, Phone Klipper explained its halt with a configuration error.** klippy reports
+  what it always reports with no board to talk to - "Option 'restart_method' is not valid in section 'mcu'",
+  "Printer is halted" - which names a config problem where the cause is an absent machine, and sends the
+  user looking for a mistake they did not make. The card now says there is no printer attached, and that
+  what follows is what klippy says with nothing to drive.
+- **A failure raised off the Plate was still reported to a surface nobody could see.** The corner banner
+  lives in the model viewer, so a configuration snapshot import that failed from the More tab wrote its
+  message to a status line and a corner that were both on another tab. Anywhere but the Plate the app now
+  says it out loud. Found while re-testing "importing an unusable snapshot is a silent no-op", which the
+  log line alone only half fixed.
+- **The layer readout credited Cura with every slice.** It read "Cura 12" after a PrusaSlicer or an
+  OrcaSlicer slice, and the number comes from the file's own `;LAYER:` marker - so it was wrong about the
+  engine and was not Cura's number even when Cura wrote the file. It names the engine that actually sliced.
+- **The reset had three different names.** PrusaSlicer's "Reset Prusa settings" and OrcaSlicer's "Reset to
+  engine defaults" were the same action under two names; both are "Reset to engine defaults" now. Cura's
+  pair stays "Reset all app overrides", which is a different thing - it restores the imported profile
+  rather than the engine's defaults.
+- **OctoPrint's header claimed a connection the Status tab denied.** A successful "Test server" set the
+  status line to "Connected to OctoPrint 1.9.3" without saving anything, so the Status tab - gated on the
+  saved configuration - said "Configure OctoPrint on the Setup page" directly below it. A test now reports
+  what it proved: the server answered, and the setup still needs saving.
+- **The OctoPrint setup form was wiped by unrelated updates.** The effect that loads the saved values was
+  keyed on the whole configuration, so discovery writing any other part of it - the webcam it found, the
+  connection it reported - rewrote the URL and key fields from the saved values while they were being
+  typed. It is keyed on the fields the form actually loads.
+- **The Modelling screen named an agent that did not exist.** With no harness connected it captioned the
+  view "The agent has the camera" next to its own "Connect to the harness first". With nothing on the other
+  end it says so.
+- **Three of the four "reset everything" controls reset without asking.** Cura's two sheets and the
+  PrusaSlicer one threw away every override, or every Prusa setting, on a single tap with no warning and no
+  undo; only the OrcaSlicer one asked. All four now go through one `ResetConfirmDialog`, so they ask the
+  same way and none is the odd one out. Found because the user checked the engine they were on, saw no
+  confirmation, and then asked whether the others had one either - which is the question that turned one
+  fix into four.
+- **A Smart Infill tap selected too much on a curved part, and did it in the wrong places.** The pick walk
+  was bounded by the straight-line distance from the tap, while the panel promises the surface *"within this
+  radius of your finger"*. The two agree on a flat face and disagree at every fold: the walk rounds a bend
+  and then keeps going along the neighbouring run, which is a fraction of a millimetre away through the air
+  for its whole length. Bounded by the distance travelled instead, the budget is spent getting round the
+  bend. Measured on a real 3DBenchy at a 2.37 mm radius over ten seed triangles, one differed - by 3x -
+  and nine were unchanged, so this is a narrow defect rather than a general one; the flat regions were
+  already exact. A hairpin test fails on the old metric and passes on the new one.
+- **More > Smart Infill left you on the More tab.** The panel it opens lives over the Plate, so setting the
+  flag alone looked like a dead control. The row now takes you to the surface the panel is on.
+- **Every outcome the app reported was written where nobody could read it.** All status messages - success
+  and failure alike - are the title of one collapsible Plate card, and a collapsed `CollapsibleCard`
+  renders a chevron and nothing else, the title surviving only as TalkBack's label. Folded is the default,
+  so a slice that failed looked exactly like a slice that was never asked for, and an import that threw
+  appeared to be ignored: everything the app said, it said to itself.
+- **"The host stopped with:" could be followed by nothing.** The label was printed whenever a log tail
+  existed, and a blank tail rendered as a reason that had been lost rather than one that was never written.
 - **The settings catalogue showed the engine's printf escapes.** OrcaSlicer writes a literal percent
   sign as `%%` in its own option descriptions, and its `--dump-settings` output carries that through, so
   the catalogue read "adjusted to this %% of acceleration" and "For 100%% overhang". The escape is
   collapsed where the catalogue is read.
+- **A restored modelling screen could not reach the engine.** `modellingOpen` is `rememberSaveable`, so
+  the screen comes back after the process is killed while `openModelling` - the call that started the
+  engine - is not re-run. With the engine no longer booted at launch, that screen showed "failed to
+  connect to /127.0.0.1 (port 9876) ... ECONNREFUSED" until it was left and re-entered. It is restarted
+  in the same recovery effect that already reconnects the harness.
 - **The Blender engine booted at every app launch, and pinned the CPU with it.** `EnderSlicerApplication`
   started the engine and its keeper service unconditionally in `onCreate`: a 1.3 GB library load, ~480 MB
   of asset extraction and a ten-minute partial wake lock for every user who opened the app, including
