@@ -159,7 +159,30 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
 - [webviewdp](https://github.com/tomppi/webviewdp) - a minimal Android WebView app that wraps a harness's own web UI for the same phone
 - [docs/smart-infill.md](docs/smart-infill.md), [docs/non-planar.md](docs/non-planar.md), [docs/ui-style-guide.md](docs/ui-style-guide.md) - feature and UI notes
+- [docs/gcode-correctness/](docs/gcode-correctness/) - one document per engine comparing the G-code this
+  app produces against the real slicer, with the model, the preset and every difference found
 - [CHANGELOG.md](CHANGELOG.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+
+### Does it slice like the real thing?
+
+The app does not reimplement these slicers - it runs them. CuraEngine and PrusaSlicer are the vendor
+binaries, and the OrcaSlicer route is a headless driver over the same `libslic3r`, so with identical
+settings the tool paths should be identical rather than merely similar. They are:
+
+| engine | supports off | supports on |
+|---|---|---|
+| CuraEngine 5.14.0-alpha.0 | walls, skin and infill **exact** | exact, except **tree support** |
+| PrusaSlicer 3.0.0-alpha11 | **0.9992** | **0.9696** - path length within 0.0002 % |
+| OrcaSlicer 2.4.2 | **0.9776** | 0.9776 |
+
+Every figure is measured against a control run of the reference against itself, because CuraEngine does
+not reproduce its own output at the thread count it is given: two runs with identical arguments agree on
+74.1 % of segments, and single-threaded they are byte-identical. Tree support is chaotic in the engine
+itself - re-running the app's own engine on the same phone changes it while every wall, skin and infill
+segment stays identical - so support is not a correctness signal for any slicer.
+
+[docs/gcode-correctness/](docs/gcode-correctness/) has the models, presets, settings and every
+difference; `scripts/compare-gcode.py` is the comparator.
 
 ## License
 
