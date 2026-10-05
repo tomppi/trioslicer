@@ -10,6 +10,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Starting a print from the Files tab crashed the app.** `sendScript` wrote to the printer's socket
+  on whichever dispatcher its caller was on, and the Files tab calls it from a UI coroutine - so
+  `resetLiveOverrides()`, the script sent immediately before `SDCARD_PRINT_FILE`, raised
+  `NetworkOnMainThreadException` and took the process down. The stack was
+  `KlipperFilesTab:174 -> KlipperViewModel:457 -> printGcodeFile:1055 -> sendScript:1049 ->
+  MoonrakerTransport.sendFrame:255`. It only fired when the write actually reached the socket rather
+  than the buffer, which is why the same action worked most of the time. The write runs on
+  `Dispatchers.IO` now, in the one function both callers share; the repository's other two G-code
+  senders were already wrapped, and the identical call two lines below this one already was too.
+
 - **The All-settings catalog was missing 79 Cura settings, acceleration and jerk among them.** Cura nests a
   setting's own sub-settings under it - `acceleration_print` carries `acceleration_wall`,
   `acceleration_layer_0` and the rest - and the catalog treated "has children" as "is only a container":

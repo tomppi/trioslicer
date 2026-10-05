@@ -1046,7 +1046,14 @@ class KlipperPrinterRepository(
     /** One script, to the printer and to the console the user reads. */
     private suspend fun sendScript(script: String) {
         append(script, KlipperConsoleLine.Source.SENT)
-        client?.gcodeAsync(script) ?: throw IllegalStateException("not connected")
+        // Off the main thread. gcodeAsync writes to the socket, and a write that actually
+        // reaches the socket raises NetworkOnMainThreadException - but only when the buffer
+        // happens to flush, which is why starting a print worked most of the time and
+        // crashed the rest. Both callers reach here from a UI coroutine; wrapping the one
+        // place they share is what protects the next caller too.
+        withContext(Dispatchers.IO) {
+            client?.gcodeAsync(script) ?: throw IllegalStateException("not connected")
+        }
     }
 
     /** Start one of those files printing, by the name the printer knows it by. */
