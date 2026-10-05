@@ -227,8 +227,8 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
                 )
                 Spacer(Modifier.height(8.dp))
                 KlipperNote(
-                    "Your board has to be running Klipper itself, of the same version as the " +
-                        "host in this app" +
+                    "Your board has to be running Klipper itself, of the same version as your " +
+                        "host" +
                         state.host.softwareVersion.takeIf { it.isNotBlank() }
                             ?.let { " ($it)" }.orEmpty() +
                         ": importing a configuration tells the app about your printer, it does " +

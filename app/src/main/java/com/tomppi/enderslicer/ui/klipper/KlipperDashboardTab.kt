@@ -167,20 +167,39 @@ internal fun KlipperDashboardTab(
 @Composable
 private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     val context = LocalContext.current
-    // Whether there is a printer on the bus at all. With none, klippy reports the
+    // The local USB bus only says anything about the printer when this device IS
+    // the host. On the PC Klipper route the printer is attached to that PC, and
+    // asking this phone's bus put "No printer is attached" directly above a host
+    // that was running and driving one.
+    //
+    // When it does apply: with no printer attached, klippy reports the
     // configuration error it was always going to report - "Option 'restart_method'
     // is not valid in section 'mcu'", "Printer is halted" - which names a config
     // problem where the cause is an absent machine, and sends the user looking for
     // a mistake they did not make. The app can tell the two apart, so it does.
     // Assuming attached on failure: a USB query that cannot answer must not
     // produce a claim about the printer.
-    val printerAttached = remember(state.connected, state.state) {
-        runCatching {
-            val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
-            manager != null && PrinterUsb.findDrivers(manager).isNotEmpty()
-        }.getOrDefault(true)
+    val remoteHost = state.remoteHost
+    val printerAttached = remember(remoteHost, state.connected, state.state) {
+        if (remoteHost != null) {
+            true
+        } else {
+            runCatching {
+                val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
+                manager != null && PrinterUsb.findDrivers(manager).isNotEmpty()
+            }.getOrDefault(true)
+        }
     }
-    KlipperCard(title = "Printer", subtitle = "The Klipper host running in this app") {
+    KlipperCard(
+        title = "Printer",
+        // The card describes whichever host the app is driving. It said "running in
+        // this app" even when the header above it read "Connected to 100.65.211.17".
+        subtitle = if (remoteHost == null) {
+            "The Klipper host running in this app"
+        } else {
+            "The Klipper host on $remoteHost"
+        },
+    ) {
         Text(
             text = when {
                 !state.connected -> "Host not reachable"

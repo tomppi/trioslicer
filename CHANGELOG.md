@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Printer card described the wrong host, and claimed no printer was attached when one was.** On the
+  PC Klipper route it read "The Klipper host running in this app" while the header above it said "Connected
+  to 100.65.211.17", and below that it added "No printer is attached, so there is nothing for the host to
+  drive yet" - a claim about *this phone's* USB bus, which has nothing to do with a printer attached to
+  another computer. Found by the user from one screenshot of the contradiction; the missing-printer line
+  was mine, added when the card was taught to explain the Klipper config error that an absent printer
+  causes, and it should have been confined to the case where this device is the host. A third instance of
+  the same assumption - "of the same version as the host in this app" in the Machine tab - is route-neutral
+  now too.
+
 ## [1.7.0] - 2026-10-04
 
 ### Added
