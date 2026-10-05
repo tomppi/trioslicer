@@ -163,4 +163,16 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 
 ## License
 
-TrioSlicer is distributed under GNU AGPL-3.0-or-later because it links to CuraEngine. The embedded BumpMesh and filaSim source are retained under `AGPL-3.0-only`. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). UltiMaker, Cura and PrusaSlicer are trademarks of their respective owners; TrioSlicer is not an official UltiMaker, Creality, Prusa Research or CNC Kitchen application.
+TrioSlicer is distributed under GNU AGPL-3.0-or-later because it links to CuraEngine. The embedded
+BumpMesh and filaSim source are retained under `AGPL-3.0-only`. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+`SPDX-License-Identifier: AGPL-3.0-or-later`
+
+The full text is in [`LICENSE`](LICENSE), and a complete copy of the GNU Affero General Public License
+version 3 must accompany distributed builds. This program is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+UltiMaker, Cura and PrusaSlicer are trademarks of their respective owners; TrioSlicer is not an official
+UltiMaker, Creality, Prusa Research or CNC Kitchen application.
