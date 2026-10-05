@@ -419,12 +419,12 @@ private fun SpeedReadings(state: KlipperPrinterState) {
         label = "Velocity now",
         value = speeds.live.orDash() + " mm/s, measured",
     )
-    speeds.filament?.takeIf { it > 0.01 }?.let { filament ->
-        KlipperValue(
-            label = "Filament velocity now",
-            value = filament.orDash(2) + " mm/s of filament",
-        )
-    }
+    // Always a row, whatever the filament is doing. Held back until it was moving, this line
+    // arrived and left with every travel - and took the rest of the card with it.
+    KlipperValue(
+        label = "Filament velocity now",
+        value = speeds.filament.orDash(2) + " mm/s of filament",
+    )
     KlipperValue(
         label = "Velocity the file asks for",
         value = speeds.askedPerSecond.orDash() + " mm/s",

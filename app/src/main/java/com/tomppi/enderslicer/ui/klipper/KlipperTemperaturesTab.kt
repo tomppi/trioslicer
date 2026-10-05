@@ -119,18 +119,33 @@ internal fun KlipperTemperaturesTab(state: KlipperPrinterState, viewModel: Klipp
     }
 }
 
-/** A label and a reading, the shape both this screen and the dashboard use. */
+/**
+ * A label and a reading, the shape both this screen and the dashboard use.
+ *
+ * A heater shows its target and its power **always**, at zero when zero is the truth, and a dash
+ * only when the host has not reported them. They used to be drawn only while non-zero, so a
+ * heater holding its temperature added and removed two lines as the PID cycled: the card rewrote
+ * itself once a second, everything below moved with it, and a printer doing exactly what it
+ * should looked broken. A sensor has neither figure and still shows the one row it owns.
+ *
+ * The dashboard's own print figures already work this way - every row present, a dash for a value
+ * that does not exist yet - so this is that pattern applied where it was missing.
+ */
 @Composable
 internal fun HeaterReadoutRow(heater: KlipperHeater) {
     KlipperValue(
         label = heater.label + " temperature",
         value = heater.temperature?.let { "%.1f °C".format(it) } ?: "-",
     )
-    heater.target?.takeIf { it > 0.0 }?.let { target ->
-        KlipperValue(heater.label + " target", "%.0f °C".format(target))
-    }
-    heater.power?.takeIf { it > 0.0 }?.let { power ->
-        KlipperValue(heater.label + " heater power", "%.0f%% of full power".format(power * 100))
+    if (heater.isHeater) {
+        KlipperValue(
+            label = heater.label + " target",
+            value = heater.target?.let { "%.0f °C".format(it) } ?: "—",
+        )
+        KlipperValue(
+            label = heater.label + " heater power",
+            value = heater.power?.let { "%.0f%% of full power".format(it * 100) } ?: "—",
+        )
     }
 }
 

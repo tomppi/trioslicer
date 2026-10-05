@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Klipper readings that came and went took the layout with them.** A heater's target and power were
+  drawn only while non-zero, and "Filament velocity now" only while filament was moving - so a printer
+  holding its temperature, or one making a travel, added and removed lines and moved everything below
+  them. On a steady PID cycle that happened about once a second, which reads as a fault rather than as
+  the printer working. All three rows are now always present, showing zero when zero is the truth and a
+  dash when the host has not reported them, which is what the rest of the screen already did. A sensor
+  still shows only its temperature. `HeaterReadoutRowTest` fails if any of those rows goes conditional
+  again.
+
 - **The Printer card described the wrong host, and claimed no printer was attached when one was.** On the
   PC Klipper route it read "The Klipper host running in this app" while the header above it said "Connected
   to 100.65.211.17", and below that it added "No printer is attached, so there is nothing for the host to
