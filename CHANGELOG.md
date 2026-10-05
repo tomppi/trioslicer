@@ -6,7 +6,52 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-05
+
 ### Fixed
+
+- **The All-settings catalog was missing 79 Cura settings, acceleration and jerk among them.** Cura nests a
+  setting's own sub-settings under it - `acceleration_print` carries `acceleration_wall`,
+  `acceleration_layer_0` and the rest - and the catalog treated "has children" as "is only a container":
+  it recursed into such a node and then skipped the node itself, so its key never appeared. The catalog
+  offered 529 of the 729 settings the bundled definitions declare, which is why the app looked like it had
+  no acceleration setting at all. Ranges and defaults are read now too, so Cura rows clamp like Orca's
+  already did. `AllSettingsCatalogTest` walks the definitions independently and fails if the catalog
+  cannot offer a key they declare - and fails on the old code, naming the lost keys, which is how the
+  test was checked rather than assumed.
+- **Verified end to end on the device.** `acceleration_print_layer_0`, one of the settings the catalog
+  could not previously offer, was added from the All-settings sheet with the value 1234 and the slice
+  ran. The engine's argv, from `files/logs/curaengine-last.log`, ends:
+
+  ```
+  [866] …/output.gcode
+  [867] -s
+  [868] acceleration_print_layer_0=1234
+  ```
+
+  A setting the app had no way to reach now reaches CuraEngine as the final argument, after the settings
+  source, so it wins.
+- **The All-settings list says which settings Cura will actually read.** Cura declares an `enabled`
+  expression per setting - 516 of the 729 - and the app never read them, so a setting that the engine
+  would ignore was listed exactly like one in force. The list is now split into **Active** and **Not
+  active**, and an inactive row names what it is waiting for: `retraction_hop_only_when_collides` shows
+  "needs retraction_hop_enabled, travel_avoid_other_parts" under the app's own defaults, which is the
+  answer to why adding it changes nothing. Orca and Prusa carry no dependency information at all, so
+  their lists stay flat rather than being sorted on a guess. `CuraEnabled` reads the expressions -
+  a small grammar of setting names, and/or/not, comparisons, parentheses and Cura's four helper calls -
+  and reports an expression it cannot read as active rather than inactive. Seven of the 514 use Python
+  list membership or a bare `False`; the test pins that number so an eighth cannot appear unnoticed.
+
+  Checked on the device both ways. With the app's defaults, searching for the setting shows
+  `Not active (1)` and the line "needs retraction_hop_enabled, travel_avoid_other_parts". Adding those
+  two - through the same sheet, the booleans now being switches - moves it to `Active (1)` with the
+  reason gone.
+- **Booleans in the All-settings sheet are switches, not text fields.** CuraEngine reads only `on`, `yes`,
+  `true` and `True` as true; every other spelling - `TRUE`, `ON`, a typo - falls through to false with
+  nothing in the engine log and no complaint from the app. A text box invited exactly that for the 115 Cura,
+  109 Orca and 51 Prusa settings the catalogues declare boolean. They get a switch now, which opens on the
+  catalogue's own default and writes the same `true`/`false` the curated switches write. The catalogues
+  were already carrying the type; only the sheet was ignoring it.
 
 - **Klipper readings that came and went took the layout with them.** A heater's target and power were
   drawn only while non-zero, and "Filament velocity now" only while filament was moving - so a printer

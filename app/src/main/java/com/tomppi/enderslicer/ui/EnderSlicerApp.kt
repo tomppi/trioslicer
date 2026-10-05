@@ -104,6 +104,8 @@ import com.tomppi.enderslicer.harness.HarnessConfig
 import com.tomppi.enderslicer.harness.HarnessConfigStore
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.AllSettingsCatalogs
+import com.tomppi.enderslicer.profile.AllSettingsGroups
+import com.tomppi.enderslicer.profile.CuraSettingDelta
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrusaSliceSettings
@@ -1436,6 +1438,21 @@ fun EnderSlicerApp(
                                     SlicerEngine.CURA -> state.extraCuraSettings
                                     SlicerEngine.PRUSA -> state.extraPrusaSettings
                                     SlicerEngine.ORCA -> state.extraOrcaSettings
+                                },
+                                // What the engine will actually be given, so Cura's enabled
+                                // expressions are judged against the truth rather than against
+                                // the definitions. Only Cura has them; the other two get an
+                                // empty map and the sheet leaves their lists ungrouped.
+                                values = remember(engine, state.settings, state.extraCuraSettings) {
+                                    if (engine == SlicerEngine.CURA) {
+                                        AllSettingsGroups.effectiveValues(
+                                            specs = catalogSpecs,
+                                            appValues = CuraSettingDelta.standaloneValues(state.settings),
+                                            extras = state.extraCuraSettings ?: emptyMap(),
+                                        )
+                                    } else {
+                                        emptyMap()
+                                    }
                                 },
                                 managedKeys = when (engine) {
                                     SlicerEngine.CURA -> AllSettingsCatalogs.CURA_MANAGED_KEYS

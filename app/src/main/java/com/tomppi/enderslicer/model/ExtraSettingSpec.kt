@@ -11,6 +11,25 @@ data class ExtraSettingSpec(
     val defaultValue: String? = null,
     /** True when the catalogue declares a numeric (float/int) type. */
     val numeric: Boolean = false,
+    /**
+     * True when the catalogue declares a boolean type.
+     *
+     * Booleans are chosen, never typed. CuraEngine reads only "on", "yes", "true" or
+     * "True" as true - "TRUE" and "ON" are silently false - and every other spelling
+     * falls through to false without a word from the engine or the app. A switch
+     * cannot be misspelled, and it writes the same "true"/"false" that
+     * CuraSettingDelta writes for the curated switches, so both paths agree.
+     */
+    val boolean: Boolean = false,
+    /**
+     * Cura's own statement of when this setting is in effect, e.g.
+     * `retraction_enable and retraction_hop_enabled and travel_avoid_other_parts`.
+     *
+     * 516 of the 729 settings declare one. Without it the list presents a setting that the
+     * engine will never read as though it were any other, which is how someone adds
+     * `retraction_hop_only_when_collides` and watches nothing happen.
+     */
+    val enabledExpression: String? = null,
     /** The catalogue's declared minimum, when it declares one. */
     val minimum: Double? = null,
     /** The catalogue's declared maximum, when it declares one. */
@@ -43,6 +62,8 @@ object AllSettingsCatalogs {
                         label = item.getString("key"),
                         description = unescapePercent(item.optString("desc", "")),
                         defaultValue = item.optString("default", "").ifBlank { null },
+                        // "bools" is a per-extruder vector, not a single switch.
+                        boolean = item.optString("type", "") == "bool",
                     ),
                 )
             }
@@ -86,6 +107,7 @@ object AllSettingsCatalogs {
                         description = unescapePercent(item.optString("desc", "")),
                         defaultValue = item.optString("default", "").ifBlank { null },
                         numeric = item.optString("type", "") in NUMERIC_ORCA_TYPES,
+                        boolean = item.optString("type", "") == "bool",
                         minimum = item.optionalDouble("min"),
                         maximum = item.optionalDouble("max"),
                     ),
@@ -149,17 +171,33 @@ object AllSettingsCatalogs {
                 collectCuraSettings(spec, out)
                 continue
             }
-            if (spec.has("settings") || spec.has("children")) {
-                collectCuraSettings(spec, out)
-                continue
-            }
             if (key !in out) {
                 out[key] = ExtraSettingSpec(
-                    key,
-                    spec.optString("label", key).ifBlank { key },
-                    spec.optString("description", ""),
+                    key = key,
+                    label = spec.optString("label", key).ifBlank { key },
+                    description = spec.optString("description", ""),
+                    // The Orca catalogue carried a default and a range and the Cura one did
+                    // not, so Cura rows showed no default and - worse - could not be clamped:
+                    // the sheet uses these to keep a value the definition excludes out of the
+                    // file. Both are declared per setting in these very definitions.
+                    defaultValue = spec.opt("default_value")
+                        ?.takeUnless { it == JSONObject.NULL }
+                        ?.toString(),
                     numeric = type == "float" || type == "int",
+                    boolean = type == "bool",
+                    enabledExpression = spec.optString("enabled", "").ifBlank { null },
+                    minimum = spec.optionalDouble("minimum_value"),
+                    maximum = spec.optionalDouble("maximum_value"),
                 )
+            }
+            // A node can be a setting AND a parent. Cura nests a setting's own
+            // sub-settings under it - acceleration_print carries acceleration_wall,
+            // acceleration_layer_0 and the rest, jerk_print likewise - so treating
+            // "has children" as "is only a container" dropped 79 settings outright.
+            // Print acceleration and jerk were among them, which is why the app
+            // appeared to have no acceleration setting at all.
+            if (spec.has("settings") || spec.has("children")) {
+                collectCuraSettings(spec, out)
             }
         }
     }
