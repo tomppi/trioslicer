@@ -97,16 +97,10 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
 ## Install
 
 Download the latest `TrioSlicer-<version>.apk` from the
-[releases page](https://github.com/tomppi/trioslicer/releases) **on the phone** and open it - Android
-asks whether to install it, and that is the whole process. No cable, no adb, nothing to set up on a
-computer.
+[releases page](https://github.com/tomppi/trioslicer/releases).
 
 Android 10+ on **arm64-v8a** only. The engines are 64-bit ARM, so an older 32-bit phone may accept
-the install and then have no engine to run: check the device before downloading. It is a **release**
-build - `android:debuggable` is off - signed with the project's private release key, so it installs
-over any release since 1.3.6 and keeps its data. An install from the **original** 1.3.5 or earlier
-was signed with a debug key that is now retired, and Android refuses an update across signing keys
-(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`): uninstall it once first.
+the install and then have no engine to run: check the device before downloading.
 
 To check that a downloaded APK is ours (`apksigner` ships in the Android SDK's build-tools; the APK
 carries a v2 signature, which `keytool -printcert -jarfile` cannot read):
