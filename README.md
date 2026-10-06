@@ -7,10 +7,10 @@
 TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
 preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
 or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
-an embedded **Blender 3.6**. It is **1.6.6** and runs on Android 10+ on **ARM64**, with all three
-engines cross-compiled for the phone together with their own upstream profile systems: CuraEngine
-**5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and OrcaSlicer **2.4.2**. Its most-tested baseline
-is a modified Creality Ender 3 V2.
+an embedded **Blender 3.6**. It runs on Android 10+ on **ARM64** and nothing else - the engines are
+built for `arm64-v8a` alone - with all three cross-compiled for the phone together with their own
+upstream profile systems: CuraEngine **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and
+OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2.
 
 > This is development software, not a complete Cura or PrusaSlicer replacement. Inspect every model, setting and generated G-code before printing.
 
@@ -96,23 +96,23 @@ is a modified Creality Ender 3 V2.
 
 ## Install
 
-Download `TrioSlicer-1.6.6.apk` from the [releases page](https://github.com/tomppi/trioslicer/releases)
-and open it on the phone, or install it over adb:
+Download the latest `TrioSlicer-<version>.apk` from the
+[releases page](https://github.com/tomppi/trioslicer/releases) **on the phone** and open it - Android
+asks whether to install it, and that is the whole process. No cable, no adb, nothing to set up on a
+computer.
 
-```sh
-adb install TrioSlicer-1.6.6.apk
-```
-
-Android 10+ on arm64-v8a. It is a **release** build - `android:debuggable` is off - signed with the
-project's private release key, so it installs over any release since 1.3.6 and keeps its data. An install from the
-**original** 1.3.5 or earlier was signed with a debug key that is now retired, and Android refuses an
-update across signing keys (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`): uninstall it once first.
+Android 10+ on **arm64-v8a** only. The engines are 64-bit ARM, so an older 32-bit phone may accept
+the install and then have no engine to run: check the device before downloading. It is a **release**
+build - `android:debuggable` is off - signed with the project's private release key, so it installs
+over any release since 1.3.6 and keeps its data. An install from the **original** 1.3.5 or earlier
+was signed with a debug key that is now retired, and Android refuses an update across signing keys
+(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`): uninstall it once first.
 
 To check that a downloaded APK is ours (`apksigner` ships in the Android SDK's build-tools; the APK
 carries a v2 signature, which `keytool -printcert -jarfile` cannot read):
 
 ```sh
-apksigner verify --print-certs TrioSlicer-1.6.6.apk
+apksigner verify --print-certs TrioSlicer-<version>.apk
 ```
 
 The signer's certificate digest must be
