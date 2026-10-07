@@ -74,6 +74,11 @@ gz="$(find "$STAGE" -name '*.gz' | wc -l)"
 # only when the checkout has none, so staging never silently regresses the engine to an
 # older copy.
 rm -rf "$SITE" "$LIBEXEC"
+# The parents, not just the destinations. `cp -a src dst` creates dst but not the directory
+# it goes in, and on a fresh checkout neither app/src/main/assets/cad/lib/python3.11 nor
+# app/src/main/assets/cad exists at all - so this worked on a machine that had staged before
+# and failed on the first CI run with "cannot create directory ...: No such file or directory".
+mkdir -p "$(dirname "$SITE")" "$(dirname "$LIBEXEC")"
 cp -a "$stage_site" "$SITE"
 cp -a "$stage_libexec" "$LIBEXEC"
 [ -f "$DEST/cad_mcp_slim.py" ] || cp -a "$STAGE/cad_mcp_slim.py" "$DEST/cad_mcp_slim.py"
