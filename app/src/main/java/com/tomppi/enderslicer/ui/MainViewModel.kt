@@ -29,6 +29,7 @@ import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.engine.LayerEventSource
 import com.tomppi.enderslicer.engine.LayerEventType
+import com.tomppi.enderslicer.engine.OcctEngineRunner
 import com.tomppi.enderslicer.engine.OrcaEngineRunner
 import com.tomppi.enderslicer.engine.PrinterEnvelope
 import com.tomppi.enderslicer.engine.PrusaEngineRunner
@@ -56,6 +57,7 @@ import com.tomppi.enderslicer.model.withSettings
 import com.tomppi.enderslicer.modelling.EnginePreviewClient
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import com.tomppi.enderslicer.nativebridge.BlenderEngineService
+import com.tomppi.enderslicer.nativebridge.CadEngine
 import com.tomppi.enderslicer.nonplanar.NonPlanarRuntime
 import com.tomppi.enderslicer.nonplanar.NozzleCollisionAlert
 import com.tomppi.enderslicer.nonplanar.SmartOverhangStrategy
@@ -189,6 +191,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val engine = CuraEngineRunner(app)
     private val prusaEngine = PrusaEngineRunner(app)
     private val orcaEngine = OrcaEngineRunner(app)
+    private val occtEngine = OcctEngineRunner(app)
     private val engineStore = SlicerEngineStore(app)
     private val activeEngine: SlicerEngine get() = engineStore.load()
 
@@ -268,11 +271,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         restorePersistedState()
         BlenderEngine.onStlExported = { file -> importBlenderStl(file) }
+        // The same contract for the CAD engine. It writes STEP and STL to
+        // <filesDir>/cad/exports/; the STL is the one the slicer can take, and without
+        // this the part the agent built stopped at the exports directory.
+        CadEngine.onExport = { file ->
+            // STL only. onExport fires for every model format the engine writes, and STEP
+            // and BREP are not meshes - handing one to the STL parser fails, and it fails
+            // on the first open of the menu because every file already in the directory
+            // counts as new. STEP is the format to *edit*; STL is the one to print.
+            if (file.extension.equals("stl", ignoreCase = true)) importCadStl(file)
+        }
         // An export the engine claimed while the app was busy is taken the moment
         // whatever was running finishes, wherever in this class it finished.
         viewModelScope.launch {
             _uiState.map { it.isBusy }.distinctUntilChanged().collect { busy ->
-                if (!busy) drainPendingBlenderImport()
+                if (!busy) drainPendingEngineImport()
             }
         }
         // The picker caches the mesh it last built a hierarchy for, and that cache
@@ -301,6 +314,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // no listener the engine queues it, and the next view model's setter replays
         // the newest one.
         if (BlenderEngine.onStlExported != null) BlenderEngine.onStlExported = null
+        if (CadEngine.onExport != null) CadEngine.onExport = null
         super.onCleared()
     }
 
@@ -314,6 +328,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         BlenderEngine.ensureStarted(app)
         BlenderEngineService.start(app)
     }
+
+    /**
+     * Boots the CAD engine, from the CAD menu, the way [startBlenderEngine] boots Blender's.
+     *
+     * Off the main thread, and this one is not idempotent-cheap the way the Blender call is:
+     * it extracts the engine script, writes its token and then waits up to a minute for the
+     * engine to report a listening port, and the engine imports build123d at startup. On the
+     * main thread that is a frozen menu for as long as it takes.
+     */
+    fun startCadEngine() {
+        if (cadEngineStarting) return
+        cadEngineStarting = true
+        viewModelScope.launch {
+            val started = withContext(Dispatchers.IO) { CadEngine.start(app) }
+            cadEngineStarting = false
+            _uiState.update {
+                it.copy(statusMessage = if (started) "CAD engine ready" else CadEngine.status(app))
+            }
+        }
+    }
+
+    /** Ends the CAD engine. Safe when it is not running. */
+    fun stopCadEngine() {
+        viewModelScope.launch { withContext(Dispatchers.IO) { CadEngine.stop() } }
+    }
+
+    /** Guards against a second start landing while the first is still waiting for the port. */
+    @Volatile private var cadEngineStarting = false
 
     /** Explicitly ends the Blender engine and its keeper service. */
     fun stopBlenderEngine() {
@@ -360,6 +402,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val parsed = ThreeMfModelParser.parse(source, name, triangleLimit)
                             StlMeshWriter.writeBinary(parsed.mesh, staged)
                             ImportedModel(parsed.mesh, staged, parsed.paint)
+                        } catch (error: Throwable) {
+                            staged.delete()
+                            throw error
+                        } finally {
+                            source.delete()
+                        }
+                    } else if (OcctEngineRunner.isCadFile(name)) {
+                        // STEP and IGES carry analytic geometry - real circles, real planes -
+                        // that none of the three slicers can read. OpenCASCADE tessellates it
+                        // here so that, exactly as with 3MF above, one model format reaches
+                        // every path downstream.
+                        val extension = OcctEngineRunner.extensionOf(name)
+                        val source = materializeModel(uri, triangleLimit, extension)
+                        val staged = stagedModelFile()
+                        try {
+                            val log = File(source.parentFile, "occt-${source.name}.log")
+                            if (!occtEngine.convertToStl(source, staged, log)) {
+                                throw IllegalStateException(
+                                    "OpenCASCADE could not convert " + name + " to a mesh; see " + log.name
+                                )
+                            }
+                            ImportedModel(StlParser.parse(staged, name, triangleLimit), staged, SupportPaintState())
                         } catch (error: Throwable) {
                             staged.delete()
                             throw error
@@ -521,13 +585,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * engine to <filesDir>/blender/exports/). Keeps the previous model on
      * screen until this import succeeds, matching the generation-loop contract.
      */
-    fun importBlenderStl(file: File) {
-        if (deferUntilRestoreCompletes { importBlenderStl(file) }) return
-        if (!beginOperation("Importing Blender model…")) {
+    fun importBlenderStl(file: File) = importEngineStl(file, "Blender")
+
+    /**
+     * Imports the latest CAD handoff STL, written by the engine to <filesDir>/cad/exports/.
+     *
+     * The same path as Blender's, deliberately: the engine writes a file, the app stages a
+     * private copy, parses it and centres it on the bed. The two differ only in which engine
+     * produced it, which is all the messages need to say.
+     */
+    fun importCadStl(file: File) = importEngineStl(file, "CAD")
+
+    private fun importEngineStl(file: File, engine: String) {
+        if (deferUntilRestoreCompletes { importEngineStl(file, engine) }) return
+        if (!beginOperation("Importing $engine model…")) {
             // The engine has already claimed this export, so dropping it here loses
             // the model for good. Keep the newest one and take it as soon as the
             // running operation finishes.
-            queueBlenderImport(file)
+            queueEngineImport(file, engine)
             return
         }
         val stateSnapshot = _uiState.value
@@ -537,7 +612,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // model file. It is named outside the launch so a failed parse or save can
         // delete it - the engine re-exports on every iteration, so a broken export
         // would otherwise leak one staged model per loop.
-        val staged = File(File(app.filesDir, "models"), "blender-" + System.nanoTime() + ".stl")
+        val staged = File(File(app.filesDir, "models"), engine.lowercase() + "-" + System.nanoTime() + ".stl")
         viewModelScope.launch {
             runCatching {
                 val prepared = withContext(Dispatchers.IO) {
@@ -585,7 +660,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         importedSceneModelName = null,
                         warnings = current.warnings.filterNot { it.startsWith("Imported Cura transform is for") },
                         isBusy = false,
-                        statusMessage = "Imported ${prepared.source.displayName} from the Blender engine",
+                        statusMessage = "Imported ${prepared.source.displayName} from the $engine engine",
                     )
                 }
                 previousModelPath
@@ -2859,21 +2934,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * the swap is guarded: a plain check-then-null dropped a write that landed
      * between the two statements, and the engine had already claimed that export.
      */
-    private var pendingBlenderImport: File? = null
-    private val pendingBlenderImportLock = Any()
+    private var pendingEngineImport: Pair<File, String>? = null
+    private val pendingEngineImportLock = Any()
 
-    private fun queueBlenderImport(file: File) {
-        synchronized(pendingBlenderImportLock) { pendingBlenderImport = file }
+    /** Holds a claimed export with the engine it came from, so the drain can name it right. */
+    private fun queueEngineImport(file: File, engine: String) {
+        synchronized(pendingEngineImportLock) { pendingEngineImport = file to engine }
     }
 
     /** Called wherever an operation ends, so a claimed export is not lost. */
-    private fun drainPendingBlenderImport() {
-        val queued = synchronized(pendingBlenderImportLock) {
-            val value = pendingBlenderImport
-            pendingBlenderImport = null
+    private fun drainPendingEngineImport() {
+        val (file, engine) = synchronized(pendingEngineImportLock) {
+            val value = pendingEngineImport
+            pendingEngineImport = null
             value
         } ?: return
-        importBlenderStl(queued)
+        importEngineStl(file, engine)
     }
 
         /**

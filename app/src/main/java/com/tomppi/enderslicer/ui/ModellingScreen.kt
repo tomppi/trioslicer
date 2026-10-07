@@ -173,7 +173,7 @@ fun ModellingScreen(
 }
 
 @Composable
-private fun ChatTranscript(
+internal fun ChatTranscript(
     messages: List<AiChatMessage>,
     busy: Boolean,
     status: String?,

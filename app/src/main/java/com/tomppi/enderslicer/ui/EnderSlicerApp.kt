@@ -98,6 +98,7 @@ import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
 import com.tomppi.enderslicer.conical.ConicalSettingsStore
 import com.tomppi.enderslicer.engine.GcodeDialect
+import com.tomppi.enderslicer.harness.EngineMode
 import com.tomppi.enderslicer.harness.HarnessChat
 import com.tomppi.enderslicer.harness.HarnessClient
 import com.tomppi.enderslicer.harness.HarnessConfig
@@ -130,6 +131,7 @@ import android.os.Build
 import android.os.PersistableBundle
 import androidx.compose.material.icons.filled.Lock
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
+import com.tomppi.enderslicer.nativebridge.CadEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntOffset
@@ -246,6 +248,10 @@ fun EnderSlicerApp(
     var allSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var conicalOpen by rememberSaveable { mutableStateOf(false) }
     var blenderMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    // The CAD menu, beside Blender's. Two menus rather than one with a mode switch,
+    // because the menu the user opens is the thing that tells the agent which engine it
+    // is working with - an entry inside the Blender menu could not say that.
+    var cadMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var blenderFilesOpen by rememberSaveable { mutableStateOf(false) }
     var aiChatOpen by rememberSaveable { mutableStateOf(false) }
     // The floating Plate cards fold independently: one saveable key per card, so
@@ -295,6 +301,20 @@ fun EnderSlicerApp(
     // deferred brief can be delivered.
     var modellingChatReady by remember { mutableStateOf(false) }
     val modellingChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
+
+    // The CAD conversation: same harness, a different engine, and a transcript about
+    // dimensions rather than about a mesh. Its own session id, because an agent that has
+    // just been reading a Blender transcript answers as if the model were a mesh.
+    var cadOpen by rememberSaveable { mutableStateOf(false) }
+    var cadMessages by remember { mutableStateOf(listOf<AiChatMessage>()) }
+    var cadStatus by remember { mutableStateOf<String?>(null) }
+    var cadBusy by remember { mutableStateOf(false) }
+    var cadChatReady by remember { mutableStateOf(false) }
+    var cadEngineStatus by remember { mutableStateOf("CAD engine not started") }
+    // The engine's latest render. It has a GL viewer and no window, so its picture of the
+    // model arrives as a file - the same handoff that carries STEP and STL.
+    var cadRender by remember { mutableStateOf<java.io.File?>(null) }
+    val cadChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
     var modellingCameraRev by remember { mutableStateOf(0L) }
@@ -432,7 +452,9 @@ fun EnderSlicerApp(
             aiStatus = null
             try {
                 val chat = harnessChat.get() ?: error("Connect to the harness first")
-                withContext(Dispatchers.IO) { chat.send(text) }
+                // The floating chat is the Blender one; say so, so the agent does not have
+                // to infer the engine from the wording of the request.
+                withContext(Dispatchers.IO) { chat.send(EngineMode.BLENDER.prompt(text)) }
                 aiMessages = aiMessages + AiChatMessage(fromUser = true, text = text)
                 pollForReply(chat, { aiMessages = it }, { aiStatus = it })
             } catch (error: Throwable) {
@@ -553,6 +575,16 @@ fun EnderSlicerApp(
                 modellingChatReady = true
                 harnessStore.saveModellingSession(adoptedModelling.sessionId)
                 modellingMessages = withContext(Dispatchers.IO) { modelling.messages() }
+                    .map { AiChatMessage(fromUser = it.fromUser, text = it.text) }
+                // And a third for CAD, on its own session for the same reason.
+                val cad = HarnessChat(client, workspace)
+                val adoptedCad = withContext(Dispatchers.IO) {
+                    cad.connect(harnessStore.loadCadSession())
+                }
+                cadChat.set(cad)
+                cadChatReady = true
+                harnessStore.saveCadSession(adoptedCad.sessionId)
+                cadMessages = withContext(Dispatchers.IO) { cad.messages() }
                     .map { AiChatMessage(fromUser = it.fromUser, text = it.text) }
                 // Merged over what was stored, never over what was typed: the address
                 // field is a bare URL here, so a blank one must not erase the stored
@@ -692,13 +724,38 @@ fun EnderSlicerApp(
             modellingStatus = null
             try {
                 val chat = modellingChat.get() ?: error("Connect to the harness first")
-                withContext(Dispatchers.IO) { chat.send(text) }
+                // The modelling screen is Blender's. A CAD screen sends CAD.prompt instead.
+                withContext(Dispatchers.IO) { chat.send(EngineMode.BLENDER.prompt(text)) }
                 modellingMessages = modellingMessages + AiChatMessage(fromUser = true, text = text)
                 pollForReply(chat, { modellingMessages = it }, { modellingStatus = it })
             } catch (error: Throwable) {
                 modellingStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
                 modellingBusy = false
+            }
+        }
+    }
+
+    /**
+     * Sends to the CAD agent from the CAD menu.
+     *
+     * The prompt carries the engine, because the agent cannot see which menu the user is
+     * standing in and "make the wall 2 mm thicker" reads the same for a mesh and a solid.
+     * What the transcript shows is the user's own words.
+     */
+    fun askCadAgent(text: String) {
+        aiScope.launch {
+            cadBusy = true
+            cadStatus = null
+            try {
+                val chat = cadChat.get() ?: error("Connect to the harness first")
+                withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(text)) }
+                cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+                pollForReply(chat, { cadMessages = it }, { cadStatus = it })
+            } catch (error: Throwable) {
+                cadStatus = error.message?.take(160) ?: "Harness call failed"
+            } finally {
+                cadBusy = false
             }
         }
     }
@@ -757,6 +814,31 @@ fun EnderSlicerApp(
         }
     }
 
+    /**
+     * Opens the CAD menu.
+     *
+     * The mirror of [openModelling], and the click is the whole signal: opening this menu
+     * starts the CAD engine and makes every prompt sent from here say CAD, exactly as the
+     * modelling menu starts Blender and says Blender. The user never has to tell the agent
+     * which engine they mean - the menu they are standing in already did.
+     */
+    fun openCad() {
+        cadOpen = true
+        // Opening the screen is the request that starts the engine; nothing boots it at
+        // launch. Off the main thread, because this one extracts, writes a token and waits
+        // for a port, and the engine imports build123d on the way up.
+        viewModel.startCadEngine()
+        cadEngineStatus = CadEngine.status(context)
+        if (cadChat.get() == null) {
+            if (aiConfigured) {
+                connectHarness()
+            } else {
+                cadStatus = "The harness is not set up yet - connect it in the AI chat " +
+                    "(Blender menu, Ask AI) first"
+            }
+        }
+    }
+
     // The agent writes the same camera file. Poll it while the modelling screen
     // is open so its moves land here too - that is what makes the camera shared
     // rather than one-way.
@@ -806,6 +888,28 @@ fun EnderSlicerApp(
         // restored screen showed "failed to connect to /127.0.0.1 (port 9876)
         // ... ECONNREFUSED" and stayed that way until it was left and re-entered.
         if (modellingOpen) viewModel.startBlenderEngine()
+        // Same for CAD, and the same reason: cadOpen is rememberSaveable, so a restored
+        // screen outlives the click that opened it and would otherwise sit on a dead port.
+        if (cadOpen) viewModel.startCadEngine()
+    }
+
+    // The CAD engine comes up asynchronously - it extracts, writes a token, waits for a
+    // port and imports build123d on the way - so the caption follows it rather than being
+    // read once when the menu opened and left saying "not started" while it served.
+    LaunchedEffect(cadOpen) {
+        if (!cadOpen) return@LaunchedEffect
+        // Renders are pushed rather than polled: the watcher already knows the moment one
+        // lands, and re-decoding the directory every second to find it would be work the
+        // engine has already done.
+        CadEngine.onRender = { file -> cadRender = file }
+        try {
+            while (true) {
+                cadEngineStatus = CadEngine.status(context)
+                delay(1_000)
+            }
+        } finally {
+            CadEngine.onRender = null
+        }
     }
 
     // The standing brief waits for the connection its screen opened in the same
@@ -1171,6 +1275,41 @@ fun EnderSlicerApp(
                                         )
                                     }
                                 }
+                                // CAD gets its own menu rather than an entry in the Blender
+                                // one, and that is the whole mechanism: which menu the user
+                                // opened is what tells the agent which engine it is working
+                                // with. An entry inside the Blender menu could not say that.
+                                Box {
+                                    TopBarTextAction(
+                                        label = "CAD",
+                                        onClick = { cadMenuExpanded = true },
+                                    )
+                                    DropdownMenu(
+                                        expanded = cadMenuExpanded,
+                                        onDismissRequest = { cadMenuExpanded = false },
+                                        modifier = Modifier.widthIn(min = 280.dp, max = 340.dp),
+                                    ) {
+                                        MenuSectionLabel("Model")
+                                        DropdownMenuItem(
+                                            text = { Text("Model with CAD") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                openCad()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Stop CAD engine") },
+                                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                viewModel.stopCadEngine()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                    }
+                                }
                             }
                         },
                     )
@@ -1215,6 +1354,21 @@ fun EnderSlicerApp(
                         onCameraMoved = ::publishModellingCamera,
                         incomingCamera = modellingCamera,
                         blenderDir = blenderDir,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                    )
+                } else if (cadOpen) {
+                    CadScreen(
+                        messages = cadMessages,
+                        busy = cadBusy,
+                        status = cadStatus,
+                        agentConnected = cadChatReady,
+                        engineStatus = cadEngineStatus,
+                        exportsPath = CadEngine.exportsDirectory(context).absolutePath,
+                        render = cadRender,
+                        onSend = ::askCadAgent,
+                        onExit = { cadOpen = false },
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),

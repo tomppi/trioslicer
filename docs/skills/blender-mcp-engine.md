@@ -35,7 +35,6 @@ trusted - or that gets trusted while 5555 is open - has a shell as `u:r:shell:s0
 `su -c` command below then reads the app's private storage, the MCP token included. The MCP
 socket is no more private than the adb forward that publishes it. Close it after a session with
 `adb usb`, or turn **Settings ▸ Developer options ▸ Wireless debugging** off.
-
 ## 2. Protocol
 
 Plain TCP, one JSON object per request. Either a single write with no terminator (what the app does) or newline-delimited requests are accepted; two requests in one write no longer hang the connection.
@@ -48,14 +47,13 @@ adb -s <phone-tailscale-ip>:5555 shell cat /data/user/0/com.tomppi.enderslicercu
 
 **On a phone without root** the token cannot be read from the device at all: tap **Blender → Copy MCP token** in the app, paste that value to the agent, and send it with every request. The app marks the clip sensitive so the system does not preview it.
 
-This reads the app's private file over the exposed 5555 shell, so anyone who reaches that port
-(see the exposure note in section 1) can read the token the same way. There is no `su` binary to
-call on this build: with rooted debugging enabled adbd already runs as root (`adb shell id` reports
-`uid=0(root)`, and `adb root` answers "adbd is already running as root"), so a plain `cat` reads
-it. A non-root shell fails with permission denied, which then looks exactly like a wrong token —
-every request answers `unauthorized` — so check what you read, not just that the command exited.
+There is no `su` binary to call on this build. With rooted debugging enabled adbd already runs as
+root — `adb shell id` reports `uid=0(root)` and `adb root` answers "adbd is already running as
+root" — so a plain `cat` reads the app's private file. A non-root shell fails with permission
+denied, which then looks exactly like a wrong token: every request answers `unauthorized`
+whatever the token field holds, so check what you actually read, not just that the command exited.
 
-An engine started by hand (`blender -b --python start_blender_mcp.py`) has no token file and **refuses to serve**, and the app likewise refuses to start the addon when it could not write one: without a token there is nothing to authorize a request against, so a tokenless server would let any co-installed app run Python as this app's uid. To use a hand-run engine, write `blender_mcp_token.txt` beside the script and send that token with every request.
+An engine started by hand (`blender -b --python start_blender_mcp.py`) has no token file and **refuses to serve** — the server records "no MCP token loaded; refusing to serve" and never opens the port. Without a token there is nothing to authorize a request against, so a tokenless server would let any co-installed app run Python as this app's uid. To use a hand-run engine, write `blender_mcp_token.txt` beside the script and send that token with every request.
 
 ```text
 → {"type": "ping", "params": {}, "token": "<token>"}

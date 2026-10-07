@@ -47,15 +47,17 @@ The app's **Build from image** button uploads the photograph to a harness sessio
 The upload happens **before** the prompt is sent, so by the time you read this the photograph is on disk — under the harness home, not in the workspace:
 
 ```text
-C:\Users\<you>\.dsh\attachments\v1\files\<2 hex>\<64 hex>\model-source-<epoch>.jpg
+/root/.dsh/attachments/v1/files/<2 hex>/<64 hex>/model-source-<epoch>.jpg
 ```
 
 Newest one is yours:
 
-```powershell
-Get-ChildItem "$env:USERPROFILE\.dsh\attachments" -Recurse -Filter 'model-source-*' |
-    Sort-Object LastWriteTime | Select-Object -Last 1 -ExpandProperty FullName
+```bash
+find /root/.dsh/attachments -name 'model-source-*' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-
 ```
+
+(The harness host used to be Windows, where the same file lived under
+`C:\Users\<you>\.dsh\attachments\...` and was found with `Get-ChildItem`.)
 
 **Do not go looking for it inside `session.v3.jsonl.zstd`.** That journal is a concatenation of zstd frames — one per record — so decompressing the file returns only the session header and nothing else, and a full decode to find an attachment reference is a dozen wasted steps. The path above is where it is.
 
@@ -65,12 +67,35 @@ If the prompt does not arrive with an image attached, ask for one rather than gu
 
 | | where |
 |---|---|
-| GPU box `GPU box` | `<gpu-box-lan-ip>`, ssh `<user>`, venv `/home/<user>/img2mesh/venv` |
-| Scripts (PC copy) | `C:\Users\<you>\Documents\img2mesh\blender-mcp\` |
-| Scripts (box copy) | `/home/<user>/img2mesh/`, Hunyuan clone at `/home/<user>/hy3d` |
-| Phone | `<phone-tailscale-ip>:5555` - the tailnet address - via `C:\Android\platform-tools\adb.exe`. Works anywhere the tailnet is up; `<phone-lan-ip>:5555` only on the same WiFi |
+| GPU box | `<gpu-box-lan-ip>`, ssh `<user>`, venv `/home/<user>/img2mesh/venv` |
+| Scripts (harness host) | `<blender-mcp-dir>/` - the Windows partition, mounted **read-only**, so this is a reference copy and nothing can be written to it |
+| Scripts (box copy) | `/home/<user>/img2mesh/`, Hunyuan clone at `/home/<user>/hy3d` - **these are the runnable ones** |
+| Phone | `<phone-tailscale-ip>:5555` - the tailnet address - via `/opt/android-sdk/platform-tools/adb`. Works anywhere the tailnet is up; `<phone-lan-ip>:5555` only on the same WiFi |
 
-Transport is `box.py` — `--put`, `--get`, `--sudo`, credentials in `box-credentials.json`.
+**Transport is plain `ssh`, not `box.py`.** The harness host became Debian and `paramiko` is not
+installed, so `box.py` / `--put` / `--get` no longer run here. What replaces them:
+
+```bash
+ssh <user>@<gpu-box-lan-ip> '<command>'                       # the key already works, no password
+ssh <user>@<gpu-box-lan-ip> 'cat > /remote/path' < local.py  # replaces --put
+ssh <user>@<gpu-box-lan-ip> 'cat /remote/path'   > local.py  # replaces --get
+```
+
+The **scripts live on the box and run there**, in its venv - there is no reason to copy them over:
+
+```bash
+ssh <user>@<gpu-box-lan-ip> '/home/<user>/img2mesh/venv/bin/python /home/<user>/img2mesh/<script>.py <args>'
+```
+
+For sudo on the box, the password is the `sudo_password` field of
+`<box-credentials-file>`:
+
+```bash
+BOX_PW=$(python3 -c "import json;print(json.load(open('<box-credentials-file>'))['sudo_password'])")
+ssh <user>@<gpu-box-lan-ip> "sudo -S -p '' <command>" <<< "$BOX_PW"
+```
+
+Waking the box and hibernating it again are covered by the `gpu-box-power` skill.
 
 ## Choosing the generator
 
@@ -134,8 +159,8 @@ The input is positional and **the output is `<dir>/mesh.stl`** — there is no o
 
 **Wait for the output file, not for a line of log text.** A generation takes two to four minutes. Use the helper rather than hand-rolling a loop:
 
-```powershell
-.venv\Scripts\python.exe wait_for_mesh.py out_screw --log /home/<user>/img2mesh/out_screw.log
+```bash
+ssh <user>@<gpu-box-lan-ip> '/home/<user>/img2mesh/venv/bin/python /home/<user>/img2mesh/wait_for_mesh.py out_screw --log /home/<user>/img2mesh/out_screw.log'
 ```
 
 It polls for `<dir>/mesh.stl`, watches the log for a traceback, and exits 0 / 1 / 2 so the outcome is unambiguous.
@@ -176,8 +201,6 @@ Expect **watertight**, with 0 degenerate / open / over edges. A model that fails
 
 **If the phone has left the WiFi, reach it over the tailnet.** adbd listens on every interface, so `adb connect <phone-tailnet-ip>:5555` works when the LAN address does not answer — a phone that is out of the house is still reachable, and the whole delivery goes over the tunnel. (The Tailscale caveat elsewhere in these skills is about the *app's* inbound sockets, such as the Blender MCP port; it does not apply to adb.)
 
-**That same listener is the exposure.** adbd binds TCP 5555 on **every** interface (`*:5555`, verified on the device) and authorizes a host by its adb key rather than a per-connection password, so any host the phone trusts — or that gets trusted while the port is open — can reach it from the LAN or the tailnet. The `su -c` copies below then write into the app's private storage. Turn the listener off (`adb usb`, or **Settings ▸ Developer options ▸ Wireless debugging**) once the delivery is done.
-
 The app must be **running** for the import to dispatch — check for its pid before delivering rather than after, and remember the adb server does not survive between shell invocations, so connect and use it in one command.
 
 **Stage through `/sdcard/Download/dsh-agent/`, never the Download root.** That folder is the device's drop box for agent files, and it carries a `.nomedia` so screenshots pushed there stay out of the gallery. The rule covers **everything** you send to the device - models, probe scripts, screenshots - not just the STL.
@@ -186,9 +209,11 @@ The app must be **running** for the import to dispatch — check for its pid bef
 
 The app hot-loads from its own private directory, so the file must be copied in there — the sdcard alone is not enough:
 
-```powershell
-adb push final.stl /sdcard/Download/dsh-agent/<unique-name>.stl
-adb shell "su -c 'cp /sdcard/Download/dsh-agent/<unique-name>.stl /data/data/com.tomppi.enderslicercura/files/blender/exports/'"
+```bash
+# adb is not on PATH on the harness host; it lives in the SDK
+ADB=/opt/android-sdk/platform-tools/adb
+$ADB push final.stl /sdcard/Download/dsh-agent/<unique-name>.stl
+$ADB shell "su -c 'cp /sdcard/Download/dsh-agent/<unique-name>.stl /data/data/com.tomppi.enderslicercura/files/blender/exports/'"
 ```
 
 **The filename must be new every time.** The app dedupes by path + size + mtime and dispatches each revision exactly once, so reusing a name can be silently ignored. Include a timestamp: `model-<epoch>.stl`.
@@ -237,6 +262,12 @@ That makes rendering and looking at the result a required step, not a nicety. Th
 
 **Do not try to render with the box's Blender.** `/usr/bin/blender` there is broken — `undefined symbol: _ZTVN17MaterialX_v1_39_510TypedValueIbEE`, a MaterialX ABI mismatch left behind by the 6.19 → 7.2.4 hop. Render on the PC's Blender, or use `render_numpy.py`, which was written for exactly this and needs nothing installed on the box. Four views — front, side, top, iso — are enough to tell an earbud from a blob.
 
+**That same listener is the exposure.** adbd binds TCP 5555 on **every** interface (`*:5555`,
+verified on the device) and authorizes a host by its adb key rather than a per-connection
+password, so any host the phone trusts - or that gets trusted while the port is open - can reach
+it from the LAN or the tailnet. The `su -c` copies below then write into the app's private
+storage. Turn the listener off (`adb usb`, or **Settings ▸ Developer options ▸ Wireless
+debugging**) once the delivery is done.
 ## Pitfalls that have already cost time
 
 **A generated mesh that looks tipped over.** `MarchingCubeHelper.forward` applies `v_pos[..., [2,1,0]]` — a torchmcubes convention. skimage already returns vertices in the caller's frame, so on the skimage path that swap tips the mesh. Fixed by pre-swapping in `mc_fallback.marching_cubes` and removing the swap in `gen_dog_clean.py`.

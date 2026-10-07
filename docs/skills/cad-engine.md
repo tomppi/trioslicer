@@ -1,0 +1,375 @@
+# CAD Engine (TrioSlicer / enderslicercura embedded)
+
+**This is the app's parametric CAD environment.** Where the Blender engine edits *meshes*
+(reshaping a profile, deepening a dish, mesh surgery), this one builds **exact analytic
+geometry** — solids with real surfaces, cylinders that are round rather than faceted, STEP
+files that carry design intent. Reach for this when the thing being made is a *part*: a
+bracket, an enclosure, an adapter, anything with dimensions that must be right.
+
+It is the app's own build123d + OCP, running on the device. It is not a wrapper around a
+desktop CAD package, and FreeCAD is not involved — FreeCAD's kernel *is* OpenCASCADE, and
+this engine drives that same kernel through the official Python bindings.
+
+Rule of thumb:
+
+| task | engine |
+|---|---|
+| "make a 40 mm bracket with a 6 mm boss and a 3 mm hole" | **CAD** — dimensions, exact geometry |
+| "make this scanned model thinner" / "fix this wall" | **Blender** — mesh editing |
+| "turn this photo into a model" | `image-to-3d-model` — then CAD to correct dimensions |
+
+## 1. Connect
+
+The engine is a plain TCP socket on **localhost:9877** inside the app process. It is **not**
+Blender's port (9876) — the two can run at once and each has its own.
+
+### Reach the engine on the phone the user is actually using
+
+**This is the mistake to avoid, and it has already cost one session an afternoon.** There are
+two devices:
+
+| device | serial | whose |
+|---|---|---|
+| **the user's phone** | `<phone-tailscale-ip>:5555` (tailnet) | **theirs — this is the target when they ask from the app** |
+| a dev phone | `<dev-phone-serial>` (USB) | scratch hardware for testing |
+
+**When the user asks for something from the app, the engine is on THEIR phone**, because that
+is where the app they typed into is running. Starting the engine on the dev phone and looking
+there produces "connection refused" on a socket that is listening perfectly well somewhere
+else, and nothing in the error says which device it meant.
+
+The dev phone is for trying things out without touching their device. It is not a mirror: the
+two have separate app installs, separate engines and separate tokens.
+
+```bash
+# Their phone - the one to use when they asked from the app.
+adb -s <phone-tailscale-ip>:5555 forward tcp:9877 tcp:9877
+```
+
+**A local port can only be forwarded to one device at a time.** If `adb forward --list` shows
+`<dev-phone-serial> tcp:9877`, the dev phone holds it and `127.0.0.1:9877` will reach the *dev* phone
+whatever engine you are thinking about. Remove it first:
+
+```bash
+adb forward --remove tcp:9877
+adb -s <phone-tailscale-ip>:5555 forward tcp:9877 tcp:9877
+adb forward --list                     # confirm which device holds it
+```
+
+**Every request needs the token**, and the two devices have **different tokens**. Read it from
+the device you are actually talking to:
+
+```bash
+adb -s <phone-tailscale-ip>:5555 shell cat \
+  /data/user/0/com.tomppi.enderslicercura/files/cad/cad_mcp_token.txt
+```
+
+Their phone needs no `su`: adbd already runs as root there, and `su` does not exist on that
+build — a command wrapped in `su -c` fails with `su: inaccessible or not found`.
+
+A tokenless server **refuses to serve** — it records `"no MCP token loaded; refusing to
+serve"` in its status file and never opens the port. There is no token-free command,
+`ping` included.
+
+Liveness without geometry:
+
+```bash
+# Their phone, unchanged - no su on that build.
+adb -s <phone-tailscale-ip>:5555 shell 'ss -tln | grep 9877'
+adb -s <phone-tailscale-ip>:5555 shell 'cat /data/user/0/com.tomppi.enderslicercura/files/cad/cad_mcp_status.json'
+```
+
+**No status file at all means the engine never got as far as serving** - the process died
+before it could write one. That is a different failure from a status file saying
+`"running": false`, which is the engine reporting its own refusal. Check the app's own log
+with `adb logcat -d | grep -i CadEngine` before assuming the socket is the problem.
+
+The status file is written atomically and reports:
+```json
+{"running": true, "port": 9877, "pid": 30099, "auth": true}
+```
+
+## 2. Protocol
+
+Plain TCP, one JSON object per request, newline-delimited or as a single write. Same
+envelope as the Blender engine:
+
+```text
+→ {"type": "ping", "params": {}, "token": "<token>"}
+← {"status": "success", "result": {"pong": true}}
+
+→ {"type": "ping", "params": {}}
+← {"status": "error", "message": "unauthorized: send the token from cad_mcp_token.txt"}
+```
+
+- **`params` are keyword arguments.** Omitting `params` on a command that takes arguments
+  fails with "missing required positional argument".
+- **One command at a time.** A request arriving while another has run for more than ten
+  seconds is answered `{"status": "error", "message": "engine busy in another command for
+  Ns"}` rather than waiting out your timeout.
+- **A reply is capped at 1 MiB** by the app's client. A reply is a control message, not a
+  payload — the STEP and STL bytes come back through files. Printing a whole mesh is a
+  **failed command, not a slow one**. Keep `print()` to a summary.
+
+### Commands
+
+| type | params | notes |
+|---|---|---|
+| `ping` | – | liveness; touches no geometry. Needs the token |
+| `shutdown` | – | replies, then releases the socket. The engine parks; it does not exit |
+| `execute_code` | `code` | the workhorse. namespace: `build123d`, `OCP`, `json`, `math`, `os`, and the scene helpers |
+| `get_scene_info` | – | every shape with volume, bounding box and solid count |
+| `get_object_info` | `name` | one shape, plus solid/face/edge/vertex counts |
+| `get_metrics` | `name` (optional) | volume, area, bounding box, centroid. No name = all |
+| `export_step` | `filepath`, `name` (optional) | atomic; no name = whole scene |
+| `export_stl` | `filepath`, `name` (optional), `tolerance` | atomic; no name = whole scene |
+| `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
+| `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
+| `get_addon_info` | – | engine version and kernel state |
+
+## 3. The scene
+
+Blender's engine gets persistence free from `bpy.data`. There is no equivalent here, so the
+engine owns a dict of **named shapes** — the handle you use between commands.
+
+Inside `execute_code`:
+
+| helper | purpose |
+|---|---|
+| `add(name, shape)` | put a shape in the scene |
+| `get(name)` | fetch one back |
+| `remove(name)` | drop one |
+| `shapes()` | list the names |
+| `scene` | the underlying dict, if you want it directly |
+
+`build123d`'s common names are pre-imported — `Box`, `Cylinder`, `Sphere`, `Cone`,
+`Torus`, `Plane`, `Pos`, `Location`, `Axis`, `fillet`, `chamfer`, `extrude`, `revolve`,
+`loft`, `sweep`, `export_step`, `export_stl`, `import_step`, `import_brep` — so a script
+can start modelling immediately. For anything else, `from build123d import ...`.
+
+**Objects persist between commands.** A shape added in one call is there in the next.
+
+## 4. Worked examples
+
+A part, in one call:
+
+```json
+{"type": "execute_code", "params": {"code":
+  "part = Box(40, 20, 5) - Pos(0,0,0) * Cylinder(3, 20)
+add('plate', part)
+print(part.volume)"},
+ "token": "<token>"}
+```
+
+Fillet only the vertical edges — where build123d earns its place over raw OCP:
+
+```python
+part = fillet(part.edges().filter_by(Axis.Z), radius=2)
+add("plate", part)
+```
+
+Import a STEP, modify it, export it:
+
+```python
+from build123d import import_step
+part = import_step("/path/in.step")
+add("part", part)
+print("imported, volume", part.volume)
+```
+
+Read a number back rather than guessing — always cheap:
+
+```python
+print("volume", round(part.volume, 4), "bbox", part.bounding_box().size)
+```
+
+## 4a. Importing an existing model
+
+`import_file` brings a file into the scene under a name, after which it is an ordinary
+shape — addressable, measurable, and modifiable like anything modelled here.
+
+```json
+{"type": "import_file", "params": {"filepath": "/path/part.step", "name": "housing"}}
+```
+
+**STEP is the one worth importing.** It carries analytic geometry, so a hole comes back as a
+cylinder rather than a ring of triangles and can be re-dimensioned. Verified: a STEP
+round-trip preserves volume exactly (delta 0.000000), and a shape imported that way can be
+cut, filleted and re-exported.
+
+| format | what you get |
+|---|---|
+| STEP / STP / STPZ | **exact solid** — the only format that survives editing |
+| BREP | exact solid, OCCT's native format |
+| SVG | 2D curves, for `import_svg_as_buildline_code` |
+| STL | **a surface, not a solid** — see below |
+
+### STL imports as a surface, not a solid
+
+An STL carries triangles and no topology, so there is no "inside" to measure. `import_file`
+on an STL reports **`volume: 0.0`**, and that is correct rather than a failure.
+
+You can still use it: measure with `part.area`, cut it, or wrap it with
+`build123d.Solid.make_solid(...)` when the mesh is watertight. But do not expect a boolean on
+a raw imported STL to behave like one on a solid — and say so to the user rather than
+reporting a mysterious zero volume.
+
+## 5. Handoff into the app
+
+Export to the app's handoff directory and the app picks it up:
+
+```
+/data/user/0/com.tomppi.enderslicercura/files/cad/exports/<name>.step
+/data/user/0/com.tomppi.enderslicercura/files/cad/exports/<name>.stl
+```
+
+**Export writes through a `.part` name and renames into place.** The rename is what
+publishes the file — a half-written STEP is not a file the app can use. This is automatic in
+`export_step` / `export_stl`; if you write a file yourself, do the same.
+
+Use a fresh name per generation. A rewrite of the same path only re-fires if the timestamp
+changes.
+
+## 5a. Rendering — the user's eyes
+
+The engine has a GL viewer and no window. It renders offscreen and writes a PNG, and the app
+shows the newest one as the view. **Render whenever the user should see the result** — after
+a shape change, before reporting a part done, or when asked what it looks like.
+
+```json
+{"type": "render", "params": {"filepath": ".../files/cad/exports/iso.png", "view": "iso"}}
+```
+
+| argument | default | notes |
+|---|---|---|
+| `view` | `iso` | `iso`, `top`, `front`, `right`, `left`, `back`, `bottom` |
+| `width`, `height` | 640 | capped at 2048 |
+| `shaded` | true | false draws wireframe only |
+| `name` | whole scene | render one shape |
+
+**Which view to pick.** `iso` shows a part as a part — use it by default, and after any
+change. The orthographic views are for checking *where something is*: a hole's position, a
+boss's diameter, whether two features line up. Render both when the question is "is this
+right" rather than "what does it look like".
+
+**Shaded renders carry edges**, drawn as a wireframe overlay rather than by OCCT's own edge
+setting (`SetDrawEdges` has no effect on this GLES path — the renders come out
+byte-identical with and without it). Without the overlay a boss on a plate is invisible from
+directly above, which is exactly the view used to check a feature's position.
+
+**Renders cost seconds, not milliseconds** — the viewer is built once and kept, but each
+render re-displays the scene. Do not render in a loop.
+
+## 5b. 2D — drawings and flat parts
+
+Two different jobs with two different APIs. Both are build123d, so both run through
+`execute_code` like anything else. Everything below was run on a device, not written from
+memory.
+
+### Flat parts: cut files
+
+For a plate with holes in it — something a laser or a CNC would cut — export the 2D profile.
+Real files with real units, not pictures:
+
+```python
+from build123d import *
+from build123d.exporters import ExportSVG, ExportDXF
+
+part = Box(80, 50, 3) - [Pos(x, 0) * Cylinder(3, 6) for x in (-25, 0, 25)]
+top = part.faces().sort_by(Axis.Z)[-1]          # the profile to cut
+
+svg = ExportSVG(unit=Unit.MM)
+svg.add_shape(top)
+svg.write("plate.svg")
+
+dxf = ExportDXF(unit=Unit.MM)
+dxf.add_shape(top)
+dxf.write("plate.dxf")
+```
+
+Measured on the device: 583 bytes of SVG, 16,099 of DXF.
+
+**The exporters take no shape in the constructor.** `ExportSVG(top)` does not mean "export
+top" — the argument lands on `unit` and it fails with `Invalid unit. Supported units are mm,
+cm, in.`, which says nothing about shapes and sends you looking in the wrong place. Geometry
+goes in through `add_shape`.
+
+**`ExportDXF` colour wants a `ColorIndex`, not an int.** `add_layer(color=1)` raises
+`'int' object has no attribute 'value'`; use `ColorIndex.RED`.
+
+### Technical drawings: hidden lines
+
+A drawing is a projection that keeps the hidden edges as a separate set, which is what makes
+it readable — a hole through a part shows as dashed lines instead of vanishing. `Drawing`
+wraps `HLRBRep_Algo` and `HLRAlgo_Projector`:
+
+```python
+from build123d import *
+from build123d.exporters import ExportSVG, Drawing, LineType
+
+part = Box(60, 40, 20) - Cylinder(5, 30)
+d = Drawing(part, look_at=(0, -100, 0), look_up=(0, 0, 1))     # front
+visible, hidden = d.visible_lines, d.hidden_lines
+
+svg = ExportSVG(unit=Unit.MM)
+svg.add_layer("visible", line_weight=0.5)
+svg.add_layer("hidden", line_weight=0.25, line_type=LineType.ISO_DASH)
+for edge in visible: svg.add_shape(edge, layer="visible")
+for edge in hidden:  svg.add_shape(edge, layer="hidden")
+svg.write("front.svg")
+```
+
+Measured on the device: that box with a hole gives 1 visible and 2 hidden lines for the front,
+and the same for the top, in 2,152 bytes. A plausible line count is the check that it worked —
+a drawing that comes out empty means the view is wrong, not that there is nothing there.
+
+**`Drawing` is in `build123d.exporters`.** It is not re-exported at the top level, so
+`from build123d import Drawing` fails with `name 'Drawing' is not defined`.
+
+**The attributes are `visible_lines` and `hidden_lines`** — not `visible`/`hidden`, and there
+is no `lines()`.
+
+**A top view needs `look_up=(0, 1, 0)`.** With the default the projection direction and the up
+vector are parallel and OCCT raises `gp_Dir() - input vector has zero norm`, which does not
+mention the view you asked for.
+
+### The user cannot see an SVG
+
+**Android has no SVG preview.** An SVG sent to the phone opens as a blank page or nothing at
+all, and the same goes for DXF. Render a PNG beside every drawing and send both — the SVG is
+the deliverable, the PNG is how it gets looked at. Use `render` (section 5a) on the same part.
+
+## 6. Look at your model — required, and cheap
+
+**Looking at the result is part of the job, not a nicety.** CAD fails quietly: a fillet that
+silently did nothing, a boolean that left a zero-thickness wall, a hole in the wrong place.
+An agent that models blind produces confident, plausible, wrong geometry.
+
+Two ways, both cheap:
+
+1. **Numbers first.** `get_metrics` returns volume, area, bounding box and centroid. Most
+   mistakes show up here — a volume that did not change after a cut means the cut missed; a
+   bounding box shorter than expected means an operation was dropped. Check after every
+   destructive step.
+2. **Then look at it.** Export an STL and let the app display it. That catches what numbers
+   cannot — an inverted normal, a feature on the wrong face, a wall that is not there.
+
+Do not ration this. Both are fast, and a wrong part costs far more than the check.
+
+## 7. Troubleshooting
+
+| symptom | cause |
+|---|---|
+| `unauthorized` on everything, `ping` included | token missing or wrong. Wrong token and unreadable file look identical — check what you actually read |
+| connection refused | engine not running. The app must be started; the engine lives only while the app process does |
+| `engine busy in another command for Ns` | a previous command is still running. Wait, or find what hung |
+| `Unknown command type` | typo, or a command this engine does not have |
+| `no MCP token loaded; refusing to serve` in the status file | the app did not write the token before starting the engine |
+| `'''OCP...''' object has no attribute ...'''` | a binding the official bindings do not expose. Report it — this engine has needed hand-written bindings before (`BRepTools.Clean_s`, `XCAFDoc_DocumentTool.SetLengthUnit_s`, `STEPCAFControl_Writer.Transfer`, `StlAPI_Writer.Write`) |
+
+## 8. What this engine is not
+
+- **Not a slicer.** It makes the model; the slicer engines make G-code.
+- **Not the Blender engine.** No `bpy`, no scene objects, no materials, no rendering. If the
+  task is mesh surgery, that is Blender's job.
+- **Not FreeCAD.** No document tree, no workbenches, no GUI.

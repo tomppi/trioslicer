@@ -216,6 +216,23 @@ class HarnessConfigStore(context: Context) {
         ) { "Unable to persist the modelling session" }
     }
 
+    /**
+     * Session id for the CAD conversation.
+     *
+     * Its own for the same reason the modelling one is: a CAD conversation is about
+     * dimensions and STEP files, and an agent that has just been reading a Blender mesh
+     * transcript answers as if the model were a mesh. Separate sessions are what keep the
+     * two from bleeding into each other when the user moves between the menus.
+     */
+    fun loadCadSession(): String =
+        preferences.getString(KEY_CAD_SESSION_ID, "").orEmpty()
+
+    fun saveCadSession(sessionId: String) {
+        check(
+            preferences.edit().putString(KEY_CAD_SESSION_ID, sessionId).commit(),
+        ) { "Unable to persist the CAD session" }
+    }
+
     fun clear() {
         check(preferences.edit().clear().commit()) { "Unable to clear the harness configuration" }
         runCatching { keyStore().deleteEntry(KEY_ALIAS) }
@@ -314,6 +331,7 @@ class HarnessConfigStore(context: Context) {
         const val KEY_WORKSPACE = "workspace"
         const val KEY_SESSION_ID = "session_id"
         const val KEY_MODELLING_SESSION_ID = "modelling_session_id"
+        const val KEY_CAD_SESSION_ID = "cad_session_id"
         const val KEY_ENCRYPTED_TOKEN = "launch_token_ciphertext"
         const val KEY_TOKEN_ORIGIN = "launch_token_origin"
         const val KEY_ENCRYPTED_COOKIE = "session_cookie_ciphertext"

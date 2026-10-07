@@ -68,3 +68,9 @@ keystore.properties
 
 # Klipper host payload, staged by scripts/stage-klipper-android.sh
 app/src/main/assets/klipper/
+
+# CAD engine payload, staged by scripts/stage-cad-android.sh: OCP, build123d and their
+# dependencies, 533 MB across 10,700 files. The engine script beside them
+# (cad_mcp_slim.py) is source and is committed; only the built tree is not.
+app/src/main/assets/cad/lib/
+app/src/main/assets/cad/libexec/

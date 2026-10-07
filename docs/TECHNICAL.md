@@ -1,6 +1,6 @@
 # Technical notes
 
-Building TrioSlicer, where its five engines come from, the tasks that verify a packaged build, CI, and
+Building TrioSlicer, where its six engines come from, the tasks that verify a packaged build, CI, and
 how releases are signed. The [README](../README.md) is the user-facing side of the project; this is
 everything that needs a terminal.
 
@@ -11,7 +11,7 @@ OrcaSlicer builds configure with `-G Ninja`), Gradle `9.4.1` - the committed wra
 so `./gradlew` is enough - Python 3, Node.js `22.18.0+`, stable Rust (`wasm32-unknown-unknown`) and
 `wasm-pack 0.15.0`.
 
-Four of the five engines are fetched ready-built. Building OrcaSlicer from source instead needs the
+Four of the six engines are fetched ready-built. Building OrcaSlicer from source instead needs the
 usual autotools chain (`autoconf`, `automake`, `libtool`, `m4`, `perl`) and takes hours;
 `scripts/build-orca-deps-android.sh` then `scripts/build-orca-engine-android.sh` do it.
 
@@ -35,7 +35,7 @@ scripts/build-curaengine-android.sh
 ```
 
 **Or run `./scripts/setup.sh`**, which does all of it: checks the toolchain, fetches the pinned Cura
-definitions, stages all five engines from their own scripts, checks the staged tree really holds every
+definitions, stages all six engines from their own scripts, checks the staged tree really holds every
 engine, and assembles the debug APK — failing early with the name of the script to run rather than
 letting Gradle find the problem minutes in.
 

@@ -1,0 +1,998 @@
+# cad_mcp_slim.py -- CAD engine for the TrioSlicer Android app.
+#
+# The CAD counterpart of blender_mcp_slim.py, and deliberately a near-copy of
+# its transport: same request envelope, same token auth, same one-command-at-a-
+# time queue, same atomic status and export writes. Anything the app learns
+# about one engine therefore holds for the other.
+#
+# What differs is the payload. Blender's engine drives *bpy* and holds a bpy
+# scene; this one drives **build123d on top of OCP** (the official OpenCASCADE
+# Python bindings) and holds a plain dict of named shapes. It runs under the
+# app's CPython 3.11 payload -- the interpreter that libklipper_exec.so hosts --
+# because that is where OCP, build123d and their dependencies are installed.
+#
+# License: MIT, matching the Blender addon this is derived from.
+#
+# Commands
+#   ping                    liveness; touches no geometry
+#   shutdown                drain, close the socket, exit
+#   execute_code            run build123d/OCP code; stdout captured
+#   get_scene_info          the named shapes, with volume and bounding box
+#   get_object_info         one shape in detail
+#   get_metrics             volume, area, centroid, bounding box, topology counts
+#   export_step             write the scene (or one shape) as STEP
+#   export_stl              tessellate the scene (or one shape) to binary STL
+#   get_addon_info          engine name, version, kernel versions
+#
+# Every request carries the token; without it _authorized() refuses, fail-closed.
+
+import io
+import json
+import math
+import os
+import queue
+import socket
+import threading
+import time
+import traceback
+from contextlib import redirect_stdout
+
+# 9877, not Blender's 9876: the two engines can be running at the same time and
+# each needs its own port. Overridable with cad_mcp_port.txt next to this file.
+DEFAULT_PORT = 9877
+
+# A request larger than this is refused rather than buffered: nothing legitimate
+# sends more than a script.
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
+# One command at a time runs on the main thread. A client that asks while a
+# command has been running this long is told so, instead of waiting out its own
+# timeout with no explanation.
+BUSY_ANSWER_AFTER_SECONDS = 10.0
+
+VERSION = (0, 1)
+
+
+# --------------------------------------------------------------------------
+# OpenCASCADE / build123d
+# --------------------------------------------------------------------------
+
+def _import_kernel():
+    """Import OCP and build123d once, at startup.
+
+    Import failure is not fatal to the process: the engine still serves ping and
+    reports the reason, so the app can say why CAD is unavailable rather than
+    showing a dead port.
+    """
+    kernel = {"ocp": None, "build123d": None, "error": None}
+    try:
+        import OCP
+        kernel["ocp"] = OCP
+    except Exception as exc:
+        kernel["error"] = "OCP import failed: %r" % (exc,)
+        return kernel
+    try:
+        import build123d
+        kernel["build123d"] = build123d
+    except Exception as exc:
+        kernel["error"] = "build123d import failed: %r" % (exc,)
+    return kernel
+
+
+_KERNEL = None
+
+
+def kernel():
+    global _KERNEL
+    if _KERNEL is None:
+        _KERNEL = _import_kernel()
+    return _KERNEL
+
+
+# --------------------------------------------------------------------------
+# The scene
+# --------------------------------------------------------------------------
+
+class Scene:
+    """Named shapes, in insertion order.
+
+    Blender's engine gets persistence for free from bpy.data; there is no
+    equivalent here, so the engine owns a plain dict. Names are the handle an
+    agent uses between commands.
+    """
+
+    def __init__(self):
+        self._shapes = {}
+
+    def add(self, name, shape):
+        if not name:
+            raise ValueError("add() needs a name")
+        self._shapes[str(name)] = shape
+        return str(name)
+
+    def get(self, name):
+        if name not in self._shapes:
+            raise KeyError("no shape named %r; scene holds %s"
+                           % (name, sorted(self._shapes) or "nothing"))
+        return self._shapes[name]
+
+    def remove(self, name):
+        if name not in self._shapes:
+            raise KeyError("no shape named %r" % (name,))
+        return self._shapes.pop(name)
+
+    def clear(self):
+        self._shapes.clear()
+
+    def names(self):
+        return list(self._shapes)
+
+    def items(self):
+        return list(self._shapes.items())
+
+    def empty(self):
+        return not self._shapes
+
+
+SCENE = Scene()
+
+
+def _solid_or_compound(shape):
+    """build123d shapes expose .solid()/.solids(); OCP shapes do not."""
+    return shape
+
+
+def _volume_of(shape):
+    try:
+        return float(shape.volume)
+    except Exception:
+        pass
+    try:
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(shape.wrapped, props)
+        return float(props.Mass())
+    except Exception:
+        return None
+
+
+def _area_of(shape):
+    try:
+        return float(shape.area)
+    except Exception:
+        pass
+    try:
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(shape.wrapped, props)
+        return float(props.Mass())
+    except Exception:
+        return None
+
+
+def _bbox_of(shape):
+    try:
+        box = shape.bounding_box()
+        return {
+            "min": [round(box.min.X, 6), round(box.min.Y, 6), round(box.min.Z, 6)],
+            "max": [round(box.max.X, 6), round(box.max.Y, 6), round(box.max.Z, 6)],
+            "size": [round(box.size.X, 6), round(box.size.Y, 6), round(box.size.Z, 6)],
+        }
+    except Exception:
+        return None
+
+
+def _summary(name, shape):
+    entry = {"name": name}
+    volume = _volume_of(shape)
+    if volume is not None:
+        entry["volume"] = round(volume, 6)
+    bbox = _bbox_of(shape)
+    if bbox is not None:
+        entry["bbox"] = bbox
+    if hasattr(shape, "solids"):
+        try:
+            entry["solids"] = len(shape.solids())
+        except Exception:
+            pass
+    return entry
+
+
+# --------------------------------------------------------------------------
+# Export
+# --------------------------------------------------------------------------
+
+def _resolve_target(name):
+    """(label, shape) for an export. No name means the whole scene.
+
+    Several shapes are combined into one Compound so a STEP/STL export always
+    produces a single coherent part rather than silently writing only the first.
+    """
+    if name:
+        return name, SCENE.get(name)
+    if SCENE.empty():
+        raise ValueError("scene is empty; add a shape before exporting")
+    if len(SCENE.names()) == 1:
+        only = SCENE.names()[0]
+        return only, SCENE.get(only)
+    b3d = kernel()["build123d"]
+    return "scene", b3d.Compound(children=[s for _, s in SCENE.items()])
+
+
+def _publish(path, write):
+    """Write through a temporary name, then rename into place.
+
+    The rename is what publishes the file: the app polls the export directory
+    and a half-written STEP or STL is not a file it can use. Mirrors
+    blender_mcp_slim's handoff exactly.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    temp = path + ".part"
+    try:
+        write(temp)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+    return os.path.getsize(path)
+
+
+# --------------------------------------------------------------------------
+# Offscreen rendering
+# --------------------------------------------------------------------------
+
+# Views an agent can ask for, as the direction vector V3d_View.SetProj takes.
+# Isometric first because it is the one that shows a part as a part; the three
+# orthographic views are what you ask for once you know which face to inspect.
+VIEW_DIRECTIONS = {
+    "iso": (1.0, -1.0, 1.0),
+    "top": (0.0, 0.0, 1.0),
+    "front": (0.0, -1.0, 0.0),
+    "right": (1.0, 0.0, 0.0),
+    "left": (-1.0, 0.0, 0.0),
+    "back": (0.0, 1.0, 0.0),
+    "bottom": (0.0, 0.0, -1.0),
+}
+
+# OCCT needs a GL context, and building one costs seconds of shader compilation - so it is
+# built once and kept, not per render. Confirmed working on the device: the driver comes up
+# with no window and no X server, and warns "a Window is created without a EGL Surface!"
+# along the way. That warning is benign - OCCT makes its own context - and the working path
+# deliberately does NOT hand it an EGL surface: SetNativeHandle(EGLSurface) segfaults,
+# because OCCT treats the handle as an ANativeWindow* and calls eglCreateWindowSurface on it.
+_GL = {}
+
+
+class _Renderer:
+    """A viewer, kept alive between renders.
+
+    The scene is re-displayed on every render rather than left attached: a shape added by a
+    later command has to appear, and re-attaching is cheaper than tracking what changed.
+    """
+
+    def __init__(self, width, height):
+        from OCP.Aspect import Aspect_DisplayConnection, Aspect_NeutralWindow
+        from OCP.OpenGl import OpenGl_GraphicDriver
+        from OCP.V3d import V3d_Viewer
+        from OCP.AIS import AIS_InteractiveContext
+
+        self.display = Aspect_DisplayConnection()
+        self.driver = OpenGl_GraphicDriver(self.display)
+        self.viewer = V3d_Viewer(self.driver)
+        # Without lights every shaded face renders black - the renderer is working and the
+        # picture looks broken.
+        try:
+            self.viewer.SetDefaultLights()
+        except Exception:
+            pass
+        self.viewer.SetLightOn()
+        self.view = self.viewer.CreateView()
+        self.window = Aspect_NeutralWindow()
+        self.window.SetSize(width, height)
+        self.view.SetWindow(self.window)
+        self.context = AIS_InteractiveContext(self.viewer)
+        self.width = width
+        self.height = height
+
+    def resize(self, width, height):
+        if (width, height) != (self.width, self.height):
+            self.window.SetSize(width, height)
+            self.width, self.height = width, height
+
+    def render(self, shape, width, height, view, shaded):
+        """Draw shape and return the view, ready for ToPixMap."""
+        from OCP.AIS import AIS_Shape, AIS_Shaded, AIS_WireFrame
+        from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+
+        self.resize(width, height)
+        self.context.RemoveAll(False)
+        presentation = AIS_Shape(shape)
+        # Edges on the shape's own drawer, and set before it is displayed: a shaded solid
+        # with no edges hides a boss standing on a plate, because from straight above the
+        # two top faces are the same colour. The orthographic views are the ones used to
+        # check a dimension, and without edges they are an outline and nothing else.
+        try:
+            attributes = presentation.Attributes()
+            attributes.SetDrawEdges(True)
+            attributes.SetDrawSilhouettes(True)
+            attributes.SetEdgeColor(Quantity_Color(0.1, 0.1, 0.1, Quantity_TOC_RGB))
+        except Exception:
+            pass
+        self.context.Display(presentation, False)
+        self.context.SetDisplayMode(
+            presentation, AIS_Shaded if shaded else AIS_WireFrame, False)
+        # Shaded and wireframe as two presentations of the same shape. SetDrawEdges() on
+        # the drawer has no effect on this GLES path - the renders come out byte-identical
+        # with and without it - so edges are drawn as a second, overlaid wireframe. Without
+        # them a boss on a plate is invisible from directly above, which is exactly the view
+        # used to check where a feature sits.
+        if shaded:
+            try:
+                outline = AIS_Shape(shape)
+                self.context.Display(outline, False)
+                self.context.SetDisplayMode(outline, AIS_WireFrame, False)
+                self.context.SetColor(outline, Quantity_Color(0.1, 0.1, 0.1, Quantity_TOC_RGB), False)
+            except Exception:
+                pass
+        if shaded:
+            # A warm neutral that reads well against the dark background and does not
+            # pretend to be the part's real colour - the engine models geometry, not finish.
+            colour = Quantity_Color(0.85, 0.72, 0.35, Quantity_TOC_RGB)
+            try:
+                self.context.SetColor(presentation, colour, False)
+            except Exception:
+                pass
+        # Silhouettes as well as surfaces. Without edges a boss on a plate is invisible
+        # from directly above - its top face is the same colour as the plate it stands on -
+        # and the orthographic views, which are the ones you use to check a dimension, show
+        # nothing but an outline.
+        try:
+            drawer = self.context.DefaultDrawer()
+            drawer.SetDrawEdges(True)
+            drawer.SetDrawSilhouettes(True)
+        except Exception:
+            pass
+        direction = VIEW_DIRECTIONS.get(view, VIEW_DIRECTIONS["iso"])
+        self.view.SetProj(*direction)
+        self.view.FitAll(0.02)
+        self.view.Redraw()
+        return self.view
+
+
+def _renderer(width, height):
+    """The cached viewer, rebuilt if the size changed."""
+    key = "renderer"
+    renderer = _GL.get(key)
+    if renderer is None:
+        renderer = _Renderer(width, height)
+        _GL[key] = renderer
+    return renderer
+
+
+# --------------------------------------------------------------------------
+# The server
+# --------------------------------------------------------------------------
+
+class CadMCPServer:
+    def __init__(self, host='localhost', port=DEFAULT_PORT, token=None,
+                 status_path=None):
+        self.host = host
+        self.port = port
+        # Shared secret the app writes next to this engine and sends with every
+        # request. Without it any co-installed app could reach 127.0.0.1 and run
+        # Python as this app's uid. None means "no token file", and start()
+        # refuses to serve in that case.
+        self.token = token
+        self.status_path = status_path
+        self.start_error = None
+        self.running = False
+        self.socket = None
+        self.server_thread = None
+        self.command_queue = queue.Queue()
+        self._clients = set()
+        self._clients_lock = threading.Lock()
+        self._shutdown_requested = False
+        self._executing_since = None
+        self._busy_lock = threading.Lock()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self):
+        if self.running:
+            print("CadMCP slim: server already running")
+            return
+        if not self.token:
+            # Fail closed: _authorized() would have nothing to check a request
+            # against, so serving would let any co-installed app run Python as
+            # this process's uid. Refuse, and record why for the app to read.
+            self.start_error = "no MCP token loaded; refusing to serve"
+            print("CadMCP slim: " + self.start_error)
+            write_status(self.status_path, {
+                "running": False,
+                "port": self.port,
+                "error": self.start_error,
+            })
+            return
+        self.running = True
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind((self.host, self.port))
+            self.socket.listen(5)
+            if self.port == 0:
+                self.port = self.socket.getsockname()[1]
+            self.server_thread = threading.Thread(target=self._server_loop, daemon=True)
+            self.server_thread.start()
+            print(f"CadMCP slim server started on {self.host}:{self.port}")
+            write_status(self.status_path, {
+                "running": True,
+                "port": self.port,
+                "pid": os.getpid(),
+                "auth": bool(self.token),
+            })
+        except Exception as e:
+            # Remember the reason: the caller parks instead of returning, and
+            # the app reads the status file to say why the engine is not
+            # answering.
+            self.start_error = str(e)
+            print(f"CadMCP slim start failed: {e}")
+            write_status(self.status_path,
+                         {"running": False, "port": self.port, "error": str(e)})
+            self.stop()
+
+    def stop(self):
+        self.running = False
+        if self.socket:
+            try:
+                # shutdown() wakes a blocked accept() immediately where the
+                # platform supports it; close() alone can leave the port bound
+                # until that accept returns.
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
+        with self._clients_lock:
+            clients = list(self._clients)
+            self._clients.clear()
+        for c in clients:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                c.close()
+            except Exception:
+                pass
+        while True:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+        write_status(self.status_path, {"running": False, "port": self.port})
+
+    # -- transport ---------------------------------------------------------
+
+    def _server_loop(self):
+        """Accept connections on a background thread.
+
+        Requests are parsed and authorized here, then queued; they are *run* on
+        the main thread by run_headless(). OCP is not documented as thread-safe
+        and the Blender engine has the same rule for bpy, so one command at a
+        time on one thread is the contract both engines share.
+        """
+        self.socket.settimeout(1.0)
+        while self.running:
+            try:
+                client, _address = self.socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            except Exception as e:
+                print(f"CadMCP slim: accept error {e}")
+                continue
+            with self._clients_lock:
+                self._clients.add(client)
+            threading.Thread(target=self._handle_client, args=(client,),
+                             daemon=True).start()
+
+    def _reply(self, client, message):
+        try:
+            client.sendall(json.dumps({"status": "error", "message": message}).encode("utf-8"))
+        except Exception:
+            pass
+
+    def _handle_client(self, client):
+        client.settimeout(1.0)
+        buffer = b""
+        try:
+            while self.running:
+                try:
+                    chunk = client.recv(65536)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                if len(buffer) > MAX_REQUEST_BYTES:
+                    self._reply(client, "request too large")
+                    break
+                while True:
+                    newline = buffer.find(b"\n")
+                    if newline >= 0:
+                        payload, buffer = buffer[:newline], buffer[newline + 1:]
+                    else:
+                        # A single write with no terminator is what the app
+                        # does; try it whole, and keep waiting if it is not yet
+                        # valid JSON.
+                        payload, buffer = buffer, b""
+                    if not payload.strip():
+                        break
+                    try:
+                        command = json.loads(payload.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        if newline < 0:
+                            buffer = payload
+                            break
+                        self._reply(client, "request is not valid JSON")
+                        continue
+                    self._dispatch(command, client)
+                    if newline < 0:
+                        break
+        finally:
+            with self._clients_lock:
+                self._clients.discard(client)
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _authorized(self, command):
+        # Fail closed. start() already refuses a tokenless server; this is the
+        # second line, so no future caller can re-open the port by skipping it.
+        if not self.token:
+            return False
+        return command.get("token") == self.token
+
+    def _dispatch(self, command, client):
+        """Queue a parsed request, or answer it here when it cannot run."""
+        if not isinstance(command, dict):
+            self._reply(client, "request must be a JSON object")
+            return
+        if not self._authorized(command):
+            self._reply(client, "unauthorized: send the token from cad_mcp_token.txt")
+            return
+        with self._busy_lock:
+            started = self._executing_since
+        if started is not None and command.get("type") != "ping":
+            waited = time.time() - started
+            if waited > BUSY_ANSWER_AFTER_SECONDS:
+                self._reply(client, "engine busy in another command for %.0fs" % waited)
+                return
+        self.command_queue.put((command, client))
+
+    def _drain_command_queue(self):
+        while True:
+            try:
+                command, client = self.command_queue.get_nowait()
+            except queue.Empty:
+                return
+            with self._busy_lock:
+                self._executing_since = time.time()
+            try:
+                response = self.execute_command(command)
+            finally:
+                with self._busy_lock:
+                    self._executing_since = None
+            try:
+                client.sendall(json.dumps(response).encode("utf-8"))
+            except Exception:
+                print("CadMCP slim: send failed, client gone")
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                with self._clients_lock:
+                    self._clients.discard(client)
+            if self._shutdown_requested:
+                self.running = False
+                return
+
+    def run_headless(self):
+        """Drain the queue on the calling thread for the life of the process."""
+        while self.running:
+            self._drain_command_queue()
+            time.sleep(0.02)
+        return 0
+
+    # -- commands ----------------------------------------------------------
+
+    def execute_command(self, command):
+        try:
+            return self._execute_command_internal(command)
+        except Exception as e:
+            print(f"CadMCP slim: command error {e}")
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+
+    def _execute_command_internal(self, command):
+        cmd_type = command.get("type")
+        params = command.get("params", {})
+
+        # Trivial liveness check. Touches no geometry, so a successful ping
+        # alongside a failing command isolates kernel access from transport.
+        if cmd_type == "ping":
+            return {"status": "success", "result": {"pong": True}}
+
+        # Graceful stop: the response is sent first, then the drain loop exits.
+        if cmd_type == "shutdown":
+            self._shutdown_requested = True
+            return {"status": "success", "result": {"stopping": True}}
+
+        handlers = {
+            "execute_code": self.execute_code,
+            "get_scene_info": self.get_scene_info,
+            "get_object_info": self.get_object_info,
+            "get_metrics": self.get_metrics,
+            "export_step": self.export_step,
+            "export_stl": self.export_stl,
+            "import_file": self.import_file,
+            "render": self.render,
+            "get_addon_info": self.get_addon_info,
+        }
+        handler = handlers.get(cmd_type)
+        if handler is None:
+            return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
+        try:
+            result = handler(**params)
+            return {"status": "success", "result": result}
+        except Exception as e:
+            print(f"CadMCP slim: error in {cmd_type}: {e}")
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+
+    def execute_code(self, code):
+        """Execute arbitrary build123d/OCP code. The generated-script entrypoint.
+
+        The namespace pre-imports build123d and OCP and exposes the scene
+        helpers, so a script can go straight to modelling. Returns
+        {"executed": True, "result": stdout}; exceptions propagate to the
+        dispatcher, which answers {"status": "error", "message": ...} -- the same
+        transport contract as the Blender engine.
+        """
+        k = kernel()
+        namespace = {
+            "json": json,
+            "os": os,
+            "math": math,
+            "scene": SCENE,
+            "add": SCENE.add,
+            "get": SCENE.get,
+            "remove": SCENE.remove,
+            "shapes": SCENE.names,
+            "OCP": k["ocp"],
+            "build123d": k["build123d"],
+        }
+        if k["build123d"] is not None:
+            # The common names, so a script can start modelling immediately.
+            for name in ("Box", "Cylinder", "Sphere", "Cone", "Torus", "Plane",
+                         "Pos", "Location", "Axis", "fillet", "chamfer",
+                         "extrude", "revolve", "loft", "sweep", "export_step",
+                         "export_stl", "import_step", "import_brep"):
+                if hasattr(k["build123d"], name):
+                    namespace[name] = getattr(k["build123d"], name)
+        capture_buffer = io.StringIO()
+        with redirect_stdout(capture_buffer):
+            exec(code, namespace)
+        return {"executed": True, "result": capture_buffer.getvalue()}
+
+    def get_scene_info(self):
+        return {
+            "shape_count": len(SCENE.names()),
+            "shapes": [_summary(name, shape) for name, shape in SCENE.items()],
+            "kernel": self._kernel_state(),
+        }
+
+    def get_object_info(self, name=""):
+        shape = SCENE.get(name)
+        info = _summary(name, shape)
+        wrapped = getattr(shape, "wrapped", None)
+        if wrapped is not None:
+            try:
+                from OCP.TopExp import TopExp_Explorer
+                from OCP.TopAbs import (TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID,
+                                        TopAbs_VERTEX)
+                for label, kind in (("solids", TopAbs_SOLID), ("faces", TopAbs_FACE),
+                                    ("edges", TopAbs_EDGE), ("vertices", TopAbs_VERTEX)):
+                    explorer = TopExp_Explorer(wrapped, kind)
+                    count = 0
+                    while explorer.More():
+                        count += 1
+                        explorer.Next()
+                    info[label] = count
+            except Exception as exc:
+                info["topology_error"] = str(exc)
+        return info
+
+    def get_metrics(self, name=""):
+        """Volume, area, centroid, bounding box and topology counts."""
+        if name:
+            shape = SCENE.get(name)
+            return {"name": name, **_metrics(shape)}
+        return {
+            "shape_count": len(SCENE.names()),
+            "shapes": [{"name": n, **_metrics(s)} for n, s in SCENE.items()],
+        }
+
+    def export_step(self, filepath, name=""):
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        b3d = kernel()["build123d"]
+        written = _publish(filepath, lambda temp: b3d.export_step(shape, temp))
+        return {"filepath": filepath, "bytes": written, "shapes": label}
+
+    def export_stl(self, filepath, name="", tolerance=0.1):
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        b3d = kernel()["build123d"]
+        written = _publish(
+            filepath,
+            lambda temp: b3d.export_stl(shape, temp, tolerance=tolerance),
+        )
+        return {"filepath": filepath, "bytes": written, "shapes": label}
+
+    # Extension -> build123d importer. STEP and BREP carry analytic geometry, which is
+    # what makes them worth importing rather than the mesh formats: a hole is a cylinder,
+    # not a ring of triangles, so it can be re-dimensioned afterwards.
+    IMPORTERS = {
+        ".step": "import_step",
+        ".stp": "import_step",
+        ".stpz": "import_step",
+        ".brep": "import_brep",
+        ".stl": "import_stl",
+        ".svg": "import_svg",
+    }
+
+    def import_file(self, filepath, name="", unit="mm"):
+        """Import STEP, BREP, STL or SVG into the scene.
+
+        The shape is added under `name`, or the file's stem when none is given, so the
+        agent can address it in the next command exactly as if it had been modelled here.
+        """
+        k = kernel()
+        if k["build123d"] is None:
+            raise RuntimeError(k["error"] or "build123d is unavailable")
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError("no such file: %s" % filepath)
+        extension = os.path.splitext(filepath)[1].lower()
+        importer = self.IMPORTERS.get(extension)
+        if importer is None:
+            raise ValueError("cannot import %r; supported: %s"
+                             % (extension, ", ".join(sorted(self.IMPORTERS))))
+        b3d = k["build123d"]
+        load = getattr(b3d, importer)
+        # import_stl takes a unit; the others do not.
+        shape = load(filepath, unit) if importer == "import_stl" else load(filepath)
+        label = name or os.path.splitext(os.path.basename(filepath))[0]
+        SCENE.add(label, shape)
+        info = _summary(label, shape)
+        info["imported_from"] = filepath
+        info["imported_as"] = importer
+        return info
+
+    # Renders are capped so a request cannot ask for an image larger than the device can
+    # hold: 2048x2048 RGBA is 16 MB, and the pixmap is uncompressed on the way out.
+    RENDER_MIN, RENDER_MAX = 64, 2048
+
+    def render(self, filepath, name="", view="iso", width=640, height=640, shaded=True):
+        """Draw the scene (or one shape) offscreen and write it as a PNG.
+
+        The engine has a GL viewer and no window. It works: OCCT builds its own EGL context
+        and renders into a pixmap, which is how the user gets to see what the agent sees.
+
+        OCCT writes PPM here - this build has no libpng - so the conversion to PNG goes
+        through Pillow, which is already in the payload for build123d's sake.
+        """
+        k = kernel()
+        if k["build123d"] is None:
+            raise RuntimeError(k["error"] or "build123d is unavailable")
+        from OCP.Image import Image_AlienPixMap
+
+        label, shape = _resolve_target(name)
+        width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
+        height = max(self.RENDER_MIN, min(self.RENDER_MAX, int(height)))
+        if view not in VIEW_DIRECTIONS:
+            raise ValueError("unknown view %r; try one of %s"
+                             % (view, ", ".join(sorted(VIEW_DIRECTIONS))))
+
+        renderer = _renderer(width, height)
+        viewport = renderer.render(getattr(shape, "wrapped", shape),
+                                   width, height, view, bool(shaded))
+
+        def write(temp):
+            # ToPixMap needs a path it can open, and the publish target is a .part file
+            # whose extension says nothing about the format. So the pixmap goes to its own
+            # PPM alongside, and Pillow writes the PNG to the real destination.
+            ppm = temp + ".ppm"
+            pixmap = Image_AlienPixMap()
+            viewport.ToPixMap(pixmap, width, height)
+            try:
+                if not pixmap.Save(ppm):
+                    raise RuntimeError("OCCT could not write the pixmap")
+                from PIL import Image
+                Image.open(ppm).convert("RGB").save(temp, format="PNG")
+            finally:
+                try:
+                    os.remove(ppm)
+                except OSError:
+                    pass
+
+        written = _publish(filepath, write)
+        return {
+            "filepath": filepath,
+            "bytes": written,
+            "shapes": label,
+            "view": view,
+            "width": width,
+            "height": height,
+            "shaded": bool(shaded),
+        }
+
+    def get_addon_info(self):
+        k = kernel()
+        info = {
+            "name": "MCP for CAD (Slim)",
+            "version": list(VERSION),
+            "kernel": self._kernel_state(),
+        }
+        b3d = k["build123d"]
+        if b3d is not None:
+            try:
+                info["build123d_version"] = getattr(b3d, "__version__", None)
+            except Exception:
+                pass
+        return info
+
+    def _kernel_state(self):
+        k = kernel()
+        return {
+            "ocp": k["ocp"] is not None,
+            "build123d": k["build123d"] is not None,
+            "error": k["error"],
+        }
+
+
+def _metrics(shape):
+    entry = {}
+    volume = _volume_of(shape)
+    if volume is not None:
+        entry["volume"] = round(volume, 6)
+    area = _area_of(shape)
+    if area is not None:
+        entry["area"] = round(area, 6)
+    bbox = _bbox_of(shape)
+    if bbox is not None:
+        entry["bbox"] = bbox
+        entry["centroid"] = [round((bbox["min"][i] + bbox["max"][i]) / 2.0, 6)
+                             for i in range(3)]
+    return entry
+
+
+# --------------------------------------------------------------------------
+# Status file
+# --------------------------------------------------------------------------
+
+def write_status(path, payload):
+    """Publish the server's state for the app to read.
+
+    Written through a temporary file and renamed, so the app never reads a
+    half-written status while it is deciding what to tell the user."""
+    if not path:
+        return
+    try:
+        temp = path + ".part"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temp, path)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------
+# Entry point
+# --------------------------------------------------------------------------
+
+def read_token(path):
+    """The shared secret the app writes before it starts the engine.
+
+    None means there is no token file: a development run, where the server
+    refuses to serve rather than staying open.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def main(argv=None):
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    port = DEFAULT_PORT
+    if "--port" in argv:
+        try:
+            port = int(argv[argv.index("--port") + 1])
+        except (IndexError, ValueError):
+            print("CadMCP slim: --port needs a number; using default")
+    # Allow override via a tiny file next to the engine (no env on Android).
+    try:
+        with open(os.path.join(here, "cad_mcp_port.txt"), encoding="utf-8") as handle:
+            port = int(handle.read().strip())
+    except (OSError, ValueError):
+        pass
+    if port <= 0 or port > 65535:
+        port = DEFAULT_PORT
+
+    host = os.environ.get("CAD_MCP_HOST", "") or "localhost"
+
+    # Import the kernel before announcing a port, so the first request never
+    # pays for it and a broken install is visible in the status file.
+    k = kernel()
+    if k["error"]:
+        print(f"CadMCP slim: {k['error']}")
+
+    token = read_token(os.path.join(here, "cad_mcp_token.txt"))
+    status_path = os.path.join(here, "cad_mcp_status.json")
+    restart_file = os.path.join(here, "cad_mcp_restart.txt")
+
+    # Serve, and never return. Parking keeps the process (and the user's scene)
+    # alive; the app asks for a server again by touching the restart file, which
+    # costs nothing and keeps the scene intact.
+    while True:
+        try:
+            os.remove(restart_file)
+        except OSError:
+            pass
+        server = CadMCPServer(host=host, port=port, token=token,
+                              status_path=status_path)
+        server.start()
+        if server.running:
+            print(f"CadMCP slim: serving on {host}:{port}; waiting for the restart file")
+            while server.running and not os.path.exists(restart_file):
+                server._drain_command_queue()
+                time.sleep(0.02)
+            # Say which of the two ended the serve loop. They look identical from the
+            # outside - the port closes either way - and only one of them is expected.
+            print("CadMCP slim: serve loop ended (shutdown_requested=%s restart_file=%s "
+                  "running=%s)" % (server._shutdown_requested,
+                                   os.path.exists(restart_file), server.running))
+            server.stop()
+            if server._shutdown_requested:
+                print("CadMCP slim: shutdown requested; exiting")
+                return 0
+            print("CadMCP slim: parked until the restart file appears")
+        else:
+            time.sleep(0.5)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

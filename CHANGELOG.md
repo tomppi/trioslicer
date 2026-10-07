@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-07
+
+### Added
+
+- **Parametric CAD, with build123d on OpenCASCADE.** The official OCP bindings
+  (OCCT 7.9.3, 204 MB) run under the app's own CPython - the interpreter the Klipper host
+  analytic geometry - real cylinders, real fillets, a STEP file that carries design intent -
+  rather than from a mesh. It speaks the same local socket protocol as the Blender engine, and
+  has its own **CAD** menu in the top bar, because which engine the assistant is driving is not
+  something the user should have to hold in their head: opening a menu starts that engine and
+  tells the agent which one it has.
+- **The CAD engine renders, so the assistant can see its own work.** There is no window and no
+  display; it renders offscreen through EGL into a pbuffer, reads the pixels back, and the app
+  shows the newest image as the view. Seven views (`iso`, `top`, `front`, `right`, `left`,
+  `back`, `bottom`), shaded or wireframe, up to 2048px.
+- **2D output**: SVG and DXF for flat parts, and hidden-line technical drawings through OCCT's
+  HLR - visible and hidden edges as separate sets, so a hole reads as dashed lines instead of
+  vanishing. Android cannot preview SVG, so a drawing is always sent with a render beside it.
+- **STEP, STL and BREP export**, and import, from the same engine.
+- **A CAD part reaches the plate by itself**, by the same handoff the Blender engine uses.
+- **STEP and IGES import.** A sixth engine, `libocct_exec.so` (OpenCASCADE 7.6.0, 26 MB
+  stripped), converts STEP and IGES files to a mesh on import - the same move the 3MF branch
+  already makes, so one model format reaches every path downstream. Both carry analytic
+  geometry that none of the three slicers can read.
+- **CAD operations available to the engine**: `info`, `boolean` (cut/fuse/common), `fillet`,
+  `chamfer`, `shell`, `draft`, `box`, and mesh-to-BREP `export` to STEP or IGES.
+- **Constraint-driven sketches.** `sketch <spec> <height> <out>` states relationships rather
+  than coordinates - `horizontal`, `vertical`, `equal`, `parallel`, `perpendicular`,
+  `distance`, `fix` - and FreeCAD's own PlaneGCS solver finds the geometry, which is then
+  extruded. The spec's point order is the profile outline.
+- `scripts/build-occt-engine-android.sh` builds and stages the engine, linking OCCT and
+  PlaneGCS together. It does not rebuild OCCT from scratch: the OrcaSlicer dependency tree
+  already cross-compiles 38 toolkits for arm64, so the script builds only the three its recipe
+  omits and links the driver against both sets.
+
+### Notes
+
+- Orca's recipe passes `-DBUILD_MODULE_ModelingAlgorithms=OFF`, and CMake still builds
+  whatever DataExchange depends on. `TKFillet`, `TKOffset` and `TKFeat` are not in that
+  closure, which is why fillets, shells and drafts were missing until the module was turned
+  back on.
+
 ## [1.7.1] - 2026-10-05
 
 ### Fixed

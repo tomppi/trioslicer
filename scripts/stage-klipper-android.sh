@@ -257,6 +257,15 @@ COUNT="$(find "$ASSETS" -name "*.py" | wc -l)"
 SIZE="$(du -sh "$ASSETS" | cut -f1)"
 [ "$COUNT" -ge 150 ] || { echo "expected the whole klippy tree, found $COUNT files" >&2; exit 1; }
 [ -s "$ASSETS/lib/python3.11/os.py" ] || { echo "the standard library is missing" >&2; exit 1; }
+# Checked here, on the assets, because that is what ships - not on the build prefix.
+# build-klipper-python-android.sh verifies _ctypes in the prefix and passed, while the
+# assets had been staged eleven days before libffi was sorted out and did not carry it.
+# Every check up to this point passed and the device failed at "No module named
+# '_ctypes'", which is what scipy raises on import.
+# Named exactly: a _ctypes*.so glob also matches _ctypes_test, which CPython builds with
+# or without libffi, so the loose check passes on an interpreter that has no ctypes.
+ls "$ASSETS"/lib/python3.11/lib-dynload/_ctypes.cpython-*.so >/dev/null 2>&1 \
+  || { echo "the staged standard library has no _ctypes (scipy needs it); re-stage from a prefix built with libffi" >&2; exit 1; }
 echo "staged: $COUNT python files, $(find "$ASSETS" -type f | wc -l) files, $SIZE"
 echo "helper $(sha256sum "$ASSETS/klippy/chelper/c_helper.so" | cut -c1-16)"
 if ! git -C "$ROOT" check-ignore -q "$ASSETS" 2>/dev/null; then

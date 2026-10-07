@@ -35,9 +35,18 @@ const keys = Object.keys(map).sort((a, b) => b.length - a.length);
 function sanitize(text) {
   let out = text;
   for (const key of keys) {
-    // Word boundaries keep 192.0.2.3 from matching inside 192.0.2.30.
+    // Word boundaries keep 192.0.2.3 from matching inside 192.0.2.30 - but only where the
+    // key actually ends in a word character. A boundary is a change between a word
+    // character and a non-word one, so wrapping a path in them makes it unmatchable:
+    // A boundary before a leading slash needs a word character there, and a path written
+    // in backticks or after a space has none. Every absolute path in the map published
+    // verbatim
+    // because of this, and the leak check passed it, since its patterns cover addresses
+    // and credentials rather than a person's name inside a directory listing.
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    out = out.replace(new RegExp("\\b" + escaped + "\\b", "g"), map[key]);
+    const lead = /^\w/.test(key) ? "\\b" : "";
+    const trail = /\w$/.test(key) ? "\\b" : "";
+    out = out.replace(new RegExp(lead + escaped + trail, "g"), map[key]);
   }
   return out;
 }

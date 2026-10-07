@@ -120,6 +120,139 @@ conical-slicing strategy is derived from `CNCKitchen/ConicalSlicer` and the pape
 al., Applied Sciences, 2021). The original project source remains available from
 its upstream GitHub repository.
 
+## Klipper host (`libklipper_exec.so`) and the app's CPython
+
+**This is the app's Python interpreter.** The binary is a small executable linked against
+`libpython3.11.so`; the payload beside it is a CPython 3.11 build for Android carrying the
+**klippy** tree, so the app can act as the printer's host instead of talking to one. Every
+other Python in the app runs on this interpreter — including the CAD engine above, which adds
+packages but no second Python.
+
+| component | licence | copyright |
+|---|---|---|
+| Klipper (klippy) v0.13.0 | GPL-3.0 | Kevin O'Connor and contributors |
+| CPython 3.11 | PSF-2.0 | Python Software Foundation |
+
+**Corresponding source.** Klipper is at <https://github.com/Klipper3d/klipper>, pinned at
+**v0.13.0**. `scripts/fetch-klipper-android.sh` fetches the pinned host payload and
+`scripts/stage-klipper-android.sh` stages it, and that script is the whole diff against
+upstream: **one line of `klippy/util.py`** is patched, because its `create_pty()` chmods a
+`/dev/pts` node and Android does not allow an app to do that.
+
+One file in the payload is not Klipper's: `klippy/extras/resonance_playback.py` is
+TrioSlicer's, adding a single `PLAY_RESONANCES` command so the phone's accelerometer can
+measure a vibration sweep. Its source is in this repository at
+[`native/klipper-playback/`](native/klipper-playback/), and
+`scripts/verify-resonance-playback.py` checks it against Klipper's own generator at every
+staging.
+
+The payload also carries CPython's standard library and its extension modules, and the
+packages klippy imports: `cffi`, `greenlet`, `jinja2`, `markupsafe`, `pycparser`
+and `pyserial` — permissive throughout, and each ships its own licence in the payload.
+
+**On the GPL and the app.** Klipper runs as its own executable in its own process, and the
+app talks to it rather than linking it into the app's code. The app is AGPL-3.0-or-later, so
+the direction that matters — combining GPL-3.0 code into an AGPL work — is what AGPLv3
+section 13 permits, exactly as it does for the Blender engine.
+
+## OpenCASCADE engine (`libocct_exec.so`) and PlaneGCS
+
+The engine that converts **STEP and IGES** to a mesh for import. It statically links
+**Open CASCADE Technology 7.6.0** (38 toolkits: TKSTEP, TKIGES, TKBO, TKMesh, TKShHealing
+among them) together with **FreeCAD's PlaneGCS** constraint solver, which is what the
+`sketch` command runs to solve a profile from stated relationships rather than coordinates.
+
+**Both are LGPL, and both are linked into a binary this project ships, so both are named
+here.**
+
+| component | licence | copyright |
+|---|---|---|
+| Open CASCADE Technology 7.6.0 | LGPL-2.1 **with the Open CASCADE exception** | Open CASCADE SAS |
+| PlaneGCS (FreeCAD CAx) | LGPL-2.1-or-later | © 2011 Konstantinos Poulios and contributors |
+
+The OCCT exception is the same one quoted under the CAD engine below, and the statement it
+requires is the same: **this engine makes use of and is based on facilities provided by Open
+CASCADE Technology.**
+
+**Corresponding source.** OCCT 7.6.0 is at <https://github.com/Open-Cascade-SAS/OCCT>,
+PlaneGCS within FreeCAD at <https://github.com/FreeCAD/FreeCAD> (the `src/Mod/Sketcher/App`
+solver). Neither is modified: `scripts/build-occt-engine-android.sh` cross-compiles them for
+arm64 from the pinned trees and links them, and it is committed.
+
+**On the LGPL and static linking.** The exception above covers material taken from OCCT's
+headers; the remainder of the library is LGPL-2.1. The engines are separate executables run
+as their own processes rather than shared objects loaded into the app, and each is a
+standalone program that the app talks to over a local socket — so the library and the work
+that uses it are not presented to a user as one combined work.
+
+## CAD engine (build123d on OCP) and its bundled libraries
+
+The CAD workspace builds exact geometry rather than meshes: **build123d 0.12.0** on **OCP
+7.9.3.1**, the official Python bindings for **Open CASCADE Technology 7.9.3**. It runs on the
+interpreter the Klipper host already provides, so it needs no second Python and adds no new
+executable.
+
+### Open CASCADE Technology, and the exception that matters
+
+**OCCT is LGPL-2.1, and it is statically linked into `OCP.cpython-311.so`.** The licence
+ships an exception that is the reason this is workable, so it is quoted rather than
+paraphrased:
+
+> The object code (i.e. not a source) form of a "work that uses the Library" can incorporate
+> material from a header file that is part of the Library. As a special exception to the GNU
+> Lesser General Public License version 2.1, you may distribute such object code incorporating
+> material from header files provided with the Open CASCADE Technology libraries ... under
+> terms of your choice, **provided that you give prominent notice in supporting documentation
+> to this code that it makes use of or is based on facilities provided by the Open CASCADE
+> Technology software.**
+
+This notice is that statement: **TrioSlicer's CAD engine makes use of and is based on
+facilities provided by Open CASCADE Technology.**
+
+**Corresponding source.** OCCT 7.9.3 is at
+<https://github.com/Open-Cascade-SAS/OCCT>, the bindings at
+<https://github.com/CadQuery/OCP> (tag `7.9.3.1`), and build123d at
+<https://github.com/gumyr/build123d>. The bindings were generated by **pywrap**
+(Apache-2.0, part of the OCP repository); eight bindings pywrap omits, all overloaded or
+skipped methods, were written by hand and each is named in the build plan. The Android
+cross-compile recipe is committed: `scripts/build-occt-engine-android.sh` and, for the
+payload, `scripts/stage-cad-android.sh`.
+
+| component | licence |
+|---|---|
+| Open CASCADE Technology 7.9.3 | LGPL-2.1 **with the Open CASCADE exception** |
+| OCP 7.9.3.1 (bindings) | Apache-2.0 |
+| pywrap (bindings generator) | Apache-2.0 |
+| build123d 0.12.0 | Apache-2.0 |
+
+### Native libraries
+
+| library | licence |
+|---|---|
+| `libopenblas.so` | BSD-3-Clause (the OpenBLAS project) |
+| `libgfortran.so.3` | GPL-3.0 **with the GCC Runtime Library Exception** |
+| `libjpeg_chaquopy.so` | libjpeg-turbo (IJG and BSD-style) |
+| `libpng16.so` | libpng-2.0 |
+| `libomp.so` | Apache-2.0 with LLVM Exceptions |
+
+`libpython3.11.so` is the app's own CPython, covered by the PSF licence below.
+
+### Bundled Python packages
+
+Read from each distribution's own metadata in the payload, or from its source header where
+it ships none. Permissive throughout; nothing here is copyleft beyond the LGPL above.
+
+| licence | packages |
+|---|---|
+| Apache-2.0 | `requests`, `asttokens` |
+| BSD-2-Clause | `decorator`, `lib3mf` |
+| BSD-3-Clause | `numpy`, `scipy`, `scikit-learn`, `sympy`, `traitlets`, `webcolors`, `prompt_toolkit` |
+| ISC | `pexpect` |
+| MIT | `anytree`, `bd_materials`, `charset_normalizer`, `dataclasses_json`, `deprecated`, `ezdxf`, `executing`, `jedi`, `marshmallow`, `matplotlib_inline`, `mypy_extensions`, `ocp_gordon`, `ocpsvg`, `packaging`, `parso`, `platformdirs`, `pure_eval`, `pygltflib`, `pygments`, `pyparsing`, `stack_data`, `svgelements`, `svgpathtools`, `svgwrite`, `threejs_materials`, `trianglesolver`, `typing_extensions`, `typing_inspect`, `wcwidth`, `wrapt`, `joblib`, `threadpoolctl` |
+| MPL-2.0 | `certifi` |
+| HPND (MIT-CMU) | `Pillow` |
+| PSF-2.0 | CPython 3.11, the interpreter itself |
+
 ## Android Open Source Project and AndroidX
 
 The application uses Android platform APIs and AndroidX libraries under their respective licenses.

@@ -7,7 +7,7 @@
 TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
 preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
 or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
-an embedded **Blender 3.6**. It runs on Android 10+ on **ARM64** and nothing else - the engines are
+an embedded **Blender 3.6** or in **parametric CAD**. It runs on Android 10+ on **ARM64** and nothing else - the engines are
 built for `arm64-v8a` alone - with all three cross-compiled for the phone together with their own
 upstream profile systems: CuraEngine **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and
 OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2.
@@ -48,6 +48,12 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
   100k-8M triangles.
 - **Modelling with Blender 3.6 inside the app.** An AI agent drives the embedded engine over a local
   MCP socket, sees the same render you do, and hands the finished STL to the plate.
+- **Parametric CAD, in the app.** A second modelling engine runs **build123d** on
+  **OpenCASCADE** under the app's own Python, so a part is exact geometry rather than a mesh:
+  real cylinders, fillets that are round, and a **STEP** file that carries design intent. It has
+  its own **CAD** menu beside Blender's, and the assistant sees the engine it is driving there.
+  It renders offscreen so you can see the result, and exports **SVG**, **DXF** and hidden-line
+  technical drawings for flat parts.
 - **An AI assistant on the plate.** It talks to a DeepSeek harness you run yourself: ask about the
   model, paint a region to show what should change, or have a photograph turned into a printable STL
   on a remote GPU box.
@@ -137,6 +143,8 @@ resolved settings before a critical print.
 - High-density models and fine FEA grids may exceed the Android heap; thermal FEA lacks transient conduction and creep
 - Non-planar slicing and conical slicing buffer the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
 - Cura previews estimate bead widths from the extrusion delta (Cura G-code carries no width markers), so a previewed width can differ slightly from what the engine planned
+- The APK is about 500 MB, most of it the embedded Blender and CAD engines, so it is a large
+  download and a large install
 - The AI assistant is a client to a DeepSeek harness you run yourself, and photo-to-3D additionally needs a GPU box; neither is bundled, and replies are read from a polling projection rather than streamed
 
 ## Safety
@@ -145,7 +153,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 
 ## Documentation
 
-- [docs/TECHNICAL.md](docs/TECHNICAL.md) - building it, where the five engines come from, the verification tasks, CI, and how releases are signed
+- [docs/TECHNICAL.md](docs/TECHNICAL.md) - building it, where the six engines come from, the verification tasks, CI, and how releases are signed
 - [keystore/README.md](keystore/README.md) - the release key and how to verify a downloaded APK
 - [Calibrating the input shaper with a phone](docs/INPUT_SHAPING.md)
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine

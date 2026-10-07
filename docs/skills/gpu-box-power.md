@@ -12,11 +12,79 @@ The GPU box sleeps and is woken by a magic packet sent from the Raspberry Pi. **
 
 | | address | access |
 |---|---|---|
-| GPU box (GPU box) | `<gpu-box-lan-ip>`, tailnet `<gpu-box-tailscale-ip>` | ssh `<user>`, sudo password in `box-credentials.json` |
+| GPU box | `<gpu-box-lan-ip>`, tailnet `<gpu-box-tailscale-ip>` | ssh `<user>`, sudo password in `box-credentials.json` |
 | Raspberry Pi (pi4) | `<pi-lan-ip>` (wlan0), `<pi-link-ip>` (eth0) | ssh `<user>` / `<pi-password>` |
-| Windows PC (harness host) | `<pc-lan-ip>`, tailnet `<pc-tailscale-ip>` | local |
+| Harness host (**Debian**, was Windows) | `<pc-lan-ip>`, tailnet `<harness-host-tailscale-ip>` | local, no display |
 
-Helper scripts live in `C:\Users\<you>\Documents\img2mesh\blender-mcp\`: `box.py` (ssh to the box, `--sudo` supported), `pi_send_wol.py` (wake, self-healing), `pi_run.py` (run any command on the Pi, `--sudo` supported), `pi_net_diag.py` (why the Pi has no address), `pi_login.py`.
+Helper scripts live in `<blender-mcp-dir>\`: `box.py` (ssh to the box, `--sudo` supported), `pi_send_wol.py` (wake, self-healing), `pi_run.py` (run any command on the Pi, `--sudo` supported), `pi_net_diag.py` (why the Pi has no address), `pi_login.py`.
+
+**Those scripts are Windows-side and no longer run here.** The harness host became Debian, `paramiko` is not installed, and the `.venv\Scripts\` interpreter they are invoked with does not exist. The scripts themselves are still readable - the Windows partition is mounted **read-only** at `<windows-mount>`, so they live at
+
+```text
+<blender-mcp-dir>/
+```
+
+which is the reference for the Linux procedure below. `box-credentials.json` in that directory holds `host`, `port`, `username` and `sudo_password`.
+
+## From the Linux harness host
+
+Everything the Windows scripts did, as plain `ssh`. There is nothing to install.
+
+**Auth.** `~/.ssh/id_ed25519` is already authorised on the **box**, so ssh needs no password there. Its `sudo` does, and the password is the `sudo_password` field of `box-credentials.json`:
+
+```bash
+CREDS=<box-credentials-file>
+BOX_PW=$(python3 -c "import json;print(json.load(open('$CREDS'))['sudo_password'])")
+```
+
+**The Pi is password-only** - `<user>` / `<pi-password>`, no key installed. `sshpass` and `pexpect` are both absent, so use OpenSSH's own askpass hook, which needs no package:
+
+```bash
+askpass() { f=/tmp/.askpass.$$; printf '#!/bin/sh\necho %s\n' "$1" > "$f"; chmod +x "$f"; echo "$f"; }
+PI_PW=<pi-password>
+run_on_pi() { SSH_ASKPASS=$(askpass "$PI_PW") SSH_ASKPASS_REQUIRE=force setsid -w \
+                 ssh -o StrictHostKeyChecking=accept-new <user>@<pi-lan-ip> "$@"; }
+```
+
+`setsid -w` is what makes ssh consult askpass at all: without a controlling terminal it will not otherwise. `SSH_ASKPASS_REQUIRE=force` needs OpenSSH 8.4 or newer.
+
+### Hibernate it
+
+```bash
+ssh <user>@<gpu-box-lan-ip> "sudo -S -p '' systemctl hibernate" <<< "$BOX_PW"
+```
+
+`sudo -S` takes the password on **stdin**, which is why it is a here-string rather than a `-t` session. Then **confirm it went down**, because a hibernation that is refused leaves the machine running and looks identical:
+
+```bash
+sleep 45
+ping -c1 -W2 <gpu-box-lan-ip> >/dev/null 2>&1 && echo "STILL UP" || echo "down"
+```
+
+A hibernated box also stops answering on the tailnet address `<gpu-box-tailscale-ip>`, which is a second, independent check.
+
+### Wake it
+
+The packet must come from the Pi. Its `eth0` address is a lease from the box's own dnsmasq, so a Pi that rebooted while the box slept has **no address at all**, and the send dies with `Cannot assign requested address`. Put it back first - the command is harmless when the address is already there:
+
+```bash
+run_on_pi "sudo -S -p '' ip addr add <pi-link-ip>/24 dev eth0; true" <<< "$PI_PW"
+```
+
+Then send, and poll the box rather than trusting the send:
+
+```bash
+run_on_pi "python3 -c \"import socket; p=b'\\xff'*6+bytes.fromhex('<wake-target-mac-plain>')*16; \
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1); \
+s.bind(('<pi-link-ip>',0)); s.sendto(p,('<link-broadcast>',9)); print('sent')\""
+
+for i in $(seq 1 40); do
+  timeout 2 bash -c '</dev/tcp/<gpu-box-lan-ip>/22' 2>/dev/null && { echo "up after $((i*3))s"; break; }
+  sleep 3
+done
+```
+
+**Verify against the box, never against the sender.** A packet sent to a machine that is already running proves nothing, and a send that failed silently looks exactly like one that worked.
 
 ## Why the packet has to come from the Pi
 
@@ -32,13 +100,17 @@ The ASUS bridges rather than routes — proven by the Pi's `eth0` taking a **`<p
 
 ## Wake it
 
+> **Windows invocation, no longer runnable here.** For the working Linux equivalent see
+> [From the Linux harness host](#from-the-linux-harness-host) above. What follows is kept for
+> the behaviour it documents - the MAC, the packet shape, the 20-60 s answer window.
+
 ```powershell
 cd 'C:\Users\<you>\Documents\img2mesh\blender-mcp'
 .venv\Scripts\python.exe pi_send_wol.py              # wake it, and wait until it answers
 .venv\Scripts\python.exe pi_send_wol.py --no-wait    # send only
 ```
 
-The packet targets MAC `<wake-target-mac>` (the box's **ethernet**; its WiFi MAC cannot be woken) broadcast to `<link-broadcast>:9` and `255.255.255.255:9`, 102 bytes: six `0xFF` then the MAC sixteen times. The box answers roughly 20–60 seconds later, and a successful resume keeps its uptime — a *cold boot* means the hibernation image did not restore.
+The packet targets MAC `<wake-target-mac>` (the box's **ethernet**; its WiFi MAC cannot be woken) broadcast to `<link-broadcast>:9` and `<broadcast>:9`, 102 bytes: six `0xFF` then the MAC sixteen times. The box answers roughly 20–60 seconds later, and a successful resume keeps its uptime — a *cold boot* means the hibernation image did not restore.
 
 To send it by hand from the Pi:
 
@@ -68,22 +140,27 @@ It cannot simply be renewed either, for the same reason. As of 2026-09-12 the ad
 
 Observed on 2026-09-12, which is why that change exists: the script of the day reported `exit code 0` and the box stayed down for three more minutes. It never checked the remote exit status, and the Pi's `eth0` had no address. The agent on the other end worked it out anyway — `ip addr add <pi-link-ip>/24 dev eth0` on the Pi, re-send, box up in 18 seconds — but it had to improvise that under time pressure.
 
-If it fails again:
+If it fails again, using the `run_on_pi` helper from the Linux section above:
 
-```powershell
-.venv\Scripts\python.exe pi_net_diag.py                                        # what the Pi actually has
-.venv\Scripts\python.exe pi_run.py --sudo "ip addr add <pi-link-ip>/24 dev eth0"  # put it back by hand
+```bash
+run_on_pi 'ip -4 addr show eth0'                                                   # what the Pi actually has
+run_on_pi "sudo -S -p '' ip addr add <pi-link-ip>/24 dev eth0" <<< "$PI_PW"           # put it back by hand
 ```
+
+The Windows equivalents (`pi_net_diag.py`, `pi_run.py`) are in the read-only mount but cannot run from Debian. What they do is the two commands above.
 
 **Verify against the box, never against the sender.** A packet sent to a machine that is already running proves nothing, and a send that failed silently looks identical to one that worked:
 
-```powershell
-Test-Connection -ComputerName <gpu-box-lan-ip> -Count 1 -Quiet
+```bash
+ping -c1 -W2 <gpu-box-lan-ip> >/dev/null 2>&1 && echo "up" || echo "down"
 ```
 
 The durable fix is a **static (or fallback) address on the Pi's `eth0`** rather than a lease from a machine that spends its life asleep. That is a change to the Pi's network configuration, and it was **offered and declined on 2026-09-12** - the self-healing script covers the failure, so do not re-raise it unprompted.
 
 ## Hibernate it
+
+> **Windows invocation, no longer runnable here** - see
+> [From the Linux harness host](#from-the-linux-harness-host) for the command that works.
 
 ```powershell
 .venv\Scripts\python.exe box.py --sudo "systemctl hibernate"
@@ -148,6 +225,9 @@ Two related facts about prompting a session:
 - So a session reading `running: true` after a cancel may simply be working a steer that arrived behind it.
 
 ## Verifying
+
+These run **on the box**, so prefix each with `ssh <user>@<gpu-box-lan-ip>` - or run them there
+directly. The first is the one that explains a failed resume; the rest are the wake plumbing.
 
 ```bash
 cat /proc/cmdline | tr ' ' '\n' | grep resume=

@@ -4,6 +4,7 @@ Sanitized copies of the assistant's skill files - the runbooks it follows when a
 
 | file | what it covers |
 |---|---|
+| [`cad-engine.md`](cad-engine.md) | Building exact geometry with build123d on OCP: the socket engine, the render command, 2D drawings, and which phone it is actually on |
 | [`blender-mcp-engine.md`](blender-mcp-engine.md) | Driving the Blender engine embedded in the app over its MCP socket, and the STL export handoff into the slicer UI |
 | [`image-to-3d-model.md`](image-to-3d-model.md) | Photograph to printable STL: the generator, its settings, post-processing, validation and the delivery handoff |
 | [`gpu-box-power.md`](gpu-box-power.md) | Hibernating and waking the GPU box over Wake-on-LAN, and why each piece of that configuration is needed |
@@ -37,5 +38,6 @@ and will not work:
 | `<gpu-box-link-ip>`, `<link-broadcast>` | the far end and broadcast address of that link |
 | `<lan-ip>`, `<windows-hotspot-ip>` | any local address, and one handed out by a Windows hotspot |
 | `<wake-target-mac>` | the MAC that wake-on-LAN is addressed to |
+| `<dev-phone-serial>` | a spare phone to test on, from `adb devices` |
 
 Hostnames and logins appear as placeholders (`<user>`, `<you>`, `phone-host`, `<pi-password>`). The application's own package id is left as-is: it is public, and the commands that reference it would be useless without it.
