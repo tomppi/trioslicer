@@ -644,6 +644,65 @@ val verifyDebugApkBlenderContents by tasks.registering {
  * runtime libraries, numpy assets and licence texts an APK can be missing while
  * still looking complete. This is the task CI calls.
  */
+/**
+ * The sixth engine, and the one nothing used to check.
+ *
+ * libocct_exec.so is what reads STEP and IGES and what solves the constraint sketches. It is
+ * built by scripts/build-occt-engine-android.sh and jniLibs/ is gitignored, so a checkout that
+ * has not fetched it assembles an APK that starts, slices and prints perfectly - and silently
+ * cannot import either format. That is exactly what CI shipped until this check existed: the
+ * five engine checks below all passed on an APK with no OCCT engine in it.
+ */
+fun checkOcctEnginePackaged(apk: File, label: String) {
+    check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
+    ZipFile(apk).use { zip ->
+        val entry = zip.getEntry("lib/arm64-v8a/libocct_exec.so")
+        check(entry != null && entry.size > 0L) {
+            "$label APK does not contain the ARM64 OCCT engine, so STEP and IGES import " +
+                "and the constraint sketches have nothing to run. Fetch it with " +
+                "scripts/fetch-occt-engine-android.sh."
+        }
+    }
+}
+
+/**
+ * The CAD workspace's whole runtime: OCP, build123d and their dependencies.
+ *
+ * Asserted by package rather than by count, because a truncated payload is the failure that
+ * matters - it stages a tree that looks populated and then fails on the phone with an
+ * ImportError naming a package the user has never heard of. The count is a floor beneath that.
+ */
+fun checkCadPayloadPackaged(apk: File, label: String) {
+    check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
+    ZipFile(apk).use { zip ->
+        val required = listOf(
+            "assets/cad/cad_mcp_slim.py",
+            "assets/cad/lib/python3.11/site-packages/OCP.cpython-311.so",
+            "assets/cad/lib/python3.11/site-packages/build123d/__init__.py",
+            "assets/cad/lib/python3.11/site-packages/_ctypes.cpython-311.so",
+            "assets/cad/lib/python3.11/site-packages/numpy/__init__.py",
+            "assets/cad/lib/python3.11/site-packages/scipy/__init__.py",
+            "assets/cad/libexec/libopenblas.so",
+        )
+        for (path in required) {
+            val entry = zip.getEntry(path)
+            check(entry != null && entry.size > 0L) {
+                "$label APK does not contain $path, so the CAD engine cannot start. Fetch " +
+                    "the payload with scripts/fetch-cad-payload-android.sh."
+            }
+        }
+        var count = 0
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            if (entries.nextElement().name.startsWith("assets/cad/")) count++
+        }
+        check(count >= 10_000) {
+            "$label APK carries only $count CAD payload entries; about 10700 are expected. " +
+                "A partial payload stages a tree that looks complete and fails on the device."
+        }
+    }
+}
+
 val verifyDebugApkEngines by tasks.registering {
     group = "verification"
     description = "Builds the debug APK and verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender and filaSim engines"
@@ -667,7 +726,7 @@ val verifyDebugApkEngines by tasks.registering {
  */
 val verifyReleaseApkEngines by tasks.registering {
     group = "verification"
-    description = "Verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender and filaSim engines in the release APK"
+    description = "Verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender, filaSim and OCCT engines, and the CAD payload, in the release APK"
     dependsOn("assembleRelease")
     doLast {
         val apk = releaseApkFile()
@@ -676,7 +735,9 @@ val verifyReleaseApkEngines by tasks.registering {
         checkOrcaPackaged(apk, "Release")
         checkBlenderPackaged(apk, "Release")
         checkFilaSimPackaged(apk, "Release")
-        logger.lifecycle("Release APK carries all five engines: " + apk.name)
+        checkOcctEnginePackaged(apk, "Release")
+        checkCadPayloadPackaged(apk, "Release")
+        logger.lifecycle("Release APK carries all six engines and the CAD payload: " + apk.name)
     }
 }
 

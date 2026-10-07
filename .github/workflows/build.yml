@@ -351,6 +351,45 @@ jobs:
           [ "$count" -ge 950 ] || { echo "expected ~957 payload files, found $count" >&2; exit 1; }
           echo "Klipper host staged: $count payload files and 3 libraries"
 
+      - name: Fetch and validate the OCCT engine
+        run: |
+          chmod +x scripts/fetch-occt-engine-android.sh
+          scripts/fetch-occt-engine-android.sh 2>&1 | tee occt-engine-fetch.log
+          # STEP and IGES import and the constraint sketches need this binary and nothing
+          # else provides it. jniLibs/ is gitignored, so before this step existed CI built
+          # an APK that carried neither the engine nor any way of noticing it was missing:
+          # verifyReleaseApkEngines checked five engines and this is the sixth.
+          f=app/src/main/jniLibs/arm64-v8a/libocct_exec.so
+          [ -s "$f" ] || { echo "OCCT engine missing: $f" >&2; exit 1; }
+          [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] ||
+            { echo "$f is not an ELF binary" >&2; exit 1; }
+          echo "OCCT engine staged: $(du -h "$f" | cut -f1)"
+
+      - name: Fetch and validate the CAD payload
+        run: |
+          chmod +x scripts/fetch-cad-payload-android.sh scripts/stage-cad-android.sh
+          scripts/fetch-cad-payload-android.sh 2>&1 | tee cad-payload-fetch.log
+          # The whole CAD workspace is this payload. Assert the packages the engine imports
+          # rather than just that files arrived: a truncated download stages a tree that
+          # looks populated and fails on the phone with an ImportError naming a package the
+          # user has never heard of.
+          site=app/src/main/assets/cad/lib/python3.11/site-packages
+          for p in OCP.cpython-311.so build123d numpy scipy sklearn lib3mf PIL _ctypes.cpython-311.so; do
+            [ -e "$site/$p" ] || { echo "CAD payload missing: $p" >&2; exit 1; }
+          done
+          for lib in libopenblas.so libgfortran.so.3 libjpeg_chaquopy.so libpng16.so libomp.so; do
+            [ -f "app/src/main/assets/cad/libexec/$lib" ] || {
+              echo "CAD payload missing library: $lib" >&2; exit 1; }
+          done
+          # Symlinks cannot ship: they point at the install directory of whichever machine
+          # built the archive, which is not this one.
+          links=$(find app/src/main/assets/cad -type l | wc -l)
+          [ "$links" -eq 0 ] || { echo "$links symlinks in the staged payload" >&2; exit 1; }
+          count=$(find app/src/main/assets/cad -type f | wc -l)
+          [ "$count" -ge 10000 ] || { echo "expected ~10700 payload files, found $count" >&2; exit 1; }
+          echo "CAD payload staged: $count files"
+
+
       - name: Build pinned host CuraEngine fixture binary
         run: |
           chmod +x scripts/build-curaengine-host-tests.sh
