@@ -306,7 +306,7 @@ class _Renderer:
             self.window.SetSize(width, height)
             self.width, self.height = width, height
 
-    def render(self, shape, width, height, view, shaded):
+    def render(self, shape, width, height, view, shaded, highlight=None):
         """Draw shape and return the view, ready for ToPixMap."""
         from OCP.AIS import AIS_Shape, AIS_Shaded, AIS_WireFrame
         from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
@@ -359,6 +359,23 @@ class _Renderer:
             drawer.SetDrawSilhouettes(True)
         except Exception:
             pass
+        if highlight:
+            # Each face is its own presentation. Wrapping them in a compound first would be
+            # tidier, but TopoDS.Compound() is a cast helper rather than a constructor in
+            # this binding, so there is nothing to build an empty compound with.
+            #
+            # A face index the shape does not have is skipped rather than raising: the
+            # caller is usually an agent that counted faces in an earlier turn, and the
+            # model may have changed since.
+            for face in highlight:
+                marker = AIS_Shape(face)
+                self.context.Display(marker, False)
+                self.context.SetDisplayMode(marker, AIS_Shaded, False)
+                self.context.SetColor(
+                    marker, Quantity_Color(0.95, 0.2, 0.2, Quantity_TOC_RGB), False)
+            # Deliberately not wrapped in try/except: a highlight that silently fails to
+            # draw is worse than one that reports why, because the render still comes back
+            # looking like a successful answer.
         direction = VIEW_DIRECTIONS.get(view, VIEW_DIRECTIONS["iso"])
         self.view.SetProj(*direction)
         self.view.FitAll(0.02)
@@ -379,6 +396,96 @@ def _renderer(width, height):
 # --------------------------------------------------------------------------
 # The server
 # --------------------------------------------------------------------------
+
+
+def _ray_hits(shape, point, direction):
+    """Sorted distances where a ray enters and leaves `shape`.
+
+    This is the thickness measurement, and it is done this way because OCCT 7.9.3 has no
+    thickness class at all - there is no ShapeAnalysis_Thickness_Maker in the source tree,
+    which was checked rather than assumed. Casting a line through the solid and taking the
+    gap between consecutive intersections gives the wall it passes through, which is the
+    number that decides whether a part prints.
+    """
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+    from OCP.gp import gp_Lin
+    inter = IntCurvesFace_ShapeIntersector()
+    inter.Load(shape.wrapped if hasattr(shape, 'wrapped') else shape, 1e-6)
+    inter.Perform(gp_Lin(point, direction), 0.0, 1e6)
+    return sorted(inter.Pnt(i + 1).Distance(point) for i in range(inter.NbPnt()))
+
+
+def _wall_thickness(shape, samples=14):
+    """Wall thickness through the part, sampled along all three axes.
+
+    Casting only two directions misses the wall that matters: a 0.3 mm fin is thin in Y and
+    20 mm along X, so an X-ray reports the fin as solid and the part as printable. Every axis
+    is cast and the smallest gap found anywhere is the answer, because a part is only as
+    printable as its thinnest wall.
+    """
+    box = shape.bounding_box()
+    lo, hi = box.min, box.max
+    span = (hi.X - lo.X, hi.Y - lo.Y, hi.Z - lo.Z)
+    gaps = []
+    axes = [
+        ((1, 0, 0), lambda f, g: _gp_pnt(lo.X - 1.0, lo.Y + span[1] * f, lo.Z + span[2] * g)),
+        ((0, 1, 0), lambda f, g: _gp_pnt(lo.X + span[0] * f, lo.Y - 1.0, lo.Z + span[2] * g)),
+        ((0, 0, -1), lambda f, g: _gp_pnt(lo.X + span[0] * f, lo.Y + span[1] * g, hi.Z + 1.0)),
+    ]
+    for direction, origin in axes:
+        for i in range(samples):
+            for j in range(samples):
+                f = (i + 0.5) / samples
+                g = (j + 0.5) / samples
+                hits = _ray_hits(shape, origin(f, g), _gp_dir(*direction))
+                gaps += [hits[k + 1] - hits[k] for k in range(0, len(hits) - 1, 2)]
+    return gaps
+
+
+def _gp_pnt(x, y, z):
+    from OCP.gp import gp_Pnt
+    return gp_Pnt(float(x), float(y), float(z))
+
+
+def _gp_dir(x, y, z):
+    from OCP.gp import gp_Dir
+    return gp_Dir(float(x), float(y), float(z))
+
+
+def _overhangs(shape, threshold_deg=45.0, bed_z=None):
+    """Faces that need support, and how much of the part they are.
+
+    A face is an overhang when its outward normal points downward by more than the
+    threshold from horizontal - the same rule a slicer uses, measured on the exact
+    surface rather than on the triangle mesh the slicer will see.
+    """
+    import math
+    down = math.cos(math.radians(90.0 - threshold_deg))
+    faces = []
+    total = 0.0
+    for face in shape.faces():
+        try:
+            area = face.area
+        except Exception:
+            continue
+        total += area
+        try:
+            normal = face.normal_at()
+        except Exception:
+            continue
+        # normal_at() may return a list on a shell; take the first.
+        if isinstance(normal, (list, tuple)):
+            normal = normal[0]
+        if -normal.Z > down:
+            faces.append({
+                "area": round(area, 4),
+                "z": round(face.center().Z, 4),
+                "tilt_from_horizontal_deg": round(math.degrees(math.asin(max(-1.0, min(1.0, -normal.Z)))), 2),
+            })
+    faces.sort(key=lambda f: -f["area"])
+    return {"count": len(faces), "area": round(sum(f["area"] for f in faces), 4),
+            "fraction_of_surface": round((sum(f["area"] for f in faces) / total) if total else 0.0, 4),
+            "largest": faces[:8]}
 
 class CadMCPServer:
     def __init__(self, host='localhost', port=DEFAULT_PORT, token=None,
@@ -650,6 +757,9 @@ class CadMCPServer:
             "get_metrics": self.get_metrics,
             "export_step": self.export_step,
             "export_stl": self.export_stl,
+            "export_mesh": self.export_mesh,
+            "analyze": self.analyze,
+            "section": self.section,
             "import_file": self.import_file,
             "render": self.render,
             "get_addon_info": self.get_addon_info,
@@ -757,6 +867,126 @@ class CadMCPServer:
         )
         return {"filepath": filepath, "bytes": written, "shapes": label}
 
+    def export_mesh(self, filepath, name="", format=""):
+        """Write the scene as BREP, glTF or OBJ, chosen by the file extension.
+
+        BREP is the exact geometry in OCCT's own form - lossless and re-importable, which
+        neither STEP nor STL is as a round trip. glTF and OBJ are for looking at the model
+        elsewhere.
+        """
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        b3d = kernel()["build123d"]
+        extension = ("." + format.lstrip(".")).lower() if format else os.path.splitext(filepath)[1].lower()
+        writers = {
+            ".brep": lambda temp: b3d.export_brep(shape, temp),
+            ".gltf": lambda temp: b3d.export_gltf(shape, temp),
+            ".glb": lambda temp: b3d.export_gltf(shape, temp),
+            ".obj": lambda temp: b3d.export_obj(shape, temp),
+        }
+        writer = writers.get(extension)
+        if writer is None:
+            raise ValueError("cannot export %r; supported: %s" % (extension, ", ".join(sorted(writers))))
+        written = _publish(filepath, writer)
+        return {"filepath": filepath, "bytes": written, "shapes": label, "format": extension}
+
+    def analyze(self, name="", nozzle=0.4, layer=0.2, overhang_deg=45.0,
+                bed_x=None, bed_y=None, bed_z=None, samples=14):
+        """Whether this part will print, as numbers rather than an opinion.
+
+        Three questions, each of which has sunk a print: is any wall thinner than the
+        nozzle can lay down, how much of the part overhangs and needs support, and does it
+        fit the plate. The first two are computed on the exact surface - the slicer will
+        only ever see triangles, and a wall that is thin in the model is thinner still
+        once it is meshed.
+        """
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        box = shape.bounding_box()
+        size = box.size
+        gaps = _wall_thickness(shape, samples=samples)
+        thin = [round(g, 4) for g in gaps if g < nozzle]
+        report = {
+            "shapes": label,
+            "volume_mm3": round(_volume_of(shape), 4),
+            "surface_mm2": round(_area_of(shape), 4),
+            "bbox_mm": [round(size.X, 3), round(size.Y, 3), round(size.Z, 3)],
+            "wall": {
+                "samples": len(gaps),
+                "min_mm": round(min(gaps), 4) if gaps else None,
+                "max_mm": round(max(gaps), 4) if gaps else None,
+                "below_nozzle": len(thin),
+                "thin_examples": sorted(thin)[:6],
+                "nozzle_mm": nozzle,
+            },
+            "overhang": _overhangs(shape, threshold_deg=overhang_deg),
+            "overhang_threshold_deg": overhang_deg,
+        }
+        if bed_x and bed_y:
+            fits_xy = size.X <= bed_x and size.Y <= bed_y
+            fits_rotated = min(max(size.X, size.Y), max(size.Y, size.X)) <= max(bed_x, bed_y)
+            report["bed"] = {
+                "bed_mm": [bed_x, bed_y, bed_z],
+                "fits_as_modelled": bool(fits_xy),
+                "fits_if_rotated_90": bool(fits_xy or (size.X <= bed_y and size.Y <= bed_x)),
+                "needs_rotation": bool(not fits_xy and size.X <= bed_y and size.Y <= bed_x),
+                "fits_height": (size.Z <= bed_z) if bed_z else None,
+            }
+        # The verdict, so the agent does not have to interpret the numbers to be useful.
+        problems = []
+        if report["wall"]["below_nozzle"]:
+            problems.append("%d wall sample(s) thinner than the %.2f mm nozzle, smallest %.2f mm"
+                            % (len(thin), nozzle, min(thin)))
+        if report["overhang"]["fraction_of_surface"] > 0.05:
+            problems.append("%.0f%% of the surface overhangs past %g deg and may need support"
+                            % (report["overhang"]["fraction_of_surface"] * 100, overhang_deg))
+        if report.get("bed") and not report["bed"]["fits_as_modelled"]:
+            if report["bed"]["needs_rotation"]:
+                problems.append("does not fit the bed as modelled; rotating 90 deg would")
+            else:
+                problems.append("does not fit the bed")
+        report["verdict"] = "printable as modelled" if not problems else "; ".join(problems)
+        return report
+
+    def section(self, name="", axis="x", offset=0.0, out=""):
+        """A cross-section through the part, as a face, optionally written to a file.
+
+        Reading a section is how you find the void nobody modelled and the wall nobody
+        meant: an outside view of a solid looks the same whether or not it is hollow.
+        """
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+        from OCP.gp import gp_Pln, gp_Pnt, gp_Dir
+        label, shape = _resolve_target(name)
+        box = shape.bounding_box()
+        centre = box.center()
+        normals = {'x': (1, 0, 0), 'y': (0, 1, 0), 'z': (0, 0, 1)}
+        n = normals.get(axis.lower())
+        if n is None:
+            raise ValueError("axis must be x, y or z")
+        base = {"x": centre.X, "y": centre.Y, "z": centre.Z}[axis.lower()] + offset
+        loc = {'x': (base, centre.Y, centre.Z), 'y': (centre.X, base, centre.Z),
+               'z': (centre.X, centre.Y, base)}[axis.lower()]
+        plane = gp_Pln(gp_Pnt(*loc), gp_Dir(*n))
+        op = BRepAlgoAPI_Section(shape.wrapped, plane)
+        op.Build()
+        if not op.IsDone():
+            raise RuntimeError("the section could not be computed")
+        from OCP.TopoDS import TopoDS
+        result = _solid_or_compound(op.Shape())
+        b3d = kernel()["build123d"]
+        wrapped = b3d.Shape.cast(result) if hasattr(b3d.Shape, "cast") else None
+        info = {"shapes": label, "axis": axis.lower(), "offset": offset,
+                "plane_at": round(base, 4),
+                "edges": len(list(result.edges())) if hasattr(result, "edges") else None}
+        if out:
+            written = _publish(out, lambda temp: b3d.export_svg(result, temp))
+            info["filepath"] = out
+            info["bytes"] = written
+        return info
     # Extension -> build123d importer. STEP and BREP carry analytic geometry, which is
     # what makes them worth importing rather than the mesh formats: a hole is a cylinder,
     # not a ring of triangles, so it can be re-dimensioned afterwards.
@@ -767,6 +997,10 @@ class CadMCPServer:
         ".brep": "import_brep",
         ".stl": "import_stl",
         ".svg": "import_svg",
+        # build123d has import_dxf and ezdxf is already bundled; only the map entry was
+        # missing. A DXF or SVG profile is how a flat part arrives: a drawing, a logo, a
+        # panel outline - extruded into something printable.
+        ".dxf": "import_dxf",
     }
 
     def import_file(self, filepath, name="", unit="mm"):
@@ -800,7 +1034,8 @@ class CadMCPServer:
     # hold: 2048x2048 RGBA is 16 MB, and the pixmap is uncompressed on the way out.
     RENDER_MIN, RENDER_MAX = 64, 2048
 
-    def render(self, filepath, name="", view="iso", width=640, height=640, shaded=True):
+    def render(self, filepath, name="", view="iso", width=640, height=640, shaded=True,
+               highlight_faces=None, highlight_overhang=None):
         """Draw the scene (or one shape) offscreen and write it as a PNG.
 
         The engine has a GL viewer and no window. It works: OCCT builds its own EGL context
@@ -821,9 +1056,35 @@ class CadMCPServer:
             raise ValueError("unknown view %r; try one of %s"
                              % (view, ", ".join(sorted(VIEW_DIRECTIONS))))
 
+        if highlight_overhang is not None and not highlight_faces:
+            # "Show me what needs support" without making the caller find the faces first.
+            import math as _math
+            down = _math.cos(_math.radians(90.0 - float(highlight_overhang)))
+            highlight_faces = []
+            for index, face in enumerate(shape.faces()):
+                try:
+                    normal = face.normal_at()
+                except Exception:
+                    continue
+                if isinstance(normal, (list, tuple)):
+                    normal = normal[0]
+                if -normal.Z > down:
+                    highlight_faces.append(index)
+
+        # Indices in, wrapped faces out. The renderer only ever sees a TopoDS shape,
+        # so anything that needs to ask the model a question has to happen here.
+        marked = []
+        if highlight_faces:
+            faces = list(shape.faces())
+            for index in highlight_faces:
+                if isinstance(index, int) and 0 <= index < len(faces):
+                    face = faces[index]
+                    marked.append(getattr(face, "wrapped", face))
+
         renderer = _renderer(width, height)
         viewport = renderer.render(getattr(shape, "wrapped", shape),
-                                   width, height, view, bool(shaded))
+                                   width, height, view, bool(shaded),
+                                   highlight=marked)
 
         def write(temp):
             # ToPixMap needs a path it can open, and the publish target is a .part file
@@ -852,6 +1113,7 @@ class CadMCPServer:
             "width": width,
             "height": height,
             "shaded": bool(shaded),
+            "highlighted_faces": sorted(highlight_faces) if highlight_faces else [],
         }
 
     def get_addon_info(self):

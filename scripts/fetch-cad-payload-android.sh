@@ -30,14 +30,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${GITHUB_REPOSITORY:-tomppi/trioslicer}"
-VERSION="${CAD_PAYLOAD_VERSION:-v1.0.0}"
+VERSION="${CAD_PAYLOAD_VERSION:-v1.1.0}"
 TAG="${CAD_PAYLOAD_TAG:-cad-payload-${VERSION}}"
 ASSET="cad-payload-arm64-${VERSION}.tar.gz"
 DOWNLOAD_DIR="$ROOT/.build/cad-payload-download"
 
 # The payload is imported by the app, so its digest is pinned: a deliberate re-pin sets
 # CAD_PAYLOAD_SHA256 to the digest of the new asset.
-CAD_PAYLOAD_SHA256_PINNED="798e126fd0457ff6f856bd68525e39be3d5d1d2f2358bf18fe3361eb691f88e0"
+CAD_PAYLOAD_SHA256_PINNED="98bc0f29fa8e53039408dc55d84dcf45aadcb652ce615546ffadd88f6a173016"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

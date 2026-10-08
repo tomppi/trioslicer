@@ -23,6 +23,35 @@ Rule of thumb:
 The engine is a plain TCP socket on **localhost:9877** inside the app process. It is **not**
 Blender's port (9876) — the two can run at once and each has its own.
 
+### Getting the token without root
+
+**The token is in app-private storage, and `adb shell` cannot read it** - even a shell on a
+phone where adbd runs as root is a different uid from the app:
+
+```
+drwx------  /data/user/0/com.tomppi.enderslicercura   0700, app-only
+-rw-------  .../files/cad/cad_mcp_token.txt            0600, app-only
+```
+
+**Shizuku does not change this.** It grants *shell* privilege, uid 2000, and shell is refused
+by those permissions exactly as a plain adb shell is. There is no privilege level between
+shell and root that reads another app's private directory.
+
+**The app has the answer: *Copy MCP token* in the CAD menu**, beside *Model with CAD*. It puts
+the token on the clipboard; paste it to the agent and nothing needs root at all. **Ask the user
+for it before reaching for `su`** - it is one tap, and it is the difference between a workflow
+that needs a rooted phone and one that works on any phone with wireless debugging.
+
+The order that works:
+
+1. The user opens the CAD menu and taps **Copy MCP token**, then pastes it to you.
+2. `adb -s <phone> forward tcp:9877 tcp:9877` - **this never needed root**; it asks adbd to
+   open a listener and tunnel it, which is an ordinary adb feature.
+3. Send commands with the pasted token.
+
+Root is still the fallback if the user cannot reach the phone, and on the dev phone, where
+nobody is using it. It is not the first move.
+
 ### Reach the engine on the phone the user is actually using
 
 **This is the mistake to avoid, and it has already cost one session an afternoon.** There are
@@ -373,3 +402,57 @@ Do not ration this. Both are fast, and a wrong part costs far more than the chec
 - **Not the Blender engine.** No `bpy`, no scene objects, no materials, no rendering. If the
   task is mesh surgery, that is Blender's job.
 - **Not FreeCAD.** No document tree, no workbenches, no GUI.
+
+## 9. What the OCCT layer underneath can do
+
+build123d is a comfortable wrapper over part of OCCT. `execute_code` can call **all** of it -
+316 toolkits are bound and build123d imports 84 - so when a job looks impossible in build123d,
+drop to OCP before concluding it cannot be done.
+
+**Verified working on a device**, in the engine's own environment:
+
+| capability | how |
+|---|---|
+| **IGES import and export, exactly** | `IGESControl_Reader` / `IGESControl_Writer` |
+| **The repair pipeline** | `ShapeProcessAPI_ApplySequence("ToFix").PrepareShape(shape)` |
+| **Variable-radius fillets** | `BRepFilletAPI_MakeFillet.Add(radius, edge)` per edge - build123d takes one radius |
+| **Boolean validity** | `BOPAlgo_ArgumentAnalyzer`: shapes in, `Perform()`, read `HasFaulty` |
+| **Shape-to-shape distance** | `BRepExtrema_DistShapeShape` + `PerformDist()` |
+| **Sweeps with a real section** | `BRepOffsetAPI_MakePipeShell` - the section must be a wire or face, not a solid |
+| **Point in solid, sections** | `BRepClass3d_SolidClassifier`, `BRepAlgoAPI_Section` |
+| **Highlighting faces in a render** | the `render` command's `highlight_faces` / `highlight_overhang` |
+
+**`render` with a highlight** is how you point at something instead of describing it:
+
+```json
+{"type": "render", "params": {"filepath": ".../support.png", "view": "front",
+                              "highlight_overhang": 45.0}}
+```
+
+That draws every face steeper than 45 degrees in red and reports which indices they were, so
+"this needs support" becomes a picture. Pass `highlight_faces: [0, 1]` to mark specific ones.
+An index the shape does not have is skipped rather than raising - the model may have changed
+since you counted faces.
+
+### Two things that are not there yet
+
+**`build123d.Text` returns an empty shape.** The font resolves and the glyph pipeline is
+bound, but no geometry comes out. Do not use text; there is no error to catch.
+
+**glTF and OBJ export raise.** `RWGltf_CafWriter` has no constructor and
+`Poly_Triangulation.MapNodeArray` is absent. Use STEP, STL or BREP.
+
+### If you need to bind something yourself
+
+**pywrap drops `Perform`.** The method that actually runs an OCCT algorithm is missing from
+several classes - `ShapeFix_Shape`, `BRepExtrema_DistShapeShape` and `StdPrs_BRepTextBuilder`
+all lost theirs - which leaves a class inert from Python even though every accessor around it
+is bound. **Check for `Perform` before assuming a class cannot do something.**
+
+Adding a binding is a patch to `/root/occt-port/OCP/OCP/<Toolkit>.cpp` plus a rebuild, and
+**one rebuild covers every patch**, so enumerate them all first. Do not fix them one
+`AttributeError` at a time: diff the toolkit header in
+`/root/occt-port/build/OCCT-7_9_3/src/<Toolkit>/` against the `.def` names already in the
+binding file. That is how two missing triangulation methods were found together, after three
+rebuilds spent finding text bindings one at a time.
+
