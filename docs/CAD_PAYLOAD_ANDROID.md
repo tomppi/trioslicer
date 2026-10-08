@@ -74,3 +74,12 @@ has neither the 4 GB build tree nor the cross-compiles:
 The version bumps whenever the payload changes, and the app version with it: an old app against a
 new payload is fine (it ignores what it does not use), a new app against an old payload is not
 guaranteed - the engine keeps a fallback for the missing `ReadBytes`, and nothing else.
+
+`gh release create` tags the commit that happens to be HEAD, which for a payload built during an
+app release is usually the wrong one. **Moving that tag afterwards detaches the release**: GitHub
+keeps serving the asset, but under an `untagged-` URL, and the pinned
+`releases/download/<tag>/<asset>` URL - the one `fetch-cad-payload-android.sh` uses, and CI with
+it - starts returning 404. The fix is to delete the release and create it again with
+`--verify-tag` against the tag that now exists. The 404 is also served from the CDN edge for a
+few minutes after, so a check straight away can still fail while `?anything` on the same URL
+succeeds; the two disagree only while that cache entry lives.
