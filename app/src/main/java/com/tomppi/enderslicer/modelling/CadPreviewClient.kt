@@ -150,9 +150,11 @@ class CadPreviewClient(
     /**
      * Moves the engine's camera, optionally picks, and renders one frame into [into].
      *
-     * @return the pick when [selectX]/[selectY] were given and the engine found something
-     *   under them; null otherwise. A failed frame is reported as null rather than by
-     *   throwing, so one bad frame does not take the screen down with it.
+     * @return the answer to a pick that was asked for - including "nothing there", which is an
+     *   answer the screen has a sentence for and cannot tell from a spinner if it is folded
+     *   into null. Null means no pick was asked for, or no frame came back; a failed frame is
+     *   reported that way rather than by throwing, so one bad frame does not take the screen
+     *   down with it.
      */
     fun view(
         into: File,
@@ -186,7 +188,6 @@ class CadPreviewClient(
         }
         val result = reply.optJSONObject("result") ?: return null
         val picked = result.optJSONObject("picked") ?: return null
-        if (picked.optString("kind") == "none") return null
         val normal = picked.optJSONArray("normal")?.let { array ->
             List(array.length()) { array.optDouble(it) }
         }

@@ -274,30 +274,36 @@ def main():
         deadline = time.time() + 5.0
         while harness.server.running and time.time() < deadline:
             time.sleep(0.01)
-        try:
-            harness.listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
-            still_open = True
-        except OSError:
-            still_open = False
-        # The listener is released by the accept loop, which wakes on its own 1 s
-        # timeout: close() from another thread does not free the port on Linux until
-        # that accept returns. Bounded retry, not an instant demand.
+        # The listener is released by the accept loop, which wakes on its own 1 s timeout:
+        # close() from another thread does not free the port on Linux until that accept
+        # returns. Both halves are therefore waited for inside one deadline rather than
+        # sampled - checking either the instant the shutdown is acknowledged is what made
+        # this fail on a loaded CI runner while the shutdown itself was fine.
+        closed = False
         rebound = False
-        deadline = time.time() + 5.0
-        while time.time() < deadline and not rebound:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                probe.bind(("127.0.0.1", harness.port))
-                probe.listen(1)
-                rebound = True
-            except OSError:
-                time.sleep(0.1)
-            finally:
-                probe.close()
+        deadline = time.time() + 10.0
+        while time.time() < deadline and not (closed and rebound):
+            if not closed:
+                try:
+                    harness.listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+                except OSError:
+                    closed = True
+            if not rebound:
+                probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(("127.0.0.1", harness.port))
+                    probe.listen(1)
+                    rebound = True
+                except OSError:
+                    pass
+                finally:
+                    probe.close()
+            time.sleep(0.1)
         check(
-            not still_open and rebound,
-            "a shutdown closes the listening socket and frees the port",
+            closed and rebound,
+            "a shutdown closes the listening socket and frees the port"
+            + ("" if (closed and rebound) else " (closed=%s rebound=%s)" % (closed, rebound)),
         )
     finally:
         harness.close()
