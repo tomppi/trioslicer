@@ -37,7 +37,7 @@ DOWNLOAD_DIR="$ROOT/.build/cad-payload-download"
 
 # The payload is imported by the app, so its digest is pinned: a deliberate re-pin sets
 # CAD_PAYLOAD_SHA256 to the digest of the new asset.
-CAD_PAYLOAD_SHA256_PINNED="98bc0f29fa8e53039408dc55d84dcf45aadcb652ce615546ffadd88f6a173016"
+CAD_PAYLOAD_SHA256_PINNED="9b4cadc3e92e61cf2aefbc629900896a2bcc848824f9f0900e7f8e358bd901dd"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
