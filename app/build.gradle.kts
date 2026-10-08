@@ -138,7 +138,15 @@ android {
             // trimBlenderEngine task removes those sections in place - the dynamic
             // and JNI symbols the app enters through are untouched - and AGP must
             // not strip anything else from it.
-            keepDebugSymbols += setOf("**/libblender_exec.so")
+            keepDebugSymbols += setOf(
+                "**/libblender_exec.so",
+                // The C++ runtime must not be stripped. AGP strips prebuilt .so files, and
+                // stripping this one removed 145 dynamic symbols - among them the vtable for
+                // std::ostringstream, which OCP needs. The release build then failed every CAD
+                // command with "cannot locate symbol _ZTVNSt6__ndk119basic_ostringstream..."
+                // while the debug build, whose copy kept its symbols, worked.
+                "**/libc++_shared.so",
+            )
         }
     }
 }
