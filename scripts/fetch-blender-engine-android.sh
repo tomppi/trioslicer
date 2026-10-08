@@ -45,48 +45,6 @@ sha256_of () {  # $1 = file
   fi
 }
 
-# The NDK keeps the complete C++ runtime; the Blender payload does not. Put the complete
-# one back and strip only what is safe to strip.
-restore_cxx_runtime() {
-  local target="${JNI}/libc++_shared.so"
-  [ -f "${target}" ] || return 0
-
-  # CI keeps the NDK at ANDROID_NDK_HOME; a workstation usually has it under
-  # ANDROID_HOME/ndk. Look in both, then the historic default.
-  local src=""
-  local root
-  for root in "${ANDROID_NDK_HOME:-}" "${ANDROID_HOME:-}/ndk" /opt/android-sdk/ndk; do
-    [ -n "${root}" ] || continue
-    [ -d "${root}" ] || continue
-    src="$(ls -1 "${root}"/*/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so 2>/dev/null | tail -1)"
-    [ -n "${src}" ] && break
-  done
-  if [ -z "${src}" ] || [ ! -f "${src}" ]; then
-    echo "WARNING: no NDK libc++_shared.so found; leaving the staged one alone" >&2
-    return 0
-  fi
-
-  cp -f "${src}" "${target}"
-
-  # --strip-unneeded keeps the dynamic symbol table. --strip-all is what removed the
-  # vtables in the first place, so it is not used here.
-  local strip_tool=""
-  for root in "${ANDROID_NDK_HOME:-}" "${ANDROID_HOME:-}/ndk" /opt/android-sdk/ndk; do
-    [ -n "${root}" ] || continue
-    [ -d "${root}" ] || continue
-    strip_tool="$(ls -1 "${root}"/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip 2>/dev/null | tail -1)"
-    [ -n "${strip_tool}" ] && break
-  done
-  if [ -n "${strip_tool}" ]; then
-    "${strip_tool}" --strip-unneeded "${target}" || true
-  else
-    echo "WARNING: no llvm-strip found; the restored runtime is unstripped" >&2
-  fi
-
-  echo "restored libc++_shared.so from the NDK ($(stat -c%s "${target}") bytes)"
-  return 0
-}
-
 stage() {
   local dir="$1"
   [ -d "$dir" ] || { echo "no such directory: $dir" >&2; exit 1; }
@@ -117,7 +75,6 @@ stage() {
   fi
   if [ -z "${libs_src}" ]; then
     echo "no engine runtime libraries: neither ${dir}/jniLibs nor native/blender/blender-jniLibs exists" >&2
-
     exit 1
   fi
   local libs_count=0
@@ -127,13 +84,6 @@ stage() {
     libs_count=$((libs_count + 1))
   done
   echo "staged ${libs_count} engine runtime libraries"
-
-  # The payload ships a libc++_shared.so stripped of dynamic symbols - 2195 against
-  # the NDK's 2340. Among the 145 that go is the vtable for std::ostringstream,
-  # which OCP needs, so every release build failed its CAD engine with "cannot
-  # locate symbol _ZTVNSt6__ndk119basic_ostringstream..." while the debug build,
-  # whose jniLibs already held an intact copy, worked. Put the complete one back.
-  restore_cxx_runtime
 
   for part in python scripts; do
     [ -d "${dir}/${part}" ] && cp -R "${dir}/${part}" "${ASSETS}/"

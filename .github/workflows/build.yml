@@ -330,6 +330,20 @@ jobs:
           PY
           python3 scripts/test-blender-mcp-slim.py
 
+      # The Blender package ships a libc++_shared.so stripped of dynamic symbols, and
+      # staging it over the good copy is what broke every release build's CAD engine.
+      # The fetch step above checks the file is there by name; this one puts the
+      # complete runtime back and refuses to continue if it still lacks the symbol OCP
+      # needs. Kept out of the fetch script on purpose - folding it in there broke that
+      # script's asset staging, twice.
+      - name: Restore the complete C++ runtime
+        run: |
+          set -euo pipefail
+          chmod +x scripts/restore-cxx-runtime.sh
+          scripts/restore-cxx-runtime.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+      
       - name: Fetch and validate the Klipper host payload
         run: |
           chmod +x scripts/fetch-klipper-android.sh
@@ -535,7 +549,11 @@ jobs:
           unzip -o -j "$APK" lib/arm64-v8a/libc++_shared.so -d cxx-runtime >/dev/null
           NM=$(ls -1 "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm 2>/dev/null | tail -1)
           SYM=_ZTVNSt6__ndk119basic_ostringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE
-          "$NM" -D --defined-only cxx-runtime/libc++_shared.so | grep -q "$SYM" \
+          # Into a file, not a pipe: this step runs under set -o pipefail, and
+          # grep -q exits at the first match, so nm takes SIGPIPE and the pipeline
+          # reports failure for a symbol that is present.
+          "$NM" -D --defined-only cxx-runtime/libc++_shared.so > cxx-symbols.txt 2>/dev/null || true
+          grep -q "$SYM" cxx-symbols.txt \
             || { echo "::error::libc++_shared.so has been stripped of the vtable OCP needs" >&2; exit 1; }
           echo "the C++ runtime still carries $SYM"
           grep -q 'assets/klipper/klippy/klippy.py' apk-contents.log
