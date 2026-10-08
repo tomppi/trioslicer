@@ -560,6 +560,68 @@ def _write_obj(shape, path, tolerance=0.1):
             handle.write("f %d %d %d\n" % (a, b, c))
     return len(points), len(triangles)
 
+def _describe_at(shape, x, y, z):
+    """Which face, edge or vertex of the exact shape is at a point from the mesh.
+
+    The viewer picks triangles and a triangle approximates the surface the engine actually
+    holds. Answering with the triangle would answer about the mesh; this asks the exact
+    geometry instead, so "this face" means the B-rep face that gets filleted.
+    """
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX
+
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(x), float(y), float(z))).Vertex()
+    wrapped = shape.wrapped if hasattr(shape, 'wrapped') else shape
+    # The class has no two-shape constructor and no Perform - it is created empty, given
+    # its shapes, and run with PerformDist, which is one of the bindings added by hand.
+    probe = BRepExtrema_DistShapeShape()
+    probe.LoadS1(vertex)
+    probe.LoadS2(wrapped)
+    probe.PerformDist()
+    if not probe.IsDone():
+        raise RuntimeError("could not measure the shape from that point")
+    distance = probe.Value()
+
+    # SupportOnShape2 gives the entity, and its ShapeType is a TopAbs_ShapeEnum. The
+    # SupportTypeShape2 beside it is a BRepExtrema_SupportType - a different enum that
+    # says how the solution touches the shape, not what kind of shape it is.
+    sub = probe.SupportOnShape2(1)
+    kind = sub.ShapeType()
+    if kind == TopAbs_FACE:
+        label, pool = "face", list(shape.faces())
+    elif kind == TopAbs_EDGE:
+        label, pool = "edge", list(shape.edges())
+    elif kind == TopAbs_VERTEX:
+        label, pool = "vertex", list(shape.vertices())
+    else:
+        return {"kind": "none", "distance_mm": round(distance, 6)}
+
+    index = None
+    for position, candidate in enumerate(pool):
+        inner = candidate.wrapped if hasattr(candidate, 'wrapped') else candidate
+        if inner.IsSame(sub):
+            index = position
+            break
+
+    info = {"kind": label, "index": index, "distance_mm": round(distance, 6)}
+    # A face reports how it is oriented and how big it is, because that is what decides
+    # whether it can be built on, drilled into, or needs support under it.
+    if label == "face" and index is not None:
+        try:
+            face = pool[index]
+            normal = face.normal_at()
+            if isinstance(normal, (list, tuple)):
+                normal = normal[0]
+            info["normal"] = [round(normal.X, 4), round(normal.Y, 4), round(normal.Z, 4)]
+            info["area_mm2"] = round(face.area, 4)
+            centre = face.center()
+            info["centre"] = [round(centre.X, 4), round(centre.Y, 4), round(centre.Z, 4)]
+        except Exception:
+            pass
+    return info
+
 class CadMCPServer:
     def __init__(self, host='localhost', port=DEFAULT_PORT, token=None,
                  status_path=None):
@@ -831,6 +893,7 @@ class CadMCPServer:
             "export_step": self.export_step,
             "export_stl": self.export_stl,
             "export_mesh": self.export_mesh,
+            "describe_at": self.describe_at,
             "analyze": self.analyze,
             "section": self.section,
             "import_file": self.import_file,
@@ -965,6 +1028,26 @@ class CadMCPServer:
             raise ValueError("cannot export %r; supported: %s" % (extension, ", ".join(sorted(writers))))
         written = _publish(filepath, writer)
         return {"filepath": filepath, "bytes": written, "shapes": label, "format": extension}
+
+    def describe_at(self, x, y, z, name=""):
+        """What the user clicked on, in the engine's own terms.
+
+        The app's viewer picks a triangle; this answers with the exact face, edge or vertex
+        nearest that point, its index, and - for a face - its normal and area. It is what
+        turns "this one here" into something the next command can act on.
+        """
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        info = _describe_at(shape, x, y, z)
+        info["shapes"] = label
+        info["picked_at"] = [round(float(v), 4) for v in (x, y, z)]
+        # A click that lands nowhere near the part is a mis-tap or a stale view, and saying
+        # so beats naming the nearest face of a model that has since changed.
+        if info["distance_mm"] > 1.0:
+            info["warning"] = ("the nearest geometry is %.2f mm away; the model may have "
+                               "changed since the view was drawn" % info["distance_mm"])
+        return info
 
     def analyze(self, name="", nozzle=0.4, layer=0.2, overhang_deg=45.0,
                 bed_x=None, bed_y=None, bed_z=None, samples=14):
