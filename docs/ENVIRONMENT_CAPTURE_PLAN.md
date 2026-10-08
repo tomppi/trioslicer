@@ -67,14 +67,15 @@ eyeball. A ruler works too, and is friendlier to explain to someone standing at 
 would measure its 100 mm span in the cloud and divide. The marker is repeatable, the ruler is
 improvised - both beat "I'll guess".
 
-### 2. Accuracy, which will not be what a jig needs
+### 2. Accuracy, which will not be what a fit needs
 
-A jig that clips onto a rail needs tenths of a millimetre where it touches. A phone video
-reconstruction will be around a millimetre at best, and worse on shiny, dark or repetitive
-surfaces - which is what rails, extrusions and dowel holes are. This is the fact that should shape
-the whole design:
+The linear rail is one example of the job; the shape of the problem is *any part that has to fit
+something real*. Where a jig touches that something, it needs tenths of a millimetre. A phone video
+reconstruction will be around a millimetre at best, and worse on shiny, dark or repetitive surfaces
+- which is what rails, extrusions and dowel holes are. This is the fact that should shape the whole
+design:
 
-- **The environment is context, not a datum.** It answers "where is the rail, which way does it
+- **The environment is context, not a datum.** It answers "where is the thing, which way does it
   run, what is in the way, how much room is there".
 - **Fits come from the user's calipers**, or from a close-range capture at a known scale. The
   agent must be told which dimensions it may take from the cloud and which it must ask for.
@@ -97,14 +98,28 @@ budgets, deliberately different:
 
 ## Open decisions
 
-1. **Licence.** HunyuanWorld-Mirror's `Territory` is "the worldwide territory, excluding the
-   territory of the European Union, United Kingdom and South Korea" - a grant "for the Territory
-   only". The same clause is in Hunyuan3D-2, which the existing image-to-3D pipeline already runs,
-   so this is not new exposure, but it does apply. Options, all defensible:
-   - proceed as-is, unchanged from today's practice;
-   - a photogrammetry route (COLMAP + OpenMVS: BSD + AGPL) with the same scale-marker step;
-   - a metric-geometry route (monocular metric depth + fusion) - EU-safe licences exist and I can
-     shortlist and check them if you want this path.
+1. **Licence.** Not open source: one custom agreement, the Tencent HunyuanWorld-Mirror Community
+   License, whose first line says the agreement "does not apply in the European Union, United
+   Kingdom and South Korea" and whose grant is "for the Territory only", Territory being the world
+   minus those three. The clause is identical in Hunyuan3D-2, which the image-to-3D pipeline
+   already runs, so the environment pipeline adds nothing new in kind.
+
+   **What "excluded" means, precisely.** It is a carve-out from the *grant*, not from the
+   *restrictions*: a licence is the thing that gives permission, so outside the Territory there is
+   no permission rather than unlimited permission. "The agreement does not apply to me" is not a
+   defence for using the work - it means there is no licence at all, and the default is copyright.
+   Nothing enforces this against a hobbyist running a model on their own bench, and the weights are
+   not gated (no click-through, so nobody has accepted anything either); but that is a
+   risk-tolerance judgement, not a permission, and only Tencent can grant rights in the EU.
+
+   Worth separating the two exposures: **the app does not ship Hunyuan** and never has (the
+   repository mentions it only in docs), so nothing distributed is affected. What is affected is
+   running it on the box. The options:
+   - keep it as a local bench tool, as the image pipeline does today - no redistribution, no
+     hosting, and the outputs are explicitly not Model Derivatives;
+   - photogrammetry (COLMAP + OpenMVS: BSD-3 + AGPL-3), same scale-marker step, weaker on
+     textureless and shiny surfaces;
+   - a permissive metric-geometry model - **licences to be checked one by one**, not assumed.
 2. **Scale reference**: printed marker (recommended) or ruler.
 3. **Capture**: video (`fps=1`, recommended - one pass around the job) or stills.
 4. **The accuracy contract**: confirm the split above, or decide to invest in close-range captures
