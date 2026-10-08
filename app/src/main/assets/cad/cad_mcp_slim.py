@@ -1227,7 +1227,16 @@ class CadMCPServer:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's
                 # drag-scaled deltas would always be. OCCT pans by whole pixels in any case.
-                viewport.Pan(int(round(pan_dx)), int(round(pan_dy)))
+                #
+                # The y is negated. Pan works in the window's coordinates, which grow up from
+                # the bottom-left corner; a delta from a finger grows down the screen. Measured
+                # on the phone, before this: Pan(+100, 0) moved the part +102 px right (right,
+                # it should), and Pan(0, +100) moved it 99 px *up* - the part travelling against
+                # the hand on one axis and with it on the other, which is exactly how it was
+                # reported. The arcball above needs no such flip: Rotation() reads y the way the
+                # finger sends it, and a downward drag tips the model to show more of its top,
+                # which is what grabbing the front and pulling it down should do.
+                viewport.Pan(int(round(pan_dx)), -int(round(pan_dy)))
             if zoom != 1.0:
                 viewport.SetZoom(float(zoom), True)
             viewport.Redraw()
