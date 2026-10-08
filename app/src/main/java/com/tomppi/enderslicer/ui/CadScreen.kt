@@ -92,9 +92,10 @@ fun CadScreen(
     modifier: Modifier = Modifier,
 ) {
     var chatExpanded by rememberSaveable { mutableStateOf(true) }
-    // Open on the mesh when there is one. It is the part itself and the user can turn it;
-    // the picture is the engine choosing an angle for them.
-    var showModel by rememberSaveable { mutableStateOf(true) }
+    // Open on the engine's own render. It is the exact geometry rather than a mesh, it
+    // is the picture the agent is looking at too, and it is the only one of the two that
+    // can show a highlight. The mesh is one tap away when the part is worth turning.
+    var showModel by rememberSaveable { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         Surface(tonalElevation = 3.dp) {
@@ -125,7 +126,7 @@ fun CadScreen(
                         Text(if (picking) "Picking" else "Pick a surface")
                     }
                     TextButton(onClick = { showModel = !showModel }) {
-                        Text(if (showModel) "Picture" else "Turn it")
+                        Text(if (showModel) "Render" else "Turn it")
                     }
                 }
                 TextButton(onClick = { chatExpanded = !chatExpanded }) {
