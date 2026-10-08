@@ -135,6 +135,33 @@ signature, which `keytool -printcert -jarfile` cannot read):
 
     Signer #1 certificate SHA-256 digest: e4d88ac927ecb945e256e783ae431254785fd110fa9c78559f89d832128ea5d7
 
+## Working locally
+
+A change is built, installed and tried locally. CI is for the release, not for each iteration: a
+run takes twenty minutes, and what it produces is the same APK this produces in two.
+
+    scripts/local-release.sh --install
+
+That builds `:app:assembleRelease`, checks the APK against the certificate digest pinned above,
+and installs it with `adb install -r`. Because the key is the release key the install goes *over* a
+released build and keeps the app's data - there is nothing to uninstall, and nothing to re-enter.
+
+A payload change is the one thing with two halves: the tree under `app/src/main/assets/cad` is
+staged, built and tried locally like anything else, and only the release step publishes the asset
+and pins its digest - see [CAD_PAYLOAD_ANDROID.md](CAD_PAYLOAD_ANDROID.md).
+
+**Cutting the release** is deliberate, and it is done from the machine that built and tried the
+APK. The workflow uploads its artifact but has `contents: read`, so it cannot publish a release;
+the APKs on the releases page are attached by hand:
+
+    git push origin main
+    cp app/build/outputs/apk/release/app-release.apk TrioSlicer-1.8.4.apk
+    gh release create v1.8.4 --title 'TrioSlicer 1.8.4' --notes-file notes.md TrioSlicer-1.8.4.apk
+
+The version in `app/build.gradle.kts` and the tag move together, and `versionCode` always moves
+up: that is what lets an install tell two builds apart, and what stops a release from being
+overwritten by an older one.
+
 ## Platform notes
 
 **Since 1.3.0 this is a Linux project.** It is developed on Debian 13 against this checkout: `main` is
