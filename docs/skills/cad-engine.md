@@ -436,11 +436,28 @@ since you counted faces.
 
 ### Two things that are not there yet
 
-**`build123d.Text` returns an empty shape.** The font resolves and the glyph pipeline is
-bound, but no geometry comes out. Do not use text; there is no error to catch.
+**glTF export does not work, and `export_mesh` says so.** OCCT's `RWGltf_CafWriter`
+returns False and writes nothing on this platform - the binding is now present, the writer
+itself fails. `export_mesh` raises "the exporter reported failure" rather than reporting a
+file that was never created. **Use BREP, STL, STEP or OBJ.**
 
-**glTF and OBJ export raise.** `RWGltf_CafWriter` has no constructor and
-`Poly_Triangulation.MapNodeArray` is absent. Use STEP, STL or BREP.
+**`build123d.Text` returns an empty compound.** The glyph pipeline underneath it *works* -
+`StdPrs_BRepTextBuilder.Perform` with a `StdPrs_BRepFont` returns real geometry, and this
+was verified by rendering an H and measuring the result - so the gap is in build123d's own
+wrapping, not in the bindings. Constructing `FontManager()` first is required: the bundled
+fonts are registered lazily, and until then `FindFont("singleline")` returns None.
+
+### Exporting a mesh yourself
+
+`Poly_Triangulation` has `Node`, `Triangle`, `Normal`, `UVNode` and (now)
+`MapNodeArray`; `BRep_Tool.Triangulation_s` reads a face's triangulation. `export_mesh`
+writes OBJ through those directly - `build123d.export_obj` needs
+`Poly_Triangulation.ComputeNormals`, which is not bound.
+
+**Read the face location with the triangulation.** A face's triangles are stored in that
+face's own frame; skipping `TopLoc_Location.Transformation()` puts them where the part is
+not. And reverse the winding on a face whose orientation is `TopAbs_REVERSED`, or a viewer
+that trusts the winding lights it inside out.
 
 ### If you need to bind something yourself
 

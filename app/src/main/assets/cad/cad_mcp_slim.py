@@ -231,9 +231,20 @@ def _publish(path, write):
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
-    temp = path + ".part"
+    # The temporary keeps the extension, with the marker before it rather than after.
+    # Exports that dispatch on the file extension - glTF is one - write nothing when
+    # handed "model.gltf.part", and the rename is still atomic either way.
+    root, extension = os.path.splitext(path)
+    temp = root + "-part" + extension
     try:
-        write(temp)
+        result = write(temp)
+        # An exporter that returns False, or writes nothing, must not look like success.
+        # OCCT's glTF writer does exactly that on this platform, and reporting it as a
+        # written file sends the agent looking for one that was never created.
+        if result is False:
+            raise RuntimeError("the exporter reported failure")
+        if not os.path.exists(temp) or os.path.getsize(temp) == 0:
+            raise RuntimeError("the exporter wrote nothing")
         os.replace(temp, path)
     except BaseException:
         try:
@@ -486,6 +497,68 @@ def _overhangs(shape, threshold_deg=45.0, bed_z=None):
     return {"count": len(faces), "area": round(sum(f["area"] for f in faces), 4),
             "fraction_of_surface": round((sum(f["area"] for f in faces) / total) if total else 0.0, 4),
             "largest": faces[:8]}
+
+
+def _triangulate(shape, tolerance=0.1):
+    """Mesh the shape and yield (points, triangles) in world coordinates.
+
+    Every face is meshed and transformed by its own location, because a face triangulation
+    is stored in the face's local frame - reading it without the location puts the triangles
+    somewhere the part is not.
+    """
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRep import BRep_Tool
+    from OCP.TopoDS import TopoDS
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.gp import gp_Pnt
+
+    wrapped = shape.wrapped if hasattr(shape, 'wrapped') else shape
+    BRepMesh_IncrementalMesh(wrapped, float(tolerance))
+
+    points = []
+    triangles = []
+    explorer = TopExp_Explorer(wrapped, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face(explorer.Current())
+        location = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face, location)
+        if tri is not None:
+            trsf = location.Transformation()
+            base = len(points)
+            nodes = tri.MapNodeArray()
+            for i in range(1, nodes.Length() + 1):
+                p = nodes.Value(i).Transformed(trsf)
+                points.append((p.X(), p.Y(), p.Z()))
+            reversed_face = face.Orientation() == TopAbs_REVERSED
+            for i in range(1, tri.NbTriangles() + 1):
+                a, b, c = tri.Triangle(i).Get()
+                # Winding matters: a face whose orientation is reversed faces the other way,
+                # and a viewer that trusts the winding will light it wrong.
+                if reversed_face:
+                    b, c = c, b
+                triangles.append((base + a, base + b, base + c))
+        explorer.Next()
+    return points, triangles
+
+
+def _write_obj(shape, path, tolerance=0.1):
+    """Write a Wavefront OBJ. build123d has an exporter but it needs ComputeNormals, which
+    this binding does not have - and the triangles are readable without it, so writing them
+    out directly is shorter than another rebuild.
+    """
+    points, triangles = _triangulate(shape, tolerance)
+    if not points:
+        raise RuntimeError("nothing to export: the shape produced no triangles")
+    # OBJ indices are 1-based and per-file, which is why the triangulation carries an offset.
+    with open(path, "w") as handle:
+        handle.write("# TrioSlicer CAD engine\n")
+        for x, y, z in points:
+            handle.write("v %.6f %.6f %.6f\n" % (x, y, z))
+        for a, b, c in triangles:
+            handle.write("f %d %d %d\n" % (a, b, c))
+    return len(points), len(triangles)
 
 class CadMCPServer:
     def __init__(self, host='localhost', port=DEFAULT_PORT, token=None,
@@ -883,7 +956,9 @@ class CadMCPServer:
             ".brep": lambda temp: b3d.export_brep(shape, temp),
             ".gltf": lambda temp: b3d.export_gltf(shape, temp),
             ".glb": lambda temp: b3d.export_gltf(shape, temp),
-            ".obj": lambda temp: b3d.export_obj(shape, temp),
+            # Not the build123d exporter: it needs Poly_Triangulation.ComputeNormals,
+            # which this binding does not have. The triangles are readable without it.
+            ".obj": lambda temp: _write_obj(shape, temp),
         }
         writer = writers.get(extension)
         if writer is None:
