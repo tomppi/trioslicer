@@ -219,6 +219,47 @@ Three things that test taught, each of which was wrong first:
 Still open on M1: a **real capture** — 4-6 images of something with a known-size reference in
 frame — to see what the *reconstruction's* error actually is, as opposed to the tool's arithmetic.
 
+## M2: the environment in the app (verified on a device)
+
+Driven end to end on the development phone with a real WorldMirror reconstruction (the repo's
+`Workspace` example, 4 views at 448 px), scaled by a declared 600 mm reference and meshed to
+250k triangles:
+
+    files/cad/env/workspace-env.stl     12.5 MB, delivered with adb and chowned to the app
+    import_file  unit=mm name=env       -> success in 0.2 s
+    bbox                                343.6 x 430.4 x 206.5 mm   (the JSON said 334.8 x 434.2 x 202.2)
+    view 1080x610                       -> 0.17-0.28 s a frame, against 0.09-0.16 for a simple part
+
+The screen shows the room: floor, two walls, the desk. The agent asked the engine for the bounding
+box over the same socket in 0.02 s. That is "see it and measure it" - the geometry arrives at the
+right size, in the frame the CAD engine works in, and can be queried without a render.
+
+Five things this run found, four of which are now written into the tool or the plan:
+
+1. **The up-detection was wrong, and only real data could show it.** The tool decided which way was
+   up from the sign of the fitted normal's z in the *raw* frame - which means nothing, because a
+   reconstruction's axes are arbitrary. The synthetic test passed only because its tilt happened to
+   keep z up; the real cloud came back **hanging upside down below its own bench** (z from -204 to
+   +1.76 mm). Up is now decided by where the points are: the bench has things standing on it, so it
+   is the side the bulk of the cloud is on (z from -2.25 to +204.28 afterwards). The ground-truth
+   test still passes, at the same 1.35 mm.
+2. **Environments must not be dropped in `files/cad/exports`.** The app watches that directory and
+   `onExport` imports every `.stl` it sees onto the plate - so an environment left there becomes
+   the *printable model*. They go to `files/cad/env/` instead, which nothing watches.
+3. **A differently-sized shape needs a view reset.** `import_file` does not fit the camera; the
+   first render of the environment was a 6.5 KB picture of a corner of it, because the camera still
+   belonged to the previous part. The app's own import path calls `reset()`; an agent driving the
+   socket has to ask.
+4. **Poisson makes a blobby closed shell.** Fine as context, wrong as a datum - the same conclusion
+   the accuracy section reached from the other direction, now with a picture.
+5. **250k triangles cost about double a frame.** Usable, and the dial is the decimation budget.
+
+Still open on M2: a **measurement** facility. Today the agent can ask for a bounding box and pick
+points; it cannot ask "how far is this face from the environment?", which is the question a jig
+design actually turns on. The full-resolution cloud is kept beside the mesh (`environment.ply`) for
+exactly that, and answering it wants a small command in the engine - a KD-tree built once and
+queried per call - rather than the agent reading a render.
+
 ## Milestones
 
 | | what | done when |
