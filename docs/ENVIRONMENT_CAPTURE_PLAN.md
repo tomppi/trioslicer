@@ -1,5 +1,14 @@
 # Capturing the workshop: an environment for the CAD agent to model in
 
+> **Status: on hold (2026-10-08).** Parked by the user. The pipeline works end to end - capture,
+> reconstruct on the box, scale, align, mesh, deliver, measure - but the accuracy a phone capture
+> reaches on the box's 8 GB card is context, not metrology: 8 mm sampling at room range, ~2 mm at
+> close range, and a scale that could not be established from a 20 mm reference at any range tried.
+> The job it was meant to serve is better served by the image-to-3D route measured at the end of
+> this document: **photo square-on + one caliper dimension -> generated object -> the agent models
+> the jig around it, with fits from the numbers.** Nothing here is shipped in the app; the only
+> app-side change is the `clearance` command in the CAD engine, and it is local-only.
+
 A plan, not a description of anything that exists yet. Written after reading the model's own
 repository, its licence and its output format, and against what this project already has.
 
