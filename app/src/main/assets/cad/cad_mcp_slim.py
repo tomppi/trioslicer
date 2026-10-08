@@ -1224,7 +1224,10 @@ class CadMCPServer:
                 self._orbit_cursor[1] += int(orbit_dy)
                 viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
             if pan_dx or pan_dy:
-                viewport.Pan(float(pan_dx), float(pan_dy))
+                # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
+                # refuses a float with "incompatible function arguments" - which the app's
+                # drag-scaled deltas would always be. OCCT pans by whole pixels in any case.
+                viewport.Pan(int(round(pan_dx)), int(round(pan_dy)))
             if zoom != 1.0:
                 viewport.SetZoom(float(zoom), True)
             viewport.Redraw()

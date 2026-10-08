@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.Closeable
+import kotlin.math.roundToInt
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -113,10 +114,18 @@ class CadViewport(
     private val height = AtomicInteger(0)
     private var pump: Job? = null
 
-    /** The size the frame should be rendered at. Picked up on the next frame. */
+    /** The size the frame should be rendered at. */
     fun setViewSize(w: Int, h: Int) {
-        width.set(w.coerceAtLeast(1))
-        height.set(h.coerceAtLeast(1))
+        val wasWidth = width.getAndSet(w.coerceAtLeast(1))
+        val wasHeight = height.getAndSet(h.coerceAtLeast(1))
+        // A size is not "picked up on the next frame" unless there is one. The first frame is
+        // requested when the viewport starts, which is before the view has been measured, so it
+        // is rendered at the engine's own default and then left there until the first tap or
+        // drag - the view opens low-resolution and letterboxed because of it. The size becoming
+        // known is itself a reason to draw.
+        if (pump != null && (wasWidth != width.get() || wasHeight != height.get())) {
+            pending.trySend(ViewRequest())
+        }
     }
 
     fun start() {
@@ -170,16 +179,46 @@ class CadViewport(
         // dragging. A tap cannot happen mid-drag, so a small frame never has to be mapped
         // back to view coordinates: when the finger stops, the settle frame below re-renders
         // at full size and picking is pixel-exact again.
-        val dragging = deltas.hasMotion
-        val renderWidth = if (dragging) minOf(width.get(), DRAG_MAX) else width.get()
-        val renderHeight = if (dragging) minOf(height.get(), DRAG_MAX) else height.get()
+        //
+        // The cap is on the longest side, and the deltas are scaled by the same factor. Both
+        // halves are load-bearing:
+        //
+        //  * Capping each side at DRAG_MAX turns 1812x1700 into 640x640 - a different aspect,
+        //    which the engine honours (ToPixMap adjusts the view to the dump size by default).
+        //    The frame is drawn with ContentScale.Fit, so the picture shrinks into a square in
+        //    the middle of the view while the finger moves, and comes back on the settle frame.
+        //  * The arcball turns about the *smaller* viewport dimension. Measured on the phone:
+        //    a 100-pixel drag is 9.9 degrees at 1812x1700, 16.7 at 1080x1900 and 28.1 at
+        //    640x640. Deltas measured on the display, applied to a drag-sized render, therefore
+        //    turn the model min(display) / min(render) further than the same drag at rest -
+        //    1.7x on the phone this was measured on, more on a larger view. That is what "the
+        //    drag is far too sensitive" was, and it is not a taste setting: the gesture has to
+        //    be the same one at every render size.
+        //
+        // A tap wins over a drag that shares its drain window: the engine picks at the size it
+        // rendered, and the coordinates the app sends are display pixels.
+        val dragging = deltas.hasMotion && request.selectX == null
+        val displayWidth = width.get()
+        val displayHeight = height.get()
+        val dragScale = if (dragging) {
+            minOf(1f, DRAG_MAX.toFloat() / maxOf(1, maxOf(displayWidth, displayHeight)).toFloat())
+        } else {
+            1f
+        }
+        // A size of 0 means the view has not been laid out yet, and is passed on as 0: the
+        // engine reads that as "no size given" and renders its own default, where 1 would be
+        // a one-pixel frame.
+        val renderWidth = if (dragging) (displayWidth * dragScale).roundToInt() else displayWidth
+        val renderHeight = if (dragging) (displayHeight * dragScale).roundToInt() else displayHeight
 
         val picked = client.view(
             into = frameFile,
-            orbitDx = deltas.orbitDx,
-            orbitDy = deltas.orbitDy,
-            panDx = deltas.panDx,
-            panDy = deltas.panDy,
+            // Scaled with the render: a delta is a distance on the display, and what the
+            // engine turns and pans is a distance in the frame it just rendered.
+            orbitDx = deltas.orbitDx * dragScale,
+            orbitDy = deltas.orbitDy * dragScale,
+            panDx = deltas.panDx * dragScale,
+            panDy = deltas.panDy * dragScale,
             zoom = deltas.zoom,
             selectX = request.selectX,
             selectY = request.selectY,
