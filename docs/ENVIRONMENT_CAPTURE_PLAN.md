@@ -126,11 +126,57 @@ budgets, deliberately different:
    for tighter fits.
 5. **Wake the box** for M0: the wake is the reliable half of that skill, the resume is not.
 
+## M0: measured on the box (done)
+
+The box is an **RTX 3060 Ti with 8192 MiB**, 16 cores, 15 GB RAM, 173 GB free - and the model is
+2.5B parameters, 4.8 GB of weights. That is the whole story of this milestone: it runs, at a size
+the card can hold, and the ceiling is the card.
+
+Its own examples, its own settings, `target_size` as the dial:
+
+| scene | views | target_size | result | wall | peak VRAM |
+|---|---|---|---|---|---|
+| Workspace | 4 | 518 (default) | **OOM** | 18 s | 7101 MiB |
+| Workspace | 4 | 448 | ok | 15 s | 7825 MiB |
+| Workspace | 4 | 336 | ok | 29 s | 7547 MiB |
+| Snow | 6 | 336 | ok | 15 s | 7285 MiB |
+| Valley | 11 | 336 | **OOM** | 13 s | 7781 MiB |
+
+So on this card: **4-6 views at 336-448 px, in about fifteen seconds**, model load included.
+Eleven views does not fit at any size tried, and the default 518 px does not fit at all - the
+attention is over all patches of all views, so both dials cost memory, and views cost it fastest.
+
+What one run produces (`Workspace`, 4 views, 336):
+
+    pts_from_pointmap.ply   220,992 points      the geometry, in an arbitrary world frame
+    gaussians.ply            15 MB              for splat rendering
+    depth/ normal/           per-view maps
+    sparse/0/                a COLMAP reconstruction
+    rendered_rgb.mp4         a tour of the reconstruction
+
+Those point counts are the good news: 221k points at 336 px, 387k at 448 - hectares less than the
+million-point clouds this was feared to produce, and comfortable to mesh, decimate and deliver.
+
+Three things follow for the pipeline:
+
+1. **A capture must be small.** Either 4-6 chosen stills, or a video whose frames are sampled down
+   to that - which is fine, because the point cloud does not need every frame; it needs the views
+   to be far enough apart to be worth having.
+2. **Full quality needs more card.** 518 px and 11+ views is where this model wants to be, and it
+   is not reachable on 8 GB. A rented GPU, or a card with 24 GB, is the difference between "the
+   free demo quality" and "the paper's quality" - worth knowing before the accuracy discussion.
+3. **The scale problem is exactly as advertised**: the Workspace reconstruction's extent came out
+   0.79 x 0.60 x 1.00 - arbitrary units, no millimetres anywhere in it.
+
+Environment: `/home/tomppix/worldmirror` on the box - `venv` (python 3.10.22, torch 2.4.0+cu124,
+open3d 0.18.0, pycolmap 3.10.0, gsplat 1.5.3+pt24cu124), the repo clone, and `out/<scene>-<size>/`
+for each run. Weights are in the shared HF cache.
+
 ## Milestones
 
 | | what | done when |
 |---|---|---|
-| **M0** | Box recon: wake it, `nvidia-smi`, clone, new venv, run the repo's own example | VRAM, runtime and output files are known numbers, not guesses |
+| **M0** | Box recon and the model's own examples | **done** - the table above |
 | **M1** | A real capture of the rail with the marker, scaled and squared up on the harness | a 100 mm reference measures 100 mm in the delivered mesh, and the error is written down |
 | **M2** | Delivered to the phone, visible in the CAD viewport, agent measures a known dimension | the agent reports a dimension it did not get from the user, and it is right within the stated tolerance |
 | **M3** | The jig, end to end | a printed part that fits the rail |
