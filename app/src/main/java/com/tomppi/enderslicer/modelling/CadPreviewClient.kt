@@ -204,6 +204,36 @@ class CadPreviewClient(
         )
     }
 
+    /**
+     * Hands a file to the engine and returns the name it filed the shape under.
+     *
+     * The engine already imports STEP, BREP, STL, SVG and DXF; this is the app reaching that
+     * path, so a part can arrive from storage the way it arrives from the agent.
+     *
+     * Replaces the scene by default. Importing is how a part arrives, and a viewport with no
+     * outliner cannot show that a second part is now sitting inside the first.
+     *
+     * @return the shape name on success, or null when the engine refused - the reply carries
+     *   the reason, and a failed import should cost a message rather than the screen.
+     */
+    fun importFile(
+        file: File,
+        name: String = "",
+        unit: String = "mm",
+        replace: Boolean = true,
+    ): String? {
+        val params = JSONObject()
+            .put("filepath", file.absolutePath)
+            .put("name", name)
+            .put("unit", unit)
+            .put("replace", replace)
+        val reply = command("import_file", params, IMPORT_TIMEOUT_MS)
+        if (reply.optString("status") != "success") {
+            error(reply.optString("message").ifEmpty { "The CAD engine refused the import" })
+        }
+        return reply.optJSONObject("result")?.optString("shapes")?.takeIf { it.isNotEmpty() }
+    }
+
     /** Loads a frame the engine wrote. */
     fun readFrame(file: File): Bitmap? = runCatching {
         if (!file.isFile) null else BitmapFactory.decodeFile(file.absolutePath)
@@ -221,6 +251,8 @@ class CadPreviewClient(
         private const val CONNECT_TIMEOUT_MS = 5_000
         /** A frame is a render plus a PNG encode; measured at ~120 ms, so this is slack. */
         private const val READ_TIMEOUT_MS = 30_000
+        /** Parsing a STEP or a large STL: slower than a frame, still bounded. */
+        private const val IMPORT_TIMEOUT_MS = 120_000
         private const val MAX_REPLY_BYTES = 8 * 1024 * 1024
         private val JSON_WHITESPACE = setOf(
             ' '.code.toByte(), '\n'.code.toByte(),
