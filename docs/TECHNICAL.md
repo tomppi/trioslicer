@@ -150,13 +150,18 @@ A payload change is the one thing with two halves: the tree under `app/src/main/
 staged, built and tried locally like anything else, and only the release step publishes the asset
 and pins its digest - see [CAD_PAYLOAD_ANDROID.md](CAD_PAYLOAD_ANDROID.md).
 
-**Cutting the release** is deliberate, and it is done from the machine that built and tried the
-APK. The workflow uploads its artifact but has `contents: read`, so it cannot publish a release;
-the APKs on the releases page are attached by hand:
+**Cutting the release** is deliberate, and **the APK it carries is the one CI built** - the
+artifact on the run for the tag, not the local build. The local APK is for the phone in front of
+you; the released one should be the artifact the workflow produced and checked (all six engines
+present, signed with the release key, not debuggable), so that what is on the releases page can be
+traced to the tag it came from. The workflow uploads that artifact but has `contents: read`, so it
+cannot publish the release itself - that part is by hand:
 
-    git push origin main
-    cp app/build/outputs/apk/release/app-release.apk TrioSlicer-1.8.4.apk
-    gh release create v1.8.4 --title 'TrioSlicer 1.8.4' --notes-file notes.md TrioSlicer-1.8.4.apk
+    git tag v1.8.4 && git push origin v1.8.4        # CI builds and checks the artifact
+    gh run list --limit 5                           # the run whose ref is v1.8.4
+    gh run download <run-id> --name enderslicercura-apk --dir /tmp/ci-apk
+    gh release create v1.8.4 --verify-tag --title 'TrioSlicer 1.8.4' --notes-file notes.md \
+        /tmp/ci-apk/app-release.apk#TrioSlicer-1.8.4.apk
 
 The version in `app/build.gradle.kts` and the tag move together, and `versionCode` always moves
 up: that is what lets an install tell two builds apart, and what stops a release from being

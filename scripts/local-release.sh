@@ -90,9 +90,12 @@ fi
 
 echo
 echo "This APK carries the release signature, so it installs over a released build."
-echo "To cut the release, once this is the build that should ship:"
-echo "  git push origin main"
-echo "  cp \"$APK\" TrioSlicer-<version>.apk"
-echo "  gh release create v<version> --title 'TrioSlicer <version>' --notes-file <notes> TrioSlicer-<version>.apk"
+echo "It is for the phone in front of you. The release carries the artifact CI built, from the run"
+echo "for the tag - not this file - so that what is published can be traced to the tag:"
+echo "  git push origin main && git tag v<version> && git push origin v<version>"
+echo "  gh run list --limit 5                            # the run whose ref is v<version>"
+echo "  gh run download <run-id> --name enderslicercura-apk --dir /tmp/ci-apk"
+echo "  gh release create v<version> --verify-tag --title 'TrioSlicer <version>' \\"
+echo "      --notes-file <notes> /tmp/ci-apk/app-release.apk#TrioSlicer-<version>.apk"
 echo "A payload change also needs its asset published and its digest pinned first:"
 echo "  docs/CAD_PAYLOAD_ANDROID.md"
