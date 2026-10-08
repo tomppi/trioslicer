@@ -304,6 +304,7 @@ class _Renderer:
         except Exception:
             pass
         self.viewer.SetLightOn()
+        self.height = int(height)
         self.view = self.viewer.CreateView()
         self.window = Aspect_NeutralWindow()
         self.window.SetSize(width, height)
@@ -317,7 +318,7 @@ class _Renderer:
             self.window.SetSize(width, height)
             self.width, self.height = width, height
 
-    def render(self, shape, width, height, view, shaded, highlight=None):
+    def render(self, shape, width, height, view, shaded, highlight=None, fit=True):
         """Draw shape and return the view, ready for ToPixMap."""
         from OCP.AIS import AIS_Shape, AIS_Shaded, AIS_WireFrame
         from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
@@ -336,6 +337,7 @@ class _Renderer:
             attributes.SetEdgeColor(Quantity_Color(0.1, 0.1, 0.1, Quantity_TOC_RGB))
         except Exception:
             pass
+        self.presentation = presentation
         self.context.Display(presentation, False)
         self.context.SetDisplayMode(
             presentation, AIS_Shaded if shaded else AIS_WireFrame, False)
@@ -388,8 +390,12 @@ class _Renderer:
             # draw is worse than one that reports why, because the render still comes back
             # looking like a successful answer.
         direction = VIEW_DIRECTIONS.get(view, VIEW_DIRECTIONS["iso"])
-        self.view.SetProj(*direction)
-        self.view.FitAll(0.02)
+        # SetProj resets the orientation, which would undo an orbit the caller just made.
+        if fit:
+            self.view.SetProj(*direction)
+        # A viewport keeps its camera; a still is framed for the caller every time.
+        if fit:
+            self.view.FitAll(0.02)
         self.view.Redraw()
         return self.view
 
@@ -608,6 +614,102 @@ def _describe_at(shape, x, y, z):
     info = {"kind": label, "index": index, "distance_mm": round(distance, 6)}
     # A face reports how it is oriented and how big it is, because that is what decides
     # whether it can be built on, drilled into, or needs support under it.
+    if label == "face" and index is not None:
+        try:
+            face = pool[index]
+            normal = face.normal_at()
+            if isinstance(normal, (list, tuple)):
+                normal = normal[0]
+            info["normal"] = [round(normal.X, 4), round(normal.Y, 4), round(normal.Z, 4)]
+            info["area_mm2"] = round(face.area, 4)
+            centre = face.center()
+            info["centre"] = [round(centre.X, 4), round(centre.Y, 4), round(centre.Z, 4)]
+        except Exception:
+            pass
+    return info
+
+
+def _write_view(viewport, width, height, path):
+    """Write what the viewport is showing as a PNG.
+
+    Through a temporary PPM, because the pixel buffer cannot be read directly:
+    Image_PixMap.Data(), ChangeData() and Row() all return the same nonsense value (77)
+    rather than an address, so pywrap is not marshalling Standard_Address on this class.
+    A ctypes.string_at on that value segfaults the engine - which it did, and which is why
+    the engine stopped answering commands earlier.
+
+    The format is Image_Format_RGB with RowExtraBytes 0, so w*h*3 would be the right size
+    if Data() were usable. When the binding is fixed, the PPM round trip can go and save
+    67 ms of the roughly 133 ms a frame costs: render 2 ms, readback 116 ms, PNG 15 ms.
+    The readback is the real cost, and only rendering into a surface avoids it entirely.
+    """
+    import os
+    from OCP.Image import Image_AlienPixMap
+    from PIL import Image
+
+    pixmap = Image_AlienPixMap()
+    viewport.ToPixMap(pixmap, width, height)
+    ppm = path + ".ppm"
+    try:
+        if not pixmap.Save(ppm):
+            raise RuntimeError("OCCT could not write the viewport pixels")
+        Image.open(ppm).convert("RGB").save(path, format="PNG")
+    finally:
+        try:
+            os.remove(ppm)
+        except OSError:
+            pass
+
+
+def _pick_at(renderer, x, y, shape):
+    """Which face of the exact shape is under a screen point.
+
+    AIS picks against what it is displaying; the entity it names is then matched back to the
+    shape's own face list, so the answer is an index the other commands take. Detection is
+    enough - a tap does not need a persistent selection, only to know what was under it.
+    """
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX
+
+    context = renderer.context
+    # Activate face picking on the presentation. An AIS_Shape displays in mode 0, which
+    # detects the whole solid - so a tap reports a SOLID and no face is ever named. Mode 4
+    # is AIS_Shape's face mode. The overlay shapes for a highlight are deliberately left
+    # alone; only the part itself should be pickable.
+    presentation = getattr(renderer, 'presentation', None)
+    if presentation is not None:
+        try:
+            context.SetSelectionModeActive(presentation, 4, True)
+        except Exception:
+            try:
+                context.Activate(presentation, 4)
+            except Exception:
+                pass
+    # OCCT view coordinates start at the bottom left; a touch comes from the top left.
+    height = renderer.height
+    context.MoveTo(int(x), int(height) - int(y), renderer.view, True)
+    if not context.HasDetected():
+        return {"kind": "none", "x": int(x), "y": int(y)}
+
+    sub = context.DetectedShape()
+    kind = sub.ShapeType()
+    if kind == TopAbs_FACE:
+        label, pool = "face", list(shape.faces())
+    elif kind == TopAbs_EDGE:
+        label, pool = "edge", list(shape.edges())
+    elif kind == TopAbs_VERTEX:
+        label, pool = "vertex", list(shape.vertices())
+    else:
+        # A whole-shape hit is a real answer even when no face was named.
+        return {"kind": "shape", "x": int(x), "y": int(y)}
+
+    index = None
+    for position, candidate in enumerate(pool):
+        inner = candidate.wrapped if hasattr(candidate, 'wrapped') else candidate
+        if inner.IsSame(sub):
+            index = position
+            break
+
+    info = {"kind": label, "index": index, "x": int(x), "y": int(y)}
     if label == "face" and index is not None:
         try:
             face = pool[index]
@@ -894,6 +996,7 @@ class CadMCPServer:
             "export_stl": self.export_stl,
             "export_mesh": self.export_mesh,
             "describe_at": self.describe_at,
+            "view": self.view,
             "analyze": self.analyze,
             "section": self.section,
             "import_file": self.import_file,
@@ -1049,6 +1152,55 @@ class CadMCPServer:
                                "changed since the view was drawn" % info["distance_mm"])
         return info
 
+    def view(self, filepath, name="", orbit_dx=0.0, orbit_dy=0.0,
+             pan_dx=0.0, pan_dy=0.0, zoom=1.0,
+             select_x=None, select_y=None, reset=False,
+             width=640, height=640, shaded=True):
+        """The engine's own viewport: turn it, or pick a surface in it.
+
+        This is the CAD screen's view. It is not a picture rendered for a report - the camera
+        persists between calls, so a drag rotates the part the way a desktop CAD application
+        would, and a tap goes to AIS to find which face is under the finger.
+
+        The pick answers with the exact face, not a triangle: the mesh OCCT rasterises is
+        only how the B-rep gets drawn, and what comes back is the B-rep.
+        """
+        if kernel()["build123d"] is None:
+            raise RuntimeError(kernel()["error"] or "build123d is unavailable")
+        label, shape = _resolve_target(name)
+        width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
+        height = max(self.RENDER_MIN, min(self.RENDER_MAX, int(height)))
+
+        renderer = _renderer(width, height)
+        # fit=False keeps the camera. That is the whole difference between a viewport and a
+        # set of stills: FitAll() would undo every rotation the user just made.
+        viewport = renderer.render(getattr(shape, "wrapped", shape), width, height,
+                                   "iso", bool(shaded), fit=bool(reset))
+
+        if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0:
+            if orbit_dx or orbit_dy:
+                viewport.Rotate(float(orbit_dx), float(orbit_dy))
+            if pan_dx or pan_dy:
+                viewport.Pan(float(pan_dx), float(pan_dy))
+            if zoom != 1.0:
+                viewport.SetZoom(float(zoom), True)
+            viewport.Redraw()
+
+        picked = None
+        if select_x is not None and select_y is not None:
+            picked = _pick_at(renderer, select_x, select_y, shape)
+
+        written = _publish(filepath, lambda temp: _write_view(viewport, width, height, temp))
+        result = {
+            "filepath": filepath,
+            "bytes": written,
+            "shapes": label,
+            "width": width,
+            "height": height,
+        }
+        if picked is not None:
+            result["picked"] = picked
+        return result
     def analyze(self, name="", nozzle=0.4, layer=0.2, overhang_deg=45.0,
                 bed_x=None, bed_y=None, bed_z=None, samples=14):
         """Whether this part will print, as numbers rather than an opinion.
