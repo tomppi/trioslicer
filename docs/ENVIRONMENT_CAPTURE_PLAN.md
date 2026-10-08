@@ -303,6 +303,30 @@ tenth of the scene's width, not a hundredth.
 **And the accuracy contract holds as written**: at 5.7 mm of floor flatness and a scale good to a
 few percent, the environment is context. Fits still come from calipers.
 
+## Delivering to a phone that has no root (a gap in M2)
+
+The development phone has `su`, so an environment reaches `files/cad/env/` with an adb push and the
+pipeline looked finished. **The user's phone has neither root nor `su`** - `adb shell id` reports
+`uid=2000(shell)` - so nothing outside shared storage can be written by an agent, and the app's
+private directories are out of reach. Files for that phone go to the drop box,
+`/sdcard/Download/dsh-agent/`, which is where its copy of the room environment now sits.
+
+That is not enough to finish the job, and finding out why cost one experiment:
+
+- The CAD engine **cannot read a model from shared storage**. `import_file` on
+  `/sdcard/Download/dsh-agent/room-environment.stl` reports `success` with a **zero bounding box**:
+  OCCT's STL reader opens nothing and raises nothing. The path looks fine and the answer looks fine,
+  which is the worst shape a failure can have.
+- It is not ownership. The drop-box file is `root:everybody 0660`; `chmod 644` does not even take,
+  because `/sdcard` is FUSE, and the import answers the same either way. This is scoped storage:
+  the app has no direct filesystem access there, which is exactly why its own importer goes through
+  the system file picker.
+
+**So the missing piece for a non-rooted phone is an in-app import**: a CAD-menu entry that opens the
+system file picker and copies what the user chooses into `files/cad/env/`, the way the plate
+already receives models through `files/cad/exports/`. Until that exists, delivering to the user's
+phone needs them to move the file themselves, and the environment path is a development-tool path.
+
 ## Milestones
 
 | | what | done when |
