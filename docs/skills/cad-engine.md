@@ -156,6 +156,28 @@ envelope as the Blender engine:
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
+## 2a. Units - one unit is one millimetre
+
+`build123d` is unitless, and this engine treats **one unit as one millimetre**. That is
+also what every slicer it hands geometry to assumes, so the number you write is the
+number of millimetres in the part. A request in centimetres has to be converted, and
+that conversion is the whole trap:
+
+| the user asks for | write | the part is |
+|---|---|---|
+| 20 x 20 x 20 cm | `Box(200, 200, 200)` | 20 cm - correct |
+| 20 x 20 x 20 cm | `Box(20, 20, 20)` | 2 cm - **ten times too small** |
+| a 40 mm bracket | `Box(40, ...)` | 40 mm - correct |
+
+**A wrong size is invisible in the viewport.** The camera fits whatever is in the scene,
+so a 2 cm cube fills the frame exactly as convincingly as a 20 cm one - there is no grid
+and no scale reference. The first place a unit error becomes visible is the slicer's
+**Size** field, after the part has been exported.
+
+So convert, and then **state the size in millimetres in your reply**: "20 x 20 x 20 cm,
+built as 200 mm a side". A number in the reply is what lets the user catch a unit slip in
+the chat rather than on the build plate.
+
 ## 3. The scene
 
 Blender's engine gets persistence free from `bpy.data`. There is no equivalent here, so the
