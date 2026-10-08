@@ -525,6 +525,19 @@ jobs:
           grep -q 'lib/arm64-v8a/libklipper_exec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libklipper_pty.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libpython3.11.so' apk-contents.log
+          # Presence is not enough for the C++ runtime. The Blender payload ships a
+          # libc++_shared.so stripped of 145 dynamic symbols, and staging it over the
+          # good copy is what broke every release build's CAD engine: OCP needs the
+          # vtable for std::ostringstream, and that is one of the 145. A file with the
+          # right name and the wrong contents passed the checks above for several
+          # releases - the app installed, opened, and could not run a single CAD
+          # command. So this one reads the symbol table instead of the file name.
+          unzip -o -j "$APK" lib/arm64-v8a/libc++_shared.so -d cxx-runtime >/dev/null
+          NM=$(ls -1 "$ANDROID_HOME"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm 2>/dev/null | tail -1)
+          SYM=_ZTVNSt6__ndk119basic_ostringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE
+          "$NM" -D --defined-only cxx-runtime/libc++_shared.so | grep -q "$SYM" \
+            || { echo "::error::libc++_shared.so has been stripped of the vtable OCP needs" >&2; exit 1; }
+          echo "the C++ runtime still carries $SYM"
           grep -q 'assets/klipper/klippy/klippy.py' apk-contents.log
           grep -q 'assets/klipper/klippy/chelper/c_helper.so' apk-contents.log
           grep -q 'assets/klipper/lib/python3.11/encodings/__init__.py' apk-contents.log

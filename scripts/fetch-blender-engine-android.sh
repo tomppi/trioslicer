@@ -1,6 +1,4 @@
-#!/usr/bin/env bash
-# Stage the embedded Blender engine into the app.
-#
+#!/usr/bin/env bash# Stage the embedded Blender engine into the app.#
 # The engine is not in this repository and cannot be: libblender_exec.so is
 # ~125 MB and the runtime assets (CPython stdlib, Blender's scripts, datafiles)
 # are another ~400 MB, all of them built rather than source. Nothing in Gradle
@@ -45,6 +43,28 @@ sha256_of () {  # $1 = file
   fi
 }
 
+# The NDK keeps the complete C++ runtime; the Blender payload does not. Put the complete
+# one back and strip only what is safe to strip.
+restore_cxx_runtime() {
+  local target="${JNI}/libc++_shared.so"
+  [ -f "${target}" ] || return 0
+  local sysroot
+  sysroot="$(dirname "$(dirname "$(command -v "${CC:-clang}" || echo /nonexistent)")")/sysroot"
+  local src="${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+  if [ ! -f "${src}" ]; then
+    src="$(ls -1 /opt/android-sdk/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so 2>/dev/null | tail -1)"
+  fi
+  if [ -z "${src}" ] || [ ! -f "${src}" ]; then
+    echo "WARNING: no NDK libc++_shared.so found; leaving the staged one alone" >&2
+    return 0
+  fi
+  cp -f "${src}" "${target}"
+  local strip_tool
+  strip_tool="$(ls -1 "${ANDROID_NDK_HOME:-/opt/android-sdk/ndk}"/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip 2>/dev/null | tail -1)"
+  [ -n "${strip_tool}" ] && "${strip_tool}" --strip-unneeded "${target}" 2>/dev/null
+  echo "restored libc++_shared.so from the NDK ($(stat -c%s "${target}") bytes)"
+}
+
 stage() {
   local dir="$1"
   [ -d "$dir" ] || { echo "no such directory: $dir" >&2; exit 1; }
@@ -75,6 +95,7 @@ stage() {
   fi
   if [ -z "${libs_src}" ]; then
     echo "no engine runtime libraries: neither ${dir}/jniLibs nor native/blender/blender-jniLibs exists" >&2
+
     exit 1
   fi
   local libs_count=0
@@ -84,6 +105,13 @@ stage() {
     libs_count=$((libs_count + 1))
   done
   echo "staged ${libs_count} engine runtime libraries"
+
+  # The payload ships a libc++_shared.so stripped of dynamic symbols - 2195 against
+  # the NDK's 2340. Among the 145 that go is the vtable for std::ostringstream,
+  # which OCP needs, so every release build failed its CAD engine with "cannot
+  # locate symbol _ZTVNSt6__ndk119basic_ostringstream..." while the debug build,
+  # whose jniLibs already held an intact copy, worked. Put the complete one back.
+  restore_cxx_runtime
 
   for part in python scripts; do
     [ -d "${dir}/${part}" ] && cp -R "${dir}/${part}" "${ASSETS}/"
