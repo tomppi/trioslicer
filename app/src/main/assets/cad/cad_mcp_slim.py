@@ -743,6 +743,8 @@ class CadMCPServer:
         self._clients = set()
         self._clients_lock = threading.Lock()
         self._shutdown_requested = False
+        # Screen position the orbit gesture has reached, or None between gestures.
+        self._orbit_cursor = None
         self._executing_since = None
         self._busy_lock = threading.Lock()
 
@@ -1179,12 +1181,31 @@ class CadMCPServer:
 
         if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0:
             if orbit_dx or orbit_dy:
-                viewport.Rotate(float(orbit_dx), float(orbit_dy))
+                # StartRotation/Rotation are the gesture API: both take a screen
+                # position and OCCT works out the arcball turn itself. Rotate(Ax, Ay,
+                # Az) is a different call - a rotation about a world axis, through
+                # sqrt(dx^2+dy^2) radians - and it was what this used to do. A drag of
+                # 100 pixels therefore rotated 15.9 turns and landed the cube back on
+                # itself, byte-identical to no drag at all, while a drag of 50 came out
+                # sheared rather than turned.
+                #
+                # The cursor starts at the centre of the viewport, not at (0,0): the
+                # arcball turns about the cursor, and a corner is not where a hand is.
+                if self._orbit_cursor is None:
+                    self._orbit_cursor = [int(width // 2), int(height // 2)]
+                    # Integers: pywrap types both arguments as SupportsInt, and a float is
+                    # refused with "incompatible function arguments".
+                    viewport.StartRotation(self._orbit_cursor[0], self._orbit_cursor[1])
+                self._orbit_cursor[0] += int(orbit_dx)
+                self._orbit_cursor[1] += int(orbit_dy)
+                viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
             if pan_dx or pan_dy:
                 viewport.Pan(float(pan_dx), float(pan_dy))
             if zoom != 1.0:
                 viewport.SetZoom(float(zoom), True)
             viewport.Redraw()
+        else:
+                self._orbit_cursor = None
 
         picked = None
         if select_x is not None and select_y is not None:
@@ -1313,8 +1334,14 @@ class CadMCPServer:
         ".dxf": "import_dxf",
     }
 
-    def import_file(self, filepath, name="", unit="mm"):
-        """Import STEP, BREP, STL or SVG into the scene.
+    def import_file(self, filepath, name="", unit="mm", replace=True):
+        """Import a part into the scene, replacing what is there by default.
+
+        Importing is how a part arrives, and a viewport with no outliner cannot
+        show that a second part is now sitting inside the first. Pass
+        replace=False to add alongside instead.
+
+        The shape is added under `name`, or the file's stem when none is given, so the
 
         The shape is added under `name`, or the file's stem when none is given, so the
         agent can address it in the next command exactly as if it had been modelled here.
@@ -1334,6 +1361,8 @@ class CadMCPServer:
         # import_stl takes a unit; the others do not.
         shape = load(filepath, unit) if importer == "import_stl" else load(filepath)
         label = name or os.path.splitext(os.path.basename(filepath))[0]
+        if replace:
+            SCENE.clear()
         SCENE.add(label, shape)
         info = _summary(label, shape)
         info["imported_from"] = filepath
