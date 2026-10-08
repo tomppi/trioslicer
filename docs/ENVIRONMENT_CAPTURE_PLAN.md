@@ -172,6 +172,53 @@ Environment: `/home/tomppix/worldmirror` on the box - `venv` (python 3.10.22, to
 open3d 0.18.0, pycolmap 3.10.0, gsplat 1.5.3+pt24cu124), the repo clone, and `out/<scene>-<size>/`
 for each run. Weights are in the shared HF cache.
 
+## M1: the scale, the up, and the mesh (tool ready, verified against ground truth)
+
+`env_to_cad.py` on the box (`/home/tomppix/worldmirror/`) — a point cloud in, a CAD mesh and a
+JSON in:
+
+    env_to_cad.py --points out/Workspace-336/Workspace/pts_from_pointmap.ply \
+                  --out env/workspace \
+                  --reference-mm 100 --reference-p1=1.2,0.4,0.9 --reference-p2=1.9,1.1,0.88
+
+The two reference points are the ends of the known-size thing, in the cloud's own coordinates, and
+the `=` matters: a coordinate that starts with a minus looks like an option to argparse.
+
+What it does, in order: scale from the reference; drop statistical **and** radius outliers (both,
+because they fail differently — a sparse population of its own survives the statistical pass);
+find the bench as the biggest plane and put it on z=0, refining the fit by total least squares
+because RANSAC's answer comes from three points and a tenth of a degree tips a 400 mm bench
+several millimetres; Poisson-mesh it, crop to the cloud, decimate to a phone-sized budget; write
+`environment.stl`, `environment.ply` (the aligned cloud, unmeshed) and `environment.json`.
+
+**It was verified against a scene whose true size we chose** — `test_env_to_cad.py`, which builds a
+400 x 300 mm bench, a 100 x 60 x 20 mm block and a 100 mm reference bar in true millimetres,
+converts them to an arbitrary unit (1 unit = 0.371 mm), tilts the lot, sprinkles 300 outliers
+through it, and then checks what comes back:
+
+| | truth | recovered | |
+|---|---|---|---|
+| scale, from the 100 mm reference | 0.371 mm/unit | 0.371000 | 0.00 % |
+| extent | 400 x 300 x 20 mm | 398.83 x 299.07 x 21.35 | 1.35 mm |
+| bench on z=0 | 0 | -0.75 mm | the 0.25 mm noise floor |
+
+Three things that test taught, each of which was wrong first:
+
+- **Two bounds are reported, not one.** A reconstruction always carries a few points a few
+  millimetres off a surface — too close for any distance filter to call them outliers — and eight
+  such points stretched the answer by 4.8 mm. `bounds_mm` is the honest extreme; `bounds_mm_robust`
+  (0.1st to 99.9th percentile) is the size of the place, and 0.1 % rather than 0.5 % because a
+  percentile cut eats into the ends of a bench by that fraction of its span.
+- **The plane fit has to be refined.** RANSAC alone left the bench tipped by a fraction of a
+  degree, which is invisible and worth millimetres across a bench; the smallest principal
+  direction of the inliers fixes it.
+- **Up is all a plane can give.** The in-plane orientation is left as the reconstruction had it;
+  a scene with a roll in it comes back rolled, by design, and the tool says so rather than
+  guessing a heading from a point cloud.
+
+Still open on M1: a **real capture** — 4-6 images of something with a known-size reference in
+frame — to see what the *reconstruction's* error actually is, as opposed to the tool's arithmetic.
+
 ## Milestones
 
 | | what | done when |
