@@ -39,7 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.tomppi.enderslicer.storage.BlenderOutputStore
+import com.tomppi.enderslicer.storage.EngineOutputStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,25 +48,40 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * The Blender handoff directory, with the ability to clear it.
+ * A modelling engine's handoff directory, with the ability to clear it.
  *
- * A full-screen destination rather than a sheet, because it is somewhere the
- * user browses and decides rather than a momentary picker. Every delete asks
- * first: these are the only copies of models the engine produced, and the app
- * has no way to regenerate them.
+ * A full-screen destination rather than a sheet, because it is somewhere the user browses and
+ * decides rather than a momentary picker. Every delete asks first: these are the only copies of
+ * models the engine produced, and the app has no way to regenerate them.
+ *
+ * The CAD engine needs this as much as Blender does, and for the same reason - every render it
+ * writes lands in the same folder as every model, and nothing removes either.
+ *
+ * @param title what the destination is called in the app.
+ * @param engine whose exports these are: `files/<engine>/exports`.
+ * @param extensions what to list; empty lists everything the engine wrote.
+ * @param exclude names the app keeps live in there, which are not exports.
+ * @param note a sentence about what accumulates here, in this engine's terms.
  */
 @Composable
-fun BlenderFilesScreen(
+fun EngineFilesScreen(
+    title: String,
+    engine: String,
+    note: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    extensions: Set<String> = emptySet(),
+    exclude: Set<String> = emptySet(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val store = remember(context) { BlenderOutputStore(context.applicationContext) }
+    val store = remember(context, engine, extensions, exclude) {
+        EngineOutputStore(context.applicationContext, engine, extensions, exclude)
+    }
 
-    var entries by remember { mutableStateOf<List<BlenderOutputStore.Entry>>(emptyList()) }
+    var entries by remember { mutableStateOf<List<EngineOutputStore.Entry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    var pendingDelete by remember { mutableStateOf<BlenderOutputStore.Entry?>(null) }
+    var pendingDelete by remember { mutableStateOf<EngineOutputStore.Entry?>(null) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
 
@@ -77,7 +92,7 @@ fun BlenderFilesScreen(
 
     LaunchedEffect(Unit) { refresh() }
 
-    fun delete(selected: List<BlenderOutputStore.Entry>) {
+    fun delete(selected: List<EngineOutputStore.Entry>) {
         scope.launch {
             val removed = withContext(Dispatchers.IO) { store.delete(selected) }
             status = if (removed == selected.size) {
@@ -111,7 +126,7 @@ fun BlenderFilesScreen(
                 )
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text("Blender files", style = MaterialTheme.typography.titleLarge)
+                Text(title, style = MaterialTheme.typography.titleLarge)
                 Text(
                     text = if (entries.isEmpty()) {
                         "Nothing exported yet"
@@ -139,9 +154,7 @@ fun BlenderFilesScreen(
         }
 
         Text(
-            text = "Every model the Blender engine exports is written here and picked " +
-                "up once. Nothing removes them afterwards, so this is where they " +
-                "accumulate.",
+            text = note,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(

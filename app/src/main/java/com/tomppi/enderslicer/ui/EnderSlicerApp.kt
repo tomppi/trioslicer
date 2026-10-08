@@ -259,6 +259,9 @@ fun EnderSlicerApp(
     // is working with - an entry inside the Blender menu could not say that.
     var cadMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var blenderFilesOpen by rememberSaveable { mutableStateOf(false) }
+    // The CAD engine's exports accumulate the same way Blender's do - every render it writes
+    // lands in the same folder as every model - so they get the same screen.
+    var cadFilesOpen by rememberSaveable { mutableStateOf(false) }
     var aiChatOpen by rememberSaveable { mutableStateOf(false) }
     // The floating Plate cards fold independently: one saveable key per card, so
     // each choice survives rotation and is still there after a tab switch. The
@@ -986,6 +989,7 @@ fun EnderSlicerApp(
     BackHandler(enabled = aiChatOpen && selectedTab == AppTab.PLATE) { aiChatOpen = false }
     BackHandler(enabled = modellingOpen) { modellingOpen = false }
     BackHandler(enabled = blenderFilesOpen && !modellingOpen) { blenderFilesOpen = false }
+    BackHandler(enabled = cadFilesOpen && !cadOpen) { cadFilesOpen = false }
     // The paint brush and the annotation tools own the model's gestures while they
     // are open, so back leaves them the way their own Close action does.
     BackHandler(enabled = supportPaintUiOpen) {
@@ -1355,6 +1359,17 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
+                                        HorizontalDivider()
+                                        MenuSectionLabel("Storage")
+                                        DropdownMenuItem(
+                                            text = { Text("CAD files") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                cadFilesOpen = true
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
                                     }
                                 }
                             }
@@ -1430,8 +1445,31 @@ fun EnderSlicerApp(
                             .padding(padding),
                     )
                 } else if (blenderFilesOpen) {
-                    BlenderFilesScreen(
+                    EngineFilesScreen(
+                        title = "Blender files",
+                        engine = "blender",
+                        extensions = setOf("stl"),
+                        note = "Every model the Blender engine exports is written here and " +
+                            "picked up once. Nothing removes them afterwards, so this is " +
+                            "where they accumulate.",
                         onBack = { blenderFilesOpen = false },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                    )
+                } else if (cadFilesOpen) {
+                    EngineFilesScreen(
+                        title = "CAD files",
+                        engine = "cad",
+                        // Everything the engine writes for the user: models, drawings and the
+                        // renders the agent asks for. The viewport's own frame file is excluded
+                        // - it is rewritten whenever the camera moves, and it is not an export.
+                        extensions = setOf("stl", "step", "stp", "brep", "svg", "dxf", "png"),
+                        exclude = setOf("viewport.png"),
+                        note = "Every render and every model the CAD engine writes lands here, " +
+                            "and the app picks each one up once. Nothing removes them " +
+                            "afterwards, so this is where they accumulate.",
+                        onBack = { cadFilesOpen = false },
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),
