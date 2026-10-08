@@ -171,8 +171,8 @@ class CadViewport(
         // back to view coordinates: when the finger stops, the settle frame below re-renders
         // at full size and picking is pixel-exact again.
         val dragging = deltas.hasMotion
-        val renderWidth = if (dragging) min(width.get(), DRAG_MAX) else width.get()
-        val renderHeight = if (dragging) min(height.get(), DRAG_MAX) else height.get()
+        val renderWidth = if (dragging) minOf(width.get(), DRAG_MAX) else width.get()
+        val renderHeight = if (dragging) minOf(height.get(), DRAG_MAX) else height.get()
 
         val picked = client.view(
             into = frameFile,

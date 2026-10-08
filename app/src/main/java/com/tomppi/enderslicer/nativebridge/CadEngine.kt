@@ -322,6 +322,13 @@ object CadEngine {
     private fun startEngine(context: Context): Boolean {
 
         val dir = prepare(context) ?: return false
+        // The status file describes a process, not a screen. A stale one answers for a launch
+        // that has not happened yet: a start that failed left "running": false, and an engine
+        // that has since been killed left "running": true. awaitListening() believes either -
+        // giving up milliseconds after the launch, or reporting a port nothing is serving -
+        // and the first of those bricks the screen until the app's data is cleared. Clear the
+        // file first, so what is read is only ever what this process just wrote.
+        File(dir, STATUS_FILE).delete()
         val exe = engineExecutable(context)
         if (!exe.isFile) {
             Log.e(TAG, "interpreter missing at ${exe.absolutePath}")

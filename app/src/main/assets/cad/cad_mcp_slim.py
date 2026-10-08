@@ -630,27 +630,51 @@ def _describe_at(shape, x, y, z):
 
 
 def _write_view(viewport, width, height, path):
-    """Write what the viewport is showing as a PNG.
+    """Write what the viewport is showing as a PNG, straight out of the render buffer.
 
-    Through a temporary PPM, because the pixel buffer cannot be read directly:
-    Image_PixMap.Data(), ChangeData() and Row() all return the same nonsense value (77)
-    rather than an address, so pywrap is not marshalling Standard_Address on this class.
-    A ctypes.string_at on that value segfaults the engine - which it did, and which is why
-    the engine stopped answering commands earlier.
+    ToPixMap is the render: it draws the scene offscreen at this size and asks the GL driver
+    for the pixels back. Two things about the asking were wrong.
 
-    The format is Image_Format_RGB with RowExtraBytes 0, so w*h*3 would be the right size
-    if Data() were usable. When the binding is fixed, the PPM round trip can go and save
-    67 ms of the roughly 133 ms a frame costs: render 2 ms, readback 116 ms, PNG 15 ms.
-    The readback is the real cost, and only rendering into a surface avoids it entirely.
+    The pixels were requested as RGB. The framebuffer is RGBA, so OCCT took its slow path -
+    one glReadPixels per row and a software conversion of every pixel
+    (OpenGl_FrameBuffer::Buffer(), the toConvRgba2Rgb branch). Asking for RGBA matches the
+    framebuffer and takes the single batch glReadPixels of the whole image.
+
+    And the buffer could not be read from Python at all: Image_PixMap.Data() returns the
+    byte it points at rather than an address - pywrap binds Standard_Byte* as its pointee -
+    so Data() on a fresh frame came back as 77, the top-left pixel's blue channel, and a
+    ctypes.string_at on it segfaulted the engine. The frame therefore went out through
+    OCCT's Save(), which writes a raw PPM whatever the file is called, and back in through
+    Pillow. ReadBytes() is the accessor that was missing (add-image-pixels.py adds it to
+    the payload), so the frame is now GL buffer -> Python bytes -> PNG: no PPM, no second
+    file, no serializer.
+
+    Rows arrive bottom-up - how OpenGL stores them, and what the batch copy requires (a
+    top-down image sends OCCT back to reading row by row) - so the raw decoder is told -1
+    and flips them as it reads. The stride is the pixmap's own SizeRowBytes(): the allocator
+    may pad a row, and assuming SizeX() * 4 would shear the picture.
     """
-    import os
     from OCP.Image import Image_AlienPixMap
     from PIL import Image
 
     pixmap = Image_AlienPixMap()
-    viewport.ToPixMap(pixmap, width, height)
+    if hasattr(pixmap, "ReadBytes"):
+        from OCP.Graphic3d import Graphic3d_BT_RGBA
+
+        if not viewport.ToPixMap(pixmap, width, height, Graphic3d_BT_RGBA):
+            raise RuntimeError("OCCT could not render the viewport")
+        frame = Image.frombytes(
+            "RGBA", (int(width), int(height)), pixmap.ReadBytes(),
+            "raw", "RGBA", int(pixmap.SizeRowBytes()), -1)
+        frame.convert("RGB").save(path, format="PNG")
+        return
+
+    # A payload older than the ReadBytes binding: keep the PPM round trip so a new script
+    # against an old payload still draws, rather than failing on a missing method.
     ppm = path + ".ppm"
     try:
+        if not viewport.ToPixMap(pixmap, width, height):
+            raise RuntimeError("OCCT could not render the viewport")
         if not pixmap.Save(ppm):
             raise RuntimeError("OCCT could not write the viewport pixels")
         Image.open(ppm).convert("RGB").save(path, format="PNG")
@@ -1380,13 +1404,12 @@ class CadMCPServer:
         The engine has a GL viewer and no window. It works: OCCT builds its own EGL context
         and renders into a pixmap, which is how the user gets to see what the agent sees.
 
-        OCCT writes PPM here - this build has no libpng - so the conversion to PNG goes
-        through Pillow, which is already in the payload for build123d's sake.
+        The pixmap is read directly and encoded with Pillow (already in the payload for
+        build123d's sake); see _write_view for why that is no longer a PPM round trip.
         """
         k = kernel()
         if k["build123d"] is None:
             raise RuntimeError(k["error"] or "build123d is unavailable")
-        from OCP.Image import Image_AlienPixMap
 
         label, shape = _resolve_target(name)
         width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
@@ -1426,22 +1449,7 @@ class CadMCPServer:
                                    highlight=marked)
 
         def write(temp):
-            # ToPixMap needs a path it can open, and the publish target is a .part file
-            # whose extension says nothing about the format. So the pixmap goes to its own
-            # PPM alongside, and Pillow writes the PNG to the real destination.
-            ppm = temp + ".ppm"
-            pixmap = Image_AlienPixMap()
-            viewport.ToPixMap(pixmap, width, height)
-            try:
-                if not pixmap.Save(ppm):
-                    raise RuntimeError("OCCT could not write the pixmap")
-                from PIL import Image
-                Image.open(ppm).convert("RGB").save(temp, format="PNG")
-            finally:
-                try:
-                    os.remove(ppm)
-                except OSError:
-                    pass
+            _write_view(viewport, width, height, temp)
 
         written = _publish(filepath, write)
         return {
