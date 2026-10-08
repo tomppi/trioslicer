@@ -34,6 +34,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.tomppi.enderslicer.model.PrinterDefinition
+import com.tomppi.enderslicer.viewer.MeshPicker
+import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.StlMesh
 
 /**
  * Modelling with the CAD engine: exact geometry, real dimensions, STEP in and out.
@@ -66,11 +71,30 @@ fun CadScreen(
      * offscreen, so the picture arrives as a file rather than as a texture.
      */
     render: File?,
+    /**
+     * The most recent model the engine exported, when it exported an STL.
+     *
+     * A render is a picture of the part from one angle, and the engine chose that
+     * angle. The mesh is the part itself: the user can turn it, and see the side the
+     * render did not show - which is the side they are usually asking about.
+     */
+    model: StlMesh?,
+    /** Draws the bed under the model, so the part reads at its real size. */
+    printer: PrinterDefinition,
+    /** Whether a tap on the model should pick a surface instead of turning it. */
+    picking: Boolean,
+    /** The surface the user last picked, shown so they can see it is armed. */
+    pickedAt: MeshPicker.Hit?,
+    onPickingChange: (Boolean) -> Unit,
+    onPicked: (MeshPicker.Hit) -> Unit,
     onSend: (String) -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var chatExpanded by rememberSaveable { mutableStateOf(true) }
+    // Open on the mesh when there is one. It is the part itself and the user can turn it;
+    // the picture is the engine choosing an angle for them.
+    var showModel by rememberSaveable { mutableStateOf(true) }
 
     Column(modifier = modifier.fillMaxSize()) {
         Surface(tonalElevation = 3.dp) {
@@ -93,12 +117,38 @@ fun CadScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.weight(1f))
+                // Offered only when there is a mesh to turn: a toggle onto an empty view is
+                // worse than no toggle at all.
+                if (model != null && render != null) {
+                    // Armed only in the model view: there is nothing to pick on a picture.
+                    TextButton(onClick = { onPickingChange(!picking) }) {
+                        Text(if (picking) "Picking" else "Pick a surface")
+                    }
+                    TextButton(onClick = { showModel = !showModel }) {
+                        Text(if (showModel) "Picture" else "Turn it")
+                    }
+                }
                 TextButton(onClick = { chatExpanded = !chatExpanded }) {
                     Text(if (chatExpanded) "Hide chat" else "Chat")
                 }
             }
         }
 
+        if (picking || pickedAt != null) {
+            Surface(tonalElevation = 2.dp) {
+                Text(
+                    text = when {
+                        picking -> "Tap the surface you mean."
+                        pickedAt != null -> "Picked x=%.1f y=%.1f z=%.1f - say what to do with it."
+                            .format(pickedAt.x, pickedAt.y, pickedAt.z)
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+        
         // The view. Until the engine renders, this says what is true rather than showing
         // an empty box: whether the engine is up, and where the parts it writes will land.
         Surface(
@@ -112,7 +162,19 @@ fun CadScreen(
                     runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
                 }
             }
-            if (bitmap != null) {
+            if (showModel && model != null) {
+                // The same viewer the plate uses, so the gestures are the ones the user
+                // already knows: drag to rotate, pinch to zoom.
+                AndroidView(
+                    factory = { context -> ModelSurfaceView(context, printer) },
+                    update = { view ->
+                        view.setMesh(model)
+                        view.surfacePickActive = picking
+                        view.onSurfacePick = onPicked
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = "The CAD engine's render of the model",

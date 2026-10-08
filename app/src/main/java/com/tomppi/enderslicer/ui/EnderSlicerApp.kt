@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.ui
 
+import android.util.Log
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -121,7 +122,9 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
+import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ViewerOrientation
 import android.content.ClipData
 import android.content.ClipDescription
@@ -314,6 +317,15 @@ fun EnderSlicerApp(
     // The engine's latest render. It has a GL viewer and no window, so its picture of the
     // model arrives as a file - the same handoff that carries STEP and STL.
     var cadRender by remember { mutableStateOf<java.io.File?>(null) }
+    // The engine's most recent STL, loaded for the viewer. A render is the engine's
+    // chosen angle; the mesh is the part, and the user can turn it to the side they
+    // actually want to see.
+    var cadModel by remember { mutableStateOf<StlMesh?>(null) }
+    // Armed when the user wants to point at a surface, and the last surface they picked.
+    // The pick is context for the next thing they say - "fillet this" - rather than a
+    // message on its own, so it is held until they speak and then cleared.
+    var cadPicking by remember { mutableStateOf(false) }
+    var cadPick by remember { mutableStateOf<MeshPicker.Hit?>(null) }
     val cadChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
@@ -749,8 +761,24 @@ fun EnderSlicerApp(
             cadStatus = null
             try {
                 val chat = cadChat.get() ?: error("Connect to the harness first")
-                withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(text)) }
+                // The agent gets the coordinates, and is told what to do with them: it
+                // is the one holding the model, so only it can say which face that point is
+                // on. The user sees their own words, not this preamble.
+                val pick = cadPick
+                val outgoing = if (pick == null) {
+                    text
+                } else {
+                    // Only the preamble is formatted: a stray % in the user's own words would
+                    // otherwise be a crash or a mis-substitution.
+                    val preamble = ("[The user picked a surface at x=%.2f y=%.2f z=%.2f in the " +
+                        "model. Call describe_at with those coordinates to find which face, " +
+                        "edge or vertex that is before acting - do not guess from the picture.]")
+                        .format(pick.x, pick.y, pick.z)
+                    preamble + "\n\n" + text
+                }
+                withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(outgoing)) }
                 cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+                cadPick = null
                 pollForReply(chat, { cadMessages = it }, { cadStatus = it })
             } catch (error: Throwable) {
                 cadStatus = error.message?.take(160) ?: "Harness call failed"
@@ -902,6 +930,16 @@ fun EnderSlicerApp(
         // lands, and re-decoding the directory every second to find it would be work the
         // engine has already done.
         CadEngine.onRender = { file -> cadRender = file }
+        // A part the engine exports as STL is one it expects to be looked at. Parsing
+        // happens here rather than in the viewer so a bad file leaves the last good model
+        // on screen instead of emptying it.
+        CadEngine.onExport = { file ->
+            if (file.extension.lowercase() == "stl") {
+                runCatching { StlParser.parse(file) }
+                    .onSuccess { cadModel = it }
+                    .onFailure { Log.w("EnderSlicer", "could not load ${file.name}", it) }
+            }
+        }
         try {
             while (true) {
                 cadEngineStatus = CadEngine.status(context)
@@ -909,6 +947,7 @@ fun EnderSlicerApp(
             }
         } finally {
             CadEngine.onRender = null
+            CadEngine.onExport = null
         }
     }
 
@@ -1367,6 +1406,12 @@ fun EnderSlicerApp(
                         engineStatus = cadEngineStatus,
                         exportsPath = CadEngine.exportsDirectory(context).absolutePath,
                         render = cadRender,
+                        model = cadModel,
+                        picking = cadPicking,
+                        pickedAt = cadPick,
+                        onPickingChange = { cadPicking = it; if (!it) cadPick = null },
+                        onPicked = { cadPick = it; cadPicking = false },
+                        printer = state.printer.withSettings(state.settings),
                         onSend = ::askCadAgent,
                         onExit = { cadOpen = false },
                         modifier = Modifier
