@@ -356,6 +356,40 @@ arithmetic that failed on eyeballed cube corners. `reference-sheet.png` (A4, 300
 Print at 100 %, and measure the bar with calipers: whatever it actually reads is the number to use,
 because that catches a printer that scaled the page.
 
+## The object route beats the environment route (measured)
+
+The question was whether the app's existing image-to-3D generator (Hunyuan3D-2mini, DMC at 512)
+does this job better than a scene reconstruction. For anything a jig has to fit: **yes**.
+
+Test object: the 20 mm printed cube, whose truth is exact. One photo, cropped to the cube, through
+the existing pipeline on the box:
+
+    generate        59.6 s, peak 4748 MiB, 1,746,620 faces, watertight True
+    shape check     axes 0.980 x 0.986 x 0.990 before any scaling - a cube to within 1 %
+    declare 20 mm   the height axis is set to 20.000 by prep_mesh
+    the other two   19.878 x 20.069 mm   (truth 20.00: -0.6 % and +0.35 %)
+    mid section     19.65 x 20.01 mm
+    volume          7618 mm^3 against 8000 for a true cube
+
+The dimensions **not declared** came back within 0.12 mm on one axis and 0.07 mm on the other. The
+volume is 4.8 % light, which is the generator rounding the edges and corners - so take shape and
+fit surfaces from this, never volume.
+
+Why this changes the plan rather than adding to it:
+
+- **No reference object, no marker, no triangulation.** The scale comes from one caliper reading,
+  declared once, exactly as the existing pipeline already works.
+- **Clean watertight geometry** instead of a Poisson shell over an 8 mm point cloud.
+- **The environment reconstruction drops to optional context** - which is the only thing it was
+  ever good for: where things are, not what size they are.
+
+Caveats worth keeping: this is the generator's easiest case (simple, lit, three faces visible);
+hidden sides are invented, so a fit that wraps right round wants two or three photos; and the mesh
+arrives at 1.7M faces, which the CAD engine will want decimated before it goes on a phone.
+
+The workflow this validates: **photo + one measured dimension -> generated object -> the agent
+models the jig around it.**
+
 ## Milestones
 
 | | what | done when |
