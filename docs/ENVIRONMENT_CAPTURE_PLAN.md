@@ -327,6 +327,35 @@ system file picker and copies what the user chooses into `files/cad/env/`, the w
 already receives models through `files/cad/exports/`. Until that exists, delivering to the user's
 phone needs them to move the file themselves, and the environment path is a development-tool path.
 
+## Close range, second capture: frame-filling beats distance
+
+Nine portrait frames of the tripod's upper legs (Cullmann) with the 20 mm cube on the spreader.
+Three of the nine actually show the cube - the orbit hides it in the rest - so those three were
+reconstructed: 33 s, 7827 MiB, COLMAP at 3060 x 3060 as the crop-and-resize always produces.
+
+**The prediction was wrong, and the measurement says why.** Moving from 3 m to ~0.8 m was expected
+to cut the sampling from 8 mm to about 2 mm. It did not: relative to their own scene, the close-up
+reconstruction samples about as coarsely as the room one did, because the frames still contain the
+whole room. The model spends its 336 x 336 pixels across the *frame*, not across the subject, so the
+cube lands at ~30 px either way. **Fill the frame with the subject; that is the lever, not distance.**
+
+**The cube still cannot set the scale**, and the reasons are now specific rather than general:
+
+- it is ~100 px across in the 3060-wide originals - 7.75 px per mm, so 1 px is 0.13 mm;
+- it is low-contrast against the beige wall: cube saturation 92-105 and value 163, wall saturation
+  73 and value 242. Canny found no closed outline of it, and a light-and-grey colour mask found the
+  floor's highlights instead. Automatic silhouette extraction failed in all three frames;
+- picking its corners by eye is worth about 2 px, which over a 20 mm edge is ~1 % - the edge of
+  acceptable, with no margin, and it needs a human in the loop for every capture.
+
+**The fix was in the plan from the start and is now unblocked: print a marker.** `cv2.aruco` is
+available in the box's OpenCV, so a marker's four corners come back sub-pixel and automatically, in
+the *full-resolution* frames - and triangulating those corners through the COLMAP poses is the same
+arithmetic that failed on eyeballed cube corners. `reference-sheet.png` (A4, 300 dpi) carries a
+100 mm DICT_4X4_50 marker, a 60 mm one, and a 200 mm scale bar; it is in the phone's drop box.
+Print at 100 %, and measure the bar with calipers: whatever it actually reads is the number to use,
+because that catches a printer that scaled the page.
+
 ## Milestones
 
 | | what | done when |
