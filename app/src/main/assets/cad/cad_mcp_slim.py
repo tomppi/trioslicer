@@ -234,8 +234,18 @@ def _publish(path, write):
     # The temporary keeps the extension, with the marker before it rather than after.
     # Exports that dispatch on the file extension - glTF is one - write nothing when
     # handed "model.gltf.part", and the rename is still atomic either way.
+    #
+    # And it is staged in a directory of its own, beside the target rather than in the middle
+    # of the directory being watched. The whole point of the temporary is that a file appearing
+    # next to the finished ones is a whole file; leaving it there breaks exactly that - the app
+    # reports every new .png, .stl and .step in the export directory, so the empty temporary was
+    # announced as "render ready: viewport-part.png (0 bytes)" twice a second while the frame it
+    # belonged to was being written, and never finished. The rename is atomic either way: same
+    # filesystem, one directory down.
     root, extension = os.path.splitext(path)
-    temp = root + "-part" + extension
+    staging = os.path.join(directory or ".", ".parts")
+    os.makedirs(staging, exist_ok=True)
+    temp = os.path.join(staging, os.path.basename(root) + "-part" + extension)
     try:
         result = write(temp)
         # An exporter that returns False, or writes nothing, must not look like success.

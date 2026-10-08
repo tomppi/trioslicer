@@ -411,8 +411,13 @@ object CadEngine {
             while (watching) {
                 val candidates = runCatching {
                     directory.listFiles { file ->
-                        file.isFile && file.extension.lowercase() in
-                            (EXPORT_EXTENSIONS + RENDER_EXTENSIONS)
+                        // "-part" is the engine's staging name, and it is only ever a
+                        // half-written file on its way to a real one. It is staged a directory
+                        // down now, so this is the guard for an engine that predates that - a
+                        // 0-byte "viewport-part.png" reported as a render twice a second is
+                        // noise the user cannot act on.
+                        file.isFile && !file.name.contains("-part") &&
+                            file.extension.lowercase() in (EXPORT_EXTENSIONS + RENDER_EXTENSIONS)
                     }?.toList().orEmpty()
                 }.getOrDefault(emptyList())
                 for (file in candidates) {
