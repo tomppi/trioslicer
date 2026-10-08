@@ -1,4 +1,6 @@
-#!/usr/bin/env bash# Stage the embedded Blender engine into the app.#
+#!/usr/bin/env bash
+# Stage the embedded Blender engine into the app.
+#
 # The engine is not in this repository and cannot be: libblender_exec.so is
 # ~125 MB and the runtime assets (CPython stdlib, Blender's scripts, datafiles)
 # are another ~400 MB, all of them built rather than source. Nothing in Gradle
@@ -48,21 +50,41 @@ sha256_of () {  # $1 = file
 restore_cxx_runtime() {
   local target="${JNI}/libc++_shared.so"
   [ -f "${target}" ] || return 0
-  local sysroot
-  sysroot="$(dirname "$(dirname "$(command -v "${CC:-clang}" || echo /nonexistent)")")/sysroot"
-  local src="${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
-  if [ ! -f "${src}" ]; then
-    src="$(ls -1 /opt/android-sdk/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so 2>/dev/null | tail -1)"
-  fi
+
+  # CI keeps the NDK at ANDROID_NDK_HOME; a workstation usually has it under
+  # ANDROID_HOME/ndk. Look in both, then the historic default.
+  local src=""
+  local root
+  for root in "${ANDROID_NDK_HOME:-}" "${ANDROID_HOME:-}/ndk" /opt/android-sdk/ndk; do
+    [ -n "${root}" ] || continue
+    [ -d "${root}" ] || continue
+    src="$(ls -1 "${root}"/*/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so 2>/dev/null | tail -1)"
+    [ -n "${src}" ] && break
+  done
   if [ -z "${src}" ] || [ ! -f "${src}" ]; then
     echo "WARNING: no NDK libc++_shared.so found; leaving the staged one alone" >&2
     return 0
   fi
+
   cp -f "${src}" "${target}"
-  local strip_tool
-  strip_tool="$(ls -1 "${ANDROID_NDK_HOME:-/opt/android-sdk/ndk}"/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip 2>/dev/null | tail -1)"
-  [ -n "${strip_tool}" ] && "${strip_tool}" --strip-unneeded "${target}" 2>/dev/null
+
+  # --strip-unneeded keeps the dynamic symbol table. --strip-all is what removed the
+  # vtables in the first place, so it is not used here.
+  local strip_tool=""
+  for root in "${ANDROID_NDK_HOME:-}" "${ANDROID_HOME:-}/ndk" /opt/android-sdk/ndk; do
+    [ -n "${root}" ] || continue
+    [ -d "${root}" ] || continue
+    strip_tool="$(ls -1 "${root}"/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip 2>/dev/null | tail -1)"
+    [ -n "${strip_tool}" ] && break
+  done
+  if [ -n "${strip_tool}" ]; then
+    "${strip_tool}" --strip-unneeded "${target}" || true
+  else
+    echo "WARNING: no llvm-strip found; the restored runtime is unstripped" >&2
+  fi
+
   echo "restored libc++_shared.so from the NDK ($(stat -c%s "${target}") bytes)"
+  return 0
 }
 
 stage() {
