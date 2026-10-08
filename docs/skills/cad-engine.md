@@ -153,6 +153,7 @@ envelope as the Blender engine:
 | `export_step` | `filepath`, `name` (optional) | atomic; no name = whole scene |
 | `export_stl` | `filepath`, `name` (optional), `tolerance` | atomic; no name = whole scene |
 | `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
+| `clearance` | `cloud`, `name` or `x`,`y`,`z` | distance from the part to a scanned environment |
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
@@ -254,6 +255,34 @@ cut, filleted and re-exported.
 | BREP | exact solid, OCCT's native format |
 | SVG | 2D curves, for `import_svg_as_buildline_code` |
 | STL | **a surface, not a solid** — see below |
+
+## 4b. Measuring against a scanned environment
+
+A capture of a real place arrives as a point cloud — `environment.npy`, an Nx3 float array in
+millimetres, written beside the mesh by the capture pipeline. `clearance` answers the question a
+jig turns on: how far is my part from the real thing?
+
+```json
+{"type": "clearance", "params": {"cloud": "/…/env/environment.npy", "name": "bracket"}}
+{"type": "clearance", "params": {"cloud": "/…/env/environment.npy", "x": 0, "y": 0, "z": 150}}
+```
+
+Give `name` and it measures a shape in the scene — vertices, edge midpoints, and a grid over every
+face, because a corner can be millimetres clear while the middle of a face is touching. Give
+`x`, `y`, `z` and it measures a single point. The answer carries both ends of the closest pair:
+
+```json
+{"shapes": "bracket", "distance_mm": 47.46, "from": [686.6, -765.3, 52.5],
+ "to": [686.6, -765.3, 5.0], "probes": 140, "cloud_points": 295915}
+```
+
+**Measure against the cloud, not the mesh in the scene.** The imported mesh is decimated for
+display; the cloud is the reconstruction. The tree over it is built once per file and kept, so the
+first call costs about a second on 300k points and later ones about 20 ms.
+
+Verified against known offsets: from a point on the reconstructed floor, ±50 mm and ±100 mm read
+back as 47.2/47.5 and 97.2/97.3 mm — the shortfall is the point's own distance to the nearest
+sample, not an error in the query.
 
 ### STL imports as a surface, not a solid
 

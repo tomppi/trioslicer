@@ -260,6 +260,49 @@ design actually turns on. The full-resolution cloud is kept beside the mesh (`en
 exactly that, and answering it wants a small command in the engine - a KD-tree built once and
 queried per call - rather than the agent reading a render.
 
+## M1 and M2 with a real capture: the projector on its tripod
+
+Six photos of a projector on a tripod in a bedroom, taken on the user's phone (3060 x 4080), plus
+three close-ups of the reference - a 20 mm printed cube standing on the projector's shelf.
+
+**What worked, on the first real capture:**
+
+- 4 wide views reconstruct in **26 s** at 336 px, 7827 MiB peak. 6 views OOMs, and 4 views at 448
+  OOMs - the capture is **portrait**, so `target_size` lands on the short side and the frame
+  carries about 1.8x the pixels of a landscape example at the same setting. Landscape examples are
+  not a guide to a phone's portrait photos.
+- The room comes back with the floor as its largest plane, **flat to 5.7 mm** across a nominal
+  4.5 x 3.5 m - which is the accuracy figure that matters for context, and it is what the plan
+  predicted from the other direction.
+- Aligned, meshed to 250k triangles, delivered, imported into the CAD engine in 0.16 s, rendered,
+  and queried: the whole chain on real photographs.
+
+**What did not work: the 20 mm cube cannot set the scale.**
+
+The room reconstructs at **~8 mm point spacing** (median nearest-neighbour over 388k points), so a
+20 mm cube is two and a half samples wide in the wide views. Adding a close-up helps - the cube
+reaches ~35 px - but measuring it four independent ways gives four answers:
+
+| measurement | implied scale |
+|---|---|
+| top face height above the shelf, region A | 835 mm/unit |
+| top face height above the shelf, region B | 477 mm/unit |
+| top face side 1 | 1628 mm/unit |
+| top face side 2 | 1247 mm/unit |
+
+A factor of **3.4** between the extremes, and the two "shelf" regions differ in normal by 15
+degrees: at this resolution the model's depth near a glossy dark surface is noisy by more than the
+size of the thing being measured. The cube is not a bad idea; it is a bad *size* for a capture
+that has to hold a whole room.
+
+**What to do instead.** Put something with a known dimension that is *large in the frame* next to
+the job: a tape measure or a metre rule laid on the floor (about 125 px at 8 mm spacing, so the
+ends are good to ~1 %), or an A4 sheet (297 mm, 37 px, ~3 %). The reference wants to be roughly a
+tenth of the scene's width, not a hundredth.
+
+**And the accuracy contract holds as written**: at 5.7 mm of floor flatness and a scale good to a
+few percent, the environment is context. Fits still come from calipers.
+
 ## Milestones
 
 | | what | done when |

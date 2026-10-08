@@ -204,6 +204,47 @@ def _summary(name, shape):
 # Export
 # --------------------------------------------------------------------------
 
+# One loaded environment cloud at a time: a capture is hundreds of thousands of points, the
+# tree over it is built once, and the phone has one of these to think about.
+_CLEARANCE = {}
+
+
+def _probe_points(shape, samples=16):
+    """Points spread over a shape, so a clearance is its closest approach and not its nearest
+    corner.
+
+    Vertices and edge midpoints are free, and a face gets a grid: a corner can be millimetres
+    from the world while the middle of a face is touching it, which is exactly the case a jig
+    is built to avoid.
+    """
+    points = []
+
+    def add(vector):
+        try:
+            points.append((float(vector.X), float(vector.Y), float(vector.Z)))
+        except Exception:
+            pass
+
+    for vertex in shape.vertices():
+        add(vertex)
+    for edge in shape.edges():
+        for t in (0.25, 0.5, 0.75):
+            try:
+                add(edge.position_at(t))
+            except Exception:
+                break
+    grid = max(2, int(math.sqrt(max(4, samples))))
+    for face in shape.faces():
+        try:
+            for i in range(grid):
+                for j in range(grid):
+                    add(face.position_at((i + 0.5) / grid, (j + 0.5) / grid))
+        except Exception:
+            # A face that will not take a parameter is still covered by its own vertices.
+            continue
+    return points
+
+
 def _resolve_target(name):
     """(label, shape) for an export. No name means the whole scene.
 
@@ -1036,6 +1077,7 @@ class CadMCPServer:
             "analyze": self.analyze,
             "section": self.section,
             "import_file": self.import_file,
+            "clearance": self.clearance,
             "render": self.render,
             "get_addon_info": self.get_addon_info,
         }
@@ -1414,6 +1456,67 @@ class CadMCPServer:
         info["imported_from"] = filepath
         info["imported_as"] = importer
         return info
+
+    def clearance(self, cloud, name="", x=None, y=None, z=None, samples=16):
+        """How far the part is from the scanned environment.
+
+        The number a jig design turns on, and the one question a render cannot answer. The
+        environment arrives as a point cloud - the `environment.npy` the capture pipeline
+        writes beside the mesh - while the mesh in the scene is a decimated stand-in for
+        display. Measuring against that mesh would be the error of an approximation of an
+        approximation, so this measures against the cloud: every point of it, through a k-d
+        tree built once per file and kept.
+
+        Give `name` to measure the closest approach of a shape in the scene, or x, y and z
+        for a single point. The answer carries both ends of the closest pair, so the next
+        command can act on where the part comes near the world rather than on the number.
+        """
+        import numpy as np
+        from scipy.spatial import cKDTree
+
+        path = os.path.abspath(cloud)
+        if not os.path.isfile(path):
+            raise FileNotFoundError("no such cloud: %s" % path)
+        cached = _CLEARANCE.get(path)
+        stamp = os.path.getmtime(path)
+        if cached is None or cached[0] != stamp:
+            points = np.load(path)
+            if points.ndim != 2 or points.shape[1] < 3:
+                raise ValueError("expected an Nx3 array in %s, found %s"
+                                 % (path, getattr(points, "shape", None)))
+            points = np.ascontiguousarray(points[:, :3], dtype=np.float64)
+            if len(points) == 0:
+                raise ValueError("the cloud in %s is empty" % path)
+            cached = (stamp, points, cKDTree(points))
+            _CLEARANCE[path] = cached
+            # One cloud at a time: these are millions of points, and the phone has one task.
+            for other in [p for p in _CLEARANCE if p != path]:
+                del _CLEARANCE[other]
+        _, points, tree = cached
+
+        if x is None and y is None and z is None:
+            label, shape = _resolve_target(name)
+            probes = _probe_points(shape, samples)
+            source = label
+        else:
+            if x is None or y is None or z is None:
+                raise ValueError("a point query needs all of x, y and z")
+            probes = [(float(x), float(y), float(z))]
+            source = "point"
+        if not probes:
+            raise RuntimeError("nothing to measure: %s has no probe points" % source)
+
+        distances, indices = tree.query(np.array(probes, dtype=np.float64))
+        nearest = int(np.argmin(distances))
+        return {
+            "shapes": source,
+            "distance_mm": round(float(distances[nearest]), 4),
+            "from": [round(v, 4) for v in probes[nearest]],
+            "to": [round(float(v), 4) for v in points[int(indices[nearest])]],
+            "probes": len(probes),
+            "cloud_points": int(len(points)),
+            "cloud": path,
+        }
 
     # Renders are capped so a request cannot ask for an image larger than the device can
     # hold: 2048x2048 RGBA is 16 MB, and the pixmap is uncompressed on the way out.
