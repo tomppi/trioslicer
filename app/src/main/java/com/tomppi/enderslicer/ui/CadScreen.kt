@@ -1,10 +1,16 @@
 package com.tomppi.enderslicer.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import com.tomppi.enderslicer.modelling.CadPick
 import java.io.File
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,11 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import com.tomppi.enderslicer.model.PrinterDefinition
-import com.tomppi.enderslicer.viewer.MeshPicker
-import com.tomppi.enderslicer.viewer.ModelSurfaceView
-import com.tomppi.enderslicer.viewer.StlMesh
 
 /**
  * Modelling with the CAD engine: exact geometry, real dimensions, STEP in and out.
@@ -64,13 +65,13 @@ fun CadScreen(
     /** Where finished STEP and STL land, shown so the user knows where to look. */
     exportsPath: String,
     /**
-     * The engine's most recent render, or null before it has drawn one.
+     * The engine's most recent frame, or null before the first one arrives.
      *
-     * This is the engine's own picture of its own scene, the way the modelling screen shows
-     * Blender's - the difference is only that this engine has no window and renders
-     * offscreen, so the picture arrives as a file rather than as a texture.
+     * This is the engine's own viewport: its camera, its scene, its render. The app does not
+     * draw the model at all, which is what makes this one view rather than two - there is no
+     * second camera to keep in step and no coordinate frame to translate a tap through.
      */
-    render: File?,
+    frame: Bitmap?,
     /**
      * The most recent model the engine exported, when it exported an STL.
      *
@@ -78,24 +79,22 @@ fun CadScreen(
      * angle. The mesh is the part itself: the user can turn it, and see the side the
      * render did not show - which is the side they are usually asking about.
      */
-    model: StlMesh?,
-    /** Draws the bed under the model, so the part reads at its real size. */
-    printer: PrinterDefinition,
-    /** Whether a tap on the model should pick a surface instead of turning it. */
-    picking: Boolean,
-    /** The surface the user last picked, shown so they can see it is armed. */
-    pickedAt: MeshPicker.Hit?,
-    onPickingChange: (Boolean) -> Unit,
-    onPicked: (MeshPicker.Hit) -> Unit,
+    /** The last surface the user picked, so the screen can say what is armed. */
+    pick: CadPick?,
+    /** True while the engine is rendering a frame, so the view can show it is working. */
+    framePending: Boolean,
+    onOrbit: (Float, Float) -> Unit,
+    onPan: (Float, Float) -> Unit,
+    onZoom: (Float) -> Unit,
+    onSelect: (Int, Int) -> Unit,
+    onViewSize: (Int, Int) -> Unit,
+    onResetView: () -> Unit,
+    onPickUsed: () -> Unit,
     onSend: (String) -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var chatExpanded by rememberSaveable { mutableStateOf(true) }
-    // Open on the engine's own render. It is the exact geometry rather than a mesh, it
-    // is the picture the agent is looking at too, and it is the only one of the two that
-    // can show a highlight. The mesh is one tap away when the part is worth turning.
-    var showModel by rememberSaveable { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         Surface(tonalElevation = 3.dp) {
@@ -118,16 +117,8 @@ fun CadScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.weight(1f))
-                // Offered only when there is a mesh to turn: a toggle onto an empty view is
-                // worse than no toggle at all.
-                if (model != null && render != null) {
-                    // Armed only in the model view: there is nothing to pick on a picture.
-                    TextButton(onClick = { onPickingChange(!picking) }) {
-                        Text(if (picking) "Picking" else "Pick a surface")
-                    }
-                    TextButton(onClick = { showModel = !showModel }) {
-                        Text(if (showModel) "Render" else "Turn it")
-                    }
+                TextButton(onClick = onResetView) {
+                    Text("Reset view")
                 }
                 TextButton(onClick = { chatExpanded = !chatExpanded }) {
                     Text(if (chatExpanded) "Hide chat" else "Chat")
@@ -135,21 +126,24 @@ fun CadScreen(
             }
         }
 
-        if (picking || pickedAt != null) {
+        if (pick != null || framePending) {
             Surface(tonalElevation = 2.dp) {
                 Text(
                     text = when {
-                        picking -> "Tap the surface you mean."
-                        pickedAt != null -> "Picked x=%.1f y=%.1f z=%.1f - say what to do with it."
-                            .format(pickedAt.x, pickedAt.y, pickedAt.z)
-                        else -> ""
+                        pick?.isSomething == true && pick.kind == "face" ->
+                            "Picked face #%d (%.1f mm2) - say what to do with it."
+                                .format(pick.index, pick.areaMm2 ?: 0.0)
+                        pick?.isSomething == true ->
+                            "Picked %s #%d - say what to do with it.".format(pick.kind, pick.index)
+                        pick != null -> "Nothing under that tap. Try again, or turn the part."
+                        else -> "Rendering..."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
         }
-        
+
         // The view. Until the engine renders, this says what is true rather than showing
         // an empty box: whether the engine is up, and where the parts it writes will land.
         Surface(
@@ -158,31 +152,33 @@ fun CadScreen(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
-            val bitmap = remember(render?.absolutePath) {
-                render?.let { file ->
-                    runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
-                }
-            }
-            if (showModel && model != null) {
-                // The same viewer the plate uses, so the gestures are the ones the user
-                // already knows: drag to rotate, pinch to zoom.
-                AndroidView(
-                    factory = { context -> ModelSurfaceView(context, printer) },
-                    update = { view ->
-                        view.setMesh(model)
-                        view.surfacePickActive = picking
-                        view.onSurfacePick = onPicked
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else if (bitmap != null) {
+            // One view: the engine's own. The frame is asked for at exactly this size, so
+            // what the user taps is the pixel the engine picked at - letterboxing a frame
+            // rendered at another size would name the wrong face.
+            val shown = frame
+            if (shown != null) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "The CAD engine's render of the model",
+                    bitmap = shown.asImageBitmap(),
+                    contentDescription = "The CAD engine's view of the model",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(8.dp),
+                        .onSizeChanged { onViewSize(it.width, it.height) }
+                        // A tap is a pick, not a mode: there is nothing else a tap could
+                        // sensibly mean on a view the engine owns.
+                        .pointerInput(Unit) {
+                            detectTapGestures { offset ->
+                                onSelect(offset.x.toInt(), offset.y.toInt())
+                            }
+                        }
+                        // One finger orbits, two pinch and pan - the gestures the plate and
+                        // the Blender preview already taught, so there is nothing to learn.
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                if (zoom != 1f) onZoom(zoom)
+                                if (pan.x != 0f || pan.y != 0f) onOrbit(pan.x, pan.y)
+                            }
+                        },
                 )
             } else Box(contentAlignment = Alignment.Center) {
                 Column(

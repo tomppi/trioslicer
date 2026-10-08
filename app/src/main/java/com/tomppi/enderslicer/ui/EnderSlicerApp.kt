@@ -134,6 +134,9 @@ import android.os.Build
 import android.os.PersistableBundle
 import androidx.compose.material.icons.filled.Lock
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
+import com.tomppi.enderslicer.modelling.CadPick
+import com.tomppi.enderslicer.modelling.CadPreviewClient
+import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
@@ -320,12 +323,12 @@ fun EnderSlicerApp(
     // The engine's most recent STL, loaded for the viewer. A render is the engine's
     // chosen angle; the mesh is the part, and the user can turn it to the side they
     // actually want to see.
-    var cadModel by remember { mutableStateOf<StlMesh?>(null) }
-    // Armed when the user wants to point at a surface, and the last surface they picked.
-    // The pick is context for the next thing they say - "fillet this" - rather than a
-    // message on its own, so it is held until they speak and then cleared.
-    var cadPicking by remember { mutableStateOf(false) }
-    var cadPick by remember { mutableStateOf<MeshPicker.Hit?>(null) }
+    // The engine's own viewport. The app does not draw the model at all; it asks the
+    // engine to render and shows the frame that comes back.
+    var cadViewport by remember { mutableStateOf<CadViewport?>(null) }
+    var cadFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var cadFramePending by remember { mutableStateOf(false) }
+    var cadPick by remember { mutableStateOf<CadPick?>(null) }
     val cadChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
@@ -761,20 +764,16 @@ fun EnderSlicerApp(
             cadStatus = null
             try {
                 val chat = cadChat.get() ?: error("Connect to the harness first")
-                // The agent gets the coordinates, and is told what to do with them: it
-                // is the one holding the model, so only it can say which face that point is
-                // on. The user sees their own words, not this preamble.
+                // The agent is told which surface the engine named, not a coordinate to
+                // resolve: the pick already came back as the exact B-rep face. The user
+                // sees their own words, not this preamble.
                 val pick = cadPick
                 val outgoing = if (pick == null) {
                     text
                 } else {
-                    // Only the preamble is formatted: a stray % in the user's own words would
-                    // otherwise be a crash or a mis-substitution.
-                    val preamble = ("[The user picked a surface at x=%.2f y=%.2f z=%.2f in the " +
-                        "model. Call describe_at with those coordinates to find which face, " +
-                        "edge or vertex that is before acting - do not guess from the picture.]")
-                        .format(pick.x, pick.y, pick.z)
-                    preamble + "\n\n" + text
+                    // The engine named the surface, so tell the agent what it named rather than
+                    // making it resolve a point. It is already the exact B-rep face.
+                    pick.asPrompt(pick.x, pick.y) + text
                 }
                 withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(outgoing)) }
                 cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
@@ -929,25 +928,34 @@ fun EnderSlicerApp(
         // Renders are pushed rather than polled: the watcher already knows the moment one
         // lands, and re-decoding the directory every second to find it would be work the
         // engine has already done.
-        CadEngine.onRender = { file -> cadRender = file }
-        // A part the engine exports as STL is one it expects to be looked at. Parsing
-        // happens here rather than in the viewer so a bad file leaves the last good model
-        // on screen instead of emptying it.
-        CadEngine.onExport = { file ->
-            if (file.extension.lowercase() == "stl") {
-                runCatching { StlParser.parse(file) }
-                    .onSuccess { cadModel = it }
-                    .onFailure { Log.w("EnderSlicer", "could not load ${file.name}", it) }
-            }
-        }
+        // One viewport for the life of the screen. It owns the camera and the frame loop,
+        // and it is closed with the screen so a render in flight cannot outlive it.
+        val viewport = CadViewport(
+            scope = aiScope,
+            client = CadPreviewClient(
+                tokenFile = File(context.filesDir, "cad/cad_mcp_token.txt"),
+            ),
+            frameFile = File(CadEngine.exportsDirectory(context), "viewport.png"),
+            // The engine extracts 566 MB before it binds, so the screen waits on it
+            // rather than on a retry count.
+            engineReady = { runCatching { CadEngine.status(context) }.getOrDefault("") == "ready" },
+        )
+        cadViewport = viewport
+        viewport.start()
+        val frameJob = launch { viewport.frame.collect { cadFrame = it } }
+        val pickJob = launch { viewport.pick.collect { cadPick = it } }
+        val busyJob = launch { viewport.busy.collect { cadFramePending = it } }
         try {
             while (true) {
                 cadEngineStatus = CadEngine.status(context)
                 delay(1_000)
             }
         } finally {
-            CadEngine.onRender = null
-            CadEngine.onExport = null
+            frameJob.cancel()
+            pickJob.cancel()
+            busyJob.cancel()
+            viewport.close()
+            cadViewport = null
         }
     }
 
@@ -1405,13 +1413,16 @@ fun EnderSlicerApp(
                         agentConnected = cadChatReady,
                         engineStatus = cadEngineStatus,
                         exportsPath = CadEngine.exportsDirectory(context).absolutePath,
-                        render = cadRender,
-                        model = cadModel,
-                        picking = cadPicking,
-                        pickedAt = cadPick,
-                        onPickingChange = { cadPicking = it; if (!it) cadPick = null },
-                        onPicked = { cadPick = it; cadPicking = false },
-                        printer = state.printer.withSettings(state.settings),
+                        frame = cadFrame,
+                        pick = cadPick,
+                        framePending = cadFramePending,
+                        onOrbit = { dx, dy -> cadViewport?.orbit(dx, dy) },
+                        onPan = { dx, dy -> cadViewport?.pan(dx, dy) },
+                        onZoom = { factor -> cadViewport?.zoomBy(factor) },
+                        onSelect = { x, y -> cadViewport?.select(x, y) },
+                        onViewSize = { w, h -> cadViewport?.setViewSize(w, h) },
+                        onResetView = { cadViewport?.reset() },
+                        onPickUsed = { cadViewport?.clearPick() },
                         onSend = ::askCadAgent,
                         onExit = { cadOpen = false },
                         modifier = Modifier
