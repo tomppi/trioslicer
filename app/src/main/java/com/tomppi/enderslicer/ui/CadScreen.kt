@@ -306,6 +306,9 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
         var travelled = Offset.Zero
         var pinched = 1f
         var pastTouchSlop = false
+        // What this gesture turned out to be. Latched at the first decisive movement.
+        var turning = false
+        var turningDecided = false
         awaitFirstDown(requireUnconsumed = false)
         do {
             val event = awaitPointerEvent()
@@ -357,10 +360,20 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
                         //
                         // Measured the same way the touch slop is - the arc the fingers swept,
                         // in pixels - and the larger motion wins the event.
-                        val turning = abs(twist) * maxOf(spanNow, spanBefore)
-                        val travelling = panChange.getDistance()
-                        if (turning > travelling && turning > touchSlop) {
-                            onRotate(twist)
+                        // Decided once per gesture, then kept until the fingers lift.
+                        //
+                        // Re-deciding every event was why a turn felt insensitive: a real twist
+                        // drifts as it turns, so the travel won the event most of the time and
+                        // only the odd event rotated - most of a deliberate turn was spent
+                        // panning. Once a hand has committed to turning, it is turning.
+                        val arc = abs(twist) * maxOf(spanNow, spanBefore)
+                        val travel = panChange.getDistance()
+                        if (!turningDecided && (arc > touchSlop || travel > touchSlop)) {
+                            turning = arc > travel
+                            turningDecided = true
+                        }
+                        if (turning) {
+                            if (twist != 0f) onRotate(twist)
                         } else {
                             if (panChange != Offset.Zero) onPan(panChange.x, panChange.y)
                             if (zoomChange != 1f) onZoom(zoomChange)
