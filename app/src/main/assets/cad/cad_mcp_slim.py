@@ -589,26 +589,31 @@ def _grid_shape(step, half=100.0):
 def _orbit_camera(view, dx, dy, width, height):
     """Turn the view without rolling it: a turntable, out of OCCT's own two rotations.
 
-    The difference between them is the whole trick:
+    Rotate is the horizontal gesture and Turn is the vertical one - a swap of what their names
+    suggest, and established by using it rather than by reading about it:
 
-    * Turn turns about the *reference* (world) axes. Turning about world Z is a turntable yaw,
-      and the horizon cannot tilt, because the axis it turns about is vertical by definition.
-    * Rotate turns about the *view's* axes. Rotating about the view's X is a tip about the
-      camera's own right - the axis a turntable tips on - so that stays level too.
+        left and right  ->  Rotate, which moves the part left and right
+        up and down     ->  Turn, which moves the part up and down
 
-    The arcball (StartRotation/Rotation) is neither: it rolls, which laid a part on its side when
-    the phone was dragged diagonally. Rebuilding the camera was tried and is worse - SetCamera
-    re-derives the projection's scale and up as well, so the part came back a sixth of its size in
-    pixels and still tilted.
+    The first version had these the other way round, and the phone reported it immediately: up
+    and down moved the part sideways, left and right moved it up and down. The measurements
+    missed it - a turning silhouette moves its own centroid wherever it likes, so both mappings
+    produced a plausible frame.
+
+    Between them they cannot roll: one turns about the world's vertical, the other about the
+    camera's own right. The arcball (StartRotation/Rotation) rolled, which laid a part on its side
+    when the phone was dragged diagonally. Rebuilding the camera was tried and is worse -
+    SetCamera re-derives the projection's scale and up as well, so the part came back a sixth of
+    its size in pixels and still tilted.
 
     The rate is the arcball's own, pi radians across the smaller side of the viewport, so the
     sensitivity the phone was tuned to does not change.
     """
     scale = math.pi / max(1, min(int(width), int(height)))
     if dx:
-        view.Turn(0.0, 0.0, -float(dx) * scale)
+        view.Rotate(-float(dx) * scale, 0.0, 0.0)
     if dy:
-        view.Rotate(-float(dy) * scale, 0.0, 0.0)
+        view.Turn(0.0, 0.0, -float(dy) * scale)
 
 
 def _apply_viewer(view):
