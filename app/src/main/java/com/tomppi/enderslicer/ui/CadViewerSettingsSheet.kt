@@ -24,6 +24,11 @@ import com.tomppi.enderslicer.modelling.CadViewerSettings
 /**
  * The CAD viewport's settings.
  *
+ * Every control takes effect as it is touched: [onChange] is called on each edit, and the caller
+ * stores it and tells the engine. That is what a viewer setting is for - you are looking at the
+ * thing you are changing - and a sheet that only applied on Save meant the one place you could see
+ * the effect was the one place the change had not happened yet.
+ *
  * Two render sizes rather than one, because the viewport has two jobs: it has to keep up while a
  * finger is dragging it, and it has to be sharp once the finger stops. One number cannot do both,
  * and which trade is right depends on the phone and on how heavy the part is - so it is the user's
@@ -38,10 +43,17 @@ import com.tomppi.enderslicer.modelling.CadViewerSettings
 @Composable
 internal fun CadViewerSettingsSheet(
     current: CadViewerSettings,
-    onSave: (CadViewerSettings) -> Unit,
+    onChange: (CadViewerSettings) -> Unit,
+    onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var settings by remember(current) { mutableStateOf(current) }
+
+    // One place that both shows the change and reports it, so no control can forget one of them.
+    fun apply(next: CadViewerSettings) {
+        settings = next
+        onChange(next)
+    }
 
     Column(
         modifier = modifier
@@ -52,7 +64,8 @@ internal fun CadViewerSettingsSheet(
     ) {
         Text("CAD viewer", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "How this device draws the CAD engine's viewport. Nothing here changes the model.",
+            "How this device draws the CAD engine's viewport. Nothing here changes the model, " +
+                "and every change applies as you make it.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -65,28 +78,28 @@ internal fun CadViewerSettingsSheet(
             choices = CadViewerSettings.DRAG_CHOICES,
             selected = settings.dragQuality,
             label = { CadViewerSettings.label(it) },
-        ) { settings = settings.copy(dragQuality = it) }
+        ) { apply(settings.copy(dragQuality = it)) }
         CadChoiceRow(
             title = "Still quality",
             description = "The frame size once the camera stops. Full is the display's own size.",
             choices = CadViewerSettings.IDLE_CHOICES,
             selected = settings.idleQuality,
             label = { CadViewerSettings.label(it) },
-        ) { settings = settings.copy(idleQuality = it) }
+        ) { apply(settings.copy(idleQuality = it)) }
 
         SectionLabel("Surfaces")
         SettingSwitch(
             title = "Shaded surfaces",
             description = "Off draws the wireframe, which shows the far side of an open shell.",
             checked = settings.shaded,
-            onChecked = { settings = settings.copy(shaded = it) },
+            onChecked = { apply(settings.copy(shaded = it)) },
         )
         SettingSwitch(
             title = "Face edges",
             description = "The dark outline over a shaded surface. Without it a step on a " +
                 "plate is invisible from straight above.",
             checked = settings.edges,
-            onChecked = { settings = settings.copy(edges = it) },
+            onChecked = { apply(settings.copy(edges = it)) },
         )
         CadChoiceRow(
             title = "Tessellation",
@@ -95,15 +108,15 @@ internal fun CadViewerSettingsSheet(
             choices = CadViewerSettings.TESSELLATIONS,
             selected = settings.tessellation,
             label = { CadViewerSettings.word(it) },
-        ) { settings = settings.copy(tessellation = it) }
+        ) { apply(settings.copy(tessellation = it)) }
 
         SectionLabel("Scene")
         SettingSwitch(
             title = "Grid",
-            description = "A 1 mm grid on the bed, drawn at real size in the scene rather " +
-                "than as a screen backdrop.",
+            description = "A grid on the bed, drawn at real size in the scene rather than as " +
+                "a screen backdrop.",
             checked = settings.grid,
-            onChecked = { settings = settings.copy(grid = it) },
+            onChecked = { apply(settings.copy(grid = it)) },
         )
         if (settings.grid) {
             CadChoiceRow(
@@ -112,13 +125,13 @@ internal fun CadViewerSettingsSheet(
                 choices = CadViewerSettings.GRID_STEPS,
                 selected = settings.gridStepMm,
                 label = { CadViewerSettings.gridLabel(it) },
-            ) { settings = settings.copy(gridStepMm = it) }
+            ) { apply(settings.copy(gridStepMm = it)) }
         }
         SettingSwitch(
             title = "Axis cross",
             description = "The little X-Y-Z marker in the corner of the view.",
             checked = settings.axes,
-            onChecked = { settings = settings.copy(axes = it) },
+            onChecked = { apply(settings.copy(axes = it)) },
         )
 
         SectionLabel("Camera")
@@ -128,14 +141,14 @@ internal fun CadViewerSettingsSheet(
             choices = CadViewerSettings.PROJECTIONS,
             selected = settings.projection,
             label = { CadViewerSettings.word(it) },
-        ) { settings = settings.copy(projection = it) }
+        ) { apply(settings.copy(projection = it)) }
         CadChoiceRow(
             title = "Background",
             description = "What is behind the part.",
             choices = CadViewerSettings.BACKGROUNDS,
             selected = settings.background,
             label = { CadViewerSettings.word(it) },
-        ) { settings = settings.copy(background = it) }
+        ) { apply(settings.copy(background = it)) }
 
         SectionLabel("Smoothing")
         SettingSwitch(
@@ -144,20 +157,20 @@ internal fun CadViewerSettingsSheet(
                 "edges are smooth rather than stepped. It is skipped while you are dragging, " +
                 "where the cost would be lag.",
             checked = settings.antialiasing,
-            onChecked = { settings = settings.copy(antialiasing = it) },
+            onChecked = { apply(settings.copy(antialiasing = it)) },
         )
         SettingSwitch(
             title = "Status line",
             description = "The overlay that says what the engine is doing.",
             checked = settings.showStatus,
-            onChecked = { settings = settings.copy(showStatus = it) },
+            onChecked = { apply(settings.copy(showStatus = it)) },
         )
 
         Button(
-            onClick = { onSave(settings) },
+            onClick = onDone,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Save viewer settings")
+            Text("Done")
         }
     }
 }
@@ -184,8 +197,8 @@ private fun <T> CadChoiceRow(
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title)
         Text(description, style = MaterialTheme.typography.labelSmall)
-        // Scrollable, not just a Row: five chips are wider than a phone, and a clipped chip
-        // is a choice the user cannot make.
+        // Scrollable, not just a Row: five chips are wider than a phone, and a clipped chip is
+        // a choice the user cannot make.
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.horizontalScroll(rememberScrollState()),

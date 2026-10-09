@@ -960,9 +960,20 @@ fun EnderSlicerApp(
         val frameJob = launch { viewport.frame.collect { cadFrame = it } }
         val pickJob = launch { viewport.pick.collect { cadPick = it } }
         val busyJob = launch { viewport.busy.collect { cadFramePending = it } }
+        // The engine extracts 566 MB and binds its port after this effect starts, so the
+        // settings sent above arrive before there is anything to receive them - which is why a
+        // saved setting looked forgotten the next time the app was opened. They are sent again
+        // the moment the engine says it is ready; the call is idempotent and the viewport
+        // redraws with the camera where the user left it.
+        var viewerSettingsSent = false
         try {
             while (true) {
-                cadEngineStatus = CadEngine.status(context)
+                val status = CadEngine.status(context)
+                cadEngineStatus = status
+                if (!viewerSettingsSent && status == "ready") {
+                    viewerSettingsSent = true
+                    viewport.applyViewerSettings(cadViewerSettings)
+                }
                 delay(1_000)
             }
         } finally {
@@ -1936,15 +1947,16 @@ fun EnderSlicerApp(
         ) {
             CadViewerSettingsSheet(
                 current = cadViewerSettings,
-                onSave = { saved ->
-                    CadViewerPreference.save(context, saved)
-                    cadViewerSettings = saved
-                    cadViewerOpen = false
-                    // The engine is told, then asked for a frame: the camera the user arranged
-                    // is theirs, so a settings change redraws rather than resets.
-                    cadViewport?.applyViewerSettings(saved)
-                    Toast.makeText(context, "CAD viewer settings saved", Toast.LENGTH_SHORT).show()
+                // Stored and applied on every edit rather than on Save: the point of a viewer
+                // setting is watching it happen, and a sheet that only took effect on Save meant
+                // the one place you could see the change was the one place it had not happened.
+                // No toast per toggle either - the viewport is the feedback.
+                onChange = { next ->
+                    CadViewerPreference.save(context, next)
+                    cadViewerSettings = next
+                    cadViewport?.applyViewerSettings(next)
                 },
+                onDone = { cadViewerOpen = false },
                 modifier = Modifier
                     .fillMaxHeight(0.94f)
                     .navigationBarsPadding(),
