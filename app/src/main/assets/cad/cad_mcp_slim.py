@@ -586,6 +586,31 @@ def _grid_shape(step, half=100.0):
     return compound
 
 
+def _orbit_camera(view, dx, dy, width, height):
+    """Turn the view without rolling it: a turntable, out of OCCT's own two rotations.
+
+    The difference between them is the whole trick:
+
+    * Turn turns about the *reference* (world) axes. Turning about world Z is a turntable yaw,
+      and the horizon cannot tilt, because the axis it turns about is vertical by definition.
+    * Rotate turns about the *view's* axes. Rotating about the view's X is a tip about the
+      camera's own right - the axis a turntable tips on - so that stays level too.
+
+    The arcball (StartRotation/Rotation) is neither: it rolls, which laid a part on its side when
+    the phone was dragged diagonally. Rebuilding the camera was tried and is worse - SetCamera
+    re-derives the projection's scale and up as well, so the part came back a sixth of its size in
+    pixels and still tilted.
+
+    The rate is the arcball's own, pi radians across the smaller side of the viewport, so the
+    sensitivity the phone was tuned to does not change.
+    """
+    scale = math.pi / max(1, min(int(width), int(height)))
+    if dx:
+        view.Turn(0.0, 0.0, -float(dx) * scale)
+    if dy:
+        view.Rotate(-float(dy) * scale, 0.0, 0.0)
+
+
 def _apply_viewer(view):
     """Put the viewer's appearance on the view, and collect anything that refuses.
 
@@ -1562,14 +1587,7 @@ class CadMCPServer:
                 #
                 # The cursor starts at the centre of the viewport, not at (0,0): the
                 # arcball turns about the cursor, and a corner is not where a hand is.
-                if self._orbit_cursor is None:
-                    self._orbit_cursor = [int(width // 2), int(height // 2)]
-                    # Integers: pywrap types both arguments as SupportsInt, and a float is
-                    # refused with "incompatible function arguments".
-                    viewport.StartRotation(self._orbit_cursor[0], self._orbit_cursor[1])
-                self._orbit_cursor[0] += int(orbit_dx)
-                self._orbit_cursor[1] += int(orbit_dy)
-                viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
+                _orbit_camera(viewport, orbit_dx, orbit_dy, width, height)
             if pan_dx or pan_dy:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's
