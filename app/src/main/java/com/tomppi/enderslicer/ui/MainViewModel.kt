@@ -958,6 +958,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     overriddenSettingKeys = state.settings.overriddenSettingKeys + machineKeys,
                 ),
                 statusMessage = orcaImportSummary(imported, orca.printerPreset),
+                // Every other importer releases the gate here; this one did not, so a successful
+                // OrcaSlicer profile import left the app busy for good - Slice, Export, Import and
+                // the model tools all gated, and only a restart to get out.
+                isBusy = false,
             )
         }
         persistOrcaSettings(_uiState.value.orcaSettings)
@@ -1346,16 +1350,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val placed = models.mapIndexed { index, model ->
             model.withCenter(slots[index].centerXmm - shiftX, slots[index].centerYmm - shiftY)
         }
-        val envelope = PrinterEnvelope.from(printer.withSettings(settings))
-        val onTheBed = placed.all { model ->
-            val bounds = model.bounds
-            listOf(
-                bounds.minX to bounds.minY,
-                bounds.maxX to bounds.minY,
-                bounds.minX to bounds.maxY,
-                bounds.maxX to bounds.maxY,
-            ).all { (x, y) -> envelope.contains(x.toDouble(), y.toDouble(), 0.0) }
-        }
+        // The envelope refuses a machine shape or size it cannot model, and this runs from an
+        // import's success handler, where a throw would leave the launch and take the process
+        // with it. An unbuildable envelope means the check cannot answer, not that the plate is
+        // wrong: the packer already keeps every part inside the bed it was given.
+        val onTheBed = runCatching {
+            val envelope = PrinterEnvelope.from(printer.withSettings(settings))
+            placed.all { model ->
+                val bounds = model.bounds
+                listOf(
+                    bounds.minX to bounds.minY,
+                    bounds.maxX to bounds.minY,
+                    bounds.minX to bounds.maxY,
+                    bounds.maxX to bounds.maxY,
+                ).all { (x, y) -> envelope.contains(x.toDouble(), y.toDouble(), 0.0) }
+            }
+        }.getOrDefault(true)
         return if (onTheBed) placed else null
     }
 
@@ -1384,7 +1394,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val unchanged = current.models.size == state.models.size &&
                         current.models.indices.all { current.models[it] === state.models[it] }
                     if (!unchanged) {
-                        current.copy(isBusy = false)
+                        // The packer ran against the plate as it was. Saying so is the whole
+                        // point: a silent no-op looks like a broken button.
+                        current.copy(
+                            isBusy = false,
+                            statusMessage = "The plate changed while it was being arranged; " +
+                                "tap Arrange now again",
+                        )
                     } else {
                         current.withoutPublishedSlice(
                             "Arranged ${next.size} objects; slice again to export G-code",
@@ -1408,7 +1424,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setPlatePreferences(preferences: PlatePreferences) {
         val sanitized = preferences.sanitized()
         val previous = _uiState.value.platePreferences
-        _uiState.update { it.copy(platePreferences = sanitized) }
+        // Sequential printing and object labels are slice inputs like any other, so changing
+        // either has to drop the published G-code: exporting last slice's file while the sheet
+        // shows the new choice is the same stale-artifact bug the rest of the app guards against.
+        val sliceInputsChanged = sanitized.sequential != previous.sequential ||
+            sanitized.objectLabels != previous.objectLabels
+        _uiState.update { current ->
+            if (sliceInputsChanged) {
+                current.withoutPublishedSlice(
+                    "Plate settings changed; slice again to export G-code",
+                ).copy(platePreferences = sanitized)
+            } else {
+                current.copy(platePreferences = sanitized)
+            }
+        }
         viewModelScope.launch { withContext(Dispatchers.IO) { platePreferencesStore.save(sanitized) } }
         // Only a move *into* auto arrange repacks: the gap field reports every keystroke, and
         // repacking on each one threw away the placements the user had made by hand.
@@ -1468,7 +1497,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         artifactId?.let(engine::releaseArtifact)
                     }
                     importedScene = null
-                    _uiState.update { commit(it) }
+                    // clearBuildPlate's whole job: leaving the imported-scene banner up over an
+                    // empty plate says a Cura transform is in force when nothing is there.
+                    _uiState.update { current ->
+                        commit(current).copy(
+                            importedSceneTransformAvailable = false,
+                            importedSceneModelName = null,
+                            warnings = current.warnings.filterNot {
+                                it.startsWith("Imported Cura transform is for")
+                            },
+                        )
+                    }
                     return@runCatching
                 }
                 val snapshot = workspaceSnapshot(next)
@@ -1928,15 +1967,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Paints the object the stroke is on.
+     *
+     * The brush is expanded against THAT object's mesh, and the stroke is kept on it - the
+     * triangle indices a brush produces mean nothing outside the mesh they came from, so
+     * expanding against the selected object while the finger was on a neighbour painted the
+     * wrong triangles on the wrong part. The object painted becomes the selected one, which is
+     * what lets a stroke move from part to part without leaving the brush.
+     */
     fun paintAt(hit: MeshPicker.Hit) {
         val snapshot = _uiState.value
-        val mesh = snapshot.mesh ?: return
         if (snapshot.paintMode == SupportPaintMode.NONE) return
         if (snapshot.isBusy) return
+        val target = snapshot.models.getOrNull(hit.objectIndex) ?: return
         val radiusMm = snapshot.supportPaint.brushRadiusMm.toFloat()
         viewModelScope.launch(Dispatchers.Default) {
             val triangles = SupportPaintBrush.expand(
-                mesh = mesh,
+                mesh = target.mesh,
                 hitX = hit.x,
                 hitY = hit.y,
                 hitZ = hit.z,
@@ -1944,19 +1992,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (triangles.isEmpty()) return@launch
             _uiState.update { current ->
+                // Look the object up again: the plate can have changed while the brush ran.
+                val model = current.models.firstOrNull { it.id == target.id } ?: return@update current
                 val updated = when (current.paintMode) {
-                    SupportPaintMode.ENFORCER -> current.supportPaint.withEnforcer(triangles)
-                    SupportPaintMode.BLOCKER -> current.supportPaint.withBlocker(triangles)
-                    SupportPaintMode.ERASE -> current.supportPaint.erased(triangles)
-                    SupportPaintMode.NONE -> current.supportPaint
+                    SupportPaintMode.ENFORCER -> model.supportPaint.withEnforcer(triangles)
+                    SupportPaintMode.BLOCKER -> model.supportPaint.withBlocker(triangles)
+                    SupportPaintMode.ERASE -> model.supportPaint.erased(triangles)
+                    SupportPaintMode.NONE -> model.supportPaint
                 }
                 // The painted triangles become support modifiers in the engine
                 // command, so the published G-code stops matching the model here.
-                if (updated == current.supportPaint) {
+                if (updated == model.supportPaint) {
                     current
                 } else {
                     current.withoutPublishedSlice("Support paint changed; slice again to export G-code")
-                        .withSelectedModel { model -> model.withPaint(updated) }
+                        .withModel(model.id) { it.withPaint(updated) }
+                        .copy(selectedModelId = model.id)
                 }
             }
             persistPaintSoon()
@@ -3017,7 +3068,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun restoreWorkspace(workspace: RestoredWorkspace?) {
         if (workspace == null) return
         val snapshot = workspace.snapshot
-        val objects = workspace.objects.map { it.toPlateObject() }
+        // Names are made unique when a model is imported; a descriptor written before that - or
+        // by hand - can still hold two parts with one name, which the engines then label
+        // identically and a Klipper host treats as one cancellable object.
+        val seenNames = HashSet<String>()
+        val objects = workspace.objects.map { restored ->
+            val model = restored.toPlateObject()
+            val unique = if (seenNames.add(model.name)) {
+                model.name
+            } else {
+                generateSequence(2) { it + 1 }
+                    .map { "${model.name} ($it)" }
+                    .first { seenNames.add(it) }
+            }
+            model.copy(name = unique)
+        }
         _uiState.update { current ->
             current.withoutPublishedSlice()
                 .withModels(objects)
@@ -3348,7 +3413,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * plate when it started.
      */
     private fun beginOperation(message: String): Boolean = synchronized(operationLock) {
-        if (_uiState.value.isBusy) return false
+        if (_uiState.value.isBusy) {
+            // Controls stay live while an engine works, so a refusal has to say something: a tap
+            // that changes nothing and says nothing reads as a broken button.
+            _uiState.update { it.copy(statusMessage = "An operation is still running; try again in a moment") }
+            return false
+        }
         workspaceMutationGeneration.incrementAndGet()
         _uiState.update { it.copy(isBusy = true, statusMessage = message, sliceProgressPercent = null) }
         true

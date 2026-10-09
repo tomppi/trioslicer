@@ -705,9 +705,13 @@ class ModelSurfaceView(
      */
     private fun applyBrushProbe(hit: MeshPicker.Hit?) {
         brushDeciding = false
-        // The brush paints the selected object, so a stroke that began on another
-        // one is not a stroke at all: the gesture stays the camera's.
-        if (hit != null && hit.objectIndex == currentSelectedIndex) {
+        // The brush paints the part the finger is on, and the host makes that part the selected
+        // one as it paints, so a stroke may begin anywhere on the plate. It used to require the
+        // selected part, which handed every stroke that began on a neighbour to the camera and
+        // left all but the highlighted model unpaintable. Smart Infill is the exception: its
+        // report is about the selected object, so a neighbour is not its target.
+        val paints = hit != null && (!surfacePickActive || hit.objectIndex == currentSelectedIndex)
+        if (paints) {
             brushDragging = true
             onSurfacePick?.invoke(hit)
             return
@@ -741,17 +745,17 @@ class ModelSurfaceView(
                         continue
                     }
                     if (hit == null) continue
+                    // The object index is read here, on the UI thread, so the answer cannot race
+                    // a selection change on the GL thread.
+                    val picked = hit.objectIndex == currentSelectedIndex
                     post {
-                        // Only the selected object takes paint; a sample that
-                        // landed on a neighbour is dropped, not painted onto the
-                        // wrong part. Read here, on the UI thread, so the answer
-                        // cannot race a selection change on the GL thread.
-                        if (hit.objectIndex == currentSelectedIndex) {
-                            if (surfacePickActive) {
-                                onSurfacePick?.invoke(hit)
-                            } else {
-                                onPaintHit?.invoke(hit)
-                            }
+                        if (surfacePickActive) {
+                            // Smart Infill reports on the selected object only.
+                            if (picked) onSurfacePick?.invoke(hit)
+                        } else {
+                            // Support paint follows the finger: the host paints the object this
+                            // hit names and selects it, so one stroke can cross the plate.
+                            onPaintHit?.invoke(hit)
                         }
                     }
                 }
@@ -913,7 +917,10 @@ class ModelSurfaceView(
          * already selected asks for nothing.
          */
         override fun onSingleTapUp(event: MotionEvent): Boolean {
-            if (!cameraInteractive || paintMode != SupportPaintMode.NONE || annotationActive ||
+            // A tap paints nothing, so a paint mode does not own it: tapping the part you want to
+            // work on is exactly what a brush needs, and it was the only way to change the target
+            // without leaving the paint screen.
+            if (!cameraInteractive || annotationActive ||
                 surfacePickActive || gizmoMode != TransformGizmoMode.NONE
             ) {
                 return false

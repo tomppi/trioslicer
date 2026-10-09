@@ -241,7 +241,6 @@ internal object CuraResolvedSettingsWriter {
         objects.forEachIndexed { index, plateObject ->
             val objectTransform = if (index == 0) effectiveModelTransform else plateObject.transform
             val modelValues = JSONObject(resolved.modelValues)
-            extraSettings.forEach { (key, value) -> modelValues.put(key, value) }
             modelValues.put("extruder_nr", 0)
             if (overhangFillEnabled) {
                 // The pinned definitions default bridge detection off, and the
@@ -259,6 +258,10 @@ internal object CuraResolvedSettingsWriter {
                 enginePositionY = enginePositionY,
                 enginePositionZ = enginePositionZ,
             )
+            // The user's own overrides go on last, after every app value: the transforms and the
+            // overhang gate above would otherwise overwrite an override of the same key, so the
+            // same setting won on the standalone transport and lost on this one.
+            extraSettings.forEach { (key, value) -> modelValues.put(key, value) }
             root.put(plateObject.fileName, modelValues)
 
             plateObject.smartInfillModifiers

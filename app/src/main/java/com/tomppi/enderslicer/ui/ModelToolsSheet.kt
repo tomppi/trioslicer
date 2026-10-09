@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -183,7 +184,12 @@ private fun ModelToolsBar(
     val contentPadding = PaddingValues(horizontal = if (expandedLayout) 16.dp else 8.dp)
     Card(modifier = modifier) {
         Row(
-            modifier = Modifier.padding(horizontal = 4.dp),
+            // Scrollable: five group buttons plus Close do not fit a narrow window at a large UI
+            // scale, and the Row measured the close button with whatever width was left - which
+            // could be none, leaving no way to close the overlay but Back.
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
