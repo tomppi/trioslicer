@@ -128,6 +128,14 @@ class CadViewport(
     private val deltaLock = Any()
     private var pendingDeltas = ViewRequest()
 
+    // One-shot requests wait here instead of on the conflated channel, which *replaces* what is
+    // buffered rather than queueing it: a tap that arrived while a frame was rendering was
+    // silently replaced by the next marker and never reached the engine, and the previous pick
+    // stayed armed and rode along with the user's next instruction.
+    private var pendingSelect: Pair<Int, Int>? = null
+    private var pendingReset = false
+    private var pendingOrientation: String? = null
+
     private val width = AtomicInteger(0)
     private val height = AtomicInteger(0)
     private var pump: Job? = null
@@ -191,6 +199,19 @@ class CadViewport(
             pendingDeltas = ViewRequest()
             taken
         }
+        // The one-shot flags, which no longer travel on the conflated channel.
+        val effective = synchronized(deltaLock) {
+            val taken = ViewRequest(
+                selectX = pendingSelect?.first,
+                selectY = pendingSelect?.second,
+                reset = pendingReset,
+                orientation = pendingOrientation,
+            )
+            pendingSelect = null
+            pendingReset = false
+            pendingOrientation = null
+            taken
+        }
         // A drag renders at a fraction of the display size. At the size the view is shown -
         // 1812x1700 on an unfolded phone, about three million pixels - a frame costs the
         // better part of a second, and no amount of delta accumulation makes that feel like
@@ -216,7 +237,7 @@ class CadViewport(
         //
         // A tap wins over a drag that shares its drain window: the engine picks at the size it
         // rendered, and the coordinates the app sends are display pixels.
-        val dragging = deltas.hasMotion && request.selectX == null
+        val dragging = deltas.hasMotion && effective.selectX == null
         val displayWidth = width.get()
         val displayHeight = height.get()
         val viewer = settings()
@@ -241,8 +262,9 @@ class CadViewport(
         val renderWidth = (displayWidth * renderScale).roundToInt()
         val renderHeight = (displayHeight * renderScale).roundToInt()
 
-        val picked = client.view(
-            into = frameFile,
+        val picked = try {
+            client.view(
+                into = frameFile,
             // Scaled with the render: a delta is a distance on the display, and what the
             // engine turns and pans is a distance in the frame it just rendered.
             // Degrees, deliberately unscaled: the engine's camera is an angle, so a turn is the
@@ -252,17 +274,27 @@ class CadViewport(
             panDx = deltas.panDx * dragScale,
             panDy = deltas.panDy * dragScale,
             zoom = deltas.zoom,
-            selectX = request.selectX,
-            selectY = request.selectY,
-            reset = request.reset,
+            // Scaled into the frame like every other distance: the engine picks at the size it
+            // rendered, and with a still-quality cap the frame is smaller than the view. Sending
+            // view pixels unscaled is what made a tap name another face, or none.
+            selectX = effective.selectX?.let { (it * renderScale).roundToInt() },
+            selectY = effective.selectY?.let { (it * renderScale).roundToInt() },
+            reset = effective.reset,
             shaded = viewer.shaded,
-            orientation = request.orientation,
+            orientation = effective.orientation,
             // Supersampling only for the frame that settles: while a finger is moving, four
             // times the pixels is four times the lag, and the smoothing is invisible anyway.
             antialiasing = viewer.antialiasing && !dragging,
             width = renderWidth,
             height = renderHeight,
-        )
+            )
+        } catch (error: Throwable) {
+            // The motion was taken and no frame came of it, so it goes back: a failed frame must
+            // not eat the drag that asked for it. The engine's busy guard makes this routine
+            // rather than rare, so without this the part lags the finger by exactly that motion.
+            restoreMotion(deltas, effective)
+            throw error
+        }
         val bitmap = client.readFrame(frameFile)
         if (bitmap == null) {
             Log.w(TAG, "the engine wrote no readable frame at " + frameFile.absolutePath)
@@ -271,7 +303,15 @@ class CadViewport(
         }
         // A tap with nothing under it clears any standing pick, so a stale surface cannot be
         // attached to what the user says next.
-        if (request.selectX != null) _pick.value = picked
+        // The engine answers in the frame it drew; that frame is stretched over the view, so the
+        // point the user tapped is this one divided back. Unscaled, the pick's own coordinates -
+        // which go into the prompt the agent reads - named a pixel the user never touched.
+        if (effective.selectX != null) {
+            _pick.value = picked?.copy(
+                x = (picked.x / renderScale).roundToInt(),
+                y = (picked.y / renderScale).roundToInt(),
+            )
+        }
         // Settle: that frame was coarse, so ask for one at full size. Only after a frame that
         // moved, or the loop would never idle.
         if (dragging) pending.trySend(ViewRequest())
@@ -306,6 +346,22 @@ class CadViewport(
         pending.trySend(ViewRequest())
     }
 
+    /** Puts back what a failed frame took: motion adds up again, and a flag waits for the retry. */
+    private fun restoreMotion(deltas: ViewRequest, flags: ViewRequest) {
+        synchronized(deltaLock) {
+            pendingDeltas = pendingDeltas.copy(
+                turnYaw = pendingDeltas.turnYaw + deltas.turnYaw,
+                turnPitch = pendingDeltas.turnPitch + deltas.turnPitch,
+                panDx = pendingDeltas.panDx + deltas.panDx,
+                panDy = pendingDeltas.panDy + deltas.panDy,
+                zoom = pendingDeltas.zoom * deltas.zoom,
+            )
+            if (flags.selectX != null) pendingSelect = flags.selectX to (flags.selectY ?: 0)
+            if (flags.reset) pendingReset = true
+            if (flags.orientation != null) pendingOrientation = flags.orientation
+        }
+    }
+
     fun zoomBy(factor: Float) {
         // Multiplied, not added: a zoom of 1 is no change, and two zooms compose.
         synchronized(deltaLock) {
@@ -315,16 +371,19 @@ class CadViewport(
     }
 
     fun select(x: Int, y: Int) {
-        pending.trySend(ViewRequest(selectX = x, selectY = y))
+        synchronized(deltaLock) { pendingSelect = x to y }
+        pending.trySend(ViewRequest())
     }
 
     fun reset() {
-        pending.trySend(ViewRequest(reset = true))
+        synchronized(deltaLock) { pendingReset = true }
+        pending.trySend(ViewRequest())
     }
 
     /** Iso, Front, Top, Right: a named view re-frames the part, which is what a preset means. */
     fun setOrientation(name: String) {
-        pending.trySend(ViewRequest(orientation = name))
+        synchronized(deltaLock) { pendingOrientation = name }
+        pending.trySend(ViewRequest())
     }
 
     /**

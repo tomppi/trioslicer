@@ -132,6 +132,21 @@ object CadEngine {
         }
     }.getOrNull()
 
+    /**
+     * Whether the engine is up and serving.
+     *
+     * The yes/no companion to [status], which answers with a sentence for the user. Callers that
+     * need a decision must ask this instead of comparing that sentence to a word - they did,
+     * against "ready", while the sentence is "CAD engine ready on port 9877", so both the
+     * viewport's retry policy and the viewer settings' re-send were dead code.
+     */
+    fun isReady(context: Context): Boolean =
+        engineExecutable(context).isFile &&
+            File(context.filesDir, "klipper/lib/python3.11").isDirectory &&
+            sitePackages(context).isDirectory &&
+            root?.let { File(it, ENGINE_FILE).isFile } == true &&
+            running
+
     fun status(context: Context): String = when {
         !engineExecutable(context).isFile -> "the CAD engine binary is not packaged in this APK"
         !File(context.filesDir, "klipper/lib/python3.11").isDirectory ->

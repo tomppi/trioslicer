@@ -948,7 +948,7 @@ fun EnderSlicerApp(
             frameFile = File(CadEngine.exportsDirectory(context), "viewport.png"),
             // The engine extracts 566 MB before it binds, so the screen waits on it
             // rather than on a retry count.
-            engineReady = { runCatching { CadEngine.status(context) }.getOrDefault("") == "ready" },
+            engineReady = { runCatching { CadEngine.isReady(context) }.getOrDefault(false) },
             // Read live: a setting saved in the sheet has to reach the next frame, not the
             // next launch.
             settings = { cadViewerSettings },
@@ -971,7 +971,7 @@ fun EnderSlicerApp(
             while (true) {
                 val status = CadEngine.status(context)
                 cadEngineStatus = status
-                if (!viewerSettingsSent && status == "ready") {
+                if (!viewerSettingsSent && CadEngine.isReady(context)) {
                     viewerSettingsSent = true
                     viewport.applyViewerSettings(cadViewerSettings)
                 }
@@ -1013,7 +1013,10 @@ fun EnderSlicerApp(
     BackHandler(enabled = aiChatOpen && selectedTab == AppTab.PLATE) { aiChatOpen = false }
     BackHandler(enabled = modellingOpen) { modellingOpen = false }
     BackHandler(enabled = blenderFilesOpen && !modellingOpen) { blenderFilesOpen = false }
-    BackHandler(enabled = cadFilesOpen && !cadOpen) { cadFilesOpen = false }
+    // Back closes the CAD files screen when it is up, and the CAD screen itself otherwise: without
+    // the second, system back on a full-screen destination walked straight out of the app.
+    BackHandler(enabled = cadFilesOpen) { cadFilesOpen = false }
+    BackHandler(enabled = cadOpen && !cadFilesOpen) { cadOpen = false }
     // The paint brush and the annotation tools own the model's gestures while they
     // are open, so back leaves them the way their own Close action does.
     BackHandler(enabled = supportPaintUiOpen) {
@@ -1175,7 +1178,7 @@ fun EnderSlicerApp(
                 // spent a strip of the screen saying "Plate" about a tab that is not
                 // what you are looking at.
                 topBar = {
-                    if (modellingOpen) return@Scaffold
+                    if (modellingOpen || cadOpen) return@Scaffold
                     TopAppBar(
                         navigationIcon = {
                             if (printerScreenOpen) {
@@ -1454,7 +1457,7 @@ fun EnderSlicerApp(
                             .fillMaxSize()
                             .padding(padding),
                     )
-                } else if (cadOpen) {
+                } else if (cadOpen && !cadFilesOpen && !blenderFilesOpen) {
                     CadScreen(
                         messages = cadMessages,
                         busy = cadBusy,
@@ -1556,8 +1559,13 @@ fun EnderSlicerApp(
                                     Toast.makeText(
                                         context,
                                         if (loaded) "Loaded " + file.name + " into CAD"
-                                        else "The CAD engine did not come up; " + file.name +
-                                            " was not loaded",
+                                        // The engine comes back with its own reason when it
+                                        // refuses - an unsupported format, a missing file, a bad
+                                        // token - and blaming a slow start for that is a lie the
+                                        // log cannot correct for the user reading the toast.
+                                        else "Could not load " + file.name +
+                                            " - the engine refused it or never came up; " +
+                                            "logcat has the reason",
                                         Toast.LENGTH_LONG,
                                     ).show()
                                 } catch (error: Throwable) {

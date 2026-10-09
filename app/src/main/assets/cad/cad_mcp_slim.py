@@ -1775,9 +1775,17 @@ class CadMCPServer:
         if replace:
             SCENE.clear()
         SCENE.add(label, shape)
-        info = _summary(label, shape)
-        info["imported_from"] = filepath
-        info["imported_as"] = importer
+        # import_svg and import_dxf hand back a ShapeList - build123d's list of wires or faces -
+        # not a shape. Stored as one it reported success, wiped the scene, and broke every later
+        # command that resolved the name: the next frame raised AIS_Shape(list). Refusing it here,
+        # before the scene is cleared, is the honest answer until a profile is turned into
+        # something the scene can hold.
+        if not hasattr(shape, "wrapped"):
+            raise ValueError(
+                "%s imports as a list of profiles, which the scene cannot hold yet; import it in "
+                "execute_code and add the shape you want"
+                % os.path.splitext(os.path.basename(filepath))[1])
+        label = name or os.path.splitext(os.path.basename(filepath))[0]
         return info
 
     def clearance(self, cloud, name="", x=None, y=None, z=None, samples=16):
