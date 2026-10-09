@@ -586,36 +586,6 @@ def _grid_shape(step, half=100.0):
     return compound
 
 
-def _orbit_camera(view, dx, dy, width, height):
-    """Turn the view without rolling it: a turntable, out of OCCT's own two rotations.
-
-    Rotate is the horizontal gesture and Turn is the vertical one - a swap of what their names
-    suggest, and established by using it rather than by reading about it:
-
-        left and right  ->  Rotate, which moves the part left and right
-        up and down     ->  Turn, which moves the part up and down
-
-    The first version had these the other way round, and the phone reported it immediately: up
-    and down moved the part sideways, left and right moved it up and down. The measurements
-    missed it - a turning silhouette moves its own centroid wherever it likes, so both mappings
-    produced a plausible frame.
-
-    Between them they cannot roll: one turns about the world's vertical, the other about the
-    camera's own right. The arcball (StartRotation/Rotation) rolled, which laid a part on its side
-    when the phone was dragged diagonally. Rebuilding the camera was tried and is worse -
-    SetCamera re-derives the projection's scale and up as well, so the part came back a sixth of
-    its size in pixels and still tilted.
-
-    The rate is the arcball's own, pi radians across the smaller side of the viewport, so the
-    sensitivity the phone was tuned to does not change.
-    """
-    scale = math.pi / max(1, min(int(width), int(height)))
-    if dx:
-        view.Rotate(-float(dx) * scale, 0.0, 0.0)
-    if dy:
-        view.Turn(0.0, 0.0, -float(dy) * scale)
-
-
 def _apply_viewer(view):
     """Put the viewer's appearance on the view, and collect anything that refuses.
 
@@ -1541,7 +1511,7 @@ class CadMCPServer:
                 "readback": readback}
 
     def view(self, filepath, name="", orbit_dx=0.0, orbit_dy=0.0,
-             pan_dx=0.0, pan_dy=0.0, zoom=1.0,
+             pan_dx=0.0, pan_dy=0.0, zoom=1.0, roll=0.0,
              select_x=None, select_y=None, reset=False,
              width=640, height=640, shaded=True, orientation=None,
              antialiasing=None):
@@ -1592,7 +1562,19 @@ class CadMCPServer:
                 #
                 # The cursor starts at the centre of the viewport, not at (0,0): the
                 # arcball turns about the cursor, and a corner is not where a hand is.
-                _orbit_camera(viewport, orbit_dx, orbit_dy, width, height)
+                if self._orbit_cursor is None:
+                    self._orbit_cursor = [int(width // 2), int(height // 2)]
+                    # Integers: pywrap types both arguments as SupportsInt, and a float is
+                    # refused with "incompatible function arguments".
+                    viewport.StartRotation(self._orbit_cursor[0], self._orbit_cursor[1])
+                self._orbit_cursor[0] += int(orbit_dx)
+                self._orbit_cursor[1] += int(orbit_dy)
+                viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
+            if roll:
+                # The twist, asked for on purpose. Rotate about the view's own axis is the roll
+                # a two-finger turn means - the one thing the arcball could only ever do by
+                # accident, and the reason a part used to end up lying on its side.
+                viewport.Rotate(0.0, 0.0, math.radians(float(roll)))
             if pan_dx or pan_dy:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's

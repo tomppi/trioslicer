@@ -1469,6 +1469,7 @@ fun EnderSlicerApp(
                         onOrbit = { dx, dy -> cadViewport?.orbit(dx, dy) },
                         onPan = { dx, dy -> cadViewport?.pan(dx, dy) },
                         onZoom = { factor -> cadViewport?.zoomBy(factor) },
+                        onRotate = { degrees -> cadViewport?.rotate(degrees) },
                         onSelect = { x, y -> cadViewport?.select(x, y) },
                         onViewSize = { w, h -> cadViewport?.setViewSize(w, h) },
                         onResetView = { cadViewport?.reset() },

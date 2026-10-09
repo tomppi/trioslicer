@@ -179,6 +179,8 @@ class CadPreviewClient(
         panDx: Float = 0f,
         panDy: Float = 0f,
         zoom: Float = 1f,
+        /** Degrees to roll the view about its own axis: the two-finger twist. */
+        roll: Float = 0f,
         selectX: Int? = null,
         selectY: Int? = null,
         reset: Boolean = false,
@@ -195,6 +197,7 @@ class CadPreviewClient(
             .put("pan_dx", panDx.toDouble())
             .put("pan_dy", panDy.toDouble())
             .put("zoom", zoom.toDouble())
+        if (roll != 0f) params.put("roll", roll.toDouble())
             .put("reset", reset)
             .put("shaded", shaded)
         if (orientation != null) params.put("orientation", orientation)

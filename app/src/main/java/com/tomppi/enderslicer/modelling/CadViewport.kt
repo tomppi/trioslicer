@@ -48,6 +48,8 @@ private data class ViewRequest(
     val panDx: Float = 0f,
     val panDy: Float = 0f,
     val zoom: Float = 1f,
+    /** Degrees about the view's own axis, from the two-finger twist. */
+    val roll: Float = 0f,
     val selectX: Int? = null,
     val selectY: Int? = null,
     val reset: Boolean = false,
@@ -56,7 +58,7 @@ private data class ViewRequest(
 ) {
     /** Whether anything in here moves the camera. Picking and flags do not. */
     val hasMotion: Boolean
-        get() = orbitDx != 0f || orbitDy != 0f || panDx != 0f || panDy != 0f || zoom != 1f
+        get() = orbitDx != 0f || orbitDy != 0f || panDx != 0f || panDy != 0f || zoom != 1f || roll != 0f
 }
 
 /**
@@ -239,6 +241,7 @@ class CadViewport(
             panDx = deltas.panDx * dragScale,
             panDy = deltas.panDy * dragScale,
             zoom = deltas.zoom,
+            roll = request.roll,
             selectX = request.selectX,
             selectY = request.selectY,
             reset = request.reset,
@@ -272,6 +275,17 @@ class CadViewport(
             )
         }
         pending.trySend(ViewRequest())
+    }
+
+    /**
+     * Rolls the view about its own axis: the two-finger twist, as photo software has.
+     *
+     * Momentary rather than accumulated - a twist is an angle, not a distance travelled - so the
+     * engine is given the degrees from this event and nothing else.
+     */
+    fun rotate(degrees: Float) {
+        if (degrees == 0f) return
+        pending.trySend(ViewRequest(roll = degrees))
     }
 
     fun pan(dx: Float, dy: Float) {
