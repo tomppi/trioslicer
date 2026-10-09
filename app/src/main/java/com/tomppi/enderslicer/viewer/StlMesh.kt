@@ -16,7 +16,21 @@ data class MeshBounds(
     val centerX: Float get() = (minX + maxX) * 0.5f
     val centerY: Float get() = (minY + maxY) * 0.5f
     val centerZ: Float get() = (minZ + maxZ) * 0.5f
+
+    /** The box around both of these. What the plate's own bounds are built from. */
+    fun union(other: MeshBounds): MeshBounds = MeshBounds(
+        minX = minOf(minX, other.minX),
+        minY = minOf(minY, other.minY),
+        minZ = minOf(minZ, other.minZ),
+        maxX = maxOf(maxX, other.maxX),
+        maxY = maxOf(maxY, other.maxY),
+        maxZ = maxOf(maxZ, other.maxZ),
+    )
 }
+
+/** The box around every one of [boxes], or null when there are none. */
+fun Iterable<MeshBounds>.unionOrNull(): MeshBounds? =
+    reduceOrNull { first, second -> first.union(second) }
 
 /**
  * Linear model transform plus its final translation in normal build-plate

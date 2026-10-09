@@ -442,6 +442,19 @@ object CadEngine {
         val directory = exportsDirectory(context)
         val thread = Thread {
             Log.i(TAG, "watching ${directory.absolutePath} for exports")
+            // Everything already here is history from a previous run. [delivered] lives in
+            // memory, so without this the first poll hands the app every file the engine ever
+            // exported: invisible while an import replaced the model on the plate, because the
+            // last one simply won, and not invisible now that each import adds an object.
+            // This is the same claim the Blender watcher makes for its own directory.
+            runCatching {
+                directory.listFiles { file ->
+                    file.isFile && !file.name.contains("-part") &&
+                        file.extension.lowercase() in (EXPORT_EXTENSIONS + RENDER_EXTENSIONS)
+                }?.forEach { file ->
+                    synchronized(stateLock) { delivered.add(signatureOf(file)) }
+                }
+            }
             while (watching) {
                 val candidates = runCatching {
                     directory.listFiles { file ->

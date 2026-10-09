@@ -54,6 +54,7 @@ import kotlinx.coroutines.withContext
  * group's options open one at a time in a compact floating panel above it.
  */
 private enum class ModelToolsGroup(val label: String) {
+    PLATE("Plate"),
     TRANSFORM("Transform"),
     ACTIONS("Actions"),
     SUPPORT_PAINT("Support paint"),
@@ -85,6 +86,10 @@ fun ModelToolsOverlay(
     state: MainUiState,
     expandedLayout: Boolean,
     plateHeight: Dp,
+    onSelectModel: (String) -> Unit,
+    onRemoveModel: (String) -> Unit,
+    onArrangeNow: () -> Unit,
+    onOpenMultiObjectSettings: () -> Unit,
     onMove: (Double, Double, Double) -> Unit,
     onRotate: (ModelPlacement.Axis, Double) -> Unit,
     onScale: (Double) -> Unit,
@@ -115,6 +120,10 @@ fun ModelToolsOverlay(
                 state = state,
                 expandedLayout = expandedLayout,
                 plateHeight = plateHeight,
+                onSelectModel = onSelectModel,
+                onRemoveModel = onRemoveModel,
+                onArrangeNow = onArrangeNow,
+                onOpenMultiObjectSettings = onOpenMultiObjectSettings,
                 onMove = onMove,
                 onRotate = onRotate,
                 onScale = onScale,
@@ -211,6 +220,10 @@ private fun ModelToolsGroupPanel(
     state: MainUiState,
     expandedLayout: Boolean,
     plateHeight: Dp,
+    onSelectModel: (String) -> Unit,
+    onRemoveModel: (String) -> Unit,
+    onArrangeNow: () -> Unit,
+    onOpenMultiObjectSettings: () -> Unit,
     onMove: (Double, Double, Double) -> Unit,
     onRotate: (ModelPlacement.Axis, Double) -> Unit,
     onScale: (Double) -> Unit,
@@ -240,6 +253,14 @@ private fun ModelToolsGroupPanel(
         ) {
             Text(group.label, style = MaterialTheme.typography.titleMedium)
             when (group) {
+                ModelToolsGroup.PLATE -> ModelPlateTools(
+                    state = state,
+                    onSelectModel = onSelectModel,
+                    onRemoveModel = onRemoveModel,
+                    onArrangeNow = onArrangeNow,
+                    onOpenMultiObjectSettings = onOpenMultiObjectSettings,
+                )
+
                 ModelToolsGroup.TRANSFORM -> ModelTransformTools(
                     state = state,
                     onMove = onMove,
@@ -266,6 +287,66 @@ private fun ModelToolsGroupPanel(
                     onClearPaint = onClearPaint,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Plate group: every object on the build plate, which one the tools act on, and the
+ * arrangement.
+ *
+ * This list is the only place several objects are visible at once, so it is also where one is
+ * selected - the gizmo, the drag, the paint brush and the transform panel all act on the selected
+ * object - and where one is taken off the plate again.
+ */
+@Composable
+private fun ModelPlateTools(
+    state: MainUiState,
+    onSelectModel: (String) -> Unit,
+    onRemoveModel: (String) -> Unit,
+    onArrangeNow: () -> Unit,
+    onOpenMultiObjectSettings: () -> Unit,
+) {
+    if (state.models.isEmpty()) {
+        Text("Nothing on the plate yet.", style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    val selectedId = state.selectedModel?.id
+    state.models.forEachIndexed { index, model ->
+        val bounds = model.bounds
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onSelectModel(model.id) }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${index + 1}. ${model.name}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${model.mesh.triangleCount} triangles · " +
+                        "${"%.1f".format(bounds.width)} × ${"%.1f".format(bounds.depth)} mm" +
+                        if (model.id == selectedId) " · selected" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = { onRemoveModel(model.id) }) { Text("Remove") }
+        }
+    }
+    HorizontalDivider()
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onArrangeNow, enabled = state.models.size > 1) {
+            Text("Arrange now")
+        }
+        OutlinedButton(onClick = onOpenMultiObjectSettings) {
+            Text("Multi-object settings")
         }
     }
 }

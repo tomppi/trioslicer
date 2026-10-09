@@ -231,6 +231,7 @@ reviewer has to bring.
 - Blender wrapper: [native/blender/README.md](../native/blender/README.md)
 - Smart Infill and thermal FEA: [smart-infill.md](smart-infill.md), [native-smart-infill-handover.md](native-smart-infill-handover.md)
 - Non-planar slicing: [non-planar.md](non-planar.md)
+- Multi-object printing: [multi-object-printing.md](multi-object-printing.md)
 - OctoPrint: [octoprint-integration.md](octoprint-integration.md)
 - The assistant and its harness: [AI_ASSISTANT.md](../AI_ASSISTANT.md), [skills/](skills/)
 - UI conventions: [ui-style-guide.md](ui-style-guide.md)

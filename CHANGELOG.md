@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-object printing.** The build plate holds several models: an import appends to whatever
+  is already there, each part is selected, moved, turned and painted on its own, and one slice
+  covers the whole plate. The app arranges the plate itself - none of the three engines arranges
+  for the CLI paths this app drives, and both Slic3r forks will happily slice one part through
+  another - with **Auto arrange** / **Manual** placement, a gap setting, **Arrange now**, and a
+  **Multi-object printing** menu on the engine card.
+- **Sequential printing** ("print one object at a time") on all three engines. None of them
+  validates the head clearance in that mode - PrusaSlicer's check is commented out, the Orca
+  console never calls it, CuraEngine never had one - so the app refuses a plate whose parts would
+  collide with the print head or the gantry, before slicing it.
+- **Object labels in the G-code**, so a printer can cancel one object on its own: PrusaSlicer and
+  OrcaSlicer write per-object M486/EXCLUDE_OBJECT markers, and the G-code policy no longer
+  rejects the third object's id (it failed *after* a successful slice).
+- **CAD and Blender handoff for several parts.** Every file those engines export lands on the
+  plate as its own object, and each engine screen has **All to plate** to export the whole scene
+  in one action.
+- The saved workspace remembers the entire plate; a descriptor written by an older build still
+  restores as a one-model plate.
+
 ## [1.8.0] - 2026-10-07
 
 ### Added

@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -38,6 +40,7 @@ import com.tomppi.enderslicer.modelling.SceneSummary
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -162,6 +165,10 @@ fun ModellingPreview(
     var renderWidth by remember { mutableStateOf(0) }
     var renderHeight by remember { mutableStateOf(0) }
     var status by remember { mutableStateOf<String?>("Looking at the engine's scene...") }
+    // Kept apart from [status]: that one is a full-view overlay for "nothing to show yet", and a
+    // finished export must not cover the model it just exported.
+    var plateMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     var interacting by remember { mutableStateOf(false) }
     val lastGestureAt = remember { AtomicLong(0L) }
     // Bumped when the picture must be rendered again at the same camera - the
@@ -551,6 +558,36 @@ fun ModellingPreview(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp),
+            )
+        }
+        // A scene holding several objects has to leave the engine as one file per object: the
+        // engine's own export writes a single STL, and the plate would receive every part fused
+        // into one model sitting on top of the others.
+        TextButton(
+            onClick = {
+                plateMessage = "Exporting every object..."
+                scope.launch {
+                    val published = withContext(Dispatchers.IO) {
+                        client.exportEveryObject(File(blenderDir, "exports"))
+                    }
+                    plateMessage = when {
+                        published == null -> "The engine did not export the scene"
+                        published == 0 -> "The Blender scene has no mesh objects"
+                        published == 1 -> "Exported 1 object; it is joining the plate"
+                        else -> "Exported $published objects; they are joining the plate"
+                    }
+                }
+            },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+        ) {
+            Text("All to plate")
+        }
+        plateMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
             )
         }
     }

@@ -1,5 +1,11 @@
 package com.tomppi.enderslicer.profile
 
+import com.tomppi.enderslicer.conical.ConicalRuntime
+import com.tomppi.enderslicer.conical.ConicalSettings
+import com.tomppi.enderslicer.nonplanar.NonPlanarRuntime
+import com.tomppi.enderslicer.nonplanar.NonPlanarSettings
+import com.tomppi.enderslicer.smartinfill.SmartInfillModifier
+import com.tomppi.enderslicer.smartinfill.SmartInfillRuntime
 import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
@@ -214,6 +220,128 @@ class CuraResolvedSettingsWriterTest {
                 JSONObject(destination.readText()).getJSONObject(modelFile.name).getBoolean("bridge_settings_enabled"),
             )
         } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    /**
+     * The resolved request is one mesh group, so it carries one key per plate object.
+     * The engine reads the transform keys from the group's shared settings once per
+     * key, so a key that omitted them would silently inherit the previous object's.
+     */
+    @Test
+    fun writesOneKeyPerPlateObjectWithItsOwnTransform() {
+        val directory = Files.createTempDirectory("enderslicer-resolved-plate").toFile()
+        try {
+            val first = File(directory, "model-1.stl")
+            val second = File(directory, "model-2.stl")
+            writeTriangle(first, 100f, 100f, 1f)
+            writeTriangle(second, 20f, 30f, 1f)
+            val destination = File(directory, "resolved-settings.json")
+            val secondTransform = StlSliceTransform(
+                linear = listOf(
+                    0.0, 1.0, 0.0,
+                    -1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0,
+                ),
+                translationXmm = 11.5,
+                translationYmm = 22.5,
+                translationZmm = 0.0,
+            )
+
+            CuraResolvedSettingsWriter.write(
+                destination = destination,
+                modelFileName = first.name,
+                resolved = resolvedSettings(centerIsZero = false),
+                additionalObjects = listOf(
+                    CuraResolvedSettingsWriter.PlateObject(
+                        fileName = second.name,
+                        transform = secondTransform,
+                    ),
+                ),
+            )
+
+            val root = JSONObject(destination.readText())
+            val firstKey = root.getJSONObject(first.name)
+            val secondKey = root.getJSONObject(second.name)
+            assertEquals(
+                "[[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]",
+                firstKey.getString("mesh_rotation_matrix"),
+            )
+            assertEquals(
+                "[[0.0,1.0,0.0],[-1.0,0.0,0.0],[0.0,0.0,1.0]]",
+                secondKey.getString("mesh_rotation_matrix"),
+            )
+            assertEquals(0.0, firstKey.getDouble("enderslicer_mesh_translation_x"), 1e-12)
+            assertEquals(11.5, secondKey.getDouble("enderslicer_mesh_translation_x"), 1e-12)
+            assertEquals(22.5, secondKey.getDouble("enderslicer_mesh_translation_y"), 1e-12)
+            assertEquals(0.0, secondKey.getDouble("enderslicer_mesh_translation_z"), 1e-12)
+            // Shared group settings as far as the engine is concerned: extruder_nr and
+            // mesh_position must be on every key or the second model loads with the
+            // first model's values.
+            assertEquals(0, secondKey.getInt("extruder_nr"))
+            assertEquals(-115.0, secondKey.getDouble("mesh_position_x"), 1e-9)
+            assertEquals(-115.0, secondKey.getDouble("mesh_position_y"), 1e-9)
+            assertTrue(secondKey.getBoolean("support_interface_enable"))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun featuresBuiltForOneModelAreRefusedForAPlate() {
+        val directory = Files.createTempDirectory("enderslicer-resolved-plate-refusals").toFile()
+        try {
+            val first = File(directory, "model-1.stl")
+            val second = File(directory, "model-2.stl")
+            writeTriangle(first, 100f, 100f, 1f)
+            writeTriangle(second, 20f, 30f, 1f)
+            val destination = File(directory, "resolved-settings.json")
+
+            fun writePlate(additional: List<CuraResolvedSettingsWriter.PlateObject>) {
+                CuraResolvedSettingsWriter.write(
+                    destination = destination,
+                    modelFileName = first.name,
+                    resolved = resolvedSettings(centerIsZero = false),
+                    additionalObjects = additional,
+                )
+            }
+
+            SmartInfillRuntime.activate(null)
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            ConicalRuntime.activate(ConicalSettings())
+            val smartInfillError = runCatching {
+                writePlate(
+                    listOf(
+                        CuraResolvedSettingsWriter.PlateObject(
+                            fileName = second.name,
+                            smartInfillModifiers = listOf(SmartInfillModifier(35, second)),
+                        ),
+                    ),
+                )
+            }.exceptionOrNull()
+            assertTrue(smartInfillError is IllegalArgumentException)
+            assertTrue(smartInfillError?.message.orEmpty().contains("Smart Infill"))
+
+            NonPlanarRuntime.activate(NonPlanarSettings(enabled = true))
+            val nonPlanarError = runCatching {
+                writePlate(listOf(CuraResolvedSettingsWriter.PlateObject(fileName = second.name)))
+            }.exceptionOrNull()
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            assertTrue(nonPlanarError is IllegalArgumentException)
+            assertTrue(nonPlanarError?.message.orEmpty().contains("Non-planar"))
+
+            ConicalRuntime.activate(ConicalSettings(enabled = true))
+            val conicalError = runCatching {
+                writePlate(listOf(CuraResolvedSettingsWriter.PlateObject(fileName = second.name)))
+            }.exceptionOrNull()
+            ConicalRuntime.activate(ConicalSettings())
+            assertTrue(conicalError is IllegalArgumentException)
+            assertTrue(conicalError?.message.orEmpty().contains("Conical"))
+        } finally {
+            SmartInfillRuntime.activate(null)
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            ConicalRuntime.activate(ConicalSettings())
             directory.deleteRecursively()
         }
     }

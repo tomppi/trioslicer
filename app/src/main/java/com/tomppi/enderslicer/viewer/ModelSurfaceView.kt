@@ -93,6 +93,9 @@ class ModelSurfaceView(
     /** A long press that landed on the model: the app puts the three modes up. */
     var onTransformRequested: ((Float, Float) -> Unit)? = null
 
+    /** A tap on a part: the index in the list the renderer was last given. */
+    var onModelPicked: ((Int) -> Unit)? = null
+
     /** Live rotation while the finger is down, for the hovering readout. */
     var onRotatePreview: ((ModelPlacement.Axis, Float) -> Unit)? = null
 
@@ -142,7 +145,21 @@ class ModelSurfaceView(
     private var draggingAxisMove = false
     private var axisMoveAxis: ModelPlacement.Axis = ModelPlacement.Axis.X
     private var axisMoveMillimetres = 0f
-    private var currentMesh: StlMesh? = null
+    /**
+     * Every mesh on the plate, in the host's order.
+     *
+     * The plate held exactly one until multi-object printing: the tools, the
+     * gizmo and the annotations still act on the selected one, while the camera
+     * frames them all.
+     */
+    private var currentMeshes: List<StlMesh> = emptyList()
+
+    /** Which object in [currentMeshes] the tools act on. */
+    private var currentSelectedIndex = 0
+
+    /** The mesh those tools act on, or null when the plate is empty. */
+    private val currentMesh: StlMesh?
+        get() = currentMeshes.getOrNull(currentSelectedIndex)
 
     /** Invoked on the UI thread with the model triangle hit by a paint stroke. */
     var onPaintHit: ((MeshPicker.Hit) -> Unit)? = null
@@ -270,19 +287,35 @@ class ModelSurfaceView(
         isClickable = true
     }
 
-    fun setMesh(mesh: StlMesh?) {
-        currentMesh = mesh
+    /**
+     * Hands the viewer the whole plate, and which object the tools act on.
+     *
+     * Every mesh arrives already placed - in bed coordinates - so drawing the
+     * plate is drawing their vertices end to end and no per-object matrix is
+     * involved. The selected object is the one the brush, the gizmo and the
+     * annotations land on, and the only one drawn with the selection tint, so
+     * which object is being worked on is never a guess.
+     */
+    fun setMeshes(meshes: List<StlMesh>, selectedIndex: Int) {
+        val selected = selectedIndex.coerceIn(0, max(meshes.size - 1, 0))
+        currentMeshes = meshes
+        currentSelectedIndex = selected
         // The committed transform is in the new vertices, so the preview standing
         // in for it ends here - exactly when the geometry arrives. That timing is
         // what keeps the model from snapping back under the finger on release.
         modelRenderer.setDragOffset(0f, 0f, 0f)
         modelRenderer.setPreviewTransform(null, null, 0f, 1f)
-        queueEvent { modelRenderer.setMesh(mesh) }
+        queueEvent { modelRenderer.setMeshes(meshes, selected) }
         // The gizmo is sized from the model, so a new model gets a new one.
         queueEvent { modelRenderer.setGizmo(gizmoFor(gizmoMode)) }
-        // setMesh resets the camera on the GL thread for a new model.
+        // setMeshes resets the camera on the GL thread for a new model.
         queueEvent { notifyOrientation() }
         requestRender()
+    }
+
+    /** One model on the plate: what every single-model caller still means. */
+    fun setMesh(mesh: StlMesh?) {
+        setMeshes(if (mesh == null) emptyList() else listOf(mesh), 0)
     }
 
     fun currentOrientation(): ViewerOrientation = modelRenderer.orientation
@@ -647,7 +680,14 @@ class ModelSurfaceView(
     private fun scheduleTransformProbe(screenX: Float, screenY: Float) {
         paintPickExecutor.execute {
             val hit = modelRenderer.pickTriangle(screenX, screenY)
-            if (hit != null) post { onTransformRequested?.invoke(screenX, screenY) }
+            // The gizmo belongs to the object being worked on, so long-pressing a
+            // neighbour asks for nothing rather than putting handles on a part the
+            // finger is not on.
+            if (hit != null) post {
+                if (hit.objectIndex == currentSelectedIndex) {
+                    onTransformRequested?.invoke(screenX, screenY)
+                }
+            }
         }
     }
 
@@ -665,7 +705,9 @@ class ModelSurfaceView(
      */
     private fun applyBrushProbe(hit: MeshPicker.Hit?) {
         brushDeciding = false
-        if (hit != null) {
+        // The brush paints the selected object, so a stroke that began on another
+        // one is not a stroke at all: the gesture stays the camera's.
+        if (hit != null && hit.objectIndex == currentSelectedIndex) {
             brushDragging = true
             onSurfacePick?.invoke(hit)
             return
@@ -700,7 +742,17 @@ class ModelSurfaceView(
                     }
                     if (hit == null) continue
                     post {
-                        if (surfacePickActive) onSurfacePick?.invoke(hit) else onPaintHit?.invoke(hit)
+                        // Only the selected object takes paint; a sample that
+                        // landed on a neighbour is dropped, not painted onto the
+                        // wrong part. Read here, on the UI thread, so the answer
+                        // cannot race a selection change on the GL thread.
+                        if (hit.objectIndex == currentSelectedIndex) {
+                            if (surfacePickActive) {
+                                onSurfacePick?.invoke(hit)
+                            } else {
+                                onPaintHit?.invoke(hit)
+                            }
+                        }
                     }
                 }
             } finally {
@@ -852,6 +904,30 @@ class ModelSurfaceView(
     private inner class GestureListener : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(event: MotionEvent): Boolean = true
 
+        /**
+         * A tap on a part makes it the one the tools act on.
+         *
+         * Only while no other tool owns taps: painting, annotation and Smart Infill surface
+         * picking all read a tap as their own, and with a gizmo on screen the tap is aimed at a
+         * handle. The pick runs off the UI thread like the others, and a tap on the part that is
+         * already selected asks for nothing.
+         */
+        override fun onSingleTapUp(event: MotionEvent): Boolean {
+            if (!cameraInteractive || paintMode != SupportPaintMode.NONE || annotationActive ||
+                surfacePickActive || gizmoMode != TransformGizmoMode.NONE
+            ) {
+                return false
+            }
+            val listener = onModelPicked ?: return false
+            paintPickExecutor.execute {
+                val hit = modelRenderer.pickTriangle(event.x, event.y) ?: return@execute
+                if (hit.objectIndex != currentSelectedIndex) {
+                    post { listener(hit.objectIndex) }
+                }
+            }
+            return false
+        }
+
         override fun onLongPress(event: MotionEvent) {
             if (cameraInteractive && paintMode == SupportPaintMode.NONE &&
                 !annotationActive && gizmoMode == TransformGizmoMode.NONE
@@ -908,9 +984,39 @@ private class ModelRenderer(
     /** Device pixels per dp, for the marker line widths that GL takes in pixels. */
     private val density: Float,
 ) : GLSurfaceView.Renderer {
+    /**
+     * The whole plate as one mesh: every object's vertices end to end.
+     *
+     * The meshes are handed in already placed - in bed coordinates - so the
+     * renderer needs no per-object matrix, only where each object starts. Written
+     * last, after the bookkeeping beside it, so a pick on the executor thread
+     * never sees a scene without its owners.
+     */
     @Volatile private var mesh: StlMesh? = null
+
+    /** The objects the scene was built from, in the same order. */
+    private var objectMeshes: List<StlMesh> = emptyList()
+
+    /** Which object the tools act on: an index into [objectMeshes]. */
+    @Volatile private var selectedObject = 0
+
+    /**
+     * One entry per scene triangle: the object that owns it.
+     *
+     * Empty for a plate of one object, whose every triangle belongs to object
+     * zero: four bytes per triangle on the Java heap is worth more than a lookup
+     * that can only answer one thing.
+     */
+    private var triangleOwners: IntArray = IntArray(0)
+
+    /** Where each object's triangles start inside the scene. */
+    private var objectFirstTriangle: IntArray = IntArray(0)
+
     private var meshBuffer: FloatBuffer? = null
     private var paintColors: PaintColorBuffer? = null
+
+    /** Which object [paintColors] colours; -1 when there is none. */
+    private var colorObject = -1
     private var annotationOverlay: AnnotationOverlay? = null
     private var annotationBuffer: FloatBuffer? = null
     @Volatile private var gizmoOverlay: GizmoOverlay? = null
@@ -992,23 +1098,172 @@ private class ModelRenderer(
     private val modelView = FloatArray(16)
     private val mvp = FloatArray(16)
 
-    fun setMesh(value: StlMesh?) {
-        if (mesh === value) return
-        val isNewModel = value?.displayName != mesh?.displayName
-        mesh = value
-        meshBuffer = value?.let { mesh ->
-            mesh.interleavedVertices.directOrNull()
-                ?: mesh.interleavedVertices.arrayOrNull()?.let(::floatBuffer)
+    /**
+     * The whole plate, exactly as the host lists it, and which object the tools
+     * act on.
+     *
+     * A scene that is the same objects in the same order is left alone: every
+     * recomposition hands in a fresh list, and re-concatenating a plate of
+     * millions of triangles for one would make it stutter. Selecting a different
+     * object is not a new scene either - its vertices are already in the buffer,
+     * and only the tint and the paint move.
+     */
+    fun setMeshes(values: List<StlMesh>, selectedIndex: Int) {
+        val selected = selectedIndex.coerceIn(0, max(values.size - 1, 0))
+        if (selected == selectedObject && sameObjects(values)) return
+        val next = values.toList()
+        val rebuilt = !sameObjects(next)
+        val isNewModel = next.size != objectMeshes.size ||
+            next.indices.any { next[it].displayName != objectMeshes[it].displayName }
+        if (selected != selectedObject) {
+            // The paint in hand belonged to the object that was selected. The host
+            // hands the new object's over in the same breath; until it does, the
+            // honest answer is that nothing is painted.
+            paintState = SupportPaintState()
         }
-        // Every placement change (rotate, scale, move, lay flat, drop) hands in a
-        // fresh StlMesh, and the previous VBO is unreachable from here on: left
-        // behind, one mesh-sized buffer would leak per tap until the driver ran
-        // out of memory and the model silently stopped drawing.
-        releaseGpuBuffers()
-        paintColors = null
+        objectMeshes = next
+        selectedObject = selected
+        if (rebuilt) {
+            val scene = sceneOf(next)
+            triangleOwners = scene?.owners ?: IntArray(0)
+            objectFirstTriangle = scene?.firstTriangle ?: IntArray(0)
+            meshBuffer = scene?.mesh?.let { built ->
+                built.interleavedVertices.directOrNull()
+                    ?: built.interleavedVertices.arrayOrNull()?.let(::floatBuffer)
+            }
+            // Written last: the volatile field is what publishes the scene and the
+            // bookkeeping beside it to a pick running on the executor thread.
+            mesh = scene?.mesh
+            // Every placement change (rotate, scale, move, lay flat, drop) hands in
+            // fresh meshes, and the previous VBO is unreachable from here on: left
+            // behind, one scene-sized buffer would leak per tap until the driver ran
+            // out of memory and the plate silently stopped drawing.
+            releaseGpuBuffers()
+            paintColors = null
+            colorObject = -1
+        }
         rebuildColorBuffer()
         if (isNewModel) resetCamera()
     }
+
+    /** True when [values] is the very same objects, in the same order, as the scene in hand. */
+    private fun sameObjects(values: List<StlMesh>): Boolean {
+        if (values.size != objectMeshes.size) return false
+        for (index in values.indices) {
+            if (values[index] !== objectMeshes[index]) return false
+        }
+        return true
+    }
+
+    /** The object the tools act on, or null when the plate is empty. */
+    private fun selectedMesh(): StlMesh? = objectMeshes.getOrNull(selectedObject)
+
+    /**
+     * Concatenates the objects into the one buffer the plate is drawn from.
+     *
+     * The meshes are already in bed coordinates, so a scene is their vertices end
+     * to end: one upload, one draw per object, and an object's place in the
+     * buffer as its only per-object state. A plate of one borrows that mesh's
+     * vertex data instead of copying it, so a single model keeps exactly the
+     * memory and the upload it had before multi-object printing; a plate that
+     * outgrows the Java heap moves to a direct buffer by the same rule
+     * VertexData applies to a single mesh, so concatenating cannot defeat it.
+     */
+    private fun sceneOf(values: List<StlMesh>): Scene? {
+        if (values.isEmpty()) return null
+        val only = values.singleOrNull()
+        if (only != null) {
+            // One object is its own scene. The wrapper shares its vertex data, so
+            // this costs an object header and nothing else.
+            return Scene(
+                mesh = StlMesh(
+                    displayName = only.displayName,
+                    interleavedVertices = only.interleavedVertices,
+                    triangleCount = only.triangleCount,
+                    bounds = only.bounds,
+                ),
+                owners = IntArray(0),
+                firstTriangle = intArrayOf(0),
+            )
+        }
+        val totalTriangles = values.sumOf { it.triangleCount }
+        val totalFloats = totalTriangles * FLOATS_PER_TRIANGLE
+        val owners = IntArray(totalTriangles)
+        val firstTriangle = IntArray(values.size)
+        val heap = totalTriangles < OFF_HEAP_MIN_TRIANGLES
+        val array = if (heap) FloatArray(totalFloats) else null
+        val direct = if (heap) {
+            null
+        } else {
+            ByteBuffer.allocateDirect(totalFloats * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+        }
+        var triangle = 0
+        var at = 0
+        values.forEachIndexed { index, objectMesh ->
+            firstTriangle[index] = triangle
+            val floats = objectMesh.triangleCount * FLOATS_PER_TRIANGLE
+            val source = objectMesh.interleavedVertices
+            val sourceArray = source.arrayOrNull()
+            if (array != null) {
+                if (sourceArray != null) {
+                    System.arraycopy(sourceArray, 0, array, at, floats)
+                } else {
+                    source.directOrNull()!!.duplicate().apply {
+                        position(0)
+                        limit(floats)
+                    }.get(array, at, floats)
+                }
+            } else {
+                val target = direct!!
+                target.position(at)
+                if (sourceArray != null) {
+                    target.put(sourceArray, 0, floats)
+                } else {
+                    // A duplicate, never the mesh's own buffer: the picker reads
+                    // its contents from another thread, and its position is not mine
+                    // to move.
+                    target.put(
+                        source.directOrNull()!!.duplicate().apply {
+                            position(0)
+                            limit(floats)
+                        },
+                    )
+                }
+            }
+            var owned = 0
+            while (owned < objectMesh.triangleCount) {
+                owners[triangle + owned] = index
+                owned++
+            }
+            triangle += objectMesh.triangleCount
+            at += floats
+        }
+        return Scene(
+            mesh = StlMesh(
+                displayName = SCENE_NAME,
+                interleavedVertices = if (array != null) {
+                    VertexData.fromArray(array)
+                } else {
+                    VertexData.fromDirect(direct!!)
+                },
+                triangleCount = totalTriangles,
+                bounds = values.map { it.bounds }.unionOrNull() ?: values[0].bounds,
+            ),
+            owners = owners,
+            firstTriangle = firstTriangle,
+        )
+    }
+
+    /** The plate as one mesh, with the per-object bookkeeping the draw and the pick need. */
+    private class Scene(
+        val mesh: StlMesh,
+        /** One entry per scene triangle: the object that owns it; empty for one object. */
+        val owners: IntArray,
+        /** Where each object's triangles start inside [mesh]. */
+        val firstTriangle: IntArray,
+    )
 
     fun setPaintState(value: SupportPaintState) {
         if (paintState == value) return
@@ -1028,7 +1283,9 @@ private class ModelRenderer(
         if (paintState == value) return
         paintState = value
         val buffer = paintColors
-        if (buffer == null || buffer.triangleCount != mesh?.triangleCount) {
+        // The buffer colours the selected object's triangles, and the stroke's
+        // expansion is in that object's own indices, so the sizes have to agree.
+        if (buffer == null || buffer.triangleCount != selectedMesh()?.triangleCount) {
             rebuildColorBuffer()
             return
         }
@@ -1055,7 +1312,14 @@ private class ModelRenderer(
         rebuildRegions()
     }
 
-    private fun cameraSnapshot(currentMesh: StlMesh) = MeshPicker.CameraSnapshot(
+    /**
+     * The camera as the picker sees it.
+     *
+     * The bounds are the whole plate's, so a pick projects through exactly the fit
+     * the frame was drawn with: a plate of several objects fits differently from
+     * any one of them.
+     */
+    private fun cameraSnapshot() = MeshPicker.CameraSnapshot(
         viewportWidth = viewportWidth.toFloat(),
         viewportHeight = viewportHeight.toFloat(),
         yaw = yaw,
@@ -1063,17 +1327,38 @@ private class ModelRenderer(
         zoom = zoom,
         panX = panX,
         panY = panY,
-        meshBounds = currentMesh.bounds,
+        meshBounds = mesh?.bounds,
     )
 
     fun pickTriangle(screenX: Float, screenY: Float): MeshPicker.Hit? {
-        val currentMesh = mesh ?: return null
-        return MeshPicker.pick(
-            mesh = currentMesh,
+        val scene = mesh ?: return null
+        val hit = MeshPicker.pick(
+            mesh = scene,
             printer = printer,
-            camera = cameraSnapshot(currentMesh),
+            camera = cameraSnapshot(),
             screenX = screenX,
             screenY = screenY,
+        ) ?: return null
+        return objectHit(hit)
+    }
+
+    /**
+     * Re-frames a scene hit as a hit on the object that owns the triangle.
+     *
+     * The picker only ever sees the plate as one mesh, so the index it answers
+     * with is a scene index. Every caller outside wants the object - the brush,
+     * the gizmo and the annotations all act on one - together with the index
+     * inside that object's own mesh, which is the index its paint is stored by.
+     */
+    private fun objectHit(hit: MeshPicker.Hit): MeshPicker.Hit {
+        val owner = if (hit.triangleIndex in triangleOwners.indices) {
+            triangleOwners[hit.triangleIndex]
+        } else {
+            0
+        }
+        return hit.copy(
+            triangleIndex = hit.triangleIndex - objectFirstTriangle.getOrElse(owner) { 0 },
+            objectIndex = owner,
         )
     }
 
@@ -1087,11 +1372,17 @@ private class ModelRenderer(
      * with the result, because a later depth-preserving move needs it.
      */
     fun annotationGestureAt(screenX: Float, screenY: Float): AnnotationGesture? {
-        val currentMesh = mesh ?: return null
-        val camera = cameraSnapshot(currentMesh)
+        val scene = mesh ?: return null
+        val camera = cameraSnapshot()
         val ray = MeshPicker.ray(printer, camera, screenX, screenY) ?: return null
-        val hit = MeshPicker.pick(currentMesh, printer, camera, screenX, screenY)
-        val bounds = currentMesh.bounds
+        // An annotation describes the selected object - the session is cleared when
+        // another model is loaded - so a surface point on a neighbour is not a face
+        // of it. It counts as a miss and lands on the plane, exactly like a tap
+        // beside the part, rather than exporting another object's triangle index.
+        val hit = MeshPicker.pick(scene, printer, camera, screenX, screenY)
+            ?.let(::objectHit)
+            ?.takeIf { it.objectIndex == selectedObject }
+        val bounds = selectedMesh()?.bounds ?: scene.bounds
         val position = if (hit != null) {
             Point3(hit.x, hit.y, hit.z)
         } else {
@@ -1177,9 +1468,9 @@ private class ModelRenderer(
      */
     fun gizmoHitAt(screenX: Float, screenY: Float, tolerancePx: Float): GizmoHit? {
         val overlay = gizmoOverlay ?: return null
-        val currentMesh = mesh ?: return null
+        val scene = mesh ?: return null
         if (overlay.handles.isEmpty()) return null
-        val camera = cameraSnapshot(currentMesh)
+        val camera = cameraSnapshot()
         val probe = DepthProbe()
         val hits = ArrayList<GizmoHit>(overlay.handles.size * 8)
         val candidates = ArrayList<GizmoDrag.HandleCandidate>(overlay.handles.size * 8)
@@ -1204,7 +1495,7 @@ private class ModelRenderer(
         // What the model is doing under the finger: a handle further away than
         // that surface is behind the model, and reaching through the part to grab a
         // ring on its far side is exactly what felt wrong.
-        val surface = MeshPicker.pick(currentMesh, printer, camera, screenX, screenY)
+        val surface = MeshPicker.pick(scene, printer, camera, screenX, screenY)
         val surfaceDepth = surface?.let { probe.of(it.x, it.y, it.z) }
         val chosen = GizmoDrag.chooseHandle(candidates, tolerancePx, surfaceDepth)
         return if (chosen >= 0) hits[chosen] else null
@@ -1250,8 +1541,8 @@ private class ModelRenderer(
 
     /** Millimetres along [axis] for a screen drag on its arrow. */
     fun axisDragMillimetres(axis: ModelPlacement.Axis, deltaXPx: Float, deltaYPx: Float): Float {
-        val currentMesh = mesh ?: return 0f
-        val bounds = currentMesh.bounds
+        // The arrows are sized from the object they move, not from the plate.
+        val bounds = selectedMesh()?.bounds ?: return 0f
         val pivot = Point3(bounds.centerX, bounds.centerY, bounds.centerZ)
         val length = TransformGizmo.arrowLengthMm(bounds)
         val tip = when (axis) {
@@ -1259,7 +1550,7 @@ private class ModelRenderer(
             ModelPlacement.Axis.Y -> Point3(pivot.x, pivot.y + length, pivot.z)
             ModelPlacement.Axis.Z -> Point3(pivot.x, pivot.y, pivot.z + length)
         }
-        val camera = cameraSnapshot(currentMesh)
+        val camera = cameraSnapshot()
         val from = MeshPicker.project(printer, camera, pivot.x, pivot.y, pivot.z) ?: return 0f
         val to = MeshPicker.project(printer, camera, tip.x, tip.y, tip.z) ?: return 0f
         val fallback = BedPlaneDrag.millimetresPerPixel(
@@ -1288,8 +1579,8 @@ private class ModelRenderer(
     fun ringDragReference(axis: ModelPlacement.Axis, touchX: Float, touchY: Float): FloatArray? {
         val overlay = gizmoOverlay ?: return null
         val handle = overlay.handles.firstOrNull { it.axis == axis && it.kind == GizmoHandleKind.RING } ?: return null
-        val currentMesh = mesh ?: return null
-        val camera = cameraSnapshot(currentMesh)
+        if (mesh == null) return null
+        val camera = cameraSnapshot()
         val count = handle.points.size / 3
         if (count < 4) return null
         val projected = FloatArray(count * 2)
@@ -1466,10 +1757,9 @@ private class ModelRenderer(
      * but must still be grabbable.
      */
     fun annotationHandleAt(screenX: Float, screenY: Float, radiusPx: Float): SegmentEnd? {
-        val currentMesh = mesh ?: return null
         val overlay = annotationOverlay ?: return null
-        if (overlay.handles.isEmpty()) return null
-        val camera = cameraSnapshot(currentMesh)
+        if (overlay.handles.isEmpty() || mesh == null) return null
+        val camera = cameraSnapshot()
         var best: SegmentEnd? = null
         var bestDistance = radiusPx
         for ((end, position) in overlay.handles) {
@@ -1590,34 +1880,43 @@ private class ModelRenderer(
     }
 
     private fun rebuildColorBuffer() {
-        val currentMesh = mesh ?: run {
+        val selected = selectedMesh() ?: run {
             paintColors = null
+            colorObject = -1
             colorUploaded = false
             return
         }
         // A uniform base colour needs no buffer: the shader constant path in
         // drawMesh covers it, keeping dense meshes off the direct-memory heap
         // until painting, a boundary condition or a result tint needs colours.
+        // The selection tint is one of those constants too, so a plate with
+        // nothing painted pays nothing for it either.
         val overlay = smartInfillOverlay
         val overlayEmpty = overlay == null || overlay.isEmpty
         if (!paintActive && paintState.isEmpty && overlayEmpty) {
             paintColors = null
+            colorObject = -1
             colorUploaded = false
             return
         }
         val palette = colorPalette(overlay)
         var buffer = paintColors
         if (buffer == null ||
-            buffer.triangleCount != currentMesh.triangleCount ||
+            // Paint, conditions and the result tint all arrive in the selected
+            // object's own triangle indices, so the buffer has to belong to that
+            // object: a selection change builds a new one.
+            colorObject != selectedObject ||
+            buffer.triangleCount != selected.triangleCount ||
             // Contents, not just the slot count: a new run with the same number of
             // bins still repaints every region.
             !buffer.hasPalette(palette)
         ) {
             buffer = PaintColorBuffer(
-                triangleCount = currentMesh.triangleCount,
+                triangleCount = selected.triangleCount,
                 palette = palette,
             )
             paintColors = buffer
+            colorObject = selectedObject
             // A fresh buffer has no GPU-side copy yet, so force a full upload.
             colorUploaded = false
         }
@@ -1641,11 +1940,16 @@ private class ModelRenderer(
     /**
      * The colour of every buffer slot: the fixed roles, then one per density bin
      * of the result tint, from the viewer's own ramp.
+     *
+     * The base slot is the selection tint while the plate holds more than one
+     * object - it is the only thing telling them apart - and the plain base colour
+     * while it holds one, so a single model still looks exactly as it did before
+     * multi-object printing.
      */
     private fun colorPalette(overlay: SmartInfillOverlay?): Array<FloatArray> {
         val bins = overlay?.binDensities ?: EMPTY_DENSITIES
         val palette = ArrayList<FloatArray>(FIXED_SLOTS + bins.size)
-        palette += BASE_COLOR
+        palette += if (selectionTinted()) SELECTED_BASE_COLOR else BASE_COLOR
         palette += ENFORCER_COLOR
         palette += BLOCKER_COLOR
         palette += SUPPORT_COLOR
@@ -1654,6 +1958,13 @@ private class ModelRenderer(
         for (density in bins) palette += DensityRamp.color(density)
         return palette.toTypedArray()
     }
+
+    /** True when there is more than one object, so the selected one has to stand out. */
+    private fun selectionTinted(): Boolean = objectMeshes.size > 1
+
+    /** The colour an object with no colour buffer of its own is drawn in. */
+    private fun objectColor(index: Int): FloatArray =
+        if (selectionTinted() && index == selectedObject) SELECTED_BASE_COLOR else BASE_COLOR
 
     private fun cameraDistance(): Float = sceneFit(
         viewportWidth.toFloat() / max(viewportHeight, 1).toFloat(),
@@ -1770,7 +2081,7 @@ private class ModelRenderer(
     }
 
     private fun drawMesh() {
-        val currentMesh = mesh ?: return
+        if (mesh == null) return
         val buffer = meshBuffer ?: return
 
         // ModelPlacement has already written the mesh vertices into final
@@ -1854,14 +2165,28 @@ private class ModelRenderer(
                 GLES20.glEnableVertexAttribArray(color)
                 GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, data)
             }
-        } else {
-            GLES20.glDisableVertexAttribArray(color)
-            GLES20.glVertexAttrib3f(color, BASE_COLOR[0], BASE_COLOR[1], BASE_COLOR[2])
         }
 
         GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
         GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, currentMesh.triangleCount * 3)
+        // One draw per object. The plate is their vertices end to end, and the
+        // colour path is per object: the object being worked on carries the paint,
+        // the conditions and the selection tint, while the others draw in their
+        // plain colour through the constant-attribute path.
+        for (index in objectMeshes.indices) {
+            if (colors != null && index == colorObject) {
+                GLES20.glEnableVertexAttribArray(color)
+            } else {
+                GLES20.glDisableVertexAttribArray(color)
+                val rgb = objectColor(index)
+                GLES20.glVertexAttrib3f(color, rgb[0], rgb[1], rgb[2])
+            }
+            GLES20.glDrawArrays(
+                GLES20.GL_TRIANGLES,
+                objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE,
+                objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE,
+            )
+        }
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         GLES20.glDisableVertexAttribArray(position)
         GLES20.glDisableVertexAttribArray(normal)
@@ -2119,6 +2444,24 @@ private class ModelRenderer(
 
         /** The fixed palette slots: base, enforcer, blocker, support, load, armed. */
         const val FIXED_SLOTS = 6
+
+        /** Interleaved vertex: three position floats, then three normal ones. */
+        const val FLOATS_PER_VERTEX = 6
+
+        /** Three vertices to a triangle, so eighteen floats to a scene triangle. */
+        const val VERTICES_PER_TRIANGLE = 3
+        const val FLOATS_PER_TRIANGLE = FLOATS_PER_VERTEX * VERTICES_PER_TRIANGLE
+
+        /** The scene mesh's own name; nothing displays it. */
+        const val SCENE_NAME = "Build plate"
+
+        /**
+         * Base colour of the object being worked on while the plate holds more than
+         * one. The same family as [BASE_COLOR] and clearly lighter, so the object a
+         * brush, a gizmo drag or an annotation lands on stands out without reading
+         * as a different material.
+         */
+        val SELECTED_BASE_COLOR = floatArrayOf(0.52f, 0.78f, 0.98f)
 val ANNOTATION_COLOR = floatArrayOf(1.00f, 0.76f, 0.22f)
 val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
 

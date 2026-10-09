@@ -233,6 +233,7 @@ fun EnderSlicerApp(
     val printerChecklistStore = remember(context) { PrinterChecklistStore(context.applicationContext) }
     var printerChecklistDone by remember(printerChecklistStore) { mutableStateOf(printerChecklistStore.load()) }
     var modelToolsOpen by rememberSaveable { mutableStateOf(false) }
+    var multiObjectOpen by rememberSaveable { mutableStateOf(false) }
     // Dragging the model across the plate is a mode on the viewer, held here
     // because the Transform panel that turns it on is not the plate itself.
     var modelDragMove by rememberSaveable { mutableStateOf(false) }
@@ -1495,6 +1496,29 @@ fun EnderSlicerApp(
                         onOrientation = { cadViewport?.setOrientation(it) },
                         onPickUsed = { cadViewport?.clearPick() },
                         onSend = ::askCadAgent,
+                        onExportAll = {
+                            val viewport = cadViewport
+                            if (viewport == null) {
+                                Toast.makeText(
+                                    context,
+                                    "The CAD engine is still starting",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } else {
+                                viewport.exportEveryShape(CadEngine.exportsDirectory(context)) { count ->
+                                    Toast.makeText(
+                                        context,
+                                        when {
+                                            count == null -> "The CAD engine did not export the scene"
+                                            count == 0 -> "The CAD scene has no shapes to send"
+                                            count == 1 -> "Exported 1 shape; it is joining the plate"
+                                            else -> "Exported $count shapes; they are joining the plate"
+                                        },
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        },
                         onExit = { cadOpen = false },
                         modifier = Modifier
                             .fillMaxSize()
@@ -1637,6 +1661,9 @@ fun EnderSlicerApp(
                             onPaintHit = viewModel::paintAt,
                             onSurfacePick = viewModel::brushSurfaceAt,
                             onSurfacePickEnd = viewModel::endSmartInfillStroke,
+                            onModelPicked = { index ->
+                                state.models.getOrNull(index)?.let { model -> viewModel.selectModel(model.id) }
+                            },
                             dragMove = modelDragMove,
                             onModelDrag = { deltaX, deltaY ->
                                 viewModel.nudgeModel(deltaX.toDouble(), deltaY.toDouble())
@@ -1760,6 +1787,10 @@ fun EnderSlicerApp(
                                     state = state,
                                     expandedLayout = expandedLayout,
                                     plateHeight = plateHeightDp,
+                                    onSelectModel = viewModel::selectModel,
+                                    onRemoveModel = viewModel::removeModel,
+                                    onArrangeNow = viewModel::arrangePlate,
+                                    onOpenMultiObjectSettings = { multiObjectOpen = true },
                                     onMove = viewModel::moveModel,
                                     onRotate = viewModel::rotateModel,
                                     onScale = viewModel::scaleModelTo,
@@ -1861,6 +1892,8 @@ fun EnderSlicerApp(
                         EngineSelectorCard(
                             engine = engine,
                             onEngineChange = onEngineChange,
+                            onOpenMultiObject = { multiObjectOpen = true },
+                            objectCount = state.models.size,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         if (engine == SlicerEngine.PRUSA) {
@@ -2023,6 +2056,22 @@ fun EnderSlicerApp(
                 onChange = onUiScaleChange,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+
+    if (multiObjectOpen) {
+        AppBottomSheet(
+            onDismissRequest = { multiObjectOpen = false },
+        ) {
+            Column(modifier = Modifier.navigationBarsPadding()) {
+                MultiObjectSheet(
+                    preferences = state.platePreferences,
+                    onPreferences = viewModel::setPlatePreferences,
+                    onArrangeNow = viewModel::arrangePlate,
+                    objectCount = state.models.size,
+                    onDismiss = { multiObjectOpen = false },
+                )
+            }
         }
     }
 
@@ -2271,6 +2320,8 @@ fun EnderSlicerApp(
 internal fun EngineSelectorCard(
     engine: SlicerEngine,
     onEngineChange: (SlicerEngine) -> Unit,
+    onOpenMultiObject: () -> Unit,
+    objectCount: Int,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -2308,6 +2359,26 @@ internal fun EngineSelectorCard(
                     onClick = { onEngineChange(SlicerEngine.ORCA) },
                     modifier = Modifier.weight(1f),
                 )
+            }
+            HorizontalDivider()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Multi-object printing", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (objectCount > 1) {
+                            "$objectCount objects on the plate: placement, spacing and object labels."
+                        } else {
+                            "Placement, spacing and object labels for a plate holding several models."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                OutlinedButton(onClick = onOpenMultiObject) { Text("Settings") }
             }
         }
     }
@@ -2742,6 +2813,8 @@ private fun ViewerPanel(
     onPaintHit: (MeshPicker.Hit) -> Unit,
     onSurfacePick: (MeshPicker.Hit) -> Unit,
     onSurfacePickEnd: () -> Unit,
+    /** A tap on a part: the index in the plate's model list the viewer was given. */
+    onModelPicked: (Int) -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -2862,7 +2935,13 @@ private fun ViewerPanel(
                         ModelSurfaceView(context, effectivePrinter).also { modelView = it }
                     },
                     update = { view ->
-                        view.setMesh(state.mesh)
+                        // Everything on the plate is drawn; the tools stay on the selected one.
+                        view.setMeshes(
+                            meshes = state.models.map { it.mesh },
+                            selectedIndex = state.models.indexOfFirst { it.id == state.selectedModel?.id }
+                                .coerceAtLeast(0),
+                        )
+                        view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
                         view.setSmartInfillOverlay(state.smartInfillOverlay)

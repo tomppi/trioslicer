@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -16,11 +17,15 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.OrcaSliceSettings
+import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.PrusaSliceSettings
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.model.SlicerSettings
+import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -68,6 +73,33 @@ class SessionRailTest {
     /** The blocked-slice reason as the rail receives it, driven by a test. */
     private var reason by mutableStateOf<String?>(null)
 
+    /**
+     * One triangle is a model as far as the rail is concerned: it only asks whether the plate
+     * holds something to slice.
+     */
+    private fun plateObject(name: String): PlateObject {
+        val vertices = floatArrayOf(
+            0f, 0f, 0f, 0f, 0f, 1f,
+            1f, 0f, 0f, 0f, 0f, 1f,
+            0f, 1f, 0f, 0f, 0f, 1f,
+        )
+        val source = StlMesh(
+            displayName = name,
+            interleavedVertices = VertexData.fromArray(vertices),
+            triangleCount = 1,
+            bounds = com.tomppi.enderslicer.viewer.MeshBounds(0f, 0f, 0f, 1f, 1f, 0f),
+        )
+        val placement = ModelPlacement.centeredOnBed(source, bedWidthMm = 230.0, bedDepthMm = 230.0)
+        return PlateObject(
+            id = "session-rail-model",
+            name = name,
+            sourceMesh = source,
+            mesh = placement.transformed(source),
+            sourcePath = name,
+            placement = placement,
+        )
+    }
+
     private fun show(
         gcodeAvailable: Boolean = false,
         engine: SlicerEngine = SlicerEngine.CURA,
@@ -90,7 +122,7 @@ class SessionRailTest {
                     settings = current,
                     prusaSettings = PrusaSliceSettings(fillPattern = "grid"),
                     orcaSettings = OrcaSliceSettings(sparseInfillPattern = "grid"),
-                    modelPath = if (sliceable) "s-hook.stl" else null,
+                    models = if (sliceable) listOf(plateObject("s-hook.stl")) else emptyList(),
                     engineAvailable = sliceable,
                     isBusy = busy,
                 ),
@@ -140,8 +172,16 @@ class SessionRailTest {
         compose.onNodeWithText("Export").assertIsDisplayed().performClick()
         assertEquals(1, exports)
 
-        // A validated slice renames the button, and Model tools needs a mesh
-        // this state has not got.
+        // A validated slice renames the button. Model tools edits the model on the plate, and
+        // there is one here - the state cannot hold a path without a mesh any more, because a
+        // PlateObject carries both.
+        compose.onNodeWithText("Model tools").assertIsEnabled()
+    }
+
+    @Test
+    fun modelToolsWaitsForAModel() {
+        show()
+
         compose.onNodeWithText("Model tools").assertIsNotEnabled()
     }
 

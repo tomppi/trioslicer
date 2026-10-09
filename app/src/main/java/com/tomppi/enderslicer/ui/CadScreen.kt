@@ -105,6 +105,12 @@ fun CadScreen(
     onOrientation: (String) -> Unit = {},
     onPickUsed: () -> Unit,
     onSend: (String) -> Unit,
+    /**
+     * Writes every shape in the engine's scene to its own STL, so the plate receives the parts
+     * as separate objects. Multi-object printing starts here: a CAD scene holding several
+     * solids would otherwise reach the slicer as one fused mesh.
+     */
+    onExportAll: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -133,6 +139,9 @@ fun CadScreen(
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onResetView) {
                     Text("Reset view")
+                }
+                TextButton(onClick = onExportAll) {
+                    Text("All to plate")
                 }
                 TextButton(onClick = { chatExpanded = !chatExpanded }) {
                     Text(if (chatExpanded) "Hide chat" else "Chat")

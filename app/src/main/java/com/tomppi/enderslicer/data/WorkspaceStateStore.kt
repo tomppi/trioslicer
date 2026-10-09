@@ -14,12 +14,28 @@ import java.security.MessageDigest
 class WorkspaceStateStore(private val filesDirectory: File) {
     constructor(context: Context) : this(context.applicationContext.filesDir)
 
+    /** One model of the plate, as it was when the workspace was saved. */
+    data class Entry(
+        val modelPath: String,
+        val modelDisplayName: String,
+        val placement: ModelPlacement,
+        val supportPaint: SupportPaintState = SupportPaintState(),
+    )
+
+    /**
+     * The saved plate.
+     *
+     * [modelPath], [modelDisplayName], [placement] and [supportPaint] describe the first model and
+     * are what a descriptor written before multi-object printing held; [models] is the whole plate
+     * and is empty for those older descriptors, which restore as a one-model plate.
+     */
     data class Snapshot(
         val modelPath: String,
         val modelDisplayName: String,
         val placement: ModelPlacement,
         val configurationFingerprint: String,
         val supportPaint: SupportPaintState = SupportPaintState(),
+        val models: List<Entry> = emptyList(),
     )
 
     private val stateDirectory = File(filesDirectory, "persistent-state").apply { mkdirs() }
@@ -113,70 +129,103 @@ class WorkspaceStateStore(private val filesDirectory: File) {
     }
 
     private fun validate(snapshot: Snapshot) {
-        require(snapshot.modelDisplayName.isNotBlank() && snapshot.modelDisplayName.length <= MAX_DISPLAY_NAME_LENGTH) {
-            "Workspace model name is invalid"
-        }
         require(snapshot.configurationFingerprint.matches(FINGERPRINT_PATTERN)) {
             "Workspace configuration fingerprint is invalid"
         }
-        val model = File(snapshot.modelPath).canonicalFile
+        validateEntry(snapshot.modelPath, snapshot.modelDisplayName, snapshot.supportPaint)
+        snapshot.models.forEach { entry ->
+            validateEntry(entry.modelPath, entry.modelDisplayName, entry.supportPaint)
+        }
+    }
+
+    /** Every model on the plate has to be one of ours, present and unpainted into nonsense. */
+    private fun validateEntry(path: String, displayName: String, paint: SupportPaintState) {
+        require(displayName.isNotBlank() && displayName.length <= MAX_DISPLAY_NAME_LENGTH) {
+            "Workspace model name is invalid"
+        }
+        val model = File(path).canonicalFile
         val modelDirectory = File(filesDirectory, "models").canonicalFile
         require(model.path.startsWith(modelDirectory.path + File.separator)) {
             "Workspace model is outside the private model directory"
         }
         require(model.isFile && model.length() > 0L) { "Workspace model is unavailable" }
-        require(snapshot.supportPaint.enforcerTriangles.all { it >= 0 }) {
+        require(paint.enforcerTriangles.all { it >= 0 }) {
             "Workspace paint contains a negative enforcer triangle index"
         }
-        require(snapshot.supportPaint.blockerTriangles.all { it >= 0 }) {
+        require(paint.blockerTriangles.all { it >= 0 }) {
             "Workspace paint contains a negative blocker triangle index"
         }
     }
 
     private fun encode(snapshot: Snapshot): JSONObject {
-        val placement = snapshot.placement
-        return JSONObject()
+        val root = JSONObject()
             .put("version", VERSION)
             .put("modelPath", snapshot.modelPath)
             .put("modelDisplayName", snapshot.modelDisplayName)
-            .put(
-                "placement",
-                JSONObject()
-                    .put("linear", JSONArray(placement.linear))
-                    .put("centerXmm", placement.centerXmm)
-                    .put("centerYmm", placement.centerYmm)
-                    .put("baseZmm", placement.baseZmm)
-                    .put("source", placement.source),
-            )
-            .put(
-                "supportPaint",
-                JSONObject()
-                    .put("enforcer", JSONArray(snapshot.supportPaint.enforcerTriangles.toList()))
-                    .put("blocker", JSONArray(snapshot.supportPaint.blockerTriangles.toList()))
-                    .put("brushRadiusMm", snapshot.supportPaint.brushRadiusMm),
-            )
+            .put("placement", encodePlacement(snapshot.placement))
+            .put("supportPaint", encodePaint(snapshot.supportPaint))
             .put("configurationFingerprint", snapshot.configurationFingerprint)
+        // Written only when there is more than the legacy fields describe, so a one-model
+        // descriptor stays byte-shaped the way older builds wrote it.
+        if (snapshot.models.isNotEmpty()) {
+            root.put("models", JSONArray().apply { snapshot.models.forEach { put(encodeEntry(it)) } })
+        }
+        return root
     }
 
     private fun decode(root: JSONObject): Snapshot {
         require(root.getInt("version") == VERSION) { "Unsupported workspace descriptor version" }
-        val placementJson = root.getJSONObject("placement")
-        val linearJson = placementJson.getJSONArray("linear")
-        require(linearJson.length() == 9) { "Workspace placement matrix must contain nine values" }
+        val models = root.optJSONArray("models")?.let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.let(::decodeEntry)
+            }
+        }.orEmpty()
         return Snapshot(
             modelPath = root.getString("modelPath"),
             modelDisplayName = root.getString("modelDisplayName"),
-            placement = ModelPlacement(
-                linear = List(9) { index -> linearJson.getDouble(index) },
-                centerXmm = placementJson.getDouble("centerXmm"),
-                centerYmm = placementJson.getDouble("centerYmm"),
-                baseZmm = placementJson.getDouble("baseZmm"),
-                source = placementJson.optString("source", "Restored workspace"),
-            ),
+            placement = decodePlacement(root.getJSONObject("placement")),
             configurationFingerprint = root.getString("configurationFingerprint"),
             supportPaint = decodeSupportPaint(root.optJSONObject("supportPaint")),
+            models = models,
         )
     }
+
+    private fun encodeEntry(entry: Entry): JSONObject = JSONObject()
+        .put("modelPath", entry.modelPath)
+        .put("modelDisplayName", entry.modelDisplayName)
+        .put("placement", encodePlacement(entry.placement))
+        .put("supportPaint", encodePaint(entry.supportPaint))
+
+    private fun decodeEntry(json: JSONObject): Entry = Entry(
+        modelPath = json.getString("modelPath"),
+        modelDisplayName = json.getString("modelDisplayName"),
+        placement = decodePlacement(json.getJSONObject("placement")),
+        supportPaint = decodeSupportPaint(json.optJSONObject("supportPaint")),
+    )
+
+    private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()
+        .put("linear", JSONArray(placement.linear))
+        .put("centerXmm", placement.centerXmm)
+        .put("centerYmm", placement.centerYmm)
+        .put("baseZmm", placement.baseZmm)
+        .put("source", placement.source)
+
+    private fun decodePlacement(json: JSONObject): ModelPlacement {
+        val linearJson = json.getJSONArray("linear")
+        require(linearJson.length() == 9) { "Workspace placement matrix must contain nine values" }
+        return ModelPlacement(
+            linear = List(9) { index -> linearJson.getDouble(index) },
+            centerXmm = json.getDouble("centerXmm"),
+            centerYmm = json.getDouble("centerYmm"),
+            baseZmm = json.getDouble("baseZmm"),
+            source = json.optString("source", "Restored workspace"),
+        )
+    }
+
+    private fun encodePaint(paint: SupportPaintState): JSONObject = JSONObject()
+        .put("enforcer", JSONArray(paint.enforcerTriangles.toList()))
+        .put("blocker", JSONArray(paint.blockerTriangles.toList()))
+        .put("brushRadiusMm", paint.brushRadiusMm)
 
     private fun decodeSupportPaint(json: JSONObject?): SupportPaintState {
         if (json == null) return SupportPaintState()

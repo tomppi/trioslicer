@@ -19,6 +19,8 @@ import com.tomppi.enderslicer.data.AppStateStore
 import com.tomppi.enderslicer.data.BuiltInGcode
 import com.tomppi.enderslicer.data.OrcaSliceSettingsJson
 import com.tomppi.enderslicer.data.PendingDocumentExportStore
+import com.tomppi.enderslicer.data.PlatePreferences
+import com.tomppi.enderslicer.data.PlatePreferencesStore
 import com.tomppi.enderslicer.data.PrinterDefinitionLoader
 import com.tomppi.enderslicer.data.PrusaSliceSettingsJson
 import com.tomppi.enderslicer.data.SlicerSettingsJson
@@ -28,6 +30,8 @@ import com.tomppi.enderslicer.engine.CuraEngineRunner
 import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.engine.LayerEventSource
+import com.tomppi.enderslicer.engine.SequentialPrintCheck
+import com.tomppi.enderslicer.engine.SliceModel
 import com.tomppi.enderslicer.engine.LayerEventType
 import com.tomppi.enderslicer.engine.OcctEngineRunner
 import com.tomppi.enderslicer.engine.OrcaEngineRunner
@@ -40,8 +44,11 @@ import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.ExtraSettingSpec
 import com.tomppi.enderslicer.model.ExtraSettingValidation
 import com.tomppi.enderslicer.model.ModelPlacement
+import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.OrcaBasePreset
 import com.tomppi.enderslicer.model.PlacementHistory
+import com.tomppi.enderslicer.model.PlateArranger
+import com.tomppi.enderslicer.model.PlateFootprint
 import com.tomppi.enderslicer.model.OrcaPresetCatalog
 import com.tomppi.enderslicer.model.OrcaProfileImporter
 import com.tomppi.enderslicer.model.OrcaSliceSettings
@@ -80,6 +87,7 @@ import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
+import com.tomppi.enderslicer.viewer.PlateThreeMfWriter
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ThreeMfModelParser
@@ -171,10 +179,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val skippedWorkspaceName: String?,
     )
 
-    private data class RestoredWorkspace(
-        val snapshot: WorkspaceStateStore.Snapshot,
+    /** One model parsed back out of the saved workspace. */
+    private data class RestoredPlateObject(
         val source: StlMesh,
         val transformed: StlMesh,
+        val placement: ModelPlacement,
+        val supportPaint: SupportPaintState,
+        val path: String,
+        val name: String,
+    ) {
+        fun toPlateObject(): PlateObject = PlateObject(
+            id = PlateObject.newId(),
+            name = name,
+            sourceMesh = source,
+            mesh = transformed,
+            sourcePath = path,
+            placement = placement,
+            supportPaint = supportPaint.clippedToMesh(transformed.triangleCount),
+        )
+    }
+
+    private data class RestoredWorkspace(
+        val snapshot: WorkspaceStateStore.Snapshot,
+        /** Every model the descriptor held; never empty - a failed parse skips the workspace. */
+        val objects: List<RestoredPlateObject>,
     )
 
     private data class PreparedModelImport(
@@ -193,6 +221,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val orcaEngine = OrcaEngineRunner(app)
     private val occtEngine = OcctEngineRunner(app)
     private val engineStore = SlicerEngineStore(app)
+    private val platePreferencesStore = PlatePreferencesStore(app)
     private val activeEngine: SlicerEngine get() = engineStore.load()
 
     /** The engine the UI is driving. The named preset library is scoped to it. */
@@ -206,7 +235,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val initialStartGcode = BuiltInGcode.defaultStartGcode
     private val initialEndGcode = BuiltInGcode.defaultEndGcode
     private var importedSettingsBaseline: SlicerSettings? = null
-    private var sourceMesh: StlMesh? = null
+
+    /**
+     * The selected object's untransformed mesh.
+     *
+     * Placements are computed from the source mesh, not from the transformed one: re-applying a
+     * placement to an already-placed mesh would compound it. It is derived rather than stored
+     * because the plate holds several objects now and the selected one is the one being edited.
+     */
+    private val sourceMesh: StlMesh? get() = _uiState.value.selectedModel?.sourceMesh
+
     private var importedScene: CuraProjectScene? = null
     private var settingsPersistenceJob: Job? = null
     private var prusaSettingsPersistenceJob: Job? = null
@@ -269,6 +307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        _uiState.update { it.copy(platePreferences = platePreferencesStore.load()) }
         restorePersistedState()
         BlenderEngine.onStlExported = { file -> importBlenderStl(file) }
         // The same contract for the CAD engine. It writes STEP and STL to
@@ -376,12 +415,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Puts an imported model on the plate and selects it.
+     *
+     * Appending is what makes the plate hold several objects. An import used to replace whatever
+     * was there and delete the file behind it, which with a plate of parts would take one of the
+     * user's models away without asking.
+     */
+    private fun MainUiState.withImportedModel(
+        source: StlMesh,
+        transformed: StlMesh,
+        modelFile: File,
+        placement: ModelPlacement,
+        paint: SupportPaintState,
+        automaticScene: CuraProjectScene?,
+    ): MainUiState {
+        val added = withoutPublishedSlice()
+            .withModelAdded(
+                PlateObject(
+                    id = PlateObject.newId(),
+                    name = source.displayName,
+                    sourceMesh = source,
+                    mesh = transformed,
+                    sourcePath = modelFile.absolutePath,
+                    placement = placement,
+                    supportPaint = paint,
+                ),
+            )
+            .copy(
+                importedSceneTransformAvailable = automaticScene?.affine != null,
+                importedSceneModelName = automaticScene?.modelName,
+            )
+        if (added.platePreferences.placement != PlatePreferences.Placement.AUTO) return added
+        // The importer drops every model on the bed centre, which is fine for one and useless
+        // for several: the packer finds each object a free spot as it arrives.
+        val placed = arranged(added.models, added.platePreferences, added.settings)
+            ?: return added.copy(
+                warnings = (
+                    added.warnings + "The parts do not fit on the bed at " +
+                        "${added.platePreferences.sanitized().spacingMm} mm apart; " +
+                        "${source.displayName} landed on the bed centre"
+                    ).distinct(),
+            )
+        return added.copy(models = placed)
+    }
+
+    /** " · N models on the plate", once there is more than one, so an append is visible. */
+    private fun MainUiState.plateSuffix(): String =
+        if (models.size > 1) " · ${models.size} models on the plate" else ""
+
     fun importModel(uri: Uri) {
         if (deferUntilRestoreCompletes { importModel(uri) }) return
         if (!beginOperation("Reading model…")) return
         val sceneSnapshot = importedScene
         val stateSnapshot = _uiState.value
-        val previousModelPath = stateSnapshot.modelPath
         viewModelScope.launch {
             // Hoisted: the paint is read by the onSuccess lambda, which is outside
             // the runCatching block the destructuring lives in.
@@ -469,27 +556,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 withContext(Dispatchers.IO) {
                     workspaceStore.save(
-                        workspaceSnapshot(
-                            modelFile = prepared.modelFile,
-                            displayName = prepared.source.displayName,
-                            placement = prepared.placement,
-                            state = stateSnapshot.copy(supportPaint = paint),
-                        ),
+                        workspaceSnapshot(prepared.source, prepared.modelFile, prepared.placement, paint, stateSnapshot),
                     )
                 }
                 prepared
             }.onSuccess { prepared ->
-                sourceMesh = prepared.source
                 _uiState.update { current ->
-                    current.withoutPublishedSlice().copy(
-                        mesh = prepared.transformed,
-                        modelPath = prepared.modelFile.absolutePath,
-                        modelPlacement = prepared.placement,
-                        // Paint that arrived inside the 3MF belongs to the session now.
-                        supportPaint = importedPaint,
+                    val next = current.withImportedModel(
+                        source = prepared.source,
+                        transformed = prepared.transformed,
+                        modelFile = prepared.modelFile,
+                        placement = prepared.placement,
+                        paint = importedPaint,
+                        automaticScene = sceneSnapshot,
+                    )
+                    next.copy(
                         paintMode = SupportPaintMode.NONE,
-                        importedSceneTransformAvailable = sceneSnapshot?.affine != null,
-                        importedSceneModelName = sceneSnapshot?.modelName,
                         warnings = (current.warnings.filterNot { it.startsWith("Imported Cura transform is for") } + listOfNotNull(prepared.mismatchWarning)).distinct(),
                         isBusy = false,
                         statusMessage = buildString {
@@ -498,14 +580,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             if (!importedPaint.isEmpty) {
                                 append(" · ${importedPaint.enforcerTriangles.size + importedPaint.blockerTriangles.size} painted facets")
                             }
+                            append(next.plateSuffix())
                         },
                     )
                 }
-                previousModelPath
-                    ?.takeIf { it != prepared.modelFile.absolutePath }
-                    ?.let(::File)
-                    ?.takeIf { it.parentFile == prepared.modelFile.parentFile }
-                    ?.delete()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -524,7 +602,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (!beginOperation("Importing filaSim Part Topo result…")) return
-        val previousModelPath = stateSnapshot.modelPath
         viewModelScope.launch {
             runCatching {
                 val prepared = withContext(Dispatchers.IO) {
@@ -540,10 +617,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     withContext(Dispatchers.IO) {
                         workspaceStore.save(
                             workspaceSnapshot(
-                                modelFile = prepared.modelFile,
-                                displayName = prepared.source.displayName,
-                                placement = prepared.placement,
-                                state = stateSnapshot.copy(supportPaint = SupportPaintState()),
+                                prepared.source,
+                                prepared.modelFile,
+                                prepared.placement,
+                                SupportPaintState(),
+                                stateSnapshot,
                             ),
                         )
                     }
@@ -553,29 +631,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 prepared
             }.onSuccess { prepared ->
-                sourceMesh = prepared.source
                 importedScene = null
                 _uiState.update { current ->
-                    current.withoutPublishedSlice().copy(
-                        mesh = prepared.transformed,
-                        modelPath = prepared.modelFile.absolutePath,
-                        modelPlacement = prepared.placement,
-                        supportPaint = SupportPaintState(),
+                    val next = current.withImportedModel(
+                        source = prepared.source,
+                        transformed = prepared.transformed,
+                        modelFile = prepared.modelFile,
+                        placement = prepared.placement,
+                        paint = SupportPaintState(),
+                        automaticScene = null,
+                    )
+                    next.copy(
                         paintMode = SupportPaintMode.NONE,
-                        importedSceneTransformAvailable = false,
-                        importedSceneModelName = null,
                         warnings = current.warnings.filterNot {
                             it.startsWith("Imported Cura transform is for")
                         },
                         isBusy = false,
-                        statusMessage = "Imported ${prepared.source.displayName} as a standalone Part Topo model; inspect and slice it",
+                        statusMessage = "Imported ${prepared.source.displayName} as a standalone Part Topo model; inspect and slice it" +
+                            next.plateSuffix(),
                     )
                 }
-                previousModelPath
-                    ?.takeIf { it != prepared.modelFile.absolutePath }
-                    ?.let(::File)
-                    ?.takeIf { it.parentFile == prepared.modelFile.parentFile }
-                    ?.delete()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -606,7 +681,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val stateSnapshot = _uiState.value
-        val previousModelPath = stateSnapshot.modelPath
         // Stage a private copy: the engine overwrites the export file on the next
         // iteration, and the workspace snapshot must keep pointing at a stable
         // model file. It is named outside the launch so a failed parse or save can
@@ -637,37 +711,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 withContext(Dispatchers.IO) {
                     workspaceStore.save(
-                        workspaceSnapshot(
-                            modelFile = prepared.modelFile,
-                            displayName = prepared.source.displayName,
-                            placement = prepared.placement,
-                            state = stateSnapshot.copy(supportPaint = SupportPaintState()),
-                        ),
+                        workspaceSnapshot(prepared.source, prepared.modelFile, prepared.placement, SupportPaintState(), stateSnapshot),
                     )
                 }
                 prepared
             }.onSuccess { prepared ->
-                sourceMesh = prepared.source
                 importedScene = null
                 _uiState.update { current ->
-                    current.withoutPublishedSlice().copy(
-                        mesh = prepared.transformed,
-                        modelPath = prepared.modelFile.absolutePath,
-                        modelPlacement = prepared.placement,
-                        supportPaint = SupportPaintState(),
+                    val next = current.withImportedModel(
+                        source = prepared.source,
+                        transformed = prepared.transformed,
+                        modelFile = prepared.modelFile,
+                        placement = prepared.placement,
+                        paint = SupportPaintState(),
+                        automaticScene = null,
+                    )
+                    next.copy(
                         paintMode = SupportPaintMode.NONE,
-                        importedSceneTransformAvailable = false,
-                        importedSceneModelName = null,
                         warnings = current.warnings.filterNot { it.startsWith("Imported Cura transform is for") },
                         isBusy = false,
-                        statusMessage = "Imported ${prepared.source.displayName} from the $engine engine",
+                        statusMessage = "Imported ${prepared.source.displayName} from the $engine engine" +
+                            next.plateSuffix(),
                     )
                 }
-                previousModelPath
-                    ?.takeIf { it != prepared.modelFile.absolutePath }
-                    ?.let(::File)
-                    ?.takeIf { it.parentFile == prepared.modelFile.parentFile }
-                    ?.delete()
             }.onFailure { error ->
                 staged.delete()
                 showOperationFailure(error)
@@ -1208,13 +1274,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     artifactId?.let(engine::releaseArtifact)
                 }
             }.onSuccess {
-                sourceMesh = null
                 importedScene = null
                 _uiState.update { current ->
                     current.withoutPublishedSlice().copy(
-                        mesh = null,
-                        modelPath = null,
-                        modelPlacement = null,
+                        models = emptyList(),
+                        selectedModelId = null,
                         importedSceneTransformAvailable = false,
                         importedSceneModelName = null,
                         warnings = current.warnings.filterNot {
@@ -1225,6 +1289,101 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.onFailure(::showOperationFailure)
+        }
+    }
+
+    /**
+     * Lays the plate out again: largest first, in rows, with the gap the preferences ask for.
+     *
+     * This is the app's own packer because none of the three engines arranges for us: CuraEngine
+     * has no arrangement code at all, and the Prusa and Orca consoles never call theirs. Both
+     * Slic3r forks will happily slice overlapping objects, so nothing downstream would catch a
+     * collision either.
+     *
+     * Returns null when the parts do not fit, which the caller reports instead of stacking them.
+     */
+    private fun arranged(
+        models: List<PlateObject>,
+        preferences: PlatePreferences,
+        settings: SlicerSettings,
+    ): List<PlateObject>? {
+        if (models.size < 2) return models
+        val slots = PlateArranger.arrange(
+            footprints = models.map { model ->
+                PlateFootprint(model.bounds.width.toDouble(), model.bounds.depth.toDouble())
+            },
+            bedWidthMm = settings.machineWidthMm,
+            bedDepthMm = settings.machineDepthMm,
+            spacingMm = preferences.sanitized().spacingMm,
+        ) ?: return null
+        // The packer works in bed coordinates with (0,0) at the front-left corner; a centred
+        // origin shifts every slot by half the bed.
+        val shiftX = if (settings.originAtCenter) settings.machineWidthMm / 2.0 else 0.0
+        val shiftY = if (settings.originAtCenter) settings.machineDepthMm / 2.0 else 0.0
+        return models.mapIndexed { index, model ->
+            model.withCenter(slots[index].centerXmm - shiftX, slots[index].centerYmm - shiftY)
+        }
+    }
+
+    /** Arranges the plate on demand, whatever the placement mode says. */
+    fun arrangePlate() {
+        val state = _uiState.value
+        if (state.models.size < 2) return
+        val next = arranged(state.models, state.platePreferences, state.settings)
+        if (next == null) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "The parts do not fit on the bed at " +
+                        "${state.platePreferences.sanitized().spacingMm} mm apart",
+                )
+            }
+            return
+        }
+        placementHistory.clear()
+        val arrangedState = state.withoutPublishedSlice(
+            "Arranged ${next.size} objects; slice again to export G-code",
+        ).copy(models = next, canUndoPlacement = false, undoPlacementLabel = null)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { workspaceSnapshot(arrangedState)?.let(workspaceStore::save) }
+            }
+            _uiState.update { arrangedState }
+        }
+    }
+
+    /** Persists the multi-object preferences; an auto-arranging plate rearranges straight away. */
+    fun setPlatePreferences(preferences: PlatePreferences) {
+        val sanitized = preferences.sanitized()
+        _uiState.update { it.copy(platePreferences = sanitized) }
+        viewModelScope.launch { withContext(Dispatchers.IO) { platePreferencesStore.save(sanitized) } }
+        if (sanitized.placement == PlatePreferences.Placement.AUTO) arrangePlate()
+    }
+
+    /** The object the tools act on. Placement undo belongs to one object, so it is dropped. */
+    fun selectModel(id: String) {
+        val state = _uiState.value
+        if (state.selectedModel?.id == id) return
+        placementHistory.clear()
+        _uiState.update {
+            it.copy(selectedModelId = id, canUndoPlacement = false, undoPlacementLabel = null)
+        }
+    }
+
+    /** Takes an object off the plate and deletes the staged copy it was imported into. */
+    fun removeModel(id: String) {
+        val state = _uiState.value
+        val removed = state.models.firstOrNull { it.id == id } ?: return
+        placementHistory.clear()
+        val next = state.withoutPublishedSlice(
+            "Removed ${removed.name}; slice again to export G-code",
+        ).copy(canUndoPlacement = false, undoPlacementLabel = null)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { workspaceSnapshot(next)?.let(workspaceStore::save) }
+                removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+            }
+            _uiState.update { next }
+            if (next.models.isEmpty()) clearBuildPlate()
         }
     }
 
@@ -1644,7 +1803,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!mm.isFinite()) return
         val radius = mm.coerceIn(SupportPaintState.MIN_BRUSH_RADIUS_MM, SupportPaintState.MAX_BRUSH_RADIUS_MM)
         _uiState.update { current ->
-            current.copy(supportPaint = current.supportPaint.copy(brushRadiusMm = radius))
+            current.withSelectedModel { it.withPaint(it.supportPaint.copy(brushRadiusMm = radius)) }
         }
         persistPaintSoon()
     }
@@ -1696,7 +1855,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     current
                 } else {
                     current.withoutPublishedSlice("Support paint changed; slice again to export G-code")
-                        .copy(supportPaint = updated)
+                        .withSelectedModel { model -> model.withPaint(updated) }
                 }
             }
             persistPaintSoon()
@@ -1709,7 +1868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 current
             } else {
                 current.withoutPublishedSlice("Support paint cleared; slice again to export G-code")
-                    .copy(supportPaint = SupportPaintState())
+                    .withSelectedModel { model -> model.withPaint(SupportPaintState()) }
             }
         }
         persistPaintSoon()
@@ -1821,25 +1980,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         check(mkdir()) { "Unable to create an isolated model staging directory" }
                     }
                     val outcome = try {
-                        // CuraEngine gets the STL plus painted modifier volumes;
-                        // PrusaSlicer and OrcaSlicer read paint from the model file
-                        // itself, so a painted model has to reach them as 3MF or the
-                        // paint is silently dropped.
-                        val paintedModel = sliceEngine != SlicerEngine.CURA && !snapshot.supportPaint.isEmpty
-                        val transformedFile = if (paintedModel) {
-                            File(stagingDirectory, "transformed.3mf").also { staged ->
-                                PaintedMeshWriter.write(transformedMesh, snapshot.supportPaint, staged)
-                            }
+                        // Every object on the plate is staged with its placement already baked into
+                        // its vertices, so no engine needs a per-object transform and all three
+                        // see world coordinates.
+                        //
+                        // One file per object, except that a Slic3r fork slicing several gets one
+                        // 3MF: neither console takes more than one positional model (the last
+                        // would silently win), so a multi-object plate has to arrive as one file.
+                        val slicerFork = sliceEngine != SlicerEngine.CURA
+                        val plate: List<SliceModel> = if (slicerFork && snapshot.models.size > 1) {
+                            val staging = File(stagingDirectory, "plate.3mf")
+                            PlateThreeMfWriter.write(
+                                file = staging,
+                                entries = snapshot.models.map { model ->
+                                    PlateThreeMfWriter.Entry(
+                                        name = model.name,
+                                        mesh = model.mesh,
+                                        paint = model.supportPaint,
+                                    )
+                                },
+                                dialect = if (sliceEngine == SlicerEngine.PRUSA) {
+                                    PlateThreeMfWriter.Dialect.PRUSA_LEGACY
+                                } else {
+                                    PlateThreeMfWriter.Dialect.ORCA
+                                },
+                            )
+                            listOf(SliceModel(file = staging, name = "plate"))
                         } else {
-                            File(stagingDirectory, "transformed.stl").also { staged ->
-                                StlMeshWriter.writeBinary(transformedMesh, staged)
+                            snapshot.models.mapIndexed { index, model ->
+                                // CuraEngine gets an STL plus painted modifier volumes;
+                                // PrusaSlicer and OrcaSlicer read paint from the model file
+                                // itself, so a painted object has to reach them as 3MF or the
+                                // paint is silently dropped.
+                                val file = if (slicerFork && !model.supportPaint.isEmpty) {
+                                    File(stagingDirectory, "model-$index.3mf").also { staged ->
+                                        PaintedMeshWriter.write(model.mesh, model.supportPaint, staged)
+                                    }
+                                } else {
+                                    File(stagingDirectory, "model-$index.stl").also { staged ->
+                                        StlMeshWriter.writeBinary(model.mesh, staged)
+                                    }
+                                }
+                                SliceModel(file = file, name = model.name, supportPaint = model.supportPaint)
                             }
+                        }
+                        val transformedFile = plate.first().file
+                        // What the multi-object menu asks the engine for. The user's own
+                        // "All settings" overrides are merged after these, so an explicit key
+                        // still wins over the menu.
+                        val platePreferences = snapshot.platePreferences
+                        if (platePreferences.sequential && snapshot.models.size > 1) {
+                            val refusal = SequentialPrintCheck.refuseReason(
+                                models = snapshot.models,
+                                settings = snapshot.settings,
+                            )
+                            if (refusal != null) throw IllegalStateException(refusal)
+                        }
+                        val plateKeys = buildMap {
+                            if (platePreferences.objectLabels) put("gcode_label_objects", "firmware")
+                            if (platePreferences.sequential) put("complete_objects", "1")
+                        }
+                        val orcaPlateKeys = buildMap {
+                            if (platePreferences.objectLabels) {
+                                put("gcode_label_objects", "1")
+                                put("exclude_object", "1")
+                            }
+                            if (platePreferences.sequential) put("print_sequence", "by object")
+                        }
+                        val curaPlateKeys = buildMap {
+                            if (platePreferences.sequential) put("print_sequence", "one_at_a_time")
                         }
                         if (sliceEngine == SlicerEngine.PRUSA) {
                             val prusaResult = prusaEngine.slice(
                                 modelFile = transformedFile,
                                 printer = snapshot.printer,
-                                settings = snapshot.prusaSettings.copy(extraKeys = snapshot.extraPrusaSettings),
+                                settings = snapshot.prusaSettings.copy(
+                                    extraKeys = plateKeys + snapshot.extraPrusaSettings,
+                                ),
                                 machineSettings = snapshot.settings,
                                 startGcode = snapshot.prusaStartGcode.ifBlank { initialStartGcode },
                                 endGcode = snapshot.prusaEndGcode.ifBlank { initialEndGcode },
@@ -1872,7 +2089,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             // of the CuraEngine path do not apply here; zaa_min_z
                             // and zaa_minimize_perimeter_height keep their Orca
                             // defaults unless All settings overrides them.
-                            val orcaExtras = snapshot.extraOrcaSettings +
+                            val orcaExtras = orcaPlateKeys + snapshot.extraOrcaSettings +
                                 if (nonPlanarActive) mapOf("zaa_enabled" to "1") else emptyMap()
                             val orcaResult = orcaEngine.slice(
                                 modelFile = transformedFile,
@@ -1913,6 +2130,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             strategyMessage = smartResolution.message
                             val curaResult = engine.slice(
                                 modelFile = transformedFile,
+                                models = plate,
+                                // One object at a time is a group boundary in CuraEngine, not just
+                                // the print_sequence switch: the runner emits the --next.
+                                sequential = platePreferences.sequential,
                                 printer = snapshot.printer,
                                 settings = smartResolution.settings,
                                 startGcode = snapshot.startGcode,
@@ -1921,7 +2142,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 machineId = snapshot.curaMachineId,
                                 layerEvents = snapshot.layerEvents.filter { it.source == LayerEventSource.USER },
                                 supportPaint = snapshot.supportPaint,
-                                extraSettings = snapshot.extraCuraSettings,
+                                extraSettings = curaPlateKeys + snapshot.extraCuraSettings,
                                 onProgress = { percent ->
                                     _uiState.update {
                                         it.copy(
@@ -2425,8 +2646,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val original = sourceMesh
         val stateSnapshot = _uiState.value
         val current = stateSnapshot.modelPlacement
-        val modelPath = stateSnapshot.modelPath
-        if (original == null || current == null) {
+        // Every placement change belongs to the selected object: the mesh it is computed from is
+        // that object's, and so is the envelope it has to stay inside.
+        val selectedId = stateSnapshot.selectedModel?.id
+        if (original == null || current == null || selectedId == null) {
             showOperationFailure(IllegalStateException("Import an STL before changing model placement"))
             return
         }
@@ -2442,30 +2665,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     PrinterEnvelope.from(printer.withSettings(stateSnapshot.settings)).requireModelFits(transformed)
                     changed to transformed
                 }
-                val durableModel = requireNotNull(modelPath).let(::File)
-                    ?: error("The active model path is unavailable")
-                withContext(Dispatchers.IO) {
-                    workspaceStore.save(
-                        workspaceSnapshot(
-                            modelFile = durableModel,
-                            displayName = original.displayName,
-                            placement = prepared.first,
-                            state = stateSnapshot,
-                        ),
-                    )
+                // The save has to describe the plate as it will be, not as it was: the state
+                // update below is what the next launch has to find.
+                val changed = prepared.first
+                val nextModels = stateSnapshot.models.map { model ->
+                    if (model.id == selectedId) model.withPlacement(changed) else model
                 }
+                val nextSnapshot = workspaceSnapshot(stateSnapshot.copy(models = nextModels))
+                withContext(Dispatchers.IO) { nextSnapshot?.let(workspaceStore::save) }
                 prepared
-            }.onSuccess { (changed, transformed) ->
+            }.onSuccess { (changed, _) ->
                 if (recordHistory) placementHistory.record(message, current)
                 _uiState.update { state ->
-                    state.withoutPublishedSlice().copy(
-                        mesh = transformed,
-                        modelPlacement = changed,
-                        canUndoPlacement = placementHistory.canUndo,
-                        undoPlacementLabel = placementHistory.nextLabel,
-                        isBusy = false,
-                        statusMessage = "$message; slice again to export G-code",
-                    )
+                    state.withoutPublishedSlice()
+                        .withModel(selectedId) { model -> model.withPlacement(changed) }
+                        .copy(
+                            canUndoPlacement = placementHistory.canUndo,
+                            undoPlacementLabel = placementHistory.nextLabel,
+                            isBusy = false,
+                            statusMessage = "$message; slice again to export G-code",
+                        )
                 }
             }.onFailure(::showOperationFailure)
         }
@@ -2558,18 +2777,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ?.takeIf { workspaceMatches }
                         ?.let { snapshot ->
                             runCatching {
-                                val modelFile = File(snapshot.modelPath)
-                                val source = StlParser.parse(
-                                    file = modelFile,
-                                    displayName = snapshot.modelDisplayName,
-                                    maxTriangles = MeshTriangleLimits.current(),
-                                )
-                                RestoredWorkspace(
-                                    snapshot = snapshot,
-                                    source = source,
-                                    transformed = snapshot.placement.transformed(source),
-                                )
-                            }.getOrNull()
+                                // A descriptor written before multi-object printing has no
+                                // models list; its single model is the whole plate.
+                                val entries = snapshot.models.ifEmpty {
+                                    listOf(
+                                        WorkspaceStateStore.Entry(
+                                            modelPath = snapshot.modelPath,
+                                            modelDisplayName = snapshot.modelDisplayName,
+                                            placement = snapshot.placement,
+                                            supportPaint = snapshot.supportPaint,
+                                        ),
+                                    )
+                                }
+                                val objects = entries.mapNotNull { entry ->
+                                    runCatching {
+                                        val source = StlParser.parse(
+                                            file = File(entry.modelPath),
+                                            displayName = entry.modelDisplayName,
+                                            maxTriangles = MeshTriangleLimits.current(),
+                                        )
+                                        RestoredPlateObject(
+                                            source = source,
+                                            transformed = entry.placement.transformed(source),
+                                            placement = entry.placement,
+                                            supportPaint = entry.supportPaint,
+                                            path = entry.modelPath,
+                                            name = entry.modelDisplayName,
+                                        )
+                                    }.getOrNull()
+                                }
+                                RestoredWorkspace(snapshot = snapshot, objects = objects)
+                            }.getOrNull()?.takeIf { it.objects.isNotEmpty() }
                         }
                     val skippedWorkspaceName = savedWorkspace
                         ?.takeIf { !workspaceMatches }
@@ -2592,7 +2830,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             result.onSuccess { restored ->
                 importedScene = restored.scene
-                sourceMesh = restored.workspace?.source
                 if (restored.config == null) {
                     importedSettingsBaseline = restored.baselineSettings
                     _uiState.update {
@@ -2651,30 +2888,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun restoreWorkspace(workspace: RestoredWorkspace?) {
         if (workspace == null) return
         val snapshot = workspace.snapshot
+        val objects = workspace.objects.map { it.toPlateObject() }
         _uiState.update { current ->
-            current.withoutPublishedSlice().copy(
-                mesh = workspace.transformed,
-                modelPath = snapshot.modelPath,
-                modelPlacement = snapshot.placement,
-                supportPaint = snapshot.supportPaint.clippedToMesh(workspace.transformed.triangleCount),
-                isBusy = false,
-                statusMessage = "Restored ${snapshot.modelDisplayName} workspace; slice again to create validated G-code",
-            )
+            current.withoutPublishedSlice()
+                .withModels(objects)
+                .copy(
+                    isBusy = false,
+                    statusMessage = if (objects.size > 1) {
+                        "Restored ${objects.size} models on the plate; slice again to create validated G-code"
+                    } else {
+                        "Restored ${snapshot.modelDisplayName} workspace; slice again to create validated G-code"
+                    },
+                )
         }
     }
 
-    private fun workspaceSnapshot(
-        modelFile: File,
-        displayName: String,
-        placement: ModelPlacement,
-        state: MainUiState,
-    ): WorkspaceStateStore.Snapshot {
+    /** The descriptor for the plate as the state already holds it. */
+    private fun workspaceSnapshot(state: MainUiState): WorkspaceStateStore.Snapshot? {
+        val selected = state.selectedModel ?: return null
+        val path = selected.sourcePath ?: return null
         return WorkspaceStateStore.Snapshot(
-            modelPath = modelFile.absolutePath,
-            modelDisplayName = displayName,
-            placement = placement,
+            modelPath = path,
+            modelDisplayName = selected.name,
+            placement = selected.placement,
             configurationFingerprint = workspaceFingerprint(state),
-            supportPaint = state.supportPaint,
+            supportPaint = selected.supportPaint,
+            models = state.models.mapNotNull { it.toWorkspaceEntry() },
+        )
+    }
+
+    /**
+     * The descriptor for an import that has not reached the state yet.
+     *
+     * The save runs before the state update, so a workspace that cannot be written fails the
+     * import rather than leaving a model on the plate that the next launch would not restore.
+     */
+    private fun workspaceSnapshot(
+        source: StlMesh,
+        modelFile: File,
+        placement: ModelPlacement,
+        paint: SupportPaintState,
+        state: MainUiState,
+    ): WorkspaceStateStore.Snapshot = WorkspaceStateStore.Snapshot(
+        modelPath = modelFile.absolutePath,
+        modelDisplayName = source.displayName,
+        placement = placement,
+        configurationFingerprint = workspaceFingerprint(state),
+        supportPaint = paint,
+        models = state.models.mapNotNull { it.toWorkspaceEntry() } + WorkspaceStateStore.Entry(
+            modelPath = modelFile.absolutePath,
+            modelDisplayName = source.displayName,
+            placement = placement,
+            supportPaint = paint,
+        ),
+    )
+
+    private fun PlateObject.toWorkspaceEntry(): WorkspaceStateStore.Entry? {
+        val path = sourcePath ?: return null
+        return WorkspaceStateStore.Entry(
+            modelPath = path,
+            modelDisplayName = name,
+            placement = placement,
+            supportPaint = supportPaint,
         )
     }
 
@@ -2723,19 +2998,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun persistCurrentWorkspace(state: MainUiState) {
-        val modelPath = state.modelPath ?: return
-        val placement = state.modelPlacement ?: return
-        val source = sourceMesh ?: return
-        val modelFile = File(modelPath)
-        if (!modelFile.isFile) return
-        workspaceStore.save(
-            workspaceSnapshot(
-                modelFile = modelFile,
-                displayName = source.displayName,
-                placement = placement,
-                state = state,
-            ),
-        )
+        // Every model on the plate is saved, not just the selected one: rearranging one object
+        // must not drop the others from the workspace the next launch restores.
+        val snapshot = workspaceSnapshot(state) ?: return
+        workspaceStore.save(snapshot)
     }
 
     private fun stageAndParseImport(
@@ -2830,6 +3096,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val auditWarnings = CuraProjectAudit.warnings(config.rawValues)
             val warnings = (config.warnings + scene?.warnings.orEmpty() + auditWarnings + listOfNotNull(mismatchWarning)).distinct()
+            // The transformed mesh was computed off the main thread above; the scene transform
+            // names one model, and that is the selected one.
+            val selectedId = current.selectedModel?.id
+            val placedModels = if (autoPlacement != null && transformed != null && selectedId != null) {
+                current.models.map { model ->
+                    if (model.id == selectedId) model.withPlacement(autoPlacement) else model
+                }
+            } else {
+                current.models
+            }
             current.withoutPublishedSlice().copy(
                 settings = settings,
                 profileName = config.name,
@@ -2840,8 +3116,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 engineProfile = config.engineProfile,
                 startGcode = config.startGcode ?: initialStartGcode,
                 endGcode = config.endGcode ?: initialEndGcode,
-                mesh = transformed ?: current.mesh,
-                modelPlacement = autoPlacement ?: current.modelPlacement,
+                models = placedModels,
                 importedSceneTransformAvailable = scene?.affine != null,
                 importedSceneModelName = scene?.modelName,
                 warnings = warnings,

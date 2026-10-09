@@ -277,6 +277,29 @@ class EnginePreviewClient(
     }
 
     /**
+     * Writes every mesh object in the scene to its own STL in [directory].
+     *
+     * The app watches that directory and puts each file on the build plate as its own object, so
+     * this is what "send the whole scene to the plate" means - the way to print several Blender
+     * objects together. Each file is published by renaming it into place, because the watcher
+     * must never see a half-written mesh, and each is written in WORLD coordinates: the engine's
+     * own single-file export writes mesh-local vertices, which for several objects would drop
+     * every part on top of the others at the origin.
+     *
+     * Returns how many objects were written, or null when the engine refused.
+     */
+    fun exportEveryObject(directory: File): Int? {
+        val script = EXPORT_EVERY_OBJECT_SCRIPT.replace("__DIR__", pythonString(directory.absolutePath))
+        val reply = command("execute_code", JSONObject().put("code", script), IMPORT_TIMEOUT_MS)
+        if (reply.optString("status") != "success") {
+            Log.i(TAG, "export all -> " + reply.toString().take(160))
+            return null
+        }
+        val text = reply.optJSONObject("result")?.optString("result").orEmpty().trim()
+        return text.lineSequence().lastOrNull { it.trim().toIntOrNull() != null }?.trim()?.toIntOrNull()
+    }
+
+    /**
      * Records that the scene was replaced from outside the engine.
      *
      * The app loads a model whenever the user uploads one, which deletes whatever
@@ -418,6 +441,43 @@ bpy.ops.import_mesh.stl(filepath=path)
 meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 print('imported %d mesh(es)' % len(meshes))
 """.trimIndent()
+
+        /**
+         * One world-space binary STL per mesh object, each published by rename.
+         *
+         * Written out in full rather than calling the addon's helper: that helper writes the
+         * mesh's own local vertices, so several objects would all arrive at the origin with
+         * their placement lost. object.matrix_world is what carries where the user put them.
+         */
+        private val EXPORT_EVERY_OBJECT_SCRIPT = """
+import bpy, os, struct
+base = __DIR__
+published = 0
+for obj in bpy.context.scene.objects:
+    if obj.type != 'MESH' or obj.data is None:
+        continue
+    mesh = obj.data
+    mesh.calc_loop_triangles()
+    matrix = obj.matrix_world
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in obj.name) or "object"
+    final = os.path.join(base, safe + ".stl")
+    temp = final + ".part"
+    with open(temp, "wb") as handle:
+        handle.write(struct.pack("<80sI", b"enderslicercura MCP STL", len(mesh.loop_triangles)))
+        for triangle in mesh.loop_triangles:
+            points = [matrix @ mesh.vertices[index].co for index in triangle.vertices]
+            ux, uy, uz = points[1].x - points[0].x, points[1].y - points[0].y, points[1].z - points[0].z
+            wx, wy, wz = points[2].x - points[0].x, points[2].y - points[0].y, points[2].z - points[0].z
+            nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx
+            length = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
+            handle.write(struct.pack("<3f", nx / length, ny / length, nz / length))
+            for point in points:
+                handle.write(struct.pack("<3f", point.x, point.y, point.z))
+            handle.write(struct.pack("<H", 0))
+    os.replace(temp, final)
+    published += 1
+print(published)
+"""
 
         private val BOUNDS_SCRIPT = """
 import bpy, json

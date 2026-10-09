@@ -36,6 +36,15 @@ object MeshPicker {
         val x: Float,
         val y: Float,
         val z: Float,
+        /**
+         * Which object of the plate the triangle belongs to.
+         *
+         * The picker is handed the whole plate as one mesh - every object's
+         * triangles end to end - so the triangle index alone cannot say which
+         * part was hit. Zero for a single-object plate, and for a hit built
+         * anywhere the viewer's scene is not in hand.
+         */
+        val objectIndex: Int = 0,
     )
 
     /** A ray under a screen point, in model space. [dir] is unit length. */

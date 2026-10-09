@@ -263,10 +263,13 @@ internal object GcodeCommandPolicy {
                 bounded('R', 0.0, 500.0)
             }
             486 -> {
-                // PrusaSlicer 3.x emits M486 S0/S-1 (cancel-object tracking
-                // enable/disable) and M486 A<object name> (register object).
+                // Object tracking. PrusaSlicer 3.x and OrcaSlicer number the objects on the
+                // plate from zero and emit M486 S<id>, with M486 S-1 to clear the selection and
+                // M486 A<object name> to register the names. The bound was -1..1 from when the
+                // plate held a single model, which rejected the third object's marker after the
+                // engine had already produced good G-code - reported as "the slicer failed".
                 only('S', 'A')
-                bounded('S', -1.0, 1.0)
+                bounded('S', -1.0, MAX_OBJECT_ID)
             }
             74 -> {
                 // PrusaSlicer 3.x per-layer marker. W is the extruded filament
@@ -502,6 +505,14 @@ internal object GcodeCommandPolicy {
             "RETRACT_SPEED=[+]?(\\d+(?:\\.\\d*)?|\\.\\d+)$",
         RegexOption.IGNORE_CASE,
     )
+    /**
+     * The highest object id an M486 may select.
+     *
+     * One id per object on the plate, so this is far above any plate that fits on a bed; it only
+     * has to stop a nonsense value from passing as an object selection.
+     */
+    private const val MAX_OBJECT_ID = 100_000.0
+
     private const val KLIPPER_ADVANCE_MIN = 0.0
     private const val KLIPPER_ADVANCE_MAX = 100.0
     private const val KLIPPER_RETRACT_LENGTH_MIN = 0.0

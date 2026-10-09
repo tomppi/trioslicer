@@ -311,6 +311,28 @@ class CadPreviewClient(
     }
 
     /**
+     * Writes every named shape in the scene to its own STL in [directory].
+     *
+     * The app watches that directory and puts each file on the build plate as its own object, so
+     * this is what "send the whole scene to the plate" means - the way to print several CAD parts
+     * together. Each shape is written through a temporary name and renamed into place, exactly
+     * like the engine's own exports, because a half-written STL is not a file the importer can
+     * use.
+     *
+     * @return how many shapes were written, or null when the engine refused.
+     */
+    fun exportEveryShape(directory: File): Int? {
+        val script = EXPORT_EVERY_SHAPE_SCRIPT.replace("__DIR__", pythonString(directory.absolutePath))
+        val reply = command("execute_code", JSONObject().put("code", script), IMPORT_TIMEOUT_MS)
+        if (reply.optString("status") != "success") {
+            Log.w(TAG, "export every shape refused: " + reply.toString().take(200))
+            return null
+        }
+        val text = reply.optJSONObject("result")?.optString("result").orEmpty().trim()
+        return text.lineSequence().lastOrNull { it.trim().toIntOrNull() != null }?.trim()?.toIntOrNull()
+    }
+
+    /**
      * Loads a model into the engine, waiting for the engine to come up.
      *
      * The engine extracts 566 MB and binds its port over tens of seconds, so a single attempt is a
@@ -358,11 +380,47 @@ class CadPreviewClient(
         discardSocket()
     }
 
+    /**
+     * A Python string literal for [value].
+     *
+     * The scripts below embed a path in engine-side source, and a path is not a value the engine
+     * parses - it is code. The same escape the Blender client uses, for the same reason.
+     */
+    private fun pythonString(value: String): String {
+        val escaped = value
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        return "'" + escaped + "'"
+    }
+
     companion object {
         private const val TAG = "CadPreviewClient"
 
         /** The CAD engine's MCP port. */
         const val DEFAULT_PORT = 9877
+
+        /**
+         * One STL per named shape in the scene, each published by renaming it into place.
+         *
+         * The scene helpers (shapes/get) and build123d's export_stl are what execute_code puts in
+         * scope; writing through a temporary name is what keeps a half-written file from being
+         * picked up as a model.
+         */
+        private val EXPORT_EVERY_SHAPE_SCRIPT = """
+import os
+base = __DIR__
+published = 0
+for name in shapes():
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)) or "shape"
+    final = os.path.join(base, safe + ".stl")
+    temp = final + ".part"
+    export_stl(get(name), temp)
+    os.replace(temp, final)
+    published += 1
+print(published)
+"""
 
         private const val CONNECT_TIMEOUT_MS = 5_000
         /** How long a load waits for the engine to bind its port. The engine is the slow one. */

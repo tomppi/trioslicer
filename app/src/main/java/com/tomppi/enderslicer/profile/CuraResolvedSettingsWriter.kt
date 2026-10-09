@@ -15,6 +15,23 @@ import org.json.JSONObject
 import java.io.File
 
 internal object CuraResolvedSettingsWriter {
+    /**
+     * One more object of a multi-object plate in a resolved request: the staged STL's
+     * file name, its slice-source transform, and the modifier volumes that belong to it.
+     *
+     * Every model key must carry its own transform keys. The engine reads
+     * mesh_rotation_matrix, enderslicer_mesh_translation_* and extruder_nr from the mesh
+     * group's shared settings once per model key (CommandLine.cpp:451-470), so a key that
+     * omits one silently inherits the previous object's transform.
+     */
+    data class PlateObject(
+        val fileName: String,
+        val transform: StlSliceTransform? = null,
+        val smartInfillModifiers: List<SmartInfillModifier> = emptyList(),
+        val adaptiveWallModifiers: List<AdaptiveWallModifier> = emptyList(),
+        val supportPaintModifiers: List<SupportPaintModifier> = emptyList(),
+    )
+
     fun write(
         destination: File,
         modelFileName: String,
@@ -23,15 +40,56 @@ internal object CuraResolvedSettingsWriter {
         smartInfillModifiers: List<SmartInfillModifier> = emptyList(),
         adaptiveWallModifiers: List<AdaptiveWallModifier> = emptyList(),
         supportPaintModifiers: List<SupportPaintModifier> = emptyList(),
+        additionalObjects: List<PlateObject> = emptyList(),
     ) {
+        val multiObject = additionalObjects.isNotEmpty()
+        val objects = listOf(
+            PlateObject(
+                fileName = modelFileName,
+                transform = modelTransform,
+                smartInfillModifiers = smartInfillModifiers,
+                adaptiveWallModifiers = adaptiveWallModifiers,
+                supportPaintModifiers = supportPaintModifiers,
+            ),
+        ) + additionalObjects
+        // The resolved transport hands every model key to the engine in the one mesh
+        // group it builds, so a feature that was written for a single source file only
+        // exists once. Refuse it by name: the alternative is a request that slices one
+        // object and reports success for the whole plate.
+        require(!multiObject || NonPlanarRuntime.snapshot() == null) {
+            "Non-planar printing cannot resolve settings for several plate objects: " +
+                "its conformal surface is built for one model"
+        }
+        require(!multiObject || ConicalRuntime.snapshot() == null) {
+            "Conical slicing cannot resolve settings for several plate objects: " +
+                "the cone warp is built for one model"
+        }
+        require(
+            !multiObject ||
+                (smartInfillModifiers.isEmpty() && additionalObjects.none { it.smartInfillModifiers.isNotEmpty() }),
+        ) {
+            "Smart Infill cannot resolve settings for several plate objects: " +
+                "its modifier volumes are generated from one analyzed model file"
+        }
         require(modelFileName.endsWith(".stl", ignoreCase = true)) {
             "Resolved Cura model must be an STL file"
+        }
+        additionalObjects.forEach { plateObject ->
+            require(plateObject.fileName.endsWith(".stl", ignoreCase = true)) {
+                "Resolved Cura model must be an STL file"
+            }
         }
         val modelDirectory = destination.parentFile
             ?: error("Resolved settings destination has no parent directory")
         val modelFile = File(modelDirectory, modelFileName)
         require(modelFile.isFile && modelFile.length() > 0L) {
             "Resolved Cura STL is missing or empty: ${modelFile.absolutePath}"
+        }
+        additionalObjects.forEach { plateObject ->
+            val objectFile = File(modelDirectory, plateObject.fileName)
+            require(objectFile.isFile && objectFile.length() > 0L) {
+                "Resolved Cura STL is missing or empty: ${objectFile.absolutePath}"
+            }
         }
         val nonPlanarSnapshot = NonPlanarRuntime.snapshot()
         val conicalSnapshot = ConicalRuntime.snapshot()
@@ -58,6 +116,12 @@ internal object CuraResolvedSettingsWriter {
             addAll(effectiveSmartInfillModifiers.map { it.file.name })
             addAll(adaptiveWallModifiers.map { it.file.name })
             addAll(supportPaintModifiers.map { it.file.name })
+            additionalObjects.forEach { plateObject ->
+                add(plateObject.fileName)
+                addAll(plateObject.smartInfillModifiers.map { it.file.name })
+                addAll(plateObject.adaptiveWallModifiers.map { it.file.name })
+                addAll(plateObject.supportPaintModifiers.map { it.file.name })
+            }
         }
         val duplicatedNames = meshNames.groupBy { it }.filterValues { it.size > 1 }.keys
         require(duplicatedNames.isEmpty()) {
@@ -90,6 +154,12 @@ internal object CuraResolvedSettingsWriter {
                 ?: PrinterEnvelope.DEFAULT_GCODE_FLAVOR,
         )
         printerEnvelope.requireBinaryStlFits(modelFile, effectiveModelTransform)
+        additionalObjects.forEach { plateObject ->
+            // Each object's own transform is checked, not the first object's: a wrong
+            // matrix would otherwise move a later object out of the build volume
+            // without a word.
+            printerEnvelope.requireBinaryStlFits(File(modelDirectory, plateObject.fileName), plateObject.transform)
+        }
         effectiveSmartInfillModifiers.forEach { modifier ->
             require(modifier.file.parentFile?.canonicalFile == modelDirectory.canonicalFile) {
                 "Smart Infill modifier was not staged inside the CuraEngine request"
@@ -98,16 +168,21 @@ internal object CuraResolvedSettingsWriter {
             printerEnvelope.requireBinaryStlFits(modifier.file)
         }
 
-        NonPlanarPreparation.prepare(
-            modelFile = modelFile,
-            workspace = modelDirectory,
-            printerEnvelope = printerEnvelope,
-            layerHeightMm = nonPlanarSnapshot?.let { requiredResolvedNumber(resolved, "layer_height") } ?: 0.0,
-            nozzleDiameterMm = nonPlanarSnapshot?.let { requiredResolvedNumber(resolved, "machine_nozzle_size") } ?: 0.0,
-            smartInfillModifiers = effectiveSmartInfillModifiers,
-            adaptiveWallModifiers = adaptiveWallModifiers,
-            supportPaintModifiers = supportPaintModifiers,
-        )
+        // One mesh group, one model: the conformal/conical preparation reads and writes
+        // a single source mesh, which is exactly why the multi-object gate above
+        // refuses both before it can run.
+        if (!multiObject) {
+            NonPlanarPreparation.prepare(
+                modelFile = modelFile,
+                workspace = modelDirectory,
+                printerEnvelope = printerEnvelope,
+                layerHeightMm = nonPlanarSnapshot?.let { requiredResolvedNumber(resolved, "layer_height") } ?: 0.0,
+                nozzleDiameterMm = nonPlanarSnapshot?.let { requiredResolvedNumber(resolved, "machine_nozzle_size") } ?: 0.0,
+                smartInfillModifiers = effectiveSmartInfillModifiers,
+                adaptiveWallModifiers = adaptiveWallModifiers,
+                supportPaintModifiers = supportPaintModifiers,
+            )
+        }
         printerEnvelope.writeTo(File(modelDirectory, PrinterEnvelope.METADATA_FILE_NAME))
 
         val machineCenterX = if (centerIsZero) 0.0 else machineWidth / 2.0
@@ -134,27 +209,9 @@ internal object CuraResolvedSettingsWriter {
             enginePositionZ = enginePositionZ,
         )
 
-        val modelValues = JSONObject(resolved.modelValues)
-        modelValues.put("extruder_nr", 0)
         val overhangFillEnabled = resolved.extruderValues["enderslicer_arc_overhang_enabled"] == "true" ||
             resolved.extruderValues["enderslicer_wave_overhang_enabled"] == "true" ||
             resolved.extruderValues["enderslicer_brick_wall_enabled"] == "true"
-        if (overhangFillEnabled) {
-            // The pinned definitions default bridge detection off, and the
-            // arc/wave/brick-wall overhang generators only work on detected
-            // bridges or the layer below.
-            modelValues.put("bridge_settings_enabled", true)
-        }
-        applyTransform(
-            values = modelValues,
-            linear = linear,
-            translationX = affineTranslationX,
-            translationY = affineTranslationY,
-            translationZ = affineTranslationZ,
-            enginePositionX = enginePositionX,
-            enginePositionY = enginePositionY,
-            enginePositionZ = enginePositionZ,
-        )
 
         val globalValues = LinkedHashMap(resolved.globalValues)
         if (nonPlanarSnapshot != null || conicalSnapshot != null) {
@@ -165,78 +222,109 @@ internal object CuraResolvedSettingsWriter {
         val root = JSONObject()
             .put("global", JSONObject(globalValues))
             .put("extruder.0", extruderValues)
-            .put(modelFileName, modelValues)
 
-        effectiveSmartInfillModifiers.forEachIndexed { index, modifier ->
-            val densityResolved = resolved.smartInfillModelValues[modifier.densityPercent]
-                ?: error("Resolved Cura settings are missing for ${modifier.densityPercent}% Smart Infill")
-            val values = JSONObject(densityResolved)
-                .put("extruder_nr", 0)
-                .put("infill_mesh", true)
-                .put("infill_mesh_order", index + 1)
-                .put("infill_sparse_density", modifier.densityPercent)
-                .put("support_mesh", false)
-                .put("anti_overhang_mesh", false)
-                .put("cutting_mesh", false)
-            SmartInfillCuraContract.modifierShellNeutralValues.forEach { (key, value) ->
-                values.put(key, value.toInt())
+        // One model key per plate object, each with its own transform keys. The keys
+        // are shared settings as far as the engine is concerned: it writes each model
+        // key's values onto the mesh group before loading that model (CommandLine.cpp:
+        // 451-470), so the transform block has to be complete on every key.
+        // infill_mesh_order keeps counting across objects because every key lands in
+        // the same mesh group.
+        var modifierOrder = 0
+        objects.forEachIndexed { index, plateObject ->
+            val objectTransform = if (index == 0) effectiveModelTransform else plateObject.transform
+            val modelValues = JSONObject(resolved.modelValues)
+            modelValues.put("extruder_nr", 0)
+            if (overhangFillEnabled) {
+                // The pinned definitions default bridge detection off, and the
+                // arc/wave/brick-wall overhang generators only work on detected
+                // bridges or the layer below.
+                modelValues.put("bridge_settings_enabled", true)
             }
             applyTransform(
-                values = values,
-                linear = IDENTITY,
-                translationX = 0.0,
-                translationY = 0.0,
-                translationZ = 0.0,
+                values = modelValues,
+                linear = objectTransform?.linear ?: IDENTITY,
+                translationX = objectTransform?.translationXmm ?: 0.0,
+                translationY = objectTransform?.translationYmm ?: 0.0,
+                translationZ = objectTransform?.translationZmm ?: 0.0,
                 enginePositionX = enginePositionX,
                 enginePositionY = enginePositionY,
                 enginePositionZ = enginePositionZ,
             )
-            root.put(modifier.file.name, values)
-        }
+            root.put(plateObject.fileName, modelValues)
 
-        adaptiveWallModifiers.forEachIndexed { index, modifier ->
-            val values = JSONObject(resolved.modelValues)
-                .put("extruder_nr", 0)
-                .put("infill_mesh", true)
-                .put("infill_mesh_order", effectiveSmartInfillModifiers.size + index + 1)
-                .put("wall_line_count", modifier.wallLineCount)
-                .put("wall_0_material_flow", modifier.wallFlowPercent)
-                .put("wall_x_material_flow", modifier.wallFlowPercent)
-                .put("support_mesh", false)
-                .put("anti_overhang_mesh", false)
-                .put("cutting_mesh", false)
-            applyTransform(
-                values = values,
-                linear = IDENTITY,
-                translationX = 0.0,
-                translationY = 0.0,
-                translationZ = 0.0,
-                enginePositionX = enginePositionX,
-                enginePositionY = enginePositionY,
-                enginePositionZ = enginePositionZ,
-            )
-            root.put(modifier.file.name, values)
-        }
+            plateObject.smartInfillModifiers
+                .sortedBy(SmartInfillModifier::densityPercent)
+                .forEach { modifier ->
+                    val densityResolved = resolved.smartInfillModelValues[modifier.densityPercent]
+                        ?: error("Resolved Cura settings are missing for ${modifier.densityPercent}% Smart Infill")
+                    val values = JSONObject(densityResolved)
+                        .put("extruder_nr", 0)
+                        .put("infill_mesh", true)
+                        .put("infill_mesh_order", ++modifierOrder)
+                        .put("infill_sparse_density", modifier.densityPercent)
+                        .put("support_mesh", false)
+                        .put("anti_overhang_mesh", false)
+                        .put("cutting_mesh", false)
+                    SmartInfillCuraContract.modifierShellNeutralValues.forEach { (key, value) ->
+                        values.put(key, value.toInt())
+                    }
+                    applyTransform(
+                        values = values,
+                        linear = IDENTITY,
+                        translationX = 0.0,
+                        translationY = 0.0,
+                        translationZ = 0.0,
+                        enginePositionX = enginePositionX,
+                        enginePositionY = enginePositionY,
+                        enginePositionZ = enginePositionZ,
+                    )
+                    root.put(modifier.file.name, values)
+                }
 
-        supportPaintModifiers.forEach { modifier ->
-            val values = JSONObject(resolved.modelValues)
-                .put("extruder_nr", 0)
-                .put("meshfix_union_all", false)
-                .put("support_mesh", !modifier.isBlocker)
-                .put("anti_overhang_mesh", modifier.isBlocker)
-                .put("infill_mesh", false)
-                .put("cutting_mesh", false)
-            applyTransform(
-                values = values,
-                linear = IDENTITY,
-                translationX = 0.0,
-                translationY = 0.0,
-                translationZ = 0.0,
-                enginePositionX = enginePositionX,
-                enginePositionY = enginePositionY,
-                enginePositionZ = enginePositionZ,
-            )
-            root.put(modifier.file.name, values)
+            plateObject.adaptiveWallModifiers.forEach { modifier ->
+                val values = JSONObject(resolved.modelValues)
+                    .put("extruder_nr", 0)
+                    .put("infill_mesh", true)
+                    .put("infill_mesh_order", ++modifierOrder)
+                    .put("wall_line_count", modifier.wallLineCount)
+                    .put("wall_0_material_flow", modifier.wallFlowPercent)
+                    .put("wall_x_material_flow", modifier.wallFlowPercent)
+                    .put("support_mesh", false)
+                    .put("anti_overhang_mesh", false)
+                    .put("cutting_mesh", false)
+                applyTransform(
+                    values = values,
+                    linear = IDENTITY,
+                    translationX = 0.0,
+                    translationY = 0.0,
+                    translationZ = 0.0,
+                    enginePositionX = enginePositionX,
+                    enginePositionY = enginePositionY,
+                    enginePositionZ = enginePositionZ,
+                )
+                root.put(modifier.file.name, values)
+            }
+
+            plateObject.supportPaintModifiers.forEach { modifier ->
+                val values = JSONObject(resolved.modelValues)
+                    .put("extruder_nr", 0)
+                    .put("meshfix_union_all", false)
+                    .put("support_mesh", !modifier.isBlocker)
+                    .put("anti_overhang_mesh", modifier.isBlocker)
+                    .put("infill_mesh", false)
+                    .put("cutting_mesh", false)
+                applyTransform(
+                    values = values,
+                    linear = IDENTITY,
+                    translationX = 0.0,
+                    translationY = 0.0,
+                    translationZ = 0.0,
+                    enginePositionX = enginePositionX,
+                    enginePositionY = enginePositionY,
+                    enginePositionZ = enginePositionZ,
+                )
+                root.put(modifier.file.name, values)
+            }
         }
 
         destination.writeText(root.toString())

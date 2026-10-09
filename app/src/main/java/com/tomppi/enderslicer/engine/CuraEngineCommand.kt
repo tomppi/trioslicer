@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.engine
 
+import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.model.ExtraSettingSpec
 import com.tomppi.enderslicer.model.ExtraSettingValidation
 import com.tomppi.enderslicer.model.PrinterDefinition
@@ -7,6 +8,7 @@ import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.model.resolveEndGcode
 import com.tomppi.enderslicer.model.resolveStartGcode
 import com.tomppi.enderslicer.model.withSettings
+import com.tomppi.enderslicer.nonplanar.NonPlanarRuntime
 import com.tomppi.enderslicer.profile.CuraEngineProfile
 import com.tomppi.enderslicer.profile.CuraSettingDelta
 import com.tomppi.enderslicer.smartinfill.SmartInfillCuraContract
@@ -16,6 +18,20 @@ import com.tomppi.enderslicer.smartinfill.applyTo
 import com.tomppi.enderslicer.smartinfill.requireValidBinaryStl
 import com.tomppi.enderslicer.supportpaint.SupportPaintModifier
 import java.io.File
+
+/**
+ * One more object of a plate for the standalone `-l` transport: the staged STL and
+ * the modifier volumes that belong to that plateObject.
+ *
+ * [modelPath] is an absolute path to a staged mesh whose plate placement is already
+ * baked into its vertices, so the engine needs no per-object translate or rotate.
+ */
+data class CuraPlateObject(
+    val modelPath: String,
+    val smartInfillModifiers: List<SmartInfillModifier> = emptyList(),
+    val adaptiveWallModifiers: List<AdaptiveWallModifier> = emptyList(),
+    val supportPaintModifiers: List<SupportPaintModifier> = emptyList(),
+)
 
 object CuraEngineCommand {
     fun buildResolved(
@@ -75,6 +91,8 @@ object CuraEngineCommand {
         extraSettings: Map<String, String> = emptyMap(),
         catalog: List<ExtraSettingSpec> = emptyList(),
         threadCount: Int = recommendedThreadCount(),
+        additionalObjects: List<CuraPlateObject> = emptyList(),
+        sequential: Boolean = false,
     ): List<String> {
         require(profile == null) {
             "Imported Cura configurations must be dependency-resolved before command generation"
@@ -99,52 +117,100 @@ object CuraEngineCommand {
         } else {
             activeSmartInfill?.stageModifiers(workspace, analyzedSource).orEmpty()
         }
-        effectiveSmartInfillModifiers.forEach { modifier ->
-            requireSafeArgument(modifier.file.absolutePath)
-            requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
+        // A plate is one mesh group: every object's -l lands in group 0, so the objects
+        // print layer by layer together. "--next" is Cura's one-at-a-time marker
+        // instead - the CLI focuses the next mesh group, and the engine treats a group
+        // as a whole print unit: Slice::compute loops the groups, Scene::processMeshGroup
+        // writes G-code per group (Scene.cpp:95), only the first group gets the machine
+        // start sequence while every later one gets the between-parts hop
+        // (FffGcodeWriter.cpp:82-95, FffGcodeWriter.cpp:555). Cura's own frontend groups
+        // exactly that way: one group holding every object for all_at_once, one group per
+        // object only for one_at_a_time (StartSliceJob.py:168-224).
+        //
+        // Cura-only features that were built around one source file cannot be spread
+        // over several objects; name them here instead of slicing object 1 and
+        // reporting success for the whole plate.
+        if (additionalObjects.isNotEmpty()) {
+            require(
+                activeSmartInfill == null &&
+                    effectiveSmartInfillModifiers.isEmpty() &&
+                    additionalObjects.all { it.smartInfillModifiers.isEmpty() },
+            ) {
+                "Smart Infill cannot slice several plate objects: its modifier volumes are " +
+                    "generated from one analyzed model file"
+            }
+            require(NonPlanarRuntime.snapshot() == null) {
+                "Non-planar printing cannot slice several plate objects: its conformal surface " +
+                    "is built for one model"
+            }
+            require(ConicalRuntime.snapshot() == null) {
+                "Conical slicing cannot slice several plate objects: the cone warp is built for one model"
+            }
         }
-        adaptiveWallModifiers.forEach { modifier ->
-            requireSafeArgument(modifier.file.absolutePath)
-            requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
-        }
-        supportPaintModifiers.forEach { modifier ->
-            requireSafeArgument(modifier.file.absolutePath)
-            requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
+
+        val objects = listOf(
+            CuraPlateObject(
+                modelPath = modelPath,
+                smartInfillModifiers = effectiveSmartInfillModifiers,
+                adaptiveWallModifiers = adaptiveWallModifiers,
+                supportPaintModifiers = supportPaintModifiers,
+            ),
+        ) + additionalObjects
+        objects.forEach { plateObject ->
+            requireSafeArgument(plateObject.modelPath)
+            plateObject.smartInfillModifiers.forEach { modifier ->
+                requireSafeArgument(modifier.file.absolutePath)
+                requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
+            }
+            plateObject.adaptiveWallModifiers.forEach { modifier ->
+                requireSafeArgument(modifier.file.absolutePath)
+                requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
+            }
+            plateObject.supportPaintModifiers.forEach { modifier ->
+                requireSafeArgument(modifier.file.absolutePath)
+                requireValidBinaryStl(modifier.file, Int.MAX_VALUE)
+            }
         }
 
         val effectiveSettings = SmartInfillRuntime.current()?.applyTo(settings) ?: settings
         val effectivePrinter = printer.withSettings(effectiveSettings)
         val printerEnvelope = PrinterEnvelope.from(effectivePrinter)
-        analyzedSource.takeIf(File::isFile)?.let(printerEnvelope::requireBinaryStlFits)
         // The label decides what the failure names: without one every volume
         // reads as "Model vertex N", which sent a whole debugging session after
         // the wrong file.
-        effectiveSmartInfillModifiers.forEach { modifier ->
-            printerEnvelope.requireBinaryStlFits(
-                modifier.file,
-                label = "Smart Infill ${modifier.densityPercent}% modifier",
-            )
-        }
-        adaptiveWallModifiers.forEach { modifier ->
-            printerEnvelope.requireBinaryStlFits(
-                modifier.file,
-                label = "Adaptive-wall modifier " + modifier.file.name,
-            )
-        }
-        supportPaintModifiers.forEach { modifier ->
+        objects.forEach { plateObject ->
+            File(plateObject.modelPath).takeIf(File::isFile)?.let(printerEnvelope::requireBinaryStlFits)
+            plateObject.smartInfillModifiers.forEach { modifier ->
+                printerEnvelope.requireBinaryStlFits(
+                    modifier.file,
+                    label = "Smart Infill ${modifier.densityPercent}% modifier",
+                )
+            }
+            plateObject.adaptiveWallModifiers.forEach { modifier ->
+                printerEnvelope.requireBinaryStlFits(
+                    modifier.file,
+                    label = "Adaptive-wall modifier " + modifier.file.name,
+                )
+            }
+            plateObject.supportPaintModifiers.forEach { modifier ->
                 printerEnvelope.requireBinaryStlFits(modifier.file, label = "Support-paint modifier " + modifier.file.name)
             }
+        }
 
-        NonPlanarPreparation.prepare(
-            modelFile = analyzedSource,
-            workspace = workspace,
-            printerEnvelope = printerEnvelope,
-            layerHeightMm = effectiveSettings.layerHeightMm,
-            nozzleDiameterMm = effectivePrinter.nozzleSizeMm,
-            smartInfillModifiers = effectiveSmartInfillModifiers,
-            adaptiveWallModifiers = adaptiveWallModifiers,
-            supportPaintModifiers = supportPaintModifiers,
-        )
+        // One mesh group, one source mesh: the conformal/conical preparation is exactly
+        // what the several-object refusal above protects.
+        if (additionalObjects.isEmpty()) {
+            NonPlanarPreparation.prepare(
+                modelFile = analyzedSource,
+                workspace = workspace,
+                printerEnvelope = printerEnvelope,
+                layerHeightMm = effectiveSettings.layerHeightMm,
+                nozzleDiameterMm = effectivePrinter.nozzleSizeMm,
+                smartInfillModifiers = effectiveSmartInfillModifiers,
+                adaptiveWallModifiers = adaptiveWallModifiers,
+                supportPaintModifiers = supportPaintModifiers,
+            )
+        }
 
         val effectiveStartGcode = effectiveSettings.resolveStartGcode(startGcode)
         val effectiveEndGcode = machineEndGcodeFor(effectiveSettings, endGcode)
@@ -258,6 +324,14 @@ object CuraEngineCommand {
             setting(key, value)
         }
         applyStandaloneSettings()
+        if (sequential) {
+            // One object at a time is Cura's own grouping switch: its frontend builds
+            // one object group per object exactly when print_sequence is one_at_a_time,
+            // and the engine reads this from the mesh group settings
+            // (FffGcodeWriter.cpp:4454). It belongs on the global stack, before -e0,
+            // because it describes the whole plate rather than one mesh.
+            setting("print_sequence", "one_at_a_time")
+        }
 
         command += listOf(
             "-e0",
@@ -298,74 +372,87 @@ object CuraEngineCommand {
         setting("support_roof_line_distance", lineDistance)
         setting("support_bottom_line_distance", lineDistance)
 
-        prepareMeshLoad()
-        command += listOf("-l", modelPath)
-        positionLoadedMesh()
-        setting("extruder_nr", 0)
         val basePattern = activeSmartInfill
             ?.let(SmartInfillCuraContract::basePattern)
             ?: effectiveSettings.infillPattern.lowercase()
-        applySmartInfillRegion(
-            activeSmartInfill?.baseDensityPercent ?: effectiveSettings.infillDensityPercent,
-            basePattern,
-        )
-        setting("infill_mesh", false)
-        setting("support_mesh", false)
-        setting("anti_overhang_mesh", false)
-        setting("cutting_mesh", false)
+        // Every object emits the same block: prepareMeshLoad, -l, that object's own
+        // settings on its own mesh (-l focuses the loaded mesh, CommandLine.cpp:308),
+        // then that object's modifier volumes. One group holds them all, unless the
+        // caller asked for sequential printing, where --next starts each object's own
+        // group. infill_mesh_order counts across the whole command: inside one group
+        // every modifier must have its own order, while a new group restarts it.
+        var modifierOrder = 0
+        objects.forEachIndexed { index, plateObject ->
+            if (sequential && index > 0) {
+                command += "--next"
+                modifierOrder = 0
+            }
+            prepareMeshLoad()
+            command += listOf("-l", plateObject.modelPath)
+            positionLoadedMesh()
+            setting("extruder_nr", 0)
+            applySmartInfillRegion(
+                activeSmartInfill?.baseDensityPercent ?: effectiveSettings.infillDensityPercent,
+                basePattern,
+            )
+            setting("infill_mesh", false)
+            setting("support_mesh", false)
+            setting("anti_overhang_mesh", false)
+            setting("cutting_mesh", false)
 
-        effectiveSmartInfillModifiers
-            .sortedBy(SmartInfillModifier::densityPercent)
-            .forEachIndexed { index, modifier ->
+            plateObject.smartInfillModifiers
+                .sortedBy(SmartInfillModifier::densityPercent)
+                .forEach { modifier ->
+                    prepareMeshLoad()
+                    command += listOf("-l", modifier.file.absolutePath)
+                    positionLoadedMesh()
+                    setting("extruder_nr", 0)
+                    setting("infill_mesh", true)
+                    setting("infill_mesh_order", ++modifierOrder)
+                    val modifierPattern = activeSmartInfill
+                        ?.let { SmartInfillCuraContract.modifierPattern(it, modifier.densityPercent) }
+                        ?: effectiveSettings.infillPattern.lowercase()
+                    applySmartInfillRegion(modifier.densityPercent.toDouble(), modifierPattern)
+                    neutralizeSmartInfillModifierShell()
+                    setting("support_mesh", false)
+                    setting("anti_overhang_mesh", false)
+                    setting("cutting_mesh", false)
+                }
+
+            plateObject.adaptiveWallModifiers.forEach { modifier ->
                 prepareMeshLoad()
                 command += listOf("-l", modifier.file.absolutePath)
                 positionLoadedMesh()
                 setting("extruder_nr", 0)
                 setting("infill_mesh", true)
-                setting("infill_mesh_order", index + 1)
-                val modifierPattern = activeSmartInfill
-                    ?.let { SmartInfillCuraContract.modifierPattern(it, modifier.densityPercent) }
-                    ?: effectiveSettings.infillPattern.lowercase()
-                applySmartInfillRegion(modifier.densityPercent.toDouble(), modifierPattern)
-                neutralizeSmartInfillModifierShell()
+                setting("infill_mesh_order", ++modifierOrder)
+                setting("wall_line_count", modifier.wallLineCount)
+                setting("wall_0_material_flow", modifier.wallFlowPercent)
+                setting("wall_x_material_flow", modifier.wallFlowPercent)
+                applySmartInfillRegion(
+                    activeSmartInfill?.baseDensityPercent ?: effectiveSettings.infillDensityPercent,
+                    basePattern,
+                )
                 setting("support_mesh", false)
                 setting("anti_overhang_mesh", false)
                 setting("cutting_mesh", false)
             }
 
-        adaptiveWallModifiers.forEachIndexed { index, modifier ->
-            prepareMeshLoad()
-            command += listOf("-l", modifier.file.absolutePath)
-            positionLoadedMesh()
-            setting("extruder_nr", 0)
-            setting("infill_mesh", true)
-            setting("infill_mesh_order", effectiveSmartInfillModifiers.size + index + 1)
-            setting("wall_line_count", modifier.wallLineCount)
-            setting("wall_0_material_flow", modifier.wallFlowPercent)
-            setting("wall_x_material_flow", modifier.wallFlowPercent)
-            applySmartInfillRegion(
-                activeSmartInfill?.baseDensityPercent ?: effectiveSettings.infillDensityPercent,
-                basePattern,
-            )
-            setting("support_mesh", false)
-            setting("anti_overhang_mesh", false)
-            setting("cutting_mesh", false)
-        }
-
-        supportPaintModifiers.forEach { modifier ->
-            prepareMeshLoad()
-            command += listOf("-l", modifier.file.absolutePath)
-            positionLoadedMesh()
-            setting("extruder_nr", 0)
-            // The painted prisms overlap heavily by design; unioning them is the
-            // dominant slice cost and unnecessary: each prism is already a closed
-            // volume and the support generator projects all support meshes
-            // together regardless of union state.
-            setting("meshfix_union_all", false)
-            setting("support_mesh", !modifier.isBlocker)
-            setting("anti_overhang_mesh", modifier.isBlocker)
-            setting("infill_mesh", false)
-            setting("cutting_mesh", false)
+            plateObject.supportPaintModifiers.forEach { modifier ->
+                prepareMeshLoad()
+                command += listOf("-l", modifier.file.absolutePath)
+                positionLoadedMesh()
+                setting("extruder_nr", 0)
+                // The painted prisms overlap heavily by design; unioning them is the
+                // dominant slice cost and unnecessary: each prism is already a closed
+                // volume and the support generator projects all support meshes
+                // together regardless of union state.
+                setting("meshfix_union_all", false)
+                setting("support_mesh", !modifier.isBlocker)
+                setting("anti_overhang_mesh", modifier.isBlocker)
+                setting("infill_mesh", false)
+                setting("cutting_mesh", false)
+            }
         }
 
         command += listOf("-o", outputPath)

@@ -5,7 +5,9 @@ import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.ModelPlacement
+import com.tomppi.enderslicer.data.PlatePreferences
 import com.tomppi.enderslicer.model.OrcaSliceSettings
+import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.PrusaPresetOption
 import com.tomppi.enderslicer.model.PrusaPresetSelection
@@ -17,7 +19,9 @@ import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
+import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.unionOrNull
 
 data class MainUiState(
     val printer: PrinterDefinition,
@@ -39,14 +43,23 @@ data class MainUiState(
     /** Prusa-imported start/end gcode; the Cura path never sees them. */
     val prusaStartGcode: String = "",
     val prusaEndGcode: String = "",
-    val mesh: StlMesh? = null,
-    val modelPath: String? = null,
-    val modelPlacement: ModelPlacement? = null,
+    /**
+     * Every model on the plate, in import order.
+     *
+     * The plate held exactly one of these until multi-object printing. [selectedModel] is the one
+     * the tools, the gestures and the paint brush act on, and [mesh], [modelPath] and
+     * [modelPlacement] below answer for it, so the many callers that mean "the model" keep
+     * working without knowing there can be several.
+     */
+    val models: List<PlateObject> = emptyList(),
+    /** The object the tools act on. Null exactly when the plate is empty. */
+    val selectedModelId: String? = null,
+    /** How the plate is laid out and printed. A workflow choice, not a slicing setting. */
+    val platePreferences: PlatePreferences = PlatePreferences(),
     /** True while there is a placement change to take back. */
     val canUndoPlacement: Boolean = false,
     /** What undoing would take back, for the button's own label. */
     val undoPlacementLabel: String? = null,
-    val supportPaint: SupportPaintState = SupportPaintState(),
     val paintMode: SupportPaintMode = SupportPaintMode.NONE,
 
     /**
@@ -127,6 +140,51 @@ data class MainUiState(
      */
     val sliceProgressPercent: Int? = null,
 ) {
+    /** The object every single-model path means: the selected one, or the only one there is. */
+    val selectedModel: PlateObject?
+        get() = models.firstOrNull { it.id == selectedModelId } ?: models.firstOrNull()
+
+    /** The selected object's mesh, as drawn and as handed to the engines. */
+    val mesh: StlMesh? get() = selectedModel?.mesh
+
+    /** The file the selected object was imported from. */
+    val modelPath: String? get() = selectedModel?.sourcePath
+
+    /** Where the selected object sits on the bed. */
+    val modelPlacement: ModelPlacement?
+        get() = selectedModel?.placement ?: models.firstOrNull()?.placement
+
+    /** The selected object's paint: the brush belongs to the object it paints. */
+    val supportPaint: SupportPaintState
+        get() = selectedModel?.supportPaint ?: SupportPaintState()
+
+    /** Everything on the plate as one box: what has to fit, and what the camera frames. */
+    val plateBounds: MeshBounds? get() = models.map { it.mesh.bounds }.unionOrNull()
+
+    /** Adds a model and selects it - a freshly imported object is the one being worked on. */
+    fun withModelAdded(model: PlateObject): MainUiState =
+        copy(models = models + model, selectedModelId = model.id)
+
+    /** Replaces the list, keeping the selection when the object it named still exists. */
+    fun withModels(next: List<PlateObject>): MainUiState = copy(
+        models = next,
+        selectedModelId = selectedModelId?.takeIf { id -> next.any { it.id == id } }
+            ?: next.firstOrNull()?.id,
+    )
+
+    /** Replaces one object by id. */
+    fun withModel(id: String, update: (PlateObject) -> PlateObject): MainUiState =
+        copy(models = models.map { if (it.id == id) update(it) else it })
+
+    /** Replaces the selected object; a no-op when the plate is empty. */
+    fun withSelectedModel(update: (PlateObject) -> PlateObject): MainUiState {
+        val target = selectedModel ?: return this
+        return withModel(target.id, update)
+    }
+
+    /** Takes one object off the plate, selecting another if the removed one was selected. */
+    fun withoutModel(id: String): MainUiState = withModels(models.filterNot { it.id == id })
+
     /** The stored result is exportable; completeness is the cached value from when it was stored. */
     fun hasCurrentGcode(): Boolean = sliceResultId != null && gcodePath != null && gcodeComplete
 

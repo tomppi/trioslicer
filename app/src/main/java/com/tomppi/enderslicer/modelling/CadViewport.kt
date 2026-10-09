@@ -194,6 +194,21 @@ class CadViewport(
         }
     }
 
+    /**
+     * Asks the engine to write every shape in its scene to its own STL in [directory].
+     *
+     * The app's export watcher turns each file into its own object on the build plate, so this is
+     * how a CAD scene holding several parts reaches the plate in one action. It runs on the
+     * viewport's scope but not through the frame loop: exporting is a tessellation, not a render,
+     * and it must not be replaced by the next camera move.
+     */
+    fun exportEveryShape(directory: File, onResult: (Int?) -> Unit = {}) {
+        scope.launch {
+            val published = withContext(Dispatchers.IO) { client.exportEveryShape(directory) }
+            onResult(published)
+        }
+    }
+
     fun start() {
         if (pump != null) return
         Log.i(TAG, "starting; frame file " + frameFile.absolutePath)

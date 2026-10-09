@@ -10,6 +10,7 @@ import com.tomppi.enderslicer.nonplanar.NonPlanarSettings
 import com.tomppi.enderslicer.profile.CuraEngineProfile
 import com.tomppi.enderslicer.smartinfill.SmartInfillCuraContract
 import com.tomppi.enderslicer.smartinfill.SmartInfillModifier
+import com.tomppi.enderslicer.smartinfill.SmartInfillRuntime
 import com.tomppi.enderslicer.supportpaint.SupportPaintModifier
 import com.tomppi.enderslicer.viewer.StlParser
 import java.io.File
@@ -492,6 +493,174 @@ class CuraEngineCommandTest {
                 1e-9,
             )
         } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    /**
+     * A plate is one mesh group. "--next" would move the next object into a group of
+     * its own, which this engine slices and writes as a whole part before the one after
+     * it, so every -l of a plate stays in group 0 and each object's modifier volumes
+     * follow that object's own mesh.
+     */
+    @Test
+    fun plateObjectsStayInOneMeshGroupWithTheirOwnModifiers() {
+        val directory = Files.createTempDirectory("cura-plate-command").toFile()
+        try {
+            SmartInfillRuntime.activate(null)
+            val first = File(directory, "model-1.stl")
+            val second = File(directory, "model-2.stl")
+            val enforcer = File(directory, "object-2-support-enforcer.stl")
+            writeTriangle(first, 10f, 10f, 0.2f)
+            writeTriangle(second, 110f, 110f, 0.2f)
+            writeTriangle(enforcer, 110f, 110f, 0.4f)
+
+            val command = CuraEngineCommand.build(
+                executablePath = "/native/libcuraengine_exec.so",
+                definitionsDirectory = "/files/definitions",
+                machineDefinitionPath = "/files/definitions/creality_ender3.def.json",
+                extruderDefinitionPath = "/files/definitions/creality_base_extruder_0.def.json",
+                modelPath = first.absolutePath,
+                outputPath = File(directory, "current.gcode").absolutePath,
+                printer = printer,
+                settings = SlicerSettings(),
+                startGcode = "G28",
+                endGcode = "M104 S0",
+                additionalObjects = listOf(
+                    CuraPlateObject(
+                        modelPath = second.absolutePath,
+                        supportPaintModifiers = listOf(SupportPaintModifier(isBlocker = false, file = enforcer)),
+                    ),
+                ),
+                threadCount = 4,
+            )
+
+            val firstIndex = command.indexOf(first.absolutePath)
+            val secondIndex = command.indexOf(second.absolutePath)
+            val enforcerIndex = command.indexOf(enforcer.absolutePath)
+            val outputIndex = command.indexOf("-o")
+            assertTrue(firstIndex > 0)
+            assertTrue(secondIndex > firstIndex)
+            assertTrue(enforcerIndex > secondIndex)
+            assertTrue(outputIndex > enforcerIndex)
+            assertFalse(
+                "A plate must not open a second mesh group: --next prints the parts one at a time",
+                command.contains("--next"),
+            )
+            // Load-time transform keys precede every -l, the second object's included:
+            // without them that -l would read the previous mesh's matrix.
+            assertEquals("-l", command[firstIndex - 1])
+            assertEquals("-l", command[secondIndex - 1])
+            assertEquals("-l", command[enforcerIndex - 1])
+            assertTrue(command.subList(0, firstIndex).contains("mesh_rotation_matrix=[[1,0,0],[0,1,0],[0,0,1]]"))
+            assertTrue(command.subList(firstIndex, secondIndex).contains("mesh_rotation_matrix=[[1,0,0],[0,1,0],[0,0,1]]"))
+            assertTrue(command.subList(secondIndex, enforcerIndex).contains("mesh_position_x=-115.0"))
+            // Each -l focuses its own mesh, so a per-object setting stays per object,
+            // and the enforcer only exists in the block that owns it.
+            assertTrue(command.subList(firstIndex + 1, secondIndex).contains("infill_mesh=false"))
+            assertTrue(command.subList(secondIndex + 1, enforcerIndex).contains("extruder_nr=0"))
+            assertTrue(command.subList(enforcerIndex + 1, outputIndex).contains("support_mesh=true"))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aSequentialPlateAsksForOneAtATimeAndOpensAGroupPerObject() {
+        val directory = Files.createTempDirectory("cura-sequential-plate").toFile()
+        try {
+            val first = File(directory, "model-1.stl")
+            val second = File(directory, "model-2.stl")
+            writeTriangle(first, 10f, 10f, 0.2f)
+            writeTriangle(second, 110f, 110f, 0.2f)
+
+            val command = CuraEngineCommand.build(
+                executablePath = "/native/libcuraengine_exec.so",
+                definitionsDirectory = "/files/definitions",
+                machineDefinitionPath = "/files/definitions/creality_ender3.def.json",
+                extruderDefinitionPath = "/files/definitions/creality_base_extruder_0.def.json",
+                modelPath = first.absolutePath,
+                outputPath = File(directory, "current.gcode").absolutePath,
+                printer = printer,
+                settings = SlicerSettings(),
+                startGcode = "G28",
+                endGcode = "M104 S0",
+                additionalObjects = listOf(CuraPlateObject(modelPath = second.absolutePath)),
+                sequential = true,
+                threadCount = 4,
+            )
+
+            val firstIndex = command.indexOf(first.absolutePath)
+            val secondIndex = command.indexOf(second.absolutePath)
+            val nextIndex = command.indexOf("--next")
+            assertEquals("--next", command[nextIndex])
+            assertTrue(nextIndex in (firstIndex + 1) until secondIndex)
+            // The switch Cura's own frontend groups one-object-per-group off, on the
+            // global stack before the first mesh load.
+            assertEquals("print_sequence=one_at_a_time", command.single { it.startsWith("print_sequence=") })
+            assertTrue(command.indexOf("print_sequence=one_at_a_time") < firstIndex)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    /**
+     * Smart Infill, non-planar printing and conical slicing are all built from one
+     * source mesh. A plate must be refused by name instead of sliced as whichever
+     * object happened to be first.
+     */
+    @Test
+    fun featuresBuiltForOneModelAreRefusedForAPlate() {
+        val directory = Files.createTempDirectory("cura-plate-refusals").toFile()
+        try {
+            val first = File(directory, "model-1.stl")
+            val second = File(directory, "model-2.stl")
+            val modifier = File(directory, "smart-infill-35pct.stl")
+            writeTriangle(first, 10f, 10f, 0.2f)
+            writeTriangle(second, 110f, 110f, 0.2f)
+            writeTriangle(modifier, 110f, 110f, 0.4f)
+
+            fun buildPlate(smartInfillModifiers: List<SmartInfillModifier> = emptyList()): List<String> =
+                CuraEngineCommand.build(
+                    executablePath = "/native/libcuraengine_exec.so",
+                    definitionsDirectory = "/files/definitions",
+                    machineDefinitionPath = "/files/definitions/creality_ender3.def.json",
+                    extruderDefinitionPath = "/files/definitions/creality_base_extruder_0.def.json",
+                    modelPath = first.absolutePath,
+                    outputPath = File(directory, "current.gcode").absolutePath,
+                    printer = printer,
+                    settings = SlicerSettings(),
+                    startGcode = "G28",
+                    endGcode = "M104 S0",
+                    smartInfillModifiers = smartInfillModifiers,
+                    additionalObjects = listOf(CuraPlateObject(modelPath = second.absolutePath)),
+                    threadCount = 4,
+                )
+
+            SmartInfillRuntime.activate(null)
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            ConicalRuntime.activate(ConicalSettings())
+            val smartInfillError = runCatching {
+                buildPlate(smartInfillModifiers = listOf(SmartInfillModifier(35, modifier)))
+            }.exceptionOrNull()
+            assertTrue(smartInfillError is IllegalArgumentException)
+            assertTrue(smartInfillError?.message.orEmpty().contains("Smart Infill"))
+
+            NonPlanarRuntime.activate(NonPlanarSettings(enabled = true))
+            val nonPlanarError = runCatching { buildPlate() }.exceptionOrNull()
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            assertTrue(nonPlanarError is IllegalArgumentException)
+            assertTrue(nonPlanarError?.message.orEmpty().contains("Non-planar"))
+
+            ConicalRuntime.activate(ConicalSettings(enabled = true))
+            val conicalError = runCatching { buildPlate() }.exceptionOrNull()
+            ConicalRuntime.activate(ConicalSettings())
+            assertTrue(conicalError is IllegalArgumentException)
+            assertTrue(conicalError?.message.orEmpty().contains("Conical"))
+        } finally {
+            SmartInfillRuntime.activate(null)
+            NonPlanarRuntime.activate(NonPlanarSettings())
+            ConicalRuntime.activate(ConicalSettings())
             directory.deleteRecursively()
         }
     }

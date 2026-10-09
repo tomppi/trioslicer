@@ -17,11 +17,14 @@ import com.tomppi.enderslicer.nonplanar.NozzleCollisionAlert
 import com.tomppi.enderslicer.profile.CuraEngineProfile
 import com.tomppi.enderslicer.profile.CuraResolvedSettingsWriter
 import com.tomppi.enderslicer.profile.CuraSliceSettingsResolver
+import com.tomppi.enderslicer.smartinfill.SmartInfillModifier
 import com.tomppi.enderslicer.smartinfill.SmartInfillRuntime
 import com.tomppi.enderslicer.smartinfill.SmartInfillSliceSnapshot
+import com.tomppi.enderslicer.supportpaint.SupportPaintModifier
 import com.tomppi.enderslicer.supportpaint.SupportPaintModifiers
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.StlParser
+import com.tomppi.enderslicer.viewer.StlSliceTransform
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -74,6 +77,16 @@ class CuraEngineRunner(private val context: Context) {
         val resolvedSettings: File = File(directory, "resolved-settings.json"),
     )
 
+    /** One plate object's engine-facing files, staged inside the request workspace. */
+    private data class StagedPlateObject(
+        val model: File,
+        val name: String,
+        val transform: StlSliceTransform?,
+        val smartInfillModifiers: List<SmartInfillModifier>,
+        val adaptiveWallModifiers: List<AdaptiveWallModifier>,
+        val supportPaintModifiers: List<SupportPaintModifier>,
+    )
+
     private val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
     private val executable = File(nativeDirectory, ENGINE_LIBRARY_NAME)
     private val publisher = SliceArtifactPublisher(File(context.filesDir, SliceArtifactPublisher.RESULTS_DIRECTORY_NAME))
@@ -99,8 +112,19 @@ class CuraEngineRunner(private val context: Context) {
 
     fun releaseArtifact(id: String) = publisher.release(id)
 
+    /**
+     * Slice a plate.
+     *
+     * [models] is the whole plate in plate order; an empty list keeps the pre-plate
+     * callers working and is read as one object staged at [modelFile]. [sequential]
+     * asks for one object at a time (a mesh group per object, print_sequence
+     * one_at_a_time) instead of the default plate-wide all-at-once pass; the caller
+     * owns the clearance check that decides whether the parts can be printed that way.
+     */
     suspend fun slice(
         modelFile: File,
+        models: List<SliceModel> = emptyList(),
+        sequential: Boolean = false,
         printer: PrinterDefinition,
         settings: SlicerSettings,
         startGcode: String,
@@ -116,6 +140,8 @@ class CuraEngineRunner(private val context: Context) {
         SmartInfillRuntime.withSnapshot(smartInfillSnapshot) {
             sliceBlocking(
                 modelFile,
+                models,
+                sequential,
                 printer,
                 settings,
                 // The Klipper route's mesh call is added here, to the user's own start script:
@@ -136,6 +162,8 @@ class CuraEngineRunner(private val context: Context) {
 
     private fun sliceBlocking(
         modelFile: File,
+        models: List<SliceModel>,
+        sequential: Boolean,
         printer: PrinterDefinition,
         settings: SlicerSettings,
         startGcode: String,
@@ -148,6 +176,8 @@ class CuraEngineRunner(private val context: Context) {
         extraSettings: Map<String, String>,
         onProgress: (Int) -> Unit,
     ): SliceResult {
+        // An empty plate list is the pre-plate call: one object staged at modelFile.
+        val plate = if (models.isEmpty()) listOf(SliceModel(file = modelFile, name = modelFile.name)) else models
         val nonPlanarRequestSnapshot = NonPlanarRuntime.snapshot()
         val conicalRequestSnapshot = ConicalRuntime.snapshot()
         val sliceSettings = when {
@@ -168,7 +198,7 @@ class CuraEngineRunner(private val context: Context) {
         writeInitialLog(
             log,
             workspace.id,
-            modelFile,
+            plate,
             printer,
             effectiveSettings,
             profile,
@@ -179,57 +209,134 @@ class CuraEngineRunner(private val context: Context) {
 
         try {
             require(isAvailable()) { status() }
-            require(modelFile.isFile && modelFile.length() > 0L) { "The imported STL is no longer available" }
-            smartInfillSnapshot?.requireMatchesSource(modelFile)
+            require(plate.all { it.file.isFile && it.file.length() > 0L }) {
+                "The imported STL is no longer available"
+            }
+            // Features built around one source file cannot be spread over several
+            // objects. Refusing here, once the diagnostic log exists, is the only
+            // alternative to slicing object 1 and reporting success for the plate.
+            //
+            // Layer events are deliberately not in this list: they address printed
+            // layer numbers ("pause at layer 5"), which the merged plate G-code still
+            // has, not an object. The sequential switch only changes the order the
+            // objects are printed in, so those refusals are the same either way.
+            if (plate.size > 1) {
+                require(smartInfillSnapshot == null) {
+                    "Smart Infill cannot slice ${plate.size} plate objects: its modifier volumes " +
+                        "are generated from one analyzed model file. Remove the extra objects, " +
+                        "or disable Smart Infill."
+                }
+                require(nonPlanarRequestSnapshot == null) {
+                    "Non-planar printing cannot slice ${plate.size} plate objects: the conformal " +
+                        "surface is built for one model. Remove the extra objects to slice non-planar."
+                }
+                require(conicalRequestSnapshot == null) {
+                    "Conical slicing cannot slice ${plate.size} plate objects: the cone warp is " +
+                        "built for one model. Remove the extra objects to slice conically."
+                }
+            }
+            smartInfillSnapshot?.requireMatchesSource(plate.first().file)
 
             val resolutionProfile = profile?.let { completeDefinitionStack(it, machineId) }
-            val modelTransform = if (resolutionProfile != null) {
-                CuraResolvedSettingsWriter.copyResolvedSourceSnapshot(
-                    stagedDisplayedFile = modelFile,
-                    destination = workspace.model,
-                    copyFile = { source, destination ->
-                        copyStable(source, destination, "The original model changed while it was being staged")
-                    },
-                )
-            } else {
-                null
-            }
-            if (modelTransform == null) {
-                copyStable(modelFile, workspace.model, "The model changed while it was being staged")
-            }
-            val smartInfillModifiers = smartInfillSnapshot
-                ?.stageModifiers(workspace.directory, modelFile)
-                .orEmpty()
-            throwIfInterrupted()
-            val adaptiveWallModifiers = if (effectiveSettings.thicknessAdaptiveWallsEnabled) {
-                ThicknessAdaptiveWalls.generate(
-                    modelFile = workspace.model,
-                    settings = effectiveSettings,
-                    destination = workspace.directory,
+            val staged = ArrayList<StagedPlateObject>(plate.size)
+            plate.forEachIndexed { index, objectModel ->
+                val stagedModel = if (plate.size == 1) {
+                    workspace.model
+                } else {
+                    // One staged file per object: names have to stay unique because the
+                    // resolved transport addresses every mesh by its file name alone.
+                    File(workspace.directory, "model-${index + 1}.stl")
+                }
+                val modelTransform = if (resolutionProfile != null) {
+                    CuraResolvedSettingsWriter.copyResolvedSourceSnapshot(
+                        stagedDisplayedFile = objectModel.file,
+                        destination = stagedModel,
+                        copyFile = { source, destination ->
+                            copyStable(source, destination, "The original model changed while it was being staged")
+                        },
+                    )
+                } else {
+                    null
+                }
+                if (modelTransform == null) {
+                    copyStable(objectModel.file, stagedModel, "The model changed while it was being staged")
+                }
+                throwIfInterrupted()
+
+                // Each object stages its modifier volumes in a directory of its own: the
+                // generators write fixed names ("support-enforcer.stl"), so a shared
+                // directory would let object 2 overwrite object 1's volume. The volumes
+                // are then moved to plate-unique names, because the resolved settings
+                // file addresses every mesh by file name alone.
+                val modifierDirectory = if (plate.size == 1) {
+                    workspace.directory
+                } else {
+                    File(workspace.directory, "object-${index + 1}").apply {
+                        check(mkdirs() || isDirectory) { "Unable to create the object's CuraEngine staging directory" }
+                    }
+                }
+                val objectSmartInfillModifiers = smartInfillSnapshot
+                    ?.stageModifiers(modifierDirectory, objectModel.file)
+                    .orEmpty()
+                val objectAdaptiveWallModifiers = if (effectiveSettings.thicknessAdaptiveWallsEnabled) {
+                    ThicknessAdaptiveWalls.generate(
+                        modelFile = stagedModel,
+                        settings = effectiveSettings,
+                        destination = modifierDirectory,
+                        transform = modelTransform,
+                    )
+                } else {
+                    emptyList()
+                }
+                throwIfInterrupted()
+                // A one-object plate keeps the caller's paint parameter as the source
+                // when the object itself carries none: the pre-plate callers passed the
+                // paint separately and never filled SliceModel.supportPaint.
+                val paint = if (plate.size == 1 && objectModel.supportPaint.isEmpty) {
+                    supportPaint
+                } else {
+                    objectModel.supportPaint
+                }
+                val objectSupportPaintModifiers = if (paint.isEmpty) {
+                    emptyList()
+                } else {
+                    SupportPaintModifiers.generate(
+                        mesh = StlParser.parse(stagedModel, stagedModel.name, MeshTriangleLimits.current()),
+                        paint = paint,
+                        destination = modifierDirectory,
+                        thicknessMm = effectiveSettings.lineWidthMm * 2.0,
+                        transform = modelTransform,
+                    )
+                }
+                throwIfInterrupted()
+                val relocate: (File) -> File = { file ->
+                    if (plate.size == 1) file else relocateModifier(file, index, workspace)
+                }
+                staged += StagedPlateObject(
+                    model = stagedModel,
+                    name = objectModel.name,
                     transform = modelTransform,
-                )
-            } else {
-                emptyList()
-            }
-            throwIfInterrupted()
-            val supportPaintModifiers = if (supportPaint.isEmpty) {
-                emptyList()
-            } else {
-                SupportPaintModifiers.generate(
-                    mesh = StlParser.parse(workspace.model, workspace.model.name, MeshTriangleLimits.current()),
-                    paint = supportPaint,
-                    destination = workspace.directory,
-                    thicknessMm = effectiveSettings.lineWidthMm * 2.0,
-                    transform = modelTransform,
+                    smartInfillModifiers = objectSmartInfillModifiers.map { it.copy(file = relocate(it.file)) },
+                    adaptiveWallModifiers = objectAdaptiveWallModifiers.map { it.copy(file = relocate(it.file)) },
+                    supportPaintModifiers = objectSupportPaintModifiers.map { it.copy(file = relocate(it.file)) },
                 )
             }
-            throwIfInterrupted()
 
             val definitions = prepareDefinitions(workspace.directory, log, resolutionProfile, machineId)
             throwIfInterrupted()
 
+            val first = staged.first()
+            val additional = staged.drop(1)
             var resolved: CuraSliceSettingsResolver.Result? = null
             val command = if (resolutionProfile != null) {
+                // A resolved request is one settings file naming every mesh; it has no
+                // way to express a group boundary, and the group boundary is what one
+                // object at a time is. Refuse rather than quietly print the whole plate.
+                require(!sequential) {
+                    "One object at a time needs the standalone CuraEngine profile: an imported " +
+                        "Cura profile is resolved into one settings file, which cannot express a " +
+                        "per-object mesh group"
+                }
                 resolved = CuraSliceSettingsResolver.resolve(
                     resolutionProfile,
                     printer,
@@ -239,12 +346,21 @@ class CuraEngineRunner(private val context: Context) {
                 )
                 CuraResolvedSettingsWriter.write(
                     destination = workspace.resolvedSettings,
-                    modelFileName = workspace.model.name,
+                    modelFileName = first.model.name,
                     resolved = resolved,
-                    modelTransform = modelTransform,
-                    smartInfillModifiers = smartInfillModifiers,
-                    adaptiveWallModifiers = adaptiveWallModifiers,
-                    supportPaintModifiers = supportPaintModifiers,
+                    modelTransform = first.transform,
+                    smartInfillModifiers = first.smartInfillModifiers,
+                    adaptiveWallModifiers = first.adaptiveWallModifiers,
+                    supportPaintModifiers = first.supportPaintModifiers,
+                    additionalObjects = additional.map { objectModel ->
+                        CuraResolvedSettingsWriter.PlateObject(
+                            fileName = objectModel.model.name,
+                            transform = objectModel.transform,
+                            smartInfillModifiers = objectModel.smartInfillModifiers,
+                            adaptiveWallModifiers = objectModel.adaptiveWallModifiers,
+                            supportPaintModifiers = objectModel.supportPaintModifiers,
+                        )
+                    },
                 )
                 CuraEngineCommand.buildResolved(
                     executable.absolutePath,
@@ -260,18 +376,27 @@ class CuraEngineRunner(private val context: Context) {
                     definitionsDirectory = definitions.directory.absolutePath,
                     machineDefinitionPath = definitions.machineDefinition.absolutePath,
                     extruderDefinitionPath = definitions.extruderDefinition.absolutePath,
-                    modelPath = workspace.model.absolutePath,
+                    modelPath = first.model.absolutePath,
                     outputPath = workspace.output.absolutePath,
                     printer = printer,
                     settings = sliceSettings,
                     startGcode = sliceStartGcode,
                     endGcode = endGcode,
                     profile = null,
-                    smartInfillModifiers = smartInfillModifiers,
-                    adaptiveWallModifiers = adaptiveWallModifiers,
-                    supportPaintModifiers = supportPaintModifiers,
+                    smartInfillModifiers = first.smartInfillModifiers,
+                    adaptiveWallModifiers = first.adaptiveWallModifiers,
+                    supportPaintModifiers = first.supportPaintModifiers,
                     extraSettings = extraSettings,
                     catalog = extraSettingsCatalog,
+                    additionalObjects = additional.map { objectModel ->
+                        CuraPlateObject(
+                            modelPath = objectModel.model.absolutePath,
+                            smartInfillModifiers = objectModel.smartInfillModifiers,
+                            adaptiveWallModifiers = objectModel.adaptiveWallModifiers,
+                            supportPaintModifiers = objectModel.supportPaintModifiers,
+                        )
+                    },
+                    sequential = sequential,
                 )
             }
             appendCommandLog(log, definitions, resolved, workspace.resolvedSettings, command)
@@ -480,7 +605,7 @@ class CuraEngineRunner(private val context: Context) {
     private fun writeInitialLog(
         log: File,
         id: String,
-        model: File,
+        models: List<SliceModel>,
         printer: PrinterDefinition,
         settings: SlicerSettings,
         profile: CuraEngineProfile?,
@@ -494,7 +619,18 @@ class CuraEngineRunner(private val context: Context) {
                 appendLine("Request: $id")
                 appendLine("Started: ${Instant.now()}")
                 appendLine("Engine: ${executable.absolutePath}")
-                appendLine("Model: ${model.name} (${model.length()} bytes)")
+                appendLine("Model: ${models.first().file.name} (${models.first().file.length()} bytes)")
+                if (models.size > 1) {
+                    // What is being sliced, object by object: the engine's own log only
+                    // counts meshes, and a plate is not one model.
+                    appendLine("Plate objects: ${models.size}")
+                    models.forEachIndexed { index, objectModel ->
+                        appendLine(
+                            "  [${index + 1}] ${objectModel.name} " +
+                                "(${objectModel.file.name}, ${objectModel.file.length()} bytes)",
+                        )
+                    }
+                }
                 appendLine("Printer: ${printer.name}")
                 appendLine("Build volume: ${printerEnvelope.widthMm} x ${printerEnvelope.depthMm} x ${printerEnvelope.heightMm} mm")
                 appendLine("Build plate: ${printerEnvelope.buildPlateShape}, origin at center: ${printerEnvelope.originAtCenter}")
@@ -568,6 +704,20 @@ class CuraEngineRunner(private val context: Context) {
                 appendLine("Result: success")
             },
         )
+    }
+
+    /**
+     * Moves a generated modifier volume to a name only this plate object uses.
+     *
+     * The generators write fixed names ("support-enforcer.stl"), and the resolved
+     * settings file addresses every mesh by its file name alone - the engine opens that
+     * name relative to the request directory - so two objects would otherwise overwrite
+     * each other's volume and share one JSON key.
+     */
+    private fun relocateModifier(file: File, index: Int, workspace: Workspace): File {
+        val target = File(workspace.directory, "object-${index + 1}-${file.name}")
+        check(file.renameTo(target)) { "Unable to stage the modifier volume ${file.name}" }
+        return target
     }
 
     private fun copyStable(source: File, destination: File, message: String) {
