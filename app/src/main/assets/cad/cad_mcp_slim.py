@@ -1942,6 +1942,28 @@ def read_token(path):
     return token or None
 
 
+def _seed_default_scene():
+    """Put a part in the viewport before anyone asks for one.
+
+    The engine started empty, and the CAD screen has nothing to draw until a shape exists - so a
+    first visit was a spinner over an empty scene, and the app's own caption ("the engine starts
+    on its default scene") described something that was not there. A 20 mm cube on the bed gives
+    the viewport something to show, the viewer settings something to be judged against, and the
+    agent a part it can measure before it has been asked for anything.
+
+    Returns why it could not, or None when the cube is in place.
+    """
+    k = kernel()
+    if k["build123d"] is None:
+        return k["error"] or "build123d is unavailable"
+    b3d = k["build123d"]
+    SCENE.clear()
+    # Sitting on the bed rather than centred on the origin: a part that floats is a part whose
+    # relationship to the grid and the axes cannot be read.
+    SCENE.add("cube", b3d.Pos(0, 0, 10) * b3d.Box(20, 20, 20))
+    return None
+
+
 def main(argv=None):
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1969,6 +1991,10 @@ def main(argv=None):
     k = kernel()
     if k["error"]:
         print(f"CadMCP slim: {k['error']}")
+    else:
+        seeded = _seed_default_scene()
+        print("CadMCP slim: default scene seeded" if seeded is None
+              else f"CadMCP slim: no default scene ({seeded})")
 
     token = read_token(os.path.join(here, "cad_mcp_token.txt"))
     status_path = os.path.join(here, "cad_mcp_status.json")

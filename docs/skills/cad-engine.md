@@ -154,6 +154,7 @@ envelope as the Blender engine:
 | `export_stl` | `filepath`, `name` (optional), `tolerance` | atomic; no name = whole scene |
 | `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
 | `clearance` | `cloud`, `name` or `x`,`y`,`z` | distance from the part to a scanned environment |
+| `viewer_settings` | `tessellation`, `background`, `grid`, `grid_step_mm`, `axes`, `projection`, `edges`, `antialiasing` | the viewport's appearance, not the model |
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
@@ -255,6 +256,41 @@ cut, filleted and re-exported.
 | BREP | exact solid, OCCT's native format |
 | SVG | 2D curves, for `import_svg_as_buildline_code` |
 | STL | **a surface, not a solid** — see below |
+
+## 4c. The viewport's appearance
+
+`viewer_settings` sets how the scene is drawn, and answers with what the viewer reports back.
+Every value is optional, and the answer carries the viewer's own state - which is the only way to
+trust any of it, because **this driver accepts calls it does not honour**:
+
+```json
+{"type": "viewer_settings", "params": {"background": "light", "projection": "orthographic"}}
+```
+
+Three things were measured on the device rather than assumed, and each changed the code:
+
+- **`V3d_View.SetGrid` / `SetGridActivity` segfault the engine.** Not ignored - the process died,
+  reproducibly. The grid is drawn as ordinary edges instead: a real thing of a real size in the
+  scene, displayed but never added to SCENE, so it cannot reach an export.
+- **MSAA is ignored** - the frame is byte-identical with `NbMsaaSamples` at 0 and at 4.
+  Anti-aliasing supersamples in `_write_view` instead, and the app asks for it only on the frame
+  that settles, never mid-drag.
+- **`Camera()` returns a copy**, so setting the projection type on it does nothing until it is
+  handed back with `SetCamera`. Tessellation is honoured by meshing the shape *before* AIS sees it:
+  the drawer's deviation coefficient, like `SetDrawEdges`, changes nothing on this GLES path.
+
+A frame with the cube the engine seeds on startup, at 640x640:
+
+| setting | pixels changed |
+|---|---|
+| background | 292720 |
+| grid | 138122 |
+| axes | 199 |
+| projection | 106731 |
+| edges | 7895 |
+| anti-aliasing | 42449 (470 distinct colours off, ~2700 on) |
+| tessellation coarse / very fine | 54979 / 24873 |
+| view preset | 148141 |
 
 ## 4b. Measuring against a scanned environment
 
