@@ -197,7 +197,11 @@ class CadPreviewClient(
             .put("pan_dx", panDx.toDouble())
             .put("pan_dy", panDy.toDouble())
             .put("zoom", zoom.toDouble())
-        if (roll != 0f) params.put("roll", roll.toDouble())
+            .apply {
+                // A twist is the only thing sent to the engine as an angle rather than a
+                // distance, so it is the one parameter that is not always present.
+                if (roll != 0f) put("roll", roll.toDouble())
+            }
             .put("reset", reset)
             .put("shaded", shaded)
         if (orientation != null) params.put("orientation", orientation)

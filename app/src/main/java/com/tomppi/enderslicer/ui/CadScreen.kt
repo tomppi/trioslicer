@@ -348,9 +348,23 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
                 }
                 if (pastTouchSlop) {
                     if (count >= 2) {
-                        if (panChange != Offset.Zero) onPan(panChange.x, panChange.y)
-                        if (zoomChange != 1f) onZoom(zoomChange)
-                        if (twist != 0f) onRotate(twist)
+                        // Two fingers can pan, pinch and turn, and one gesture does some of all
+                        // three - so this decides between them rather than doing all of them at
+                        // once. Firing all three was the bug: a turn moves each finger, so
+                        // panChange is never zero during one, and the part slid sideways under
+                        // the hand while it turned. The slide is what the eye reads, so a twist
+                        // looked like a pan and the rotation was invisible.
+                        //
+                        // Measured the same way the touch slop is - the arc the fingers swept,
+                        // in pixels - and the larger motion wins the event.
+                        val turning = abs(twist) * maxOf(spanNow, spanBefore)
+                        val travelling = panChange.getDistance()
+                        if (turning > travelling && turning > touchSlop) {
+                            onRotate(twist)
+                        } else {
+                            if (panChange != Offset.Zero) onPan(panChange.x, panChange.y)
+                            if (zoomChange != 1f) onZoom(zoomChange)
+                        }
                     } else if (panChange != Offset.Zero) {
                         onOrbit(panChange.x, panChange.y)
                     }
