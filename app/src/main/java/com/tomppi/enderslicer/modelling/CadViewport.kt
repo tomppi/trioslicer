@@ -51,6 +51,46 @@ private const val READY_RETRIES = 3
  */
 private const val DEGREES_PER_PIXEL = 0.35f
 
+/** How many times a failed frame is re-asked for while a tap or a preset is still waiting. */
+private const val FAILED_RETRIES = 4
+
+/** How long to wait before re-asking. Longer than a frame, shorter than a user's patience. */
+private const val RETRY_AFTER_FAILURE_MS = 1_200L
+
+/**
+ * Where the frame lands inside the view: ContentScale.Fit's factor and its letterbox offsets.
+ *
+ * The frame is drawn with ContentScale.Fit, so it is scaled by one factor and centred; a view
+ * pixel is not a frame pixel. With the same aspect and no clamping this reduces to the old
+ * scale with no offset, which is why it went unnoticed until a view exceeded the engine's cap.
+ */
+private data class FrameFit(val scale: Float, val offsetX: Float, val offsetY: Float) {
+    /** View pixels to frame pixels - for a tap, and for a pan, which the engine takes in frame pixels. */
+    fun toFrame(x: Float, y: Float): Pair<Float, Float> =
+        (x - offsetX) / scale to (y - offsetY) / scale
+
+    /** Frame pixels back to view pixels, so the answer names the pixel the user touched. */
+    fun toView(x: Float, y: Float): Pair<Float, Float> =
+        x * scale + offsetX to y * scale + offsetY
+}
+
+/**
+ * How a frame of [frameWidth] x [frameHeight] is shown in a [viewWidth] x [viewHeight] view.
+ *
+ * A size of zero means the view has not been measured yet; the frame is then taken to fill it.
+ */
+private fun frameFit(viewWidth: Int, viewHeight: Int, frameWidth: Int, frameHeight: Int): FrameFit {
+    if (viewWidth <= 0 || viewHeight <= 0 || frameWidth <= 0 || frameHeight <= 0) {
+        return FrameFit(1f, 0f, 0f)
+    }
+    val scale = minOf(viewWidth.toFloat() / frameWidth, viewHeight.toFloat() / frameHeight)
+    return FrameFit(
+        scale = scale,
+        offsetX = (viewWidth - frameWidth * scale) / 2f,
+        offsetY = (viewHeight - frameHeight * scale) / 2f,
+    )
+}
+
 /** One request to the engine's camera, or a tap for it to pick at. */
 private data class ViewRequest(
     val turnYaw: Float = 0f,
@@ -158,8 +198,13 @@ class CadViewport(
         if (pump != null) return
         Log.i(TAG, "starting; frame file " + frameFile.absolutePath)
         pump = scope.launch(Dispatchers.IO) {
-            // The first frame frames the part; after that the camera belongs to the user.
-            pending.trySend(ViewRequest(reset = true))
+            // The first frame frames the part; after that the camera belongs to the user. The
+            // flag goes through reset(), into the accumulator renderOnce reads: sent as a field
+            // on the request it was ignored - the channel says *when* to draw and the
+            // accumulators say what - so the first frame kept the engine's default camera and a
+            // 20 mm part arrived as a speck in the middle of the view until a preset was pressed.
+            reset()
+            var failedAttempts = 0
             for (request in pending) {
                 _busy.value = true
                 try {
@@ -167,6 +212,7 @@ class CadViewport(
                     while (true) {
                         try {
                             renderOnce(request)
+                            failedAttempts = 0
                             break
                         } catch (error: Throwable) {
                             // While the engine is starting, keep waiting - there is nothing
@@ -176,6 +222,11 @@ class CadViewport(
                             if (ready) {
                                 if (_frame.value != null || readyAttempts >= READY_RETRIES) throw error
                                 readyAttempts++
+                            } else if (_frame.value != null) {
+                                // A frame has been shown, so the engine was up and is not any
+                                // more. Waiting for it to start again never ended: the strip sat
+                                // on "Rendering..." over a frozen picture for good.
+                                throw error
                             }
                             delay(STARTUP_RETRY_MS)
                         }
@@ -184,11 +235,25 @@ class CadViewport(
                     // A viewport that fails quietly is worse than one that fails loudly: the
                     // screen just stays empty and nothing says why.
                     Log.w(TAG, "frame failed: " + error.message, error)
+                    // A tap, a reset or a preset that failed is waiting in the accumulators, and
+                    // nothing else asks for a frame until the user touches the screen again - so
+                    // it was dropped silently while the agent was still told the previous pick.
+                    // Ask again a few times, then leave it for whatever the user does next.
+                    if (waitingForOneShot() && failedAttempts < FAILED_RETRIES) {
+                        failedAttempts++
+                        delay(RETRY_AFTER_FAILURE_MS)
+                        pending.trySend(ViewRequest())
+                    }
                 } finally {
                     _busy.value = false
                 }
             }
         }
+    }
+
+    /** Whether a tap, a reset or a preset is still waiting for the frame that failed. */
+    private fun waitingForOneShot(): Boolean = synchronized(deltaLock) {
+        pendingSelect != null || pendingReset || pendingOrientation != null
     }
 
     /** One frame. Throws when the engine is not reachable yet, or refuses. */
@@ -258,9 +323,21 @@ class CadViewport(
         // A size of 0 means the view has not been laid out yet, and is passed on as 0: the
         // engine reads that as "no size given" and renders its own default, where 1 would be
         // a one-pixel frame.
+        // The engine clamps each axis on its own to RENDER_MIN..RENDER_MAX and renders that, so a
+        // larger request came back as a smaller frame. Asking for the size the engine will really
+        // render is what makes the tap mapping below exact; the frame is then letterboxed by
+        // ContentScale.Fit, which the mapping also knows about.
         val renderScale = dragScale * stillScale
-        val renderWidth = (displayWidth * renderScale).roundToInt()
-        val renderHeight = (displayHeight * renderScale).roundToInt()
+        val renderWidth = if (displayWidth <= 0) 0 else
+            (displayWidth * renderScale).roundToInt()
+                .coerceIn(CadPreviewClient.FRAME_MIN, CadPreviewClient.FRAME_MAX)
+        val renderHeight = if (displayHeight <= 0) 0 else
+            (displayHeight * renderScale).roundToInt()
+                .coerceIn(CadPreviewClient.FRAME_MIN, CadPreviewClient.FRAME_MAX)
+        val fit = frameFit(displayWidth, displayHeight, renderWidth, renderHeight)
+        val tapX = effective.selectX
+        val tapY = effective.selectY
+        val tap = if (tapX != null && tapY != null) fit.toFrame(tapX.toFloat(), tapY.toFloat()) else null
 
         val picked = try {
             client.view(
@@ -271,14 +348,14 @@ class CadViewport(
             // same turn whatever size the frame is rendered at.
             turnYaw = deltas.turnYaw,
             turnPitch = deltas.turnPitch,
-            panDx = deltas.panDx * dragScale,
-            panDy = deltas.panDy * dragScale,
+            panDx = deltas.panDx / fit.scale,
+            panDy = deltas.panDy / fit.scale,
             zoom = deltas.zoom,
-            // Scaled into the frame like every other distance: the engine picks at the size it
-            // rendered, and with a still-quality cap the frame is smaller than the view. Sending
-            // view pixels unscaled is what made a tap name another face, or none.
-            selectX = effective.selectX?.let { (it * renderScale).roundToInt() },
-            selectY = effective.selectY?.let { (it * renderScale).roundToInt() },
+            // Into the frame's own pixels, letterbox and all: the engine picks at the size and at
+            // the place in the frame the picture really occupies. A view pixel sent unscaled, or
+            // scaled by a size the engine then clamped, named a face the finger was nowhere near.
+            selectX = tap?.first?.roundToInt(),
+            selectY = tap?.second?.roundToInt(),
             reset = effective.reset,
             shaded = viewer.shaded,
             orientation = effective.orientation,
@@ -288,6 +365,13 @@ class CadViewport(
             width = renderWidth,
             height = renderHeight,
             )
+        } catch (timeout: CadEngineTimeoutException) {
+            // The motion is deliberately NOT put back. The engine queues what it accepted and
+            // runs it whether or not this client is still here, so the turn, pan or zoom is
+            // already on its way; restoring it and sending it again applied one drag twice. A
+            // tap, a reset or a preset is absolute - asking again lands on the same state.
+            restoreFlags(effective)
+            throw timeout
         } catch (error: Throwable) {
             // The motion was taken and no frame came of it, so it goes back: a failed frame must
             // not eat the drag that asked for it. The engine's busy guard makes this routine
@@ -306,11 +390,11 @@ class CadViewport(
         // The engine answers in the frame it drew; that frame is stretched over the view, so the
         // point the user tapped is this one divided back. Unscaled, the pick's own coordinates -
         // which go into the prompt the agent reads - named a pixel the user never touched.
-        if (effective.selectX != null) {
-            _pick.value = picked?.copy(
-                x = (picked.x / renderScale).roundToInt(),
-                y = (picked.y / renderScale).roundToInt(),
-            )
+        if (tap != null) {
+            _pick.value = picked?.let {
+                val (viewX, viewY) = fit.toView(it.x.toFloat(), it.y.toFloat())
+                it.copy(x = viewX.roundToInt(), y = viewY.roundToInt())
+            }
         }
         // Settle: that frame was coarse, so ask for one at full size. Only after a frame that
         // moved, or the loop would never idle.
@@ -356,10 +440,23 @@ class CadViewport(
                 panDy = pendingDeltas.panDy + deltas.panDy,
                 zoom = pendingDeltas.zoom * deltas.zoom,
             )
-            if (flags.selectX != null) pendingSelect = flags.selectX to (flags.selectY ?: 0)
-            if (flags.reset) pendingReset = true
-            if (flags.orientation != null) pendingOrientation = flags.orientation
+            restoreFlagsLocked(flags)
         }
+    }
+
+    /**
+     * Puts back only the one-shots: a tap, a reset or a preset is absolute, not a delta.
+     *
+     * For a request that timed out, where the engine may already have applied the motion.
+     */
+    private fun restoreFlags(flags: ViewRequest) {
+        synchronized(deltaLock) { restoreFlagsLocked(flags) }
+    }
+
+    private fun restoreFlagsLocked(flags: ViewRequest) {
+        if (flags.selectX != null) pendingSelect = flags.selectX to (flags.selectY ?: 0)
+        if (flags.reset) pendingReset = true
+        if (flags.orientation != null) pendingOrientation = flags.orientation
     }
 
     fun zoomBy(factor: Float) {

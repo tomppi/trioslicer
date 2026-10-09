@@ -72,6 +72,25 @@ object CadEngine {
      * directory that already holds a STEP, so filter on the extension.
      */
     var onExport: ((File) -> Unit)? = null
+        set(value) {
+            field = value
+            // An export that arrived while nothing was listening is handed over now. The view
+            // model that owns this handler is cleared when the activity goes away, and an export
+            // claimed with no listener used to be lost for the life of the process: the agent
+            // reported the file it had written and the user never saw it. BlenderEngine replays
+            // its newest; so does this.
+            if (value == null) return
+            val newest = synchronized(pendingExports) {
+                val sorted = pendingExports.sortedBy { it.lastModified() }
+                pendingExports.clear()
+                sorted.lastOrNull()
+            } ?: return
+            runCatching { value.invoke(newest) }
+                .onFailure { Log.e(TAG, "the handler failed for ${newest.name}", it) }
+        }
+
+    /** Exports found before the UI listener attached; replayed by the setter. */
+    private val pendingExports = mutableListOf<File>()
 
     /**
      * Fires once per settled render - the engine's own picture of the model.
@@ -442,8 +461,25 @@ object CadEngine {
                     val isRender = file.extension.lowercase() in RENDER_EXTENSIONS
                     Log.i(TAG, (if (isRender) "render ready: " else "export ready: ") +
                         "${file.name} (${file.length()} bytes)")
-                    runCatching { if (isRender) onRender?.invoke(file) else onExport?.invoke(file) }
-                        .onFailure { Log.e(TAG, "the handler failed for ${file.name}", it) }
+                    if (isRender) {
+                        runCatching { onRender?.invoke(file) }
+                            .onFailure { Log.e(TAG, "the handler failed for ${file.name}", it) }
+                    } else {
+                        // Decided under the same lock the setter drains with, so a listener that
+                        // attaches between the read and the queueing cannot miss the file: either
+                        // it is attached here and gets it, or it is queued and the setter takes it.
+                        val listener = synchronized(pendingExports) {
+                            val attached = onExport
+                            if (attached == null && pendingExports.none { it.absolutePath == file.absolutePath }) {
+                                pendingExports.add(file)
+                            }
+                            attached
+                        }
+                        listener?.let { handler ->
+                            runCatching { handler(file) }
+                                .onFailure { Log.e(TAG, "the handler failed for ${file.name}", it) }
+                        }
+                    }
                 }
                 // Forget signatures whose file is gone, so the directory cannot grow a
                 // set of names nobody can act on for the life of the process.

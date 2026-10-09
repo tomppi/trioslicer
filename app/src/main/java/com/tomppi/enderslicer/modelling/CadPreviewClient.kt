@@ -60,6 +60,17 @@ data class CadPick(
  * engine already writes the file - that is how the agent shows the user a render - so this
  * reuses a path that exists rather than adding a second one.
  */
+/**
+ * The engine took longer to answer than the caller was willing to wait.
+ *
+ * Its own type because the request is still real: the engine queues what it accepted and runs it
+ * whether or not this client is still connected - a command abandoned by a timed-out client was
+ * measurably executed anyway. So a timed-out camera move has already happened, and a caller that
+ * puts the motion back and sends it again applies one drag twice.
+ */
+class CadEngineTimeoutException(message: String, cause: Throwable?) :
+    IllegalStateException(message, cause)
+
 class CadPreviewClient(
     private val host: String = "127.0.0.1",
     private val port: Int = DEFAULT_PORT,
@@ -113,9 +124,11 @@ class CadPreviewClient(
                 // The engine has one thread and it is still running this command; the answer will
                 // not come back on this socket, and a second attempt would only be refused as
                 // "engine busy" while the first finishes - which is how a slow command came back
-                // as a busy engine. A timeout is reported as what it is.
+                // as a busy engine. A timeout is reported as what it is, and as its own type: the
+                // command was accepted and the engine runs what it accepted whether or not this
+                // client is still here, so a caller must not apply the same motion twice.
                 discardSocket()
-                throw IllegalStateException(
+                throw CadEngineTimeoutException(
                     "the CAD engine did not answer within " + (timeoutMs / 1000) + "s", error)
             } catch (error: Throwable) {
                 // A dead socket is expected whenever the engine restarts, so drop it and
@@ -359,6 +372,17 @@ class CadPreviewClient(
         /** Parsing a STEP or a large STL: slower than a frame, still bounded. */
         private const val IMPORT_TIMEOUT_MS = 120_000
         private const val MAX_REPLY_BYTES = 8 * 1024 * 1024
+
+        /**
+         * The frame size the engine renders, in pixels a side.
+         *
+         * It clamps each axis on its own to this range (cad_mcp_slim.py RENDER_MIN/RENDER_MAX)
+         * and answers with the size it used. Asking for more produced a frame smaller than the
+         * view, which ContentScale.Fit then letterboxed while taps were mapped as if it filled
+         * the view - so the viewport clamps first, and knows the size it will get back.
+         */
+        const val FRAME_MIN = 64
+        const val FRAME_MAX = 2048
         private val JSON_WHITESPACE = setOf(
             ' '.code.toByte(), '\n'.code.toByte(),
             '\r'.code.toByte(), '\t'.code.toByte(),

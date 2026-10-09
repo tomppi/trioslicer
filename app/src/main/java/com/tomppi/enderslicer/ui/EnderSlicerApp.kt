@@ -634,6 +634,13 @@ fun EnderSlicerApp(
                     { modellingMessages = it },
                     { modellingStatus = it },
                 ) { modellingBusy = it }
+                // And the CAD conversation, for the same reason: a turn that outlived the
+                // activity is still running on the harness and nothing else reads its reply back.
+                resumeReplyIfRunning(
+                    cad,
+                    { cadMessages = it },
+                    { cadStatus = it },
+                ) { cadBusy = it }
                 aiStatus = when {
                     !adopted.reused -> "Started a new conversation"
                     workspace.isBlank() -> "No workspace set — the agent cannot see your skills"
@@ -793,6 +800,11 @@ fun EnderSlicerApp(
                 cadStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
                 cadBusy = false
+                // The turn is over and the agent has most likely changed the scene, so ask for a
+                // frame. Nothing else did: a command that added or moved a part left the screen
+                // showing the model as it was before, and the only way to see the new one was to
+                // poke the view - which in an empty scene was not even composed to be poked.
+                cadViewport?.refresh()
             }
         }
     }
@@ -910,12 +922,17 @@ fun EnderSlicerApp(
     // Everything needed to recover is already persisted, so reconnect rather
     // than making the user do it. Declared here because a local function
     // cannot be called before it is defined.
-    LaunchedEffect(aiConfigured, aiChatOpen, modellingOpen) {
+    LaunchedEffect(aiConfigured, aiChatOpen, modellingOpen, cadOpen) {
         // The modelling screen is a conversation too, and it has no connect UI of
         // its own: without this a rotation left it empty and every send failed
-        // with "Connect to the harness first" and no way back.
+        // with "Connect to the harness first" and no way back. CAD is the same
+        // conversation on its own session, and it was missing from both the keys and
+        // the test - so a rotation with the CAD screen open left every send failing
+        // from a chat that had nothing to send on, until the screen was left and
+        // re-entered.
         val missingClient = (aiChatOpen && harnessChat.get() == null) ||
-            (modellingOpen && modellingChat.get() == null)
+            (modellingOpen && modellingChat.get() == null) ||
+            (cadOpen && cadChat.get() == null)
         if (aiConfigured && missingClient) connectHarness()
         // The engine needs the same treatment for the same reason, and it is the
         // one thing that does NOT come back on its own: modellingOpen is

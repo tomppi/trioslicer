@@ -175,7 +175,15 @@ def _centre_of_mass(shape):
     number that was wrong for exactly the parts worth measuring.
     """
     try:
-        centre = _volume_properties(shape).CentreOfMass()
+        props = _volume_properties(shape)
+        if props.Mass() <= 0.0:
+            # A face, a sketch, a wire or a flat import has no volume, and OCCT's centre of mass
+            # for a massless shape is the shape's own location origin - a point that is neither on
+            # the part nor its middle. A box's top face answered with the box's corner, and the
+            # agent was told that was the centroid. None is the honest answer; bbox_centre sits
+            # beside it for the flat case, where the bounding box really is what you want.
+            return None
+        centre = props.CentreOfMass()
         return [round(centre.X(), 6), round(centre.Y(), 6), round(centre.Z(), 6)]
     except Exception:
         return None
@@ -328,6 +336,19 @@ def _publish(path, write):
             pass
         raise
     return os.path.getsize(path)
+
+
+def _require_extension(filepath, allowed, what):
+    """Refuse a path whose extension does not match the bytes that would be written.
+
+    The app announces and routes a file by its extension, so a mismatch is not a naming
+    preference: STEP bytes in a ".stl" were handed to the STL importer and failed there, far from
+    the call that wrote them, and the agent had already been told the export succeeded.
+    """
+    named = os.path.splitext(filepath)[1].lower()
+    if named not in allowed:
+        raise ValueError("%s writes %s; the path ends in %r"
+                         % (what, " or ".join(allowed), named or "(no extension)"))
 
 
 # --------------------------------------------------------------------------
@@ -771,36 +792,83 @@ def _gp_dir(x, y, z):
     return gp_Dir(float(x), float(y), float(z))
 
 
-def _overhangs(shape, threshold_deg=45.0, bed_z=None):
+def _overhang_share(face, down, samples=8, bed_z=0.0):
+    """What share of a face overhangs, and how steeply.
+
+    A face is sampled rather than judged by one normal. build123d's normal_at() with no arguments
+    answers at the face's mid-parameter, which on a curved face is one arbitrary point: a cylinder
+    lying on its side came out as no overhang at all, or as a full-height wall, depending only on
+    which way its seam happened to face - and that answer is what "does this need support?" was
+    decided on.
+
+    Samples resting on the bed plane are not overhangs: nothing needs supporting there, and the
+    flat bottom of an ordinary part is a downward face. Only the plane itself is excluded, not
+    everything under it.
+    """
+    import math
+    over = 0
+    attempted = 0
+    tilt_sum = 0.0
+    for i in range(samples):
+        for j in range(samples):
+            u = (i + 0.5) / samples
+            v = (j + 0.5) / samples
+            try:
+                point = face.position_at(u, v)
+                normal = face.normal_at(u, v)
+            except Exception:
+                continue
+            # normal_at() may return a list on a shell; take the first.
+            if isinstance(normal, (list, tuple)):
+                normal = normal[0]
+            attempted += 1
+            if -normal.Z <= down:
+                continue
+            try:
+                # On the bed itself, not merely below it: a part modelled around the origin has
+                # half of itself under the bed plane and still overhangs where it is not resting
+                # on anything. A sample within a micron of the plane is supported by it.
+                if abs(float(point.Z) - bed_z) <= 1e-6:
+                    continue
+            except Exception:
+                pass
+            over += 1
+            tilt_sum += math.degrees(math.asin(max(-1.0, min(1.0, -normal.Z))))
+    if not attempted:
+        return 0.0, 0.0
+    return over / float(attempted), (tilt_sum / over if over else 0.0)
+
+
+def _overhangs(shape, threshold_deg=45.0, bed_z=None, samples=8):
     """Faces that need support, and how much of the part they are.
 
-    A face is an overhang when its outward normal points downward by more than the
-    threshold from horizontal - the same rule a slicer uses, measured on the exact
-    surface rather than on the triangle mesh the slicer will see.
+    A face overhangs where its outward normal points downward by more than the threshold from
+    horizontal - the same rule a slicer uses, measured on the exact surface rather than on the
+    triangle mesh the slicer will see. The face is sampled over its whole area, so a curved face
+    contributes the part of itself that really overhangs instead of all of it or none of it.
     """
     import math
     down = math.cos(math.radians(90.0 - threshold_deg))
+    bed = 0.0 if bed_z is None else float(bed_z)
     faces = []
     total = 0.0
     for face in shape.faces():
         try:
-            area = face.area
+            area = float(face.area)
         except Exception:
             continue
         total += area
         try:
-            normal = face.normal_at()
+            share, tilt = _overhang_share(face, down, samples, bed)
         except Exception:
             continue
-        # normal_at() may return a list on a shell; take the first.
-        if isinstance(normal, (list, tuple)):
-            normal = normal[0]
-        if -normal.Z > down:
-            faces.append({
-                "area": round(area, 4),
-                "z": round(face.center().Z, 4),
-                "tilt_from_horizontal_deg": round(math.degrees(math.asin(max(-1.0, min(1.0, -normal.Z)))), 2),
-            })
+        if share <= 0.0:
+            continue
+        faces.append({
+            "area": round(area * share, 4),
+            "z": round(face.center().Z, 4),
+            "tilt_from_horizontal_deg": round(tilt, 2),
+        })
     faces.sort(key=lambda f: -f["area"])
     return {"count": len(faces), "area": round(sum(f["area"] for f in faces), 4),
             "fraction_of_surface": round((sum(f["area"] for f in faces) / total) if total else 0.0, 4),
@@ -1308,10 +1376,14 @@ class CadMCPServer:
     def execute_command(self, command):
         try:
             return self._execute_command_internal(command)
-        except Exception as e:
-            print(f"CadMCP slim: command error {e}")
+        except BaseException as e:
+            # BaseException, not Exception: execute_code runs arbitrary Python, and a script
+            # ending in exit() raises SystemExit, which used to unwind this call, the drain loop
+            # and main - taking the engine and the user's unsaved scene with it. A quit is a
+            # failed command, not a reason to stop serving.
+            print(f"CadMCP slim: command error {type(e).__name__}: {e}")
             traceback.print_exc()
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": "%s: %s" % (type(e).__name__, e)}
 
     def _execute_command_internal(self, command):
         cmd_type = command.get("type")
@@ -1434,6 +1506,7 @@ class CadMCPServer:
         }
 
     def export_step(self, filepath, name=""):
+        _require_extension(filepath, (".step", ".stp"), "a STEP file")
         if kernel()["build123d"] is None:
             raise RuntimeError(kernel()["error"] or "build123d is unavailable")
         label, shape = _resolve_target(name)
@@ -1442,6 +1515,7 @@ class CadMCPServer:
         return {"filepath": filepath, "bytes": written, "shapes": label}
 
     def export_stl(self, filepath, name="", tolerance=0.1):
+        _require_extension(filepath, (".stl",), "an STL file")
         if kernel()["build123d"] is None:
             raise RuntimeError(kernel()["error"] or "build123d is unavailable")
         label, shape = _resolve_target(name)
@@ -1598,6 +1672,7 @@ class CadMCPServer:
         if kernel()["build123d"] is None:
             raise RuntimeError(kernel()["error"] or "build123d is unavailable")
         label, shape = _resolve_target(name)
+        _require_extension(filepath, (".png",), "a frame")
         width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
         height = max(self.RENDER_MIN, min(self.RENDER_MAX, int(height)))
 
@@ -1625,6 +1700,21 @@ class CadMCPServer:
         viewport = renderer.render(getattr(shape, "wrapped", shape), width * aa, height * aa,
                                    orientation or "iso", bool(shaded),
                                    fit=bool(reset or orientation))
+
+        # The pick is taken here, before this request's own turn, pan and zoom. The caller
+        # measured the point against the frame it last received, and the motion arriving with it
+        # is new to that frame - picking after the motion answered about a point the user never
+        # touched, which is how a tap that shared a window with the tail of a drag named the
+        # neighbouring face.
+        picked = None
+        if select_x is not None and select_y is not None:
+            picked = _pick_at(renderer, select_x * aa, select_y * aa, shape)
+            if picked is not None:
+                # Answer in the frame the caller asked about. _pick_at works in pixmap pixels,
+                # where supersampling doubles every coordinate: echoing its x and y answered with
+                # a different point than the one named, and the caller had to divide the unknown
+                # factor back out.
+                picked["x"], picked["y"] = int(select_x), int(select_y)
 
         if reset or orientation:
             # The render above pointed the camera at a named view and framed the part. The
@@ -1658,10 +1748,6 @@ class CadMCPServer:
         if zoom != 1.0:
             viewport.SetZoom(float(zoom), True)
         viewport.Redraw()
-
-        picked = None
-        if select_x is not None and select_y is not None:
-            picked = _pick_at(renderer, select_x * aa, select_y * aa, shape)
 
         written = _publish(filepath, lambda temp: _write_view(
             viewport, width * aa, height * aa, temp, output=(width, height)))
@@ -1705,7 +1791,7 @@ class CadMCPServer:
                 "thin_examples": sorted(thin)[:6],
                 "nozzle_mm": nozzle,
             },
-            "overhang": _overhangs(shape, threshold_deg=overhang_deg),
+            "overhang": _overhangs(shape, threshold_deg=overhang_deg, bed_z=bed_z),
             "overhang_threshold_deg": overhang_deg,
         }
         if bed_x and bed_y:
@@ -1769,6 +1855,7 @@ class CadMCPServer:
                 "plane_at": round(base, 4),
                 "edges": len(list(result.edges())) if hasattr(result, "edges") else None}
         if out:
+            _require_extension(out, (".svg",), "an SVG section")
             # build123d has no export_svg: SVG comes from ExportSVG, added and written. The old
             # call raised AttributeError every time, so out= could never write a file.
             def _write_svg(temp):
@@ -1919,6 +2006,7 @@ class CadMCPServer:
             raise RuntimeError(k["error"] or "build123d is unavailable")
 
         label, shape = _resolve_target(name)
+        _require_extension(filepath, (".png",), "a render")
         width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
         height = max(self.RENDER_MIN, min(self.RENDER_MAX, int(height)))
         if view not in VIEW_DIRECTIONS:
@@ -1926,18 +2014,18 @@ class CadMCPServer:
                              % (view, ", ".join(sorted(VIEW_DIRECTIONS))))
 
         if highlight_overhang is not None and not highlight_faces:
-            # "Show me what needs support" without making the caller find the faces first.
+            # "Show me what needs support" without making the caller find the faces first, by the
+            # same sampled rule analyze uses: one normal per face said a lying cylinder was either
+            # no overhang at all or a full-height wall.
             import math as _math
             down = _math.cos(_math.radians(90.0 - float(highlight_overhang)))
             highlight_faces = []
             for index, face in enumerate(shape.faces()):
                 try:
-                    normal = face.normal_at()
+                    share, _tilt = _overhang_share(face, down)
                 except Exception:
                     continue
-                if isinstance(normal, (list, tuple)):
-                    normal = normal[0]
-                if -normal.Z > down:
+                if share > 0.0:
                     highlight_faces.append(index)
 
         # Indices in, wrapped faces out. The renderer only ever sees a TopoDS shape,
@@ -1958,16 +2046,20 @@ class CadMCPServer:
         # A still is rendered through the same V3d_View the user's screen is using, and that call
         # fits and re-orients it - so rendering a picture for the agent left the viewport pointing
         # at the still's camera while the turntable angles still described the old one, and the
-        # next drag jumped. The direction is put back here; the framing stays the still's FitAll
-        # until the user presses Reset view, which is a smaller surprise than a camera that moves
-        # on its own.
-        _apply_turntable(viewport, self._yaw_deg, self._pitch_deg)
-        viewport.Redraw()
-
+        # next drag jumped. The direction goes back below, and only after the pixels are on disk:
+        # putting it back first sent the user's angle to the file while the answer still called it
+        # "front", which is a worse trade than the framing that stays the still's FitAll until
+        # Reset view.
         def write(temp):
             _write_view(viewport, width, height, temp)
 
         written = _publish(filepath, write)
+
+        # Now that the still has been read out, the user's camera goes back. Left where the
+        # still pointed it, the next frame the app drew would be the still's angle.
+        _apply_turntable(viewport, self._yaw_deg, self._pitch_deg)
+        viewport.Redraw()
+
         return {
             "filepath": filepath,
             "bytes": written,
