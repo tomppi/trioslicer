@@ -1533,7 +1533,36 @@ fun EnderSlicerApp(
                         // A file here is something the engine wrote, and loading it puts it back
                         // in the scene the viewport draws - the one place the agent and the user
                         // both work. Without this the list is read-only history.
-                        onLoad = { file -> cadViewport?.loadPart(file) },
+                        //
+                        // Its own client rather than the viewport's, because this screen
+                        // *replaces* the CAD screen in the composition: the viewport is disposed
+                        // when it opens, so cadViewport is null here and the tap did nothing at
+                        // all - no log line, no error, nothing to see. The engine is a separate
+                        // process and does not care which screen is showing.
+                        onLoad = { file ->
+                            scope.launch(Dispatchers.IO) {
+                                val client = CadPreviewClient(
+                                    tokenFile = java.io.File(context.filesDir,
+                                        "cad/cad_mcp_token.txt"))
+                                try {
+                                    val name = client.importFile(
+                                        file = file,
+                                        name = file.nameWithoutExtension,
+                                        replace = true,
+                                    )
+                                    Toast.makeText(
+                                        context,
+                                        if (name != null) "Loaded " + file.name + " into CAD"
+                                        else "CAD did not accept " + file.name,
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } catch (error: Throwable) {
+                                    Log.w("EnderSlicerApp", "cad load failed: " + error.message)
+                                } finally {
+                                    client.close()
+                                }
+                            }
+                        },
                         loadLabel = "Load",
                         modifier = Modifier
                             .fillMaxSize()
