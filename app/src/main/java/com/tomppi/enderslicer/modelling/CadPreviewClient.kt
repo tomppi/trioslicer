@@ -6,6 +6,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -287,6 +288,44 @@ class CadPreviewClient(
         return reply.optJSONObject("result")?.optString("shapes")?.takeIf { it.isNotEmpty() }
     }
 
+    /**
+     * Loads a model into the engine, waiting for the engine to come up.
+     *
+     * The engine extracts 566 MB and binds its port over tens of seconds, so a single attempt is a
+     * race a model usually loses - and losing it was silent. That is how a file picked from the
+     * CAD files screen did nothing at all when it was picked before the engine was ready. The
+     * Blender client has waited this way since it was written.
+     *
+     * Only a connection failure is retried. A refusal is not a race - the engine answered, and it
+     * said no - so it comes back at once rather than making the user wait out the deadline for an
+     * answer that has already arrived. The import itself returning null is a success: the engine
+     * loaded the file and simply reported no shape names.
+     */
+    fun importFileWhenReady(
+        file: File,
+        name: String = "",
+        unit: String = "mm",
+        replace: Boolean = true,
+        timeoutMs: Long = IMPORT_WAIT_MS,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            try {
+                importFile(file = file, name = name, unit = unit, replace = replace)
+                return true
+            } catch (error: IOException) {
+                if (System.currentTimeMillis() >= deadline) {
+                    Log.w(TAG, "load gave up waiting for the engine: " + error.message)
+                    return false
+                }
+                Thread.sleep(1_000)
+            } catch (error: Throwable) {
+                Log.w(TAG, "load refused: " + error.message)
+                return false
+            }
+        }
+    }
+
     /** Loads a frame the engine wrote. */
     fun readFrame(file: File): Bitmap? = runCatching {
         if (!file.isFile) null else BitmapFactory.decodeFile(file.absolutePath)
@@ -304,6 +343,8 @@ class CadPreviewClient(
         const val DEFAULT_PORT = 9877
 
         private const val CONNECT_TIMEOUT_MS = 5_000
+        /** How long a load waits for the engine to bind its port. The engine is the slow one. */
+        private const val IMPORT_WAIT_MS = 120_000L
         /** A frame is a render plus a PNG encode; measured at ~120 ms, so this is slack. */
         private const val READ_TIMEOUT_MS = 30_000
         /** Parsing a STEP or a large STL: slower than a frame, still bounded. */

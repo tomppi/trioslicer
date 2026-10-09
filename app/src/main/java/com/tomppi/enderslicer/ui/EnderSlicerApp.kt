@@ -1545,18 +1545,27 @@ fun EnderSlicerApp(
                                     tokenFile = java.io.File(context.filesDir,
                                         "cad/cad_mcp_token.txt"))
                                 try {
-                                    val name = client.importFile(
+                                    // Waits for the engine, which takes tens of seconds to bind its
+                                    // port: a load asked for before then used to do nothing at all
+                                    // and say nothing about it.
+                                    val loaded = client.importFileWhenReady(
                                         file = file,
                                         name = file.nameWithoutExtension,
                                         replace = true,
                                     )
                                     Toast.makeText(
                                         context,
-                                        if (name != null) "Loaded " + file.name + " into CAD"
-                                        else "CAD did not accept " + file.name,
-                                        Toast.LENGTH_SHORT,
+                                        if (loaded) "Loaded " + file.name + " into CAD"
+                                        else "The CAD engine did not come up; " + file.name +
+                                            " was not loaded",
+                                        Toast.LENGTH_LONG,
                                     ).show()
                                 } catch (error: Throwable) {
+                                    Toast.makeText(
+                                        context,
+                                        "Could not load " + file.name + ": " + error.message,
+                                        Toast.LENGTH_LONG,
+                                    ).show()
                                     Log.w("EnderSlicerApp", "cad load failed: " + error.message)
                                 } finally {
                                     client.close()
