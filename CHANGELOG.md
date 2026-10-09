@@ -4,7 +4,7 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.7] - 2026-10-09
 
 ### Added
 
@@ -26,6 +26,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in one action.
 - The saved workspace remembers the entire plate; a descriptor written by an older build still
   restores as a one-model plate.
+
+### Fixed
+
+- **Support paint is drawn on every object.** It was only visible on the highlighted model,
+  because the viewer kept one colour buffer sized to the selected object and indexed by that
+  object's triangle numbers. One scene-wide buffer now carries every object's paint at its own
+  triangle offset, with the selection tint still on the highlighted part.
+- **The brush follows the finger that paints.** A stroke could only ever paint the highlighted
+  object: the viewer dropped any stroke that began on another one, dropped every later sample
+  that landed on one, and expanded the brush against the selected object's mesh regardless. A
+  stroke now paints the part it is on, and that part becomes the selected one.
+- **Two dozen defects found by two rounds of audit** of the multi-object work, each verified
+  before it was touched. The three that mattered most:
+  - the third and later objects lost their paint on **OrcaSlicer** (it reads `paint_supports`, and
+    its shipped console has no `slic3rpe:custom_supports` string at all) and their paint was
+    dropped on **PrusaSlicer** unless the file carried the stamp that routes it to the legacy
+    loader - so paint never reached either engine on any path, in either the single- or
+    multi-object case;
+  - a handoff of **three or more objects** lost the middle ones: a claimed export that arrived
+    while the app was busy went into a single slot and the next overwrote it;
+  - **"All to plate" could crash** the app when an engine was booting, stopped, or answering
+    nothing - nothing caught the client's throw.
+  Also fixed: arrangement ignored an elliptical bed (parts landed off it and CuraEngine refused
+  the slice); arranging and removing had no busy gate, so a plate could change under a running
+  slice and the finished G-code was then published for a plate that no longer existed; a
+  successful OrcaSlicer profile import left the app "Working..." until a restart; two copies of
+  one file produced two identical object names, which a Klipper host cancels as one object;
+  "All settings" overrides reached only the last object (or a modifier volume) on the
+  multi-object CuraEngine path; an unreadable saved plate vanished in silence; a single object
+  with "one at a time" on and an imported Cura profile refused every slice; the Blender handoff
+  re-imported the previous session's export as a duplicate part after a restart; export names
+  that sanitise alike overwrote each other; empty meshes and mirrored objects exported wrongly;
+  and the model tools bar could not scroll, so the close button could be measured off a narrow
+  screen.
 
 ## [1.8.0] - 2026-10-07
 
