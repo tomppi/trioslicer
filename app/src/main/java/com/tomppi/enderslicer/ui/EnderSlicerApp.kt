@@ -136,6 +136,8 @@ import androidx.compose.material.icons.filled.Lock
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import com.tomppi.enderslicer.modelling.CadPick
 import com.tomppi.enderslicer.modelling.CadPreviewClient
+import com.tomppi.enderslicer.modelling.CadViewerPreference
+import com.tomppi.enderslicer.modelling.CadViewerSettings
 import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
 import androidx.compose.foundation.layout.offset
@@ -315,6 +317,10 @@ fun EnderSlicerApp(
     // dimensions rather than about a mesh. Its own session id, because an agent that has
     // just been reading a Blender transcript answers as if the model were a mesh.
     var cadOpen by rememberSaveable { mutableStateOf(false) }
+    // How this device draws the CAD viewport. Read once per composition and handed to the
+    // viewport as a lambda, so a saved change reaches the very next frame.
+    var cadViewerOpen by rememberSaveable { mutableStateOf(false) }
+    var cadViewerSettings by remember { mutableStateOf(CadViewerPreference.load(context)) }
     var cadMessages by remember { mutableStateOf(listOf<AiChatMessage>()) }
     var cadStatus by remember { mutableStateOf<String?>(null) }
     var cadBusy by remember { mutableStateOf(false) }
@@ -942,6 +948,9 @@ fun EnderSlicerApp(
             // The engine extracts 566 MB before it binds, so the screen waits on it
             // rather than on a retry count.
             engineReady = { runCatching { CadEngine.status(context) }.getOrDefault("") == "ready" },
+            // Read live: a setting saved in the sheet has to reach the next frame, not the
+            // next launch.
+            settings = { cadViewerSettings },
         )
         cadViewport = viewport
         viewport.start()
@@ -1350,6 +1359,16 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
+                                        MenuSectionLabel("Viewer")
+                                        DropdownMenuItem(
+                                            text = { Text("Viewer settings") },
+                                            leadingIcon = { Icon(AppIcons.Filter, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                cadViewerOpen = true
+                                            },
+                                        )
+                                        MenuSectionLabel("Model")
                                         DropdownMenuItem(
                                             text = { Text("Stop CAD engine") },
                                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
@@ -1428,6 +1447,7 @@ fun EnderSlicerApp(
                         agentConnected = cadChatReady,
                         engineStatus = cadEngineStatus,
                         exportsPath = CadEngine.exportsDirectory(context).absolutePath,
+                        showStatus = cadViewerSettings.showStatus,
                         frame = cadFrame,
                         pick = cadPick,
                         framePending = cadFramePending,
@@ -1822,6 +1842,7 @@ fun EnderSlicerApp(
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
+                        onCadViewer = { cadViewerOpen = true },
                         uiScalePercent = uiScalePercent,
                         onUiScale = { uiScaleOpen = true },
                         diagnosticsOn = diagnosticsOn,
@@ -1902,6 +1923,28 @@ fun EnderSlicerApp(
             onDismissRequest = { diagnosticsLogOpen = false },
         ) {
             DiagnosticsLogSheet(onDismiss = { diagnosticsLogOpen = false })
+        }
+    }
+
+    if (cadViewerOpen) {
+        AppBottomSheet(
+            onDismissRequest = { cadViewerOpen = false },
+        ) {
+            CadViewerSettingsSheet(
+                current = cadViewerSettings,
+                onSave = { saved ->
+                    CadViewerPreference.save(context, saved)
+                    cadViewerSettings = saved
+                    cadViewerOpen = false
+                    // The camera the user arranged is theirs, so a settings change redraws
+                    // rather than resets.
+                    cadViewport?.refresh()
+                    Toast.makeText(context, "CAD viewer settings saved", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier
+                    .fillMaxHeight(0.94f)
+                    .navigationBarsPadding(),
+            )
         }
     }
 
@@ -2269,6 +2312,7 @@ private fun MoreScreen(
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
+    onCadViewer: () -> Unit,
     uiScalePercent: Int,
     onUiScale: () -> Unit,
     diagnosticsOn: Boolean,
@@ -2363,6 +2407,13 @@ private fun MoreScreen(
                 subtitle = "Max triangles for viewer and texturizer",
                 enabled = !state.isBusy,
                 onClick = onMeshLimit,
+            )
+            MoreDivider()
+            MoreRow(
+                icon = AppIcons.Cube,
+                title = "CAD viewer",
+                subtitle = "Render size, shading and the status line",
+                onClick = onCadViewer,
             )
         }
 

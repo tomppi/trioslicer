@@ -70,6 +70,13 @@ fun CadScreen(
     /** Where finished STEP and STL land, shown so the user knows where to look. */
     exportsPath: String,
     /**
+     * Whether to draw the overlay that says what the engine is doing.
+     *
+     * A viewer setting rather than a constant: the strip sits over the top-left of the picture,
+     * and a user who is studying that corner of a part should be able to get it out of the way.
+     */
+    showStatus: Boolean = true,
+    /**
      * The engine's most recent frame, or null before the first one arrives.
      *
      * This is the engine's own viewport: its camera, its scene, its render. The app does not
@@ -203,7 +210,7 @@ fun CadScreen(
                 // that appears and disappears resizes the view, and the view's size is what
                 // the frame loop renders at - so a frame in flight changed the size that
                 // asked for the next one, and the screen never stopped rendering.
-                if (pick != null || framePending) {
+                if (showStatus && (pick != null || framePending)) {
                     Surface(
                         tonalElevation = 2.dp,
                         modifier = Modifier.align(Alignment.TopStart),

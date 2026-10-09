@@ -166,6 +166,7 @@ class CadPreviewClient(
         selectX: Int? = null,
         selectY: Int? = null,
         reset: Boolean = false,
+        shaded: Boolean = true,
         width: Int = 0,
         height: Int = 0,
     ): CadPick? {
@@ -177,6 +178,7 @@ class CadPreviewClient(
             .put("pan_dy", panDy.toDouble())
             .put("zoom", zoom.toDouble())
             .put("reset", reset)
+            .put("shaded", shaded)
         if (width > 0) params.put("width", width)
         if (height > 0) params.put("height", height)
         selectX?.let { params.put("select_x", it) }

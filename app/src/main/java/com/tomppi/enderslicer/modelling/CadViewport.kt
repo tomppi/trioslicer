@@ -41,8 +41,6 @@ private const val READY_RETRIES = 3
  * that follows at full size restores it, and picking stays pixel-exact because a tap
  * cannot arrive mid-drag.
  */
-private const val DRAG_MAX = 640
-
 /** One request to the engine's camera, or a tap for it to pick at. */
 private data class ViewRequest(
     val orbitDx: Float = 0f,
@@ -83,6 +81,13 @@ class CadViewport(
     private val frameFile: File,
     /** Whether the engine has finished starting. The app knows; a frame count does not. */
     private val engineReady: () -> Boolean,
+    /**
+     * The viewer settings, read on every request rather than captured once.
+     *
+     * Live-reading is what makes a saved setting take effect on the next frame instead of the
+     * next launch - and the next frame is the one the user is looking at when they change it.
+     */
+    private val settings: () -> CadViewerSettings = { CadViewerSettings() },
 ) : Closeable {
 
     private val _frame = MutableStateFlow<Bitmap?>(null)
@@ -183,7 +188,8 @@ class CadViewport(
         // The cap is on the longest side, and the deltas are scaled by the same factor. Both
         // halves are load-bearing:
         //
-        //  * Capping each side at DRAG_MAX turns 1812x1700 into 640x640 - a different aspect,
+        //  * Capping the longest side (the drag quality setting, 640 px by default) turns
+        //    1812x1700 into 640x640 - a different aspect,
         //    which the engine honours (ToPixMap adjusts the view to the dump size by default).
         //    The frame is drawn with ContentScale.Fit, so the picture shrinks into a square in
         //    the middle of the view while the finger moves, and comes back on the settle frame.
@@ -200,16 +206,27 @@ class CadViewport(
         val dragging = deltas.hasMotion && request.selectX == null
         val displayWidth = width.get()
         val displayHeight = height.get()
+        val viewer = settings()
+        val longest = maxOf(1, maxOf(displayWidth, displayHeight))
         val dragScale = if (dragging) {
-            minOf(1f, DRAG_MAX.toFloat() / maxOf(1, maxOf(displayWidth, displayHeight)).toFloat())
+            minOf(1f, viewer.dragQuality.toFloat() / longest.toFloat())
+        } else {
+            1f
+        }
+        // The still frame gets its own cap: it is the one left on the glass to be looked at, and
+        // a full-resolution frame of a heavy part is the difference between a viewer and a slide
+        // show. Zero means no cap, which is what the app has always done.
+        val stillScale = if (!dragging && viewer.idleQuality > 0) {
+            minOf(1f, viewer.idleQuality.toFloat() / longest.toFloat())
         } else {
             1f
         }
         // A size of 0 means the view has not been laid out yet, and is passed on as 0: the
         // engine reads that as "no size given" and renders its own default, where 1 would be
         // a one-pixel frame.
-        val renderWidth = if (dragging) (displayWidth * dragScale).roundToInt() else displayWidth
-        val renderHeight = if (dragging) (displayHeight * dragScale).roundToInt() else displayHeight
+        val renderScale = dragScale * stillScale
+        val renderWidth = (displayWidth * renderScale).roundToInt()
+        val renderHeight = (displayHeight * renderScale).roundToInt()
 
         val picked = client.view(
             into = frameFile,
@@ -223,6 +240,7 @@ class CadViewport(
             selectX = request.selectX,
             selectY = request.selectY,
             reset = request.reset,
+            shaded = viewer.shaded,
             width = renderWidth,
             height = renderHeight,
         )
@@ -274,6 +292,16 @@ class CadViewport(
 
     fun reset() {
         pending.trySend(ViewRequest(reset = true))
+    }
+
+    /**
+     * Redraws with the current settings, without moving the camera.
+     *
+     * What a saved viewer setting needs: the camera the user has arranged is theirs, and changing
+     * the frame size or the shading should not throw it away.
+     */
+    fun refresh() {
+        pending.trySend(ViewRequest())
     }
 
     /** Consumed once it has been attached to something the user said. */
