@@ -953,6 +953,9 @@ fun EnderSlicerApp(
             settings = { cadViewerSettings },
         )
         cadViewport = viewport
+        // The engine draws from its own copy of these, so it is told every time the screen
+        // opens rather than only when the sheet is saved.
+        viewport.applyViewerSettings(cadViewerSettings)
         viewport.start()
         val frameJob = launch { viewport.frame.collect { cadFrame = it } }
         val pickJob = launch { viewport.pick.collect { cadPick = it } }
@@ -1457,6 +1460,7 @@ fun EnderSlicerApp(
                         onSelect = { x, y -> cadViewport?.select(x, y) },
                         onViewSize = { w, h -> cadViewport?.setViewSize(w, h) },
                         onResetView = { cadViewport?.reset() },
+                        onOrientation = { cadViewport?.setOrientation(it) },
                         onPickUsed = { cadViewport?.clearPick() },
                         onSend = ::askCadAgent,
                         onExit = { cadOpen = false },
@@ -1936,9 +1940,9 @@ fun EnderSlicerApp(
                     CadViewerPreference.save(context, saved)
                     cadViewerSettings = saved
                     cadViewerOpen = false
-                    // The camera the user arranged is theirs, so a settings change redraws
-                    // rather than resets.
-                    cadViewport?.refresh()
+                    // The engine is told, then asked for a frame: the camera the user arranged
+                    // is theirs, so a settings change redraws rather than resets.
+                    cadViewport?.applyViewerSettings(saved)
                     Toast.makeText(context, "CAD viewer settings saved", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier

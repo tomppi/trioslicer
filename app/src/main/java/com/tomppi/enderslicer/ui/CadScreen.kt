@@ -101,6 +101,8 @@ fun CadScreen(
     onSelect: (Int, Int) -> Unit,
     onViewSize: (Int, Int) -> Unit,
     onResetView: () -> Unit,
+    /** A named view: Iso, Front, Top, Right. Re-frames the part as well as turning the camera. */
+    onOrientation: (String) -> Unit = {},
     onPickUsed: () -> Unit,
     onSend: (String) -> Unit,
     onExit: () -> Unit,
@@ -135,6 +137,24 @@ fun CadScreen(
                 TextButton(onClick = { chatExpanded = !chatExpanded }) {
                     Text(if (chatExpanded) "Hide chat" else "Chat")
                 }
+            }
+        }
+        // The four views worth a tap. A part is judged from a named direction far more often
+        // than from a free angle, and naming them costs one row.
+        Surface(tonalElevation = 1.dp) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                listOf("iso" to "Iso", "front" to "Front", "top" to "Top", "right" to "Right")
+                    .forEach { (name, label) ->
+                        TextButton(onClick = { onOrientation(name) }) {
+                            Text(label, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
             }
         }
 

@@ -323,6 +323,43 @@ VIEW_DIRECTIONS = {
     "bottom": (0.0, 0.0, -1.0),
 }
 
+# --------------------------------------------------------------------------
+# The viewer's appearance
+# --------------------------------------------------------------------------
+
+# What the viewport looks like, as opposed to what is in it. Set from the app's Viewer settings
+# through the `viewer_settings` command, and consulted by every render - the scene is cleared and
+# rebuilt on each frame, so a presentation is not somewhere a setting could live between frames.
+#
+# Values are the app's own vocabulary rather than OCCT's: the sheet offers four tessellation
+# levels and three backgrounds, and the mapping to numbers belongs here, next to the code that
+# has to honour it.
+VIEWER = {
+    "tessellation": "standard",
+    "background": "dark",
+    "grid": False,
+    "grid_step_mm": 10.0,
+    "axes": True,
+    "projection": "perspective",
+    "edges": True,
+    "antialiasing": True,
+}
+
+# AIS drawer deviation coefficient: the biggest gap between the true surface and the triangles
+# drawn for it, as a fraction of the shape's size. Lower is finer and costs triangles.
+TESSELLATION_LEVELS = {
+    "coarse": 0.01,
+    "standard": 0.001,
+    "fine": 0.0005,
+    "very fine": 0.0001,
+}
+
+BACKGROUND_COLOURS = {
+    "dark": (0.16, 0.17, 0.19),
+    "mid": (0.34, 0.35, 0.37),
+    "light": (0.86, 0.86, 0.85),
+}
+
 # OCCT needs a GL context, and building one costs seconds of shader compilation - so it is
 # built once and kept, not per render. Confirmed working on the device: the driver comes up
 # with no window and no X server, and warns "a Window is created without a EGL Surface!"
@@ -376,6 +413,45 @@ class _Renderer:
 
         self.resize(width, height)
         self.context.RemoveAll(False)
+        # The grid, under everything, as geometry: a thing of a real size seen with the part
+        # rather than a screen-space backdrop. Displayed here and never added to SCENE, so it
+        # cannot reach an export.
+        # Tessellation the way that works here: mesh the shape itself, before AIS looks at it.
+        # AIS_Shape displays an existing triangulation and only computes one when there is none,
+        # which is why the drawer's deviation coefficient changed nothing - the same reason
+        # SetDrawEdges changed nothing, and it is written down in render() already.
+        try:
+            from OCP.BRepMesh import BRepMesh_IncrementalMesh
+            from OCP.BRepTools import BRepTools
+
+            wrapped = getattr(shape, "wrapped", shape)
+            # The old triangulation has to go first: BRepMesh keeps an existing mesh that is
+            # already finer than the one asked for, so a coarser setting would change nothing
+            # and look like a broken control.
+            try:
+                BRepTools.Clean_s(wrapped)
+            except Exception:
+                pass
+            # Relative deflection - a fraction of the shape's own size. The levels are
+            # fractions, and passing one as millimetres asked for 0.0001 mm on a 20 mm
+            # cylinder, which is millions of triangles and killed the render.
+            BRepMesh_IncrementalMesh(
+                wrapped,
+                TESSELLATION_LEVELS.get(VIEWER["tessellation"],
+                                        TESSELLATION_LEVELS["standard"]),
+                True, 0.5, True)
+        except Exception as exc:
+            VIEWER.setdefault("_errors", {})["tessellation"] = "%s: %s" % (
+                type(exc).__name__, exc)
+        if VIEWER["grid"]:
+            try:
+                grid = AIS_Shape(_grid_shape(float(VIEWER["grid_step_mm"])))
+                self.context.Display(grid, False)
+                self.context.SetDisplayMode(grid, AIS_WireFrame, False)
+                self.context.SetColor(
+                    grid, Quantity_Color(0.45, 0.47, 0.52, Quantity_TOC_RGB), False)
+            except Exception:
+                pass
         presentation = AIS_Shape(shape)
         # Edges on the shape's own drawer, and set before it is displayed: a shaded solid
         # with no edges hides a boss standing on a plate, because from straight above the
@@ -386,6 +462,10 @@ class _Renderer:
             attributes.SetDrawEdges(True)
             attributes.SetDrawSilhouettes(True)
             attributes.SetEdgeColor(Quantity_Color(0.1, 0.1, 0.1, Quantity_TOC_RGB))
+            # The drawer's deviation coefficient used to be set here for the tessellation
+            # setting. It is not: on this driver the coefficient changes nothing - the frame
+            # came back byte-identical at every level - and the setting is honoured by meshing
+            # the shape before AIS ever sees it, in render().
         except Exception:
             pass
         self.presentation = presentation
@@ -397,7 +477,7 @@ class _Renderer:
         # with and without it - so edges are drawn as a second, overlaid wireframe. Without
         # them a boss on a plate is invisible from directly above, which is exactly the view
         # used to check where a feature sits.
-        if shaded:
+        if shaded and VIEWER["edges"]:
             try:
                 outline = AIS_Shape(shape)
                 self.context.Display(outline, False)
@@ -440,6 +520,7 @@ class _Renderer:
             # Deliberately not wrapped in try/except: a highlight that silently fails to
             # draw is worse than one that reports why, because the render still comes back
             # looking like a successful answer.
+        _apply_viewer(self.view)
         direction = VIEW_DIRECTIONS.get(view, VIEW_DIRECTIONS["iso"])
         # SetProj resets the orientation, which would undo an orbit the caller just made.
         if fit:
@@ -449,6 +530,100 @@ class _Renderer:
             self.view.FitAll(0.02)
         self.view.Redraw()
         return self.view
+
+
+def _grid_shape(step, half=100.0):
+    """A rectangular grid on the bed, as ordinary edges.
+
+    Built rather than asked for: V3d_View's own grid killed this driver outright - SetGrid /
+    SetGridActivity segfault inside OCCT's GL path, reproducibly, and a segfault cannot be
+    caught in Python. Edges take the same route as the model itself, which this driver has
+    been drawing all along.
+
+    Cached by step: a rebuild per frame would put a hundred edges through the mesher sixty
+    times a second for a backdrop that never changes.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.gp import gp_Pnt
+
+    key = ("grid", step, half)
+    cached = _GL.get(key)
+    if cached is not None:
+        return cached
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    count = int(half / step)
+    for i in range(-count, count + 1):
+        offset = i * step
+        builder.Add(compound, BRepBuilderAPI_MakeEdge(
+            gp_Pnt(offset, -half, 0.0), gp_Pnt(offset, half, 0.0)).Edge())
+        builder.Add(compound, BRepBuilderAPI_MakeEdge(
+            gp_Pnt(-half, offset, 0.0), gp_Pnt(half, offset, 0.0)).Edge())
+    _GL[key] = compound
+    return compound
+
+
+def _apply_viewer(view):
+    """Put the viewer's appearance on the view, and collect anything that refuses.
+
+    Every one of these goes through OCCT's rendering path, where a call can be accepted and
+    ignored - SetGrid segfaulted this driver outright, SetDrawEdges changed nothing, and MSAA
+    changed nothing. Failures are recorded rather than swallowed, because a setting that reports
+    success while doing nothing is worse than one that admits it, and the read-back lives in the
+    viewer_settings command so a caller can ask the viewer what it is actually doing.
+    """
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+    from OCP.Graphic3d import Graphic3d_Camera
+
+    def note(name, exc):
+        VIEWER.setdefault("_errors", {})[name] = "%s: %s" % (type(exc).__name__, exc)
+
+    colour = BACKGROUND_COLOURS.get(VIEWER["background"], BACKGROUND_COLOURS["dark"])
+    try:
+        view.SetBackgroundColor(
+            Quantity_Color(colour[0], colour[1], colour[2], Quantity_TOC_RGB))
+    except Exception as exc:
+        note("background", exc)
+
+    # The little axis cross in the corner, which tells the user which way is which without a
+    # second click.
+    try:
+        if VIEWER["axes"]:
+            from OCP.Aspect import Aspect_TypeOfTriedronPosition
+
+            position = getattr(Aspect_TypeOfTriedronPosition, "Aspect_TOTP_LEFT_LOWER",
+                               getattr(Aspect_TypeOfTriedronPosition, "Aspect_TOTP_CENTER"))
+            view.TriedronDisplay(position,
+                                 Quantity_Color(0.9, 0.9, 0.9, Quantity_TOC_RGB), 0.08)
+        else:
+            view.TriedronErase()
+    except Exception as exc:
+        note("axes", exc)
+
+    # Orthographic for judging a dimension, perspective for looking at a part.
+    try:
+        camera = view.Camera()
+        camera.SetProjectionType(
+            Graphic3d_Camera.Projection_Orthographic
+            if VIEWER["projection"] == "orthographic"
+            else Graphic3d_Camera.Projection_Perspective)
+        # Camera() hands back a copy through this binding, so the change has to be handed back
+        # to the view or it dies with the local handle. This is what made an orthographic
+        # setting do nothing until it was measured.
+        view.SetCamera(camera)
+        view.Invalidate()
+    except Exception as exc:
+        note("projection", exc)
+
+    # Multisampling: accepted and ignored here. Anti-aliasing is done by supersampling the frame
+    # in _write_view instead, which the measurements can see.
+    try:
+        view.ChangeRenderingParams().NbMsaaSamples = 4 if VIEWER["antialiasing"] else 0
+    except Exception as exc:
+        note("msaa", exc)
 
 
 def _renderer(width, height):
@@ -680,7 +855,7 @@ def _describe_at(shape, x, y, z):
     return info
 
 
-def _write_view(viewport, width, height, path):
+def _write_view(viewport, width, height, path, output=None):
     """Write what the viewport is showing as a PNG, straight out of the render buffer.
 
     ToPixMap is the render: it draws the scene offscreen at this size and asks the GL driver
@@ -717,7 +892,13 @@ def _write_view(viewport, width, height, path):
         frame = Image.frombytes(
             "RGBA", (int(width), int(height)), pixmap.ReadBytes(),
             "raw", "RGBA", int(pixmap.SizeRowBytes()), -1)
-        frame.convert("RGB").save(path, format="PNG")
+        frame = frame.convert("RGB")
+        # Anti-aliasing, done on the way out: the view is drawn larger and averaged down. MSAA
+        # is accepted and ignored on this driver - the frame came back byte-identical with
+        # NbMsaaSamples at 0 and at 4 - so smoothing has to happen here or not at all.
+        if output and (int(output[0]), int(output[1])) != (int(width), int(height)):
+            frame = frame.resize((int(output[0]), int(output[1])), Image.LANCZOS)
+        frame.save(path, format="PNG")
         return
 
     # A payload older than the ReadBytes binding: keep the PPM round trip so a new script
@@ -728,7 +909,10 @@ def _write_view(viewport, width, height, path):
             raise RuntimeError("OCCT could not render the viewport")
         if not pixmap.Save(ppm):
             raise RuntimeError("OCCT could not write the viewport pixels")
-        Image.open(ppm).convert("RGB").save(path, format="PNG")
+        legacy = Image.open(ppm).convert("RGB")
+        if output and (int(output[0]), int(output[1])) != (int(width), int(height)):
+            legacy = legacy.resize((int(output[0]), int(output[1])), Image.LANCZOS)
+        legacy.save(path, format="PNG")
     finally:
         try:
             os.remove(ppm)
@@ -1078,6 +1262,7 @@ class CadMCPServer:
             "section": self.section,
             "import_file": self.import_file,
             "clearance": self.clearance,
+            "viewer_settings": self.viewer_settings,
             "render": self.render,
             "get_addon_info": self.get_addon_info,
         }
@@ -1230,10 +1415,86 @@ class CadMCPServer:
                                "changed since the view was drawn" % info["distance_mm"])
         return info
 
+    def viewer_settings(self, tessellation=None, background=None, grid=None,
+                        grid_step_mm=None, axes=None, projection=None, edges=None,
+                        antialiasing=None):
+        """The viewer's appearance: what a frame looks like, not what is in it.
+
+        Every argument is optional; what is given is applied and nothing else is touched. The
+        answer carries the settings *and* what the viewer reports back, because several of these
+        go through OCCT's rendering path, where a value can be accepted and quietly ignored -
+        SetDrawEdges did exactly that on this GLES driver, and the renders came out byte-identical
+        with and without it. `readback` is the viewer's own answer; grid and the axis cross have
+        no getter in this binding, so those two are honestly absent from it and are checked by
+        looking at a frame.
+        """
+        if tessellation is not None:
+            if tessellation not in TESSELLATION_LEVELS:
+                raise ValueError("tessellation must be one of %s"
+                                 % ", ".join(sorted(TESSELLATION_LEVELS)))
+            VIEWER["tessellation"] = tessellation
+        if background is not None:
+            if background not in BACKGROUND_COLOURS:
+                raise ValueError("background must be one of %s"
+                                 % ", ".join(sorted(BACKGROUND_COLOURS)))
+            VIEWER["background"] = background
+        if grid is not None:
+            VIEWER["grid"] = bool(grid)
+        if grid_step_mm is not None:
+            VIEWER["grid_step_mm"] = max(0.1, float(grid_step_mm))
+        if axes is not None:
+            VIEWER["axes"] = bool(axes)
+        if projection is not None:
+            if projection not in ("perspective", "orthographic"):
+                raise ValueError("projection must be perspective or orthographic")
+            VIEWER["projection"] = projection
+        if edges is not None:
+            VIEWER["edges"] = bool(edges)
+        if antialiasing is not None:
+            VIEWER["antialiasing"] = bool(antialiasing)
+
+        # The OCCT view belongs to the cached renderer, not to this class - the `view` command
+        # method has that name here, which is a trap worth the comment. With no renderer yet
+        # there is no view to talk to, and nothing to do: every setting is consulted when a
+        # frame is built, so it will be honoured by the first one.
+        renderer = _GL.get("renderer")
+        viewer = getattr(renderer, "view", None)
+        readback = {"applied_to_view": viewer is not None}
+        if viewer is not None:
+            _apply_viewer(viewer)
+            viewer.Redraw()
+            try:
+                readback["projection"] = str(viewer.Camera().ProjectionType()).split(".")[-1]
+            except Exception:
+                pass
+            try:
+                readback["msaa_samples"] = int(viewer.RenderingParams().NbMsaaSamples)
+            except Exception:
+                pass
+            try:
+                colour = viewer.BackgroundColor()
+                readback["background_rgb"] = [round(colour.Red(), 3), round(colour.Green(), 3),
+                                              round(colour.Blue(), 3)]
+            except Exception:
+                pass
+            try:
+                presentation = getattr(renderer, "presentation", None)
+                if presentation is not None:
+                    readback["deviation_coefficient"] = float(
+                        presentation.Attributes().DeviationCoefficient())
+            except Exception:
+                pass
+        if VIEWER.get("_errors"):
+            readback["errors"] = dict(VIEWER["_errors"])
+            VIEWER.pop("_errors", None)
+        return {"settings": {k: v for k, v in VIEWER.items() if not k.startswith("_")},
+                "readback": readback}
+
     def view(self, filepath, name="", orbit_dx=0.0, orbit_dy=0.0,
              pan_dx=0.0, pan_dy=0.0, zoom=1.0,
              select_x=None, select_y=None, reset=False,
-             width=640, height=640, shaded=True):
+             width=640, height=640, shaded=True, orientation=None,
+             antialiasing=None):
         """The engine's own viewport: turn it, or pick a surface in it.
 
         This is the CAD screen's view. It is not a picture rendered for a report - the camera
@@ -1249,14 +1510,28 @@ class CadMCPServer:
         width = max(self.RENDER_MIN, min(self.RENDER_MAX, int(width)))
         height = max(self.RENDER_MIN, min(self.RENDER_MAX, int(height)))
 
-        renderer = _renderer(width, height)
+        # Anti-aliasing by supersampling: the frame is drawn twice as wide and tall and
+        # averaged down on the way out. MSAA is accepted and ignored on this driver - the frame
+        # came back byte-identical with NbMsaaSamples at 0 and at 4 - so the smoothing has to
+        # happen here or not at all. Everything the caller sends is in the frame they asked for,
+        # so drag deltas and tap coordinates are scaled on the way in and the answer on the way
+        # out.
+        # The caller can turn it off per frame, and the app does: a frame drawn while a finger
+        # is moving wants speed, the frame that settles under it wants the smooth edges. On this
+        # device that is the difference between a viewport and a slideshow on a heavy part.
+        aa = 2 if (VIEWER["antialiasing"] if antialiasing is None else antialiasing) else 1
+        renderer = _renderer(width * aa, height * aa)
         # fit=False keeps the camera. That is the whole difference between a viewport and a
         # set of stills: FitAll() would undo every rotation the user just made.
-        viewport = renderer.render(getattr(shape, "wrapped", shape), width, height,
-                                   "iso", bool(shaded), fit=bool(reset))
+        # A named view is a preset: it puts the camera where that view lives and frames the
+        # part again, which is what pressing Front or Top means.
+        viewport = renderer.render(getattr(shape, "wrapped", shape), width * aa, height * aa,
+                                   orientation or "iso", bool(shaded),
+                                   fit=bool(reset or orientation))
 
         if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0:
             if orbit_dx or orbit_dy:
+                orbit_dx, orbit_dy = orbit_dx * aa, orbit_dy * aa
                 # StartRotation/Rotation are the gesture API: both take a screen
                 # position and OCCT works out the arcball turn itself. Rotate(Ax, Ay,
                 # Az) is a different call - a rotation about a world axis, through
@@ -1288,7 +1563,7 @@ class CadMCPServer:
                 # reported. The arcball above needs no such flip: Rotation() reads y the way the
                 # finger sends it, and a downward drag tips the model to show more of its top,
                 # which is what grabbing the front and pulling it down should do.
-                viewport.Pan(int(round(pan_dx)), -int(round(pan_dy)))
+                viewport.Pan(int(round(pan_dx * aa)), -int(round(pan_dy * aa)))
             if zoom != 1.0:
                 viewport.SetZoom(float(zoom), True)
             viewport.Redraw()
@@ -1297,9 +1572,10 @@ class CadMCPServer:
 
         picked = None
         if select_x is not None and select_y is not None:
-            picked = _pick_at(renderer, select_x, select_y, shape)
+            picked = _pick_at(renderer, select_x * aa, select_y * aa, shape)
 
-        written = _publish(filepath, lambda temp: _write_view(viewport, width, height, temp))
+        written = _publish(filepath, lambda temp: _write_view(
+            viewport, width * aa, height * aa, temp, output=(width, height)))
         result = {
             "filepath": filepath,
             "bytes": written,

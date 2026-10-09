@@ -167,6 +167,8 @@ class CadPreviewClient(
         selectY: Int? = null,
         reset: Boolean = false,
         shaded: Boolean = true,
+        orientation: String? = null,
+        antialiasing: Boolean? = null,
         width: Int = 0,
         height: Int = 0,
     ): CadPick? {
@@ -179,6 +181,8 @@ class CadPreviewClient(
             .put("zoom", zoom.toDouble())
             .put("reset", reset)
             .put("shaded", shaded)
+        if (orientation != null) params.put("orientation", orientation)
+        if (antialiasing != null) params.put("antialiasing", antialiasing)
         if (width > 0) params.put("width", width)
         if (height > 0) params.put("height", height)
         selectX?.let { params.put("select_x", it) }
@@ -205,6 +209,30 @@ class CadPreviewClient(
             areaMm2 = picked.optDouble("area_mm2", Double.NaN).takeIf { !it.isNaN() },
             centre = centre,
         )
+    }
+
+    /**
+     * Tells the engine how to draw, and asks it what it is actually doing.
+     *
+     * The read-back is the point of the answer: several of these go through OCCT's rendering
+     * path, which on this driver accepts a call and ignores it, so a setting is only known to
+     * have taken effect by measuring a frame.
+     *
+     * @return the engine's own report, or null when it refused the whole request.
+     */
+    fun viewerSettings(settings: CadViewerSettings): JSONObject? {
+        val params = JSONObject()
+            .put("tessellation", settings.tessellation)
+            .put("background", settings.background)
+            .put("grid", settings.grid)
+            .put("grid_step_mm", settings.gridStepMm.toDouble())
+            .put("axes", settings.axes)
+            .put("projection", settings.projection)
+            .put("edges", settings.edges)
+            .put("antialiasing", settings.antialiasing)
+        val reply = command("viewer_settings", params, IMPORT_TIMEOUT_MS)
+        if (reply.optString("status") != "success") return null
+        return reply.optJSONObject("result")
     }
 
     /**

@@ -51,6 +51,8 @@ private data class ViewRequest(
     val selectX: Int? = null,
     val selectY: Int? = null,
     val reset: Boolean = false,
+    /** A named view - "front", "top" - which re-frames the part as well as turning the camera. */
+    val orientation: String? = null,
 ) {
     /** Whether anything in here moves the camera. Picking and flags do not. */
     val hasMotion: Boolean
@@ -241,6 +243,10 @@ class CadViewport(
             selectY = request.selectY,
             reset = request.reset,
             shaded = viewer.shaded,
+            orientation = request.orientation,
+            // Supersampling only for the frame that settles: while a finger is moving, four
+            // times the pixels is four times the lag, and the smoothing is invisible anyway.
+            antialiasing = viewer.antialiasing && !dragging,
             width = renderWidth,
             height = renderHeight,
         )
@@ -292,6 +298,25 @@ class CadViewport(
 
     fun reset() {
         pending.trySend(ViewRequest(reset = true))
+    }
+
+    /** Iso, Front, Top, Right: a named view re-frames the part, which is what a preset means. */
+    fun setOrientation(name: String) {
+        pending.trySend(ViewRequest(orientation = name))
+    }
+
+    /**
+     * Hands the engine the viewer's appearance, then redraws.
+     *
+     * The camera is left alone: these are settings about how the view is drawn, and throwing
+     * away the angle the user arranged to apply them would be a poor trade.
+     */
+    fun applyViewerSettings(settings: CadViewerSettings) {
+        scope.launch {
+            runCatching { client.viewerSettings(settings) }
+                .onFailure { Log.w(TAG, "the engine refused the viewer settings: " + it.message) }
+            refresh()
+        }
     }
 
     /**
