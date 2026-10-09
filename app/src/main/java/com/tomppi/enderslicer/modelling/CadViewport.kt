@@ -349,6 +349,20 @@ class CadViewport(
      *
      * @return the name the engine filed the shape under, or null when it refused.
      */
+    /**
+     * Loads a file into the engine's scene, the way an agent's export would.
+     *
+     * Fire and forget: the frame that follows is the answer, and importPart already frames the
+     * part - the camera belonged to whatever was in the scene before, and that part is gone.
+     */
+    fun loadPart(file: java.io.File) {
+        scope.launch {
+            runCatching { importPart(file) }
+                .onSuccess { Log.i(TAG, "loaded " + file.name + " into the CAD engine") }
+                .onFailure { Log.w(TAG, "could not load " + file.name + ": " + it.message) }
+        }
+    }
+
     suspend fun importPart(file: java.io.File): String? = withContext(Dispatchers.IO) {
         val name = try {
             client.importFile(file = file, name = file.nameWithoutExtension, replace = true)

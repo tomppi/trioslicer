@@ -1505,6 +1505,11 @@ fun EnderSlicerApp(
                             "and the app picks each one up once. Nothing removes them " +
                             "afterwards, so this is where they accumulate.",
                         onBack = { cadFilesOpen = false },
+                        // A file here is something the engine wrote, and loading it puts it back
+                        // in the scene the viewport draws - the one place the agent and the user
+                        // both work. Without this the list is read-only history.
+                        onLoad = { file -> cadViewport?.loadPart(file) },
+                        loadLabel = "Load",
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),

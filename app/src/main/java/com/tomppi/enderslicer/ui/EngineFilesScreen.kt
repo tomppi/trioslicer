@@ -72,6 +72,16 @@ fun EngineFilesScreen(
     modifier: Modifier = Modifier,
     extensions: Set<String> = emptySet(),
     exclude: Set<String> = emptySet(),
+    /**
+     * Loads a file back into the engine it came from, when the caller can.
+     *
+     * The screen lists what the engine wrote; without this, the only way a part gets into a
+     * scene is the agent putting it there. The two are separate worlds - an agent's part lands
+     * on the plate through the exports folder, and the engine's own scene keeps whatever it was
+     * last told - so a user looking at a file list has no way to say "show me that one".
+     */
+    onLoad: ((java.io.File) -> Unit)? = null,
+    loadLabel: String = "Load into engine",
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -204,6 +214,11 @@ fun EngineFilesScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                            if (onLoad != null) {
+                                TextButton(onClick = { onLoad(entry.file) }) {
+                                    Text(loadLabel, style = MaterialTheme.typography.labelLarge)
+                                }
                             }
                             IconButton(onClick = { pendingDelete = entry }) {
                                 Icon(

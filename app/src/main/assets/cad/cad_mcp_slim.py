@@ -443,6 +443,7 @@ class _Renderer:
         except Exception as exc:
             VIEWER.setdefault("_errors", {})["tessellation"] = "%s: %s" % (
                 type(exc).__name__, exc)
+        self._grids = []
         if VIEWER["grid"]:
             try:
                 grid = AIS_Shape(_grid_shape(float(VIEWER["grid_step_mm"])))
@@ -450,6 +451,8 @@ class _Renderer:
                 self.context.SetDisplayMode(grid, AIS_WireFrame, False)
                 self.context.SetColor(
                     grid, Quantity_Color(0.45, 0.47, 0.52, Quantity_TOC_RGB), False)
+                # Kept, so the fit below can leave it out of the frame.
+                self._grids.append(grid)
             except Exception:
                 pass
         presentation = AIS_Shape(shape)
@@ -527,7 +530,24 @@ class _Renderer:
             self.view.SetProj(*direction)
         # A viewport keeps its camera; a still is framed for the caller every time.
         if fit:
+            # Fit the part, not the furniture. The grid is real geometry in this same context and
+            # FitAll fits everything displayed, so with a 200 mm bed grid on a 10 mm part came
+            # back as a speck: reported from the phone as a toy car 20 px across in an 800 px
+            # frame, and filling it with the grid off.
+            #
+            # Erased across the fit and put straight back - cheaper and more certain than building
+            # a Bnd_Box for FitAll to take, and it changes nothing else about the display.
+            for grid in getattr(self, "_grids", []):
+                try:
+                    self.context.Erase(grid, False)
+                except Exception:
+                    pass
             self.view.FitAll(0.02)
+            for grid in getattr(self, "_grids", []):
+                try:
+                    self.context.Display(grid, False)
+                except Exception:
+                    pass
         self.view.Redraw()
         return self.view
 
