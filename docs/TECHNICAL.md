@@ -17,8 +17,10 @@ usual autotools chain (`autoconf`, `automake`, `libtool`, `m4`, `perl`) and take
 
 ## From a clean checkout
 
-The scripts are committed executable and `.gitattributes` keeps them LF, so there is nothing to
-`chmod`:
+`.gitattributes` keeps the scripts LF, and most are committed executable; a few are not
+(`scripts/fetch-klipper-android.sh`, `scripts/fetch-cad-payload-android.sh`,
+`scripts/stage-cad-android.sh`, the filaSim scripts), so run `chmod +x scripts/*.sh` once on a
+clean clone - CI chmods each script before it runs it:
 
 ```bash
 scripts/fetch-cura-resources.sh
@@ -96,8 +98,9 @@ The per-engine tasks stay individually runnable and each one also runs the check
 `:app:verifyDebugApkPrusaContents` adds PrusaSlicer and its resources;
 `:app:verifyDebugApkBlenderContents` adds the Blender engine, its runtime libraries, its assets and
 its licences; `:app:verifyDebugApkFilaSimContents` adds the native filaSim engine. The same checks run
-against a release build with `./gradlew :app:verifyReleaseApkEngines` — they were debug-only, so a
-release APK could ship short of an engine runtime library with every task green.
+against a release build with `./gradlew :app:verifyReleaseApkEngines`, which also verifies the
+OCCT engine and the CAD payload - all six engines; they were debug-only, so a release APK could
+ship short of an engine runtime library with every task green.
 
 GitHub Actions cross-builds the engine artifacts the fetch scripts consume, builds the WASM engine,
 runs the unit/regression and definition audits, verifies packaged assets and uploads the APK.

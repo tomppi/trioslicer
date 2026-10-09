@@ -1,11 +1,11 @@
 # Non-planar slicing
 
-EnderSlicerCura includes an Android-native non-planar pipeline of its own - a relief-field flatten and an
+TrioSlicer includes an Android-native non-planar pipeline of its own - a relief-field flatten and an
 inverse mapping, not the CurviSlicer method it began from, and not a reimplementation of it. It is available under **More → Experimental → Non-planar slicing** and is disabled by default.
 
 ## Pipeline
 
-1. EnderSlicerCura rasterizes the projected interior of every upper-surface triangle from the displayed and positioned STL. This preserves broad surfaces even on coarse low-poly models.
+1. TrioSlicer rasterizes the projected interior of every upper-surface triangle from the displayed and positioned STL. This preserves broad surfaces even on coarse low-poly models.
 2. It creates a smoothed height field and derives a bounded relief field.
 3. Requested curvature strength is reduced automatically using a conservative inverse-field derivative bound. The final emitted path slope is checked again and rejected if it exceeds the effective nozzle-clearance slope.
 4. The displayed STL is flattened in an isolated request workspace. Imported Cura affine transforms are resolved before this step, and the persisted/displayed source is never modified.
@@ -15,7 +15,7 @@ inverse mapping, not the CurviSlicer method it began from, and not a reimplement
 8. Positive extrusion is compensated for the actual three-dimensional path length. Relative XYZ/E output carries quantization residuals so each source move closes on its intended endpoint.
 9. Feed rate is reduced where necessary to respect the configured maximum Z speed.
 10. An EnderSlicer-owned sentinel marks the exact beginning of machine-end G-code. The boundary is monotonic: later comments cannot re-enable curvature. End-script retract, lift, wipe and park moves are preserved rather than curved.
-11. The normal EnderSlicerCura sanitizer validates every spatial move—including travel, wipe and park moves—against the configured machine envelope before immutable publication.
+11. The normal TrioSlicer sanitizer validates every spatial move—including travel, wipe and park moves—against the configured machine envelope before immutable publication.
 
 The final file contains these markers:
 
@@ -92,7 +92,7 @@ The slice fails without replacing or publishing G-code when:
 - a coordinate reset would make printable-path transformation ambiguous;
 - adaptive-wall modifier volumes are active, because they are generated from bend detection on the un-warped model and would misalign;
 - a Smart Infill package is active while modifier warping is disabled;
-- CuraEngine or the normal EnderSlicerCura validation rejects the output.
+- CuraEngine or the normal TrioSlicer validation rejects the output.
 
 Arcs are rejected everywhere, including leading-zero aliases and custom startup purge paths. Disable arc fitting and remove custom arc commands before non-planar slicing.
 

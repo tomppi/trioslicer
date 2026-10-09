@@ -16,13 +16,13 @@ A photograph becomes a printable STL, and the STL appears on the phone's build p
 
 The order is not a suggestion. Generating before the box is awake looks like a hang; hibernating before the model is confirmed loses it.
 
-1. **Wake the box** — follow [gpu-box-power](../gpu-box-power/SKILL.md), and confirm it answers.
+1. **Wake the box** — follow [gpu-box-power](gpu-box-power.md), and confirm it answers.
 2. **Prepare the image** — `prep_photo.py` (EXIF rotation).
 3. **Generate** — `gen_hy3d_vram.py` with `--mc-algo dmc`.
 4. **Post-process** — `prep_mesh.py --height-mm <h> --from-y-up`.
 5. **Validate** — `verify-stl.mjs`; expect watertight.
 6. **Deliver to the phone** — unique filename into the app's exports dir.
-7. **Confirm it is on the plate**, then **hibernate** — [gpu-box-power](../gpu-box-power/SKILL.md).
+7. **Confirm it is on the plate**, then **hibernate** — [gpu-box-power](gpu-box-power.md).
 
 Steps 1 and 7 are the other skill, deliberately. The wake configuration is shared with every other reason to start that machine, so it lives in one place; a fix to it must not have to be made twice.
 
@@ -36,7 +36,7 @@ image ──► wake the GPU box ──► generate ──► post-process ─�
                               hibernate the box ◄─────────────┘
 ```
 
-**Waking and hibernating are a separate skill: [gpu-box-power](../gpu-box-power/SKILL.md).** Read it before touching the box — the wake is reliable, the hibernation resume is not, and the Pi is what sends the packet.
+**Waking and hibernating are a separate skill: [gpu-box-power](gpu-box-power.md).** Read it before touching the box — the wake is reliable, the hibernation resume is not, and the Pi is what sends the packet.
 
 ## When the app asks
 
@@ -141,7 +141,7 @@ So when the subject is held, or sits against a busy background, generate two or 
 
 ### 2. Wake the box
 
-Follow [gpu-box-power](../gpu-box-power/SKILL.md). Confirm it answers before generating — a cold boot after a failed resume costs minutes, and doing that mid-pipeline looks like a hang.
+Follow [gpu-box-power](gpu-box-power.md). Confirm it answers before generating — a cold boot after a failed resume costs minutes, and doing that mid-pipeline looks like a hang.
 
 ### 3. Generate
 
@@ -218,7 +218,7 @@ $ADB shell "su -c 'cp /sdcard/Download/dsh-agent/<unique-name>.stl /data/data/co
 
 **The filename must be new every time.** The app dedupes by path + size + mtime and dispatches each revision exactly once, so reusing a name can be silently ignored. Include a timestamp: `model-<epoch>.stl`.
 
-The app polls that directory every 500 ms and hot-loads what it finds — no interaction needed. See [blender-mcp-engine](../blender-mcp-engine/SKILL.md) for the handoff in detail.
+The app polls that directory every 500 ms and hot-loads what it finds — no interaction needed. See [blender-mcp-engine](blender-mcp-engine.md) for the handoff in detail.
 
 **`su -c cp` writes the file owned by root, and the app cannot read it.** The copy must be followed by handing it to the app's uid, or the import fails with no error reported anywhere:
 
@@ -246,13 +246,13 @@ Both halves of this have bitten: the run that produced a root-owned file failed 
 
 ### 7. Hibernate the box
 
-Only once the model is confirmed on the phone. Follow [gpu-box-power](../gpu-box-power/SKILL.md).
+Only once the model is confirmed on the phone. Follow [gpu-box-power](gpu-box-power.md).
 
 ## Cancelling does not stop the generation
 
 If this run is cancelled with `session/cancel`, **the generation keeps going**. The agent stops; the `gen_hy3d*` process it launched over ssh does not, and will keep holding VRAM on the box.
 
-Kill it explicitly and hibernate the box - see [gpu-box-power](../gpu-box-power/SKILL.md). A cancelled run leaves the machine awake, which nothing reports.
+Kill it explicitly and hibernate the box - see [gpu-box-power](gpu-box-power.md). A cancelled run leaves the machine awake, which nothing reports.
 
 ## The model cannot tell you it was wrong
 

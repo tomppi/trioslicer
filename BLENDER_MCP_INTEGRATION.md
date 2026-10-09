@@ -16,7 +16,7 @@ This is the core UX. Everyone (you, the AI session, the engine) has one role:
 | AI session | one open conversation | owns the design intent; issues MCP calls; keeps the spec |
 | MCP server | external process, launched by the AI session | converts AI calls into socket commands |
 | Blender engine | in-app, one long-lived process | holds the live bpy scene; executes code; exports STL |
-| EnderSlicerCura app | one process | boots engine, watches exports/, shows STLs |
+| TrioSlicer app | one process | boots engine, watches exports/, adds every exported STL to the plate |
 
 ### Sequence of one iteration (e.g. "make a cable-clip grid")
 
@@ -43,8 +43,10 @@ This is the core UX. Everyone (you, the AI session, the engine) has one role:
      "this is 13 minutes" before the user sees it.
 
 4. **The app shows the result — automatically.** The app watches
-   `exports/`; a new/updated `.stl` → import + display it (replace the
-   previous view). The user does nothing manually.
+   `exports/`; a new/updated `.stl` → import it as its own object on the
+   plate and select it. It does not replace an object already there, so
+   exporting several parts puts several objects on the plate. The user does
+   nothing manually.
 
 5. **User feedback:** "make the holes 1 mm bigger" → **new iteration.** The
    Blender scene is STILL ALIVE from step 3 — the AI does not regenerate from
@@ -64,9 +66,9 @@ This is the core UX. Everyone (you, the AI session, the engine) has one role:
   plan). The Blender scene is derived state.
 - **Scene state lives in the engine** (kept warm between iterations; that is
   why edits are cheap deltas, not rebuilds).
-- **The app holds nothing but the latest STL on screen.** If the app/engine
-  restarts, the scene is gone; the AI regenerates from its conversation
-  (deterministic generators make that easy).
+- **The app holds nothing but the plate of STLs it imported.** If the
+  app/engine restarts, the scene is gone; the AI regenerates from its
+  conversation (deterministic generators make that easy).
 - **Every iteration must end in an STL in `exports/`** — that file is the
   only contract between engine and app.
 
@@ -183,8 +185,9 @@ Path contract inside the engine (set by `blender_exec.cpp`):
 ### 3.4 Watch the STL handoff dir
 
 Poll `config/exports/` (or use FileObserver). When a new `.stl` appears (the
-AI finished an edit), import it with your existing STL import path and show
-it; keep the old model until replaced. That is the entire UI contract.
+AI finished an edit), import it with your existing STL import path and add it
+to the plate as its own object; nothing already on the plate is replaced. That
+is the entire UI contract.
 
 ### 3.5 Build considerations
 

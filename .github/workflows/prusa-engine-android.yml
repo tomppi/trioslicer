@@ -1,4 +1,8 @@
-name: Build PrusaSlicer Android ARM64
+name: Build PrusaSlicer 2.9.6 Android ARM64 (superseded)
+# Superseded by prusa-engine-3.yml, which builds the PrusaSlicer 3.0.0-alpha11
+# console the app ships and whose artifact scripts/fetch-prusa-engine-android.sh
+# consumes. This workflow still builds the 2.9.6 engine and runs only on its old
+# feature branch or by hand.
 
 on:
   push:

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Cross-compile PrusaSlicer 2.9.6 console for Android ARM64.
 # Mirrors the locally verified WSL build (NDK r28.2.13676358, Ubuntu-22.04).
+#
+# SUPERSEDED. The APK ships the PrusaSlicer 3.0.0-alpha11 console, built by
+# scripts/build-prusa-engine-android-3.sh and staged by
+# scripts/fetch-prusa-engine-android.sh from the prusa-engine-3 workflow's artifact.
+# Do not follow this script to build the engine the app packages: it produces the
+# 2.9.6 console, which nothing in the tree reads. Only
+# .github/workflows/prusa-engine-android.yml still calls it, for that old branch.
 set -euo pipefail
 # On failure, publish a compact tail as ::error:: so the run's check annotations
 # (visible without admin log access) carry the actual error context.

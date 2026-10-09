@@ -8,7 +8,7 @@ whenToUse: When asked to modify, reshape, deepen or otherwise edit an existing m
 
 **This is the device's modelling environment, and the only one.** Anything that *changes* an existing model - reshaping a profile, deepening a dish, adding or subtracting material, fixing a wall - belongs here, in bpy, over the MCP socket.
 
-The pipeline in [image-to-3d-model](../image-to-3d-model/SKILL.md) does exactly one thing: turn a photograph into a mesh on the GPU box. It is not a modelling tool. Reaching for it to edit a model means reimplementing, badly and with whatever Python happens to be installed there, mesh surgery the embedded Blender already does properly - and the box's `/usr/bin/blender` is broken besides.
+The pipeline in [image-to-3d-model](image-to-3d-model.md) does exactly one thing: turn a photograph into a mesh on the GPU box. It is not a modelling tool. Reaching for it to edit a model means reimplementing, badly and with whatever Python happens to be installed there, mesh surgery the embedded Blender already does properly - and the box's `/usr/bin/blender` is broken besides.
 
 The app bundle (package `com.tomppi.enderslicercura`) runs Blender 3.6 **inside the app process** via `libblender_exec.so` (in-process wrapper, `mainBlenderInitial` on a detached thread), with a slim MCP addon serving on **localhost:9876**. Blender stdout/stderr appear in logcat as `I app_process64` when the `wrap.com.tomppi.enderslicercura` property is set to `logwrapper` (capture with `adb logcat -d -s app_process64`).
 
@@ -114,7 +114,7 @@ Errors: `{"status": "error", "message": "<exc>"}`. A command run in `blender -b`
    It refuses anything that is not a **whole** STL, because a binary STL declares its own length: it reads the triangle count from the header and requires `84 + 50 x triangles == filesize`, with an ASCII export required to end in `endsolid`. So a half-written file can no longer be imported.
 
    That guard is a safety net, not a licence to write carelessly. Growing a file in place still costs a probe on every poll and, before the guard existed, dispatched **eleven revisions of one export - seven of them truncated mid-triangle - and left 486 MB of staged copies** in `files/models/`. Write atomically (step 1).
-3. On dispatch the app stages a private copy `files/models/blender-<nanoTime>.stl` and swaps it into the UI ("Imported … from the Blender engine"). **Always export a fresh unique/canonical filename per generation** — size+mtime signature means a rewrite of the same path only re-fires if mtime changes.
+3. On dispatch the app stages a private copy `files/models/blender-<nanoTime>.stl` and adds it to the plate as its own object, selected ("Imported … from the Blender engine"). It does not replace what was already there. **Always export a fresh unique/canonical filename per generation** — size+mtime signature means a rewrite of the same path only re-fires if mtime changes.
 4. Verify: `adb shell su -c 'ls -la /data/user/0/com.tomppi.enderslicercura/files/models/'` — a new `blender-*.stl` proves the full chain.
 
 ## 4. Look at your model - required, and do it freely

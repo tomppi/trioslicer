@@ -80,11 +80,12 @@ Licensing is a separate open question with its own note:
 ## How the native payload is produced
 
 - app/src/main/jniLibs is gitignored and produced, never committed.
-- Four of the five engines arrive as pinned release assets fetched by scripts:
+- Four of the six engines arrive as pinned release assets fetched by scripts:
   fetch-orca-engine-android.sh (orca-engine-arm64-v1.3.0.zip),
   fetch-prusa-engine-android.sh, fetch-blender-engine-android.sh
   (blender-engine-arm64-v1.2.0.zip, about 185 MB: engine, runtime libs, assets),
-  fetch-cura-resources.sh.
+  and fetch-cad-payload-android.sh (the CAD engine's Python payload).
+  fetch-cura-resources.sh stages Cura's definition tree rather than an engine.
 - The Klipper host payload joins them: fetch-klipper-android.sh stages
   klipper-host-arm64-v0.13.0.zip (about 14 MB: 957 payload files - klippy, the Android CPython
   standard library, the compiled C helper and the extensions). It is a release asset
@@ -97,9 +98,11 @@ Licensing is a separate open question with its own note:
 - filaSim is built in-repo too (Rust plus a JNI crate at native/filasim/jni) by
   build-filasim-engine-android.sh, with a patch chain applied to pinned upstream
   source. So both a C++ and a Rust-plus-JNI native pipeline already exist.
-- scripts/setup.sh stages everything from a clean checkout, and
-  ./gradlew :app:verifyDebugApkEngines checks the staged tree really holds every
-  engine. build.yml asserts a library count (at least 120) rather than trusting it.
+- scripts/setup.sh stages everything from a clean checkout and checks the staged
+  tree really holds every engine; ./gradlew :app:verifyDebugApkEngines then
+  verifies the five native engines in the debug APK (the release task adds the
+  OCCT engine and the CAD payload). build.yml asserts a library count (at least
+  120) rather than trusting it.
 
 ## What Klipper needs that is already there
 

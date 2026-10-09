@@ -66,12 +66,17 @@ them.
 
 Support painting reaches OrcaSlicer inside the model file, because an STL cannot say that one
 facet is a support enforcer and another a blocker. When a model carries paint and OrcaSlicer is
-the active engine, the slice stages `transformed.3mf` instead of `transformed.stl` and the
-request workspace keeps that extension, so the engine picks its 3MF reader. Paint is written as a
-`slic3rpe:custom_supports` attribute on each painted triangle — one hex nibble holding the
-triangle's serialised TriangleSelector state, `4` for an enforcer and `8` for a blocker, with
-unpainted triangles carrying no attribute at all. Painted supports still need support enabled in
-the print settings, exactly as they do in OrcaSlicer's own window.
+the active engine, the slice stages the model as 3MF (`model.3mf`, or `plate.3mf` when the
+plate holds several) instead of an STL, and the request workspace keeps that extension
+(`OrcaEngineRunner.stagedModel`), so the engine picks its 3MF reader. Paint is written as a
+`paint_supports` attribute on each painted triangle — one hex nibble holding the triangle's
+serialised TriangleSelector state, `4` for an enforcer and `8` for a blocker, with unpainted
+triangles carrying no attribute at all. `paint_supports` is the name this reader looks for:
+OrcaSlicer's console loads a 3MF through the Bambu reader, whose `CUSTOM_SUPPORTS_ATTR` is
+`paint_supports` (`src/libslic3r/Format/bbs_3mf.cpp`), and the shipped
+`liborca_console_exec.so` carries no `slic3rpe:custom_supports` string at all. That legacy
+name is the one the PrusaSlicer path writes. Painted supports still need support enabled in the
+print settings, exactly as they do in OrcaSlicer's own window.
 
 Non-planar slicing is OrcaSlicer's own Z-layer contouring: enabling it sets `zaa_enabled=1` in the
 print configuration, which varies Z inside a layer so top-facing surfaces follow the model. The

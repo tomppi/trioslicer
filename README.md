@@ -23,8 +23,10 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
   and applied to the active engine, each behind its own type-and-range check, so the `Profiles &
   filament` sheet can only ever change the settings the running engine reads.
 - **Takes the setup you already have.** Cura `.3mf` projects and `.curaprofile` files, PrusaSlicer
-  `.ini` config bundles, OrcaSlicer presets and bundles, and STL models.
-- **Plate, viewer and preview.** Move, rotate, scale, centre, lay flat and drop to bed; build-volume
+  `.ini` config bundles, OrcaSlicer presets and bundles, and models as STL, 3MF, STEP or IGES.
+- **Plate, viewer and preview.** Several models on the plate, packed by the app's own arranger
+  (Auto arrange or Manual) or one at a time with a clearance check; move, rotate, scale, centre,
+  lay flat and drop to bed the selected part; build-volume
   checks before slicing; OpenGL viewer; layer preview; nozzle-path view with speed-coloured beads.
 - **Edits a sliced print without re-slicing.** Pause, filament change, temperature, fan, speed, flow,
   retraction, camera, message and guarded custom G-code, placed as layer events.
@@ -130,7 +132,7 @@ start/end G-code in one file. For print and filament settings alone, export a **
 (.curaprofile)**; when a profile has no machine definition the app falls back to its bundled Ender 3
 V2 definitions. On the Prusa engine the equivalent is **Import settings from PrusaSlicer (.ini)**, and
 OrcaSlicer presets and bundles import from the Orca settings sheet. Models import from the Plate's
-**Import STL**.
+**Import** menu (**Import model**: STL, 3MF, STEP or IGES).
 
 Imported values become a persistent baseline: they stay in effect until you override them in the app,
 and your overrides are tracked separately. Formula resolution is verified against the pinned
@@ -139,7 +141,10 @@ resolved settings before a critical print.
 
 ## Current limitations
 
-- Single printable model, single extruder; no duplicate/auto-arrange workflow or Cura plugins
+- Single extruder; no duplicate command or Cura plugins
+- Multi-object plates slice on all three engines, but per-object cancellation needs PrusaSlicer or
+  OrcaSlicer - CuraEngine emits no per-object markers - and one-at-a-time printing of several
+  objects with an imported Cura profile is refused
 - High-density models and fine FEA grids may exceed the Android heap; thermal FEA lacks transient conduction and creep
 - Non-planar slicing and conical slicing buffer the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
 - Cura previews estimate bead widths from the extrusion delta (Cura G-code carries no width markers), so a previewed width can differ slightly from what the engine planned

@@ -41,7 +41,8 @@ nobody needs a per-object transform.
   object**, each object's modifiers right after its own `-l`, and "Print one object at a time"
   inserts `--next` before every object after the first.
   The resolved-profile transport (`-r`) cannot express a group boundary, so one-at-a-time with an
-  imported Cura profile is refused rather than silently sliced all-at-once.
+  imported Cura profile is refused for a plate of several objects rather than silently sliced
+  all-at-once; one object needs no boundary, so that slice is allowed.
 - **PrusaSlicer and OrcaSlicer**: their consoles take exactly ONE positional model path. In the
   Prusa console a second positional argument silently overwrites the first, so several files must
   arrive as one **3MF** (`PlateThreeMfWriter`). Orca reads geometry, `<build><item transform>`
@@ -94,3 +95,22 @@ objects on the plate for auto-arrangement. Each screen also has an **All to plat
   addon's own `_mesh_to_binary_stl` writes *mesh-local* vertices, which for several parts would
   drop every one of them at the origin with the layout lost, so the app's script applies
   `object.matrix_world` itself.
+
+## What has been verified on hardware
+
+- **CuraEngine, a support blocker**: painted blockers remove support. This path does not ask the
+  engine to understand paint at all - the app turns the painted facets into modifier volumes
+  (`anti_overhang_mesh`) and adds them to the command.
+- **PrusaSlicer, a support blocker**: painted blockers remove support. Different route: there are
+  no modifier volumes, the paint rides inside the 3MF as a per-triangle attribute, and the file
+  reaches the only reader that understands it - the legacy loader - through its
+  `Application: PrusaSlicer-2.9.6` stamp. This confirms the stamp, the attribute name
+  (`slic3rpe:custom_supports`), the per-triangle values and the volume range in practice.
+- **OrcaSlicer**: its reader decodes the same values under `paint_supports` - run against the
+  2.4.2 console, an app-style file round-trips its paint and the same file under the Prusa
+  attribute round-trips with none. Whether a blocker then removes support is **not** verified;
+  `support_type`/`support_style` is where to look first if it does not.
+
+Everything else claimed above was exercised on the device while the feature was built: several
+objects sliced by all three engines, one-at-a-time G-code from CuraEngine, the clearance refusal,
+arrangement and its persistence, the batch handoff, and the CAD and Blender exports.

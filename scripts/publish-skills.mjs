@@ -52,6 +52,15 @@ function sanitize(text) {
 }
 
 /**
+ * The live skills sit in `.dsh/skills/<name>/SKILL.md` and link to each other as
+ * `../<name>/SKILL.md`. A published copy is a flat `docs/skills/<name>.md`, so that
+ * relative path would 404 - rewrite it to the sibling's published filename.
+ */
+function flattenSkillLinks(text) {
+  return text.replace(/\]\(\.\.\/([A-Za-z0-9_-]+)\/SKILL\.md\)/g, "]($1.md)");
+}
+
+/**
  * Address- and credential-shaped content, independent of the substitution map:
  * a value the map does not know is exactly the value the map cannot remove.
  * Loopback, the documentation ranges and the placeholders themselves stay
@@ -134,7 +143,7 @@ for (const name of readdirSync(SKILLS)) {
   } catch {
     continue;
   }
-  const sanitized = sanitize(readFileSync(source, "utf8"));
+  const sanitized = flattenSkillLinks(sanitize(readFileSync(source, "utf8")));
   clean.push({ name, sanitized, findings: scan(sanitized) });
 }
 

@@ -88,9 +88,9 @@ what the picker preselects.
 ## Painted supports, non-planar and conical
 
 Painted support enforcers and blockers reach PrusaSlicer inside the model file: an STL cannot
-express per-facet paint, so a painted model is staged as `transformed.3mf` and the request
-workspace keeps that extension. The paint is written as the legacy per-triangle
-`slic3rpe:custom_supports` attribute (hex nibble `4` for an enforcer, `8` for a blocker, absent
+express per-facet paint, so a painted model is staged as `model.3mf` (`plate.3mf` when the
+plate holds several) and the request workspace keeps that extension. The paint is written as the
+legacy per-triangle `slic3rpe:custom_supports` attribute (hex nibble `4` for an enforcer, `8` for a blocker, absent
 on unpainted triangles), which this build reads through PrusaSlicer's legacy-painting path;
 PrusaSlicer 3.x writes painting as JSON metadata, so a file this app produces is understood
 rather than round-tripped by newer PrusaSlicer builds. Supports must be enabled in the print
@@ -139,3 +139,7 @@ come back unnoticed. The fetch script regenerates the file after
 - `:app:verifyDebugApkPrusaContents` (and `:app:verifyDebugApkEngines`) fails
   an APK that is missing the console, its resources, the preset catalogue or the
   derived All-settings catalogue.
+
+Building the console is `scripts/build-prusa-engine-android-3.sh`, which the
+`prusa-engine-3` workflow runs. The older `scripts/build-prusa-engine-android.sh`
+builds the superseded 2.9.6 console and is not what the APK ships.

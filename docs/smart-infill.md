@@ -12,20 +12,21 @@ verified without a phone. Results reach the slice through the same v2 metadata c
 `modifier_NNpct.stl` archive the WebView transport used, so the validation and staging paths below
 are unchanged.
 
-EnderSlicerCura packages the pinned filaSim structural-analysis workspace and supports its complete optimized-output workflow: graded or binary infill becomes Cura modifier meshes, while Part Topo becomes a new validated STL model.
+TrioSlicer packages the pinned filaSim structural-analysis workspace and supports its complete optimized-output workflow: graded or binary infill becomes Cura modifier meshes, while Part Topo becomes a new validated STL model.
 
 On the Plate, **Smart Infill** opens the analysis as a panel over the model rather than a separate screen, because assigning a boundary condition means tapping the part. A tap takes the connected surface within the panel's *Tap radius* of the finger — the crease segmentation the picker used to assign is a face finder, and on a smooth or flat part it reports the whole model as one surface, so the radius (not the patch) is what bounds a tap. Further taps add to the same condition, and **Face** widens it to the whole flat surface. The picked surfaces are tinted on the model — green for the supports the part rests on, orange for the loads it carries, yellow for the condition waiting for a tap — so what is analyzed is what is seen. Each condition's values (a force, moment or bearing vector in X/Y/Z, a pressure, a bedding modulus, a prescribed displacement, a point mass) are edited in its row, and the row title follows them. After an optimization the part is tinted by the density under each surface — the same blue→cyan→yellow→red ramp as the legend beside it, which lists every density with its share of the optimized volume. The same panel sets the material (with presets from the pinned upstream material library, plus whether the layer criterion is scored and whether self-weight acts), the analysis grid resolution, and the goal — stiffest within the budget, as stiff as a uniform print at the same mean infill, or the lightest design that reaches a safety-factor target, with self-supporting infill available as a constraint.
 
 ## Workflow
 
-1. Import and position one STL in EnderSlicerCura.
+1. Import and position the model to analyse; several models may share the plate, and the
+   panel works on the selected one.
 2. Open **Smart Infill**.
 3. Define supports and loads by tapping the part, and set the material, budget and mode in the panel.
 4. Check the setup, solve the reference part and run an optimization.
 5. Choose the output for the selected optimization mode:
    - **Graded/Binary:** export modifier STLs. The Android bridge imports the ZIP directly, without creating a user-visible download.
    - **Part Topo:** export the optimized shape. The Android bridge validates the binary STL and imports it as the new model.
-6. For graded or binary output, slice normally. EnderSlicerCura applies the filaSim base density and print assumptions, then loads the regional meshes into CuraEngine with ordered `infill_mesh` and `infill_sparse_density` values.
+6. For graded or binary output, slice normally. TrioSlicer applies the filaSim base density and print assumptions, then loads the regional meshes into CuraEngine with ordered `infill_mesh` and `infill_sparse_density` values.
 7. For Part Topo, inspect the replacement geometry, position it if necessary and slice it like any other STL.
 
 A modifier package is bound to the SHA-256 digest of the exact transformed binary STL supplied to filaSim. Importing another model, texturing it, or changing its move/rotation/lay-flat transform invalidates the package. Part Topo output deliberately clears any previous modifier package because it is a different printable geometry.
@@ -59,7 +60,8 @@ CuraEngine and final G-code retain the app's existing build-volume, extrusion-te
 
 ## Limitations
 
-- One printable model and one extruder.
+- One extruder; a modifier package binds to the object it was analysed from, and the plate may
+  hold several models.
 - The Android WebView currently uses filaSim's single-threaded WASM build.
 - Cura modifier transport and Part Topo geometry require physical validation across nested regions, thin walls, supports, print directions and different infill patterns.
 - filaSim results depend on accurate loads, constraints, material properties, layer adhesion and print orientation. This is an engineering aid, not a certified structural calculation.

@@ -1,6 +1,6 @@
 # UI style guide
 
-Conventions for EnderSlicerCura's Compose UI. The app targets phones and
+Conventions for TrioSlicer's Compose UI. The app targets phones and
 foldables with a dense, tool-first layout: small screens, gloved-ish use,
 few chrome elements. Follow the rules below for new or modified screens.
 
@@ -17,8 +17,8 @@ read that document before starting a new screen.
 - Full-screen destinations (Settings, Print, More) are tabs, not modal
   sheets. Keep ModalBottomSheet only for quick, momentary pickers
   (model tools, layer events, non-planar/conical options, Smart Infill).
-- The Plate top bar owns Import (STL) and the Plate overflow menu (model
-  position, mesh limit, clear plate). Cura `.curaprofile` and `.3mf`
+- The Plate top bar owns Import (Import model) and the Plate overflow menu
+  (model position, mesh limit, clear plate). Cura `.curaprofile` and `.3mf`
   settings imports belong to the Cura settings sheet (Settings tab), next
   to the settings they replace; anything less frequent belongs in the More
   hub.
@@ -27,9 +27,10 @@ read that document before starting a new screen.
   Never turn it back into a modal sheet.
 - First-run onboarding is one-shot and skippable (OnboardingStore). It only
   ever sets machine values that already live in SlicerSettings.
-- Expanded layouts (maxWidth >= 600 dp, unfolded foldables) split the Plate
-  tab into viewer + SessionPanel. Reuse SessionPanel; do not stack a second
-  panel on folded widths.
+- Expanded layouts (maxWidth >= 600 dp, unfolded foldables) put the
+  SessionRail - the four destinations, the session values and the
+  Slice/Export/Model tools actions - beside the content, in place of the bottom
+  NavigationBar. Reuse it; do not stack a second panel on folded widths.
 
 ## Theme
 
@@ -92,7 +93,7 @@ read that document before starting a new screen.
 - Every editable setting shows where its value came from. Use origin
   badges: PROFILE (from the Cura profile), IMPORTED (project or
   configuration snapshot), APP (user override) - and keep the color
-  coding in sync with CategorizedSettingsSheet / MachineSettingsSheet.
+  coding in sync with CategorizedSettingsSheet / MachineSettingsContent.
 - Collapsed settings sections show a one-line summary of their values
   instead of an empty header.
 

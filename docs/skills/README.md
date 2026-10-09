@@ -1,6 +1,6 @@
 # Published skills
 
-Sanitized copies of the assistant's skill files - the runbooks it follows when asked to drive hardware. See [`../AI_ASSISTANT.md`](../AI_ASSISTANT.md) for how they fit into the pipeline.
+Sanitized copies of the assistant's skill files - the runbooks it follows when asked to drive hardware. See [`../../AI_ASSISTANT.md`](../../AI_ASSISTANT.md) for how they fit into the pipeline.
 
 | file | what it covers |
 |---|---|
