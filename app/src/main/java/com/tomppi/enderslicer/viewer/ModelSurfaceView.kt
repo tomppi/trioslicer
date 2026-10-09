@@ -346,9 +346,14 @@ class ModelSurfaceView(
         requestRender()
     }
 
-    fun setPaintState(paint: SupportPaintState) {
-        queueEvent { modelRenderer.setPaintState(paint) }
+    fun setPaintStates(paint: List<SupportPaintState>) {
+        queueEvent { modelRenderer.setPaintStates(paint) }
         requestRender()
+    }
+
+    /** One state for the whole plate; kept for callers that predate per-object paint. */
+    fun setPaintState(paint: SupportPaintState) {
+        setPaintStates(listOf(paint))
     }
 
     /**
@@ -713,7 +718,12 @@ class ModelSurfaceView(
         val paints = hit != null && (!surfacePickActive || hit.objectIndex == currentSelectedIndex)
         if (paints) {
             brushDragging = true
-            onSurfacePick?.invoke(hit)
+            // The sample that answered "brush" is a sample like any other: hand it
+            // to the handler the later ones use, or the first touch of a stroke is
+            // spent on the question and the paint only starts on the next sample.
+            // The handler expands the brush off the UI thread, exactly as it does
+            // for every later sample, so nothing here waits for that expansion.
+            if (surfacePickActive) onSurfacePick?.invoke(hit) else onPaintHit?.invoke(hit)
             return
         }
         brushDragging = false
@@ -1025,10 +1035,22 @@ private class ModelRenderer(
     private var objectFirstTriangle: IntArray = IntArray(0)
 
     private var meshBuffer: FloatBuffer? = null
+
+    /**
+     * One colour buffer for the whole plate: every object's triangles live in
+     * their own slice of it, so paint on a neighbour is drawn too.
+     */
     private var paintColors: PaintColorBuffer? = null
 
-    /** Which object [paintColors] colours; -1 when there is none. */
-    private var colorObject = -1
+    /** The palette slot the selected object's unpainted triangles draw in. */
+    private var tintSlot = PaintColorBuffer.BASE_SLOT
+
+    /** The state and base slot each object's slice of [paintColors] was last resynced with. */
+    private var syncedStates: Array<SupportPaintState?> = emptyArray()
+    private var syncedBaseSlots: IntArray = IntArray(0)
+
+    /** The overlay [paintColors] already carries, so an unchanged one is not rewritten. */
+    private var syncedOverlay: SmartInfillOverlay? = null
     private var annotationOverlay: AnnotationOverlay? = null
     private var annotationBuffer: FloatBuffer? = null
     @Volatile private var gizmoOverlay: GizmoOverlay? = null
@@ -1055,7 +1077,9 @@ private class ModelRenderer(
     private var colorVbo = 0
     private var uploadedMesh: StlMesh? = null
     private var colorUploaded = false
-    private var paintState: SupportPaintState = SupportPaintState()
+
+    /** One state per object, in the same order as the plate's meshes. */
+    private var paintStates: List<SupportPaintState> = emptyList()
     private var paintActive = false
     private var smartInfillOverlay: SmartInfillOverlay? = null
     private var meshProgram = 0
@@ -1127,12 +1151,9 @@ private class ModelRenderer(
         val rebuilt = !sameObjects(next)
         val isNewModel = next.size != objectMeshes.size ||
             next.indices.any { next[it].displayName != objectMeshes[it].displayName }
-        if (selected != selectedObject) {
-            // The paint in hand belonged to the object that was selected. The host
-            // hands the new object's over in the same breath; until it does, the
-            // honest answer is that nothing is painted.
-            paintState = SupportPaintState()
-        }
+        // The paint in hand is one state per object now, so a different selection
+        // needs no reset: every object keeps its own colours and only the tint
+        // moves. The host hands the states over again in the same breath anyway.
         objectMeshes = next
         selectedObject = selected
         if (rebuilt) {
@@ -1151,8 +1172,7 @@ private class ModelRenderer(
             // behind, one scene-sized buffer would leak per tap until the driver ran
             // out of memory and the plate silently stopped drawing.
             releaseGpuBuffers()
-            paintColors = null
-            colorObject = -1
+            dropColorBuffer()
         }
         rebuildColorBuffer()
         if (isNewModel) resetCamera()
@@ -1277,31 +1297,54 @@ private class ModelRenderer(
         val firstTriangle: IntArray,
     )
 
-    fun setPaintState(value: SupportPaintState) {
-        if (paintState == value) return
-        paintState = value
+    /**
+     * One paint state per object, in the same order as the plate's meshes.
+     *
+     * Every object's paint is drawn, not just the selected one's, so the caller
+     * hands the whole plate's states over rather than the selection's.
+     */
+    fun setPaintStates(values: List<SupportPaintState>) {
+        if (paintStates == values) return
+        paintStates = values
         rebuildColorBuffer()
     }
 
+    /** One state for the whole plate; kept for callers that predate per-object paint. */
+    fun setPaintState(value: SupportPaintState) {
+        setPaintStates(listOf(value))
+    }
+
     /**
-     * Applies a single paint edit, rewriting only the triangles in [changed].
+     * Applies a single paint edit to one object, rewriting only the triangles in
+     * [changed].
      *
-     * A stroke expands to a bounded set of triangles, so this keeps the update
-     * O(brush) instead of rebuilding a colour buffer sized by the whole mesh.
-     * Falls back to a full rebuild when the buffer is missing or the mesh
-     * changed underneath it.
+     * [changed] and [value] are in [objectIndex]'s own triangle indices, and a
+     * stroke expands to a bounded set of them, so this keeps the update O(brush)
+     * instead of rebuilding a colour buffer sized by the whole plate. Falls back
+     * to a full rebuild when the buffer is missing or the scene changed
+     * underneath it.
      */
-    fun applyPaintEdit(value: SupportPaintState, changed: Set<Int>) {
-        if (paintState == value) return
-        paintState = value
+    fun applyPaintEdit(objectIndex: Int, value: SupportPaintState, changed: Set<Int>) {
+        if (objectIndex !in objectMeshes.indices) return
+        if (paintStates.getOrElse(objectIndex) { SupportPaintState() } == value) return
+        val updated = paintStates.toMutableList()
+        while (updated.size <= objectIndex) updated += SupportPaintState()
+        updated[objectIndex] = value
+        paintStates = updated
         val buffer = paintColors
-        // The buffer colours the selected object's triangles, and the stroke's
-        // expansion is in that object's own indices, so the sizes have to agree.
-        if (buffer == null || buffer.triangleCount != selectedMesh()?.triangleCount) {
+        if (buffer == null || buffer.triangleCount != mesh?.triangleCount) {
             rebuildColorBuffer()
             return
         }
-        buffer.apply(value, changed)
+        val baseSlot = baseSlotOf(objectIndex)
+        buffer.apply(
+            paint = value,
+            changed = changed,
+            offsetTriangles = objectFirstTriangle.getOrElse(objectIndex) { 0 },
+            countTriangles = objectMeshes[objectIndex].triangleCount,
+            baseSlot = baseSlot,
+        )
+        markSynced(objectIndex, value, baseSlot)
     }
 
     fun setPaintActive(value: Boolean) {
@@ -1891,11 +1934,23 @@ private class ModelRenderer(
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
     }
 
+    /**
+     * Brings the scene-wide colour buffer in line with every object's paint, the
+     * selected object's tint and the Smart Infill overlay.
+     *
+     * One buffer holds the whole plate, and every object owns a slice of it: its
+     * own triangle indices are resynced at its own first scene triangle, in its
+     * own base slot. That is what makes paint on a neighbour visible - the
+     * previous shape held only the selected object's colours, and every other
+     * object drew through the constant-colour path with its paint invisible.
+     *
+     * Only the objects whose state or base slot actually changed are resynced, so
+     * a stroke costs the object it paints rather than the whole plate.
+     */
     private fun rebuildColorBuffer() {
-        val selected = selectedMesh() ?: run {
-            paintColors = null
-            colorObject = -1
-            colorUploaded = false
+        val totalTriangles = mesh?.triangleCount ?: 0
+        if (objectMeshes.isEmpty() || totalTriangles == 0) {
+            dropColorBuffer()
             return
         }
         // A uniform base colour needs no buffer: the shader constant path in
@@ -1905,71 +1960,122 @@ private class ModelRenderer(
         // nothing painted pays nothing for it either.
         val overlay = smartInfillOverlay
         val overlayEmpty = overlay == null || overlay.isEmpty
-        if (!paintActive && paintState.isEmpty && overlayEmpty) {
-            paintColors = null
-            colorObject = -1
-            colorUploaded = false
+        if (!paintActive && overlayEmpty && paintStates.all { it.isEmpty }) {
+            dropColorBuffer()
             return
         }
         val palette = colorPalette(overlay)
-        var buffer = paintColors
-        if (buffer == null ||
-            // Paint, conditions and the result tint all arrive in the selected
-            // object's own triangle indices, so the buffer has to belong to that
-            // object: a selection change builds a new one.
-            colorObject != selectedObject ||
-            buffer.triangleCount != selected.triangleCount ||
-            // Contents, not just the slot count: a new run with the same number of
-            // bins still repaints every region.
-            !buffer.hasPalette(palette)
-        ) {
-            buffer = PaintColorBuffer(
-                triangleCount = selected.triangleCount,
-                palette = palette,
-            )
+        val existing = paintColors
+        // A new palette, a new scene size or no buffer at all means a fresh
+        // buffer; contents matter, not just the slot count, because a new run
+        // with the same number of bins still repaints every region.
+        val fresh = existing == null ||
+            existing.triangleCount != totalTriangles ||
+            !existing.hasPalette(palette.colors)
+        val buffer = if (fresh) {
+            PaintColorBuffer(triangleCount = totalTriangles, palette = palette.colors)
+        } else {
+            requireNotNull(existing)
+        }
+        if (fresh) {
             paintColors = buffer
-            colorObject = selectedObject
             // A fresh buffer has no GPU-side copy yet, so force a full upload.
             colorUploaded = false
+            syncedStates = emptyArray()
+            syncedBaseSlots = IntArray(0)
+            syncedOverlay = null
         }
-        // Only triangles whose classification changed are rewritten.
-        buffer.resync(paintState)
-        buffer.resyncOverlay(
-            supports = overlay?.supports ?: EMPTY_TRIANGLES,
-            loads = overlay?.loads ?: EMPTY_TRIANGLES,
-            active = overlay?.active ?: EMPTY_TRIANGLES,
-            // Once the region shells are drawn they carry the densities, and a
-            // surface tint underneath them reads as a blotchy mess on top of the
-            // shading. The picked supports, loads and armed surface stay tinted.
-            regions = if (overlay != null && overlay.volumes.isNotEmpty()) {
-                EMPTY_TRIANGLES
-            } else {
-                overlay?.regions ?: EMPTY_TRIANGLES
-            },
-        )
+        tintSlot = palette.selectedBaseSlot
+        objectMeshes.forEachIndexed { index, objectMesh ->
+            val state = paintStates.getOrElse(index) { SupportPaintState() }
+            val baseSlot = baseSlotOf(index)
+            if (!fresh && index < syncedStates.size &&
+                syncedStates[index] === state && syncedBaseSlots[index] == baseSlot
+            ) {
+                return@forEachIndexed
+            }
+            buffer.resync(
+                paint = state,
+                offsetTriangles = objectFirstTriangle.getOrElse(index) { 0 },
+                countTriangles = objectMesh.triangleCount,
+                baseSlot = baseSlot,
+            )
+            markSynced(index, state, baseSlot)
+        }
+        if (fresh || overlay !== syncedOverlay) {
+            buffer.resyncOverlay(
+                supports = overlay?.supports ?: EMPTY_TRIANGLES,
+                loads = overlay?.loads ?: EMPTY_TRIANGLES,
+                active = overlay?.active ?: EMPTY_TRIANGLES,
+                // Once the region shells are drawn they carry the densities, and a
+                // surface tint underneath them reads as a blotchy mess on top of the
+                // shading. The picked supports, loads and armed surface stay tinted.
+                regions = if (overlay != null && overlay.volumes.isNotEmpty()) {
+                    EMPTY_TRIANGLES
+                } else {
+                    overlay?.regions ?: EMPTY_TRIANGLES
+                },
+                offsetTriangles = objectFirstTriangle.getOrElse(selectedObject) { 0 },
+                countTriangles = objectMeshes.getOrNull(selectedObject)?.triangleCount ?: 0,
+            )
+            syncedOverlay = overlay
+        }
+    }
+
+    /** Frees the colour buffer and forgets what it carried. */
+    private fun dropColorBuffer() {
+        paintColors = null
+        colorUploaded = false
+        syncedStates = emptyArray()
+        syncedBaseSlots = IntArray(0)
+        syncedOverlay = null
+    }
+
+    /** The palette slot an object's unpainted triangles draw in. */
+    private fun baseSlotOf(index: Int): Int =
+        if (selectionTinted() && index == selectedObject) tintSlot else PaintColorBuffer.BASE_SLOT
+
+    /** Records what an object's slice of [paintColors] was last resynced with. */
+    private fun markSynced(index: Int, state: SupportPaintState, baseSlot: Int) {
+        if (index >= syncedStates.size) {
+            syncedStates = syncedStates.copyOf(index + 1)
+            syncedBaseSlots = syncedBaseSlots.copyOf(index + 1)
+        }
+        syncedStates[index] = state
+        syncedBaseSlots[index] = baseSlot
     }
 
     /**
      * The colour of every buffer slot: the fixed roles, then one per density bin
-     * of the result tint, from the viewer's own ramp.
+     * of the result tint, from the viewer's own ramp, and the selection tint as
+     * one extra slot at the end.
      *
-     * The base slot is the selection tint while the plate holds more than one
-     * object - it is the only thing telling them apart - and the plain base colour
-     * while it holds one, so a single model still looks exactly as it did before
-     * multi-object printing.
+     * Appending the tint leaves every existing index alone - slot 0 stays the
+     * plain base colour and the bins keep their 6+ slots - while still letting the
+     * selected object's unpainted triangles draw in the tint and a neighbour's in
+     * [BASE_COLOR]. The index the tint lands on comes back with the palette.
      */
-    private fun colorPalette(overlay: SmartInfillOverlay?): Array<FloatArray> {
+    private fun colorPalette(overlay: SmartInfillOverlay?): Palette {
         val bins = overlay?.binDensities ?: EMPTY_DENSITIES
-        val palette = ArrayList<FloatArray>(FIXED_SLOTS + bins.size)
-        palette += if (selectionTinted()) SELECTED_BASE_COLOR else BASE_COLOR
+        val palette = ArrayList<FloatArray>(FIXED_SLOTS + bins.size + 1)
+        palette += BASE_COLOR
         palette += ENFORCER_COLOR
         palette += BLOCKER_COLOR
         palette += SUPPORT_COLOR
         palette += LOAD_COLOR
         palette += ACTIVE_PICK_COLOR
         for (density in bins) palette += DensityRamp.color(density)
-        return palette.toTypedArray()
+        val selectedBaseSlot = palette.size
+        palette += SELECTED_BASE_COLOR
+        return Palette(palette.toTypedArray(), selectedBaseSlot)
     }
+
+    /** A palette and the slot that carries the selection tint. */
+    private class Palette(
+        val colors: Array<FloatArray>,
+        /** The slot the selected object's unpainted triangles draw in. */
+        val selectedBaseSlot: Int,
+    )
 
     /** True when there is more than one object, so the selected one has to stand out. */
     private fun selectionTinted(): Boolean = objectMeshes.size > 1
@@ -2113,28 +2219,14 @@ private class ModelRenderer(
         buffer.position(0)
         ensureMeshUpload(buffer)
         val vbo = meshVbo
-        if (vbo != 0) {
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
-            GLES20.glEnableVertexAttribArray(position)
-            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, 0)
-            GLES20.glEnableVertexAttribArray(normal)
-            GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, 12)
-        } else {
-            GLES20.glEnableVertexAttribArray(position)
-            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
-            buffer.position(3)
-            GLES20.glEnableVertexAttribArray(normal)
-            GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
-        }
-
         val colors = paintColors
-        if (colors != null) {
+        val data = colors?.buffer
+        if (colors != null && data != null) {
             if (colorVbo == 0) {
                 val ids = IntArray(1)
                 GLES20.glGenBuffers(1, ids, 0)
                 colorVbo = ids[0]
             }
-            val data = colors.buffer
             if (colorVbo != 0) {
                 GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
                 if (!colorUploaded) {
@@ -2151,6 +2243,8 @@ private class ModelRenderer(
                     colors.takeDirtyRange()
                 } else {
                     // Steady state: send only the float range the last edit touched.
+                    // A stroke rewrites the painted object's floats, so that is all
+                    // the GPU is sent - never the whole plate's colours.
                     val dirty = colors.takeDirtyRange()
                     if (dirty != null) {
                         val from = dirty.first
@@ -2166,63 +2260,59 @@ private class ModelRenderer(
                         data.limit(data.capacity())
                     }
                 }
-                GLES20.glEnableVertexAttribArray(color)
+            }
+        }
+
+        // Position, normal and colour arrays are bound once, at element zero, and
+        // each object is drawn starting at its own first vertex. A draw that starts
+        // at element F reads *every* enabled array from element F, and the colour
+        // buffer is scene-wide, so colour element first+i belongs to the same vertex
+        // as mesh element first+i: a vertex always fetches its own colour.
+        if (vbo != 0) {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+            GLES20.glEnableVertexAttribArray(position)
+            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, 0)
+            GLES20.glEnableVertexAttribArray(normal)
+            GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, 12)
+        } else {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glEnableVertexAttribArray(position)
+            buffer.position(0)
+            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
+            GLES20.glEnableVertexAttribArray(normal)
+            buffer.position(3)
+            GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
+        }
+        if (colors != null && data != null) {
+            if (colorVbo != 0) {
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
                 GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, 0)
             } else {
                 // No colour VBO (glGenBuffers failed): the pointer has to be a real
-                // client address, and GLES reads it as a byte offset while the mesh
-                // VBO is still bound, so unbind first.
+                // client address, and GLES reads it as a byte offset while another
+                // buffer is bound, so unbind first.
                 GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
                 data.position(0)
-                GLES20.glEnableVertexAttribArray(color)
                 GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, data)
             }
+            GLES20.glEnableVertexAttribArray(color)
+        } else {
+            GLES20.glDisableVertexAttribArray(color)
         }
 
         GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
         GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
-        // One draw per object. The plate is their vertices end to end, and the
-        // colour path is per object: the object being worked on carries the paint,
-        // the conditions and the selection tint, while the others draw in their
-        // plain colour through the constant-attribute path.
+        // One draw per object, each starting at its own first scene vertex. With
+        // no colour buffer at all every object still draws in its own constant -
+        // the selected one in the tint, the rest in the plain base colour.
         for (index in objectMeshes.indices) {
             val firstVertex = objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE
             val vertexCount = objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE
-            // Each object's attributes are re-pointed at its own first vertex and the draw starts
-            // at zero, rather than binding once and starting the draw at the object's offset. The
-            // colour array holds the selected object's colours and nothing else, and a draw that
-            // starts at offset F reads every enabled array from element F: for any object after
-            // the first that read past the end of the colour buffer (garbage) or from the wrong
-            // triangles (shifted paint).
-            if (vbo != 0) {
-                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
-                GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, firstVertex * 6 * 4)
-                GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, firstVertex * 6 * 4 + 12)
-            } else {
-                // A client-side pointer is read as an offset while a buffer is bound, and the
-                // colour buffer may be the one still bound from another object's draw.
-                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-                buffer.position(firstVertex * 6)
-                GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
-                buffer.position(firstVertex * 6 + 3)
-                GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
-            }
-            if (colors != null && index == colorObject) {
-                if (colorVbo != 0) {
-                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
-                    GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, 0)
-                } else {
-                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-                    colors.buffer.position(0)
-                    GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, colors.buffer)
-                }
-                GLES20.glEnableVertexAttribArray(color)
-            } else {
-                GLES20.glDisableVertexAttribArray(color)
+            if (colors == null) {
                 val rgb = objectColor(index)
                 GLES20.glVertexAttrib3f(color, rgb[0], rgb[1], rgb[2])
             }
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, firstVertex, vertexCount)
         }
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         GLES20.glDisableVertexAttribArray(position)

@@ -2945,7 +2945,8 @@ private fun ViewerPanel(
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
                         view.setSmartInfillOverlay(state.smartInfillOverlay)
-                        view.setPaintState(state.supportPaint)
+                        // Every object's paint, not just the selected one's: the viewer draws the whole plate.
+                        view.setPaintStates(state.models.map { it.supportPaint })
                         view.dragMoveActive = dragMove
                         view.onModelDragCommitted = onModelDrag
                         view.onModelDragPreview = onModelDragPreview

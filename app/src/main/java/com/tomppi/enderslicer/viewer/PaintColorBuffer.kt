@@ -18,8 +18,15 @@ import java.util.Arrays
  *
  * This type keeps one byte per triangle plus a single persistent colour buffer,
  * and rewrites only the triangles whose colour actually changed. The remaining
- * per-update cost is a byte pass over the mesh plus a handful of float stores,
- * and the caller uploads only the resulting float range to the GPU.
+ * per-update cost is a byte pass over the resynced range plus a handful of float
+ * stores, and the caller uploads only the resulting float range to the GPU.
+ *
+ * One instance covers the whole plate. Every object owns a contiguous slice of
+ * it, resynced in the object's own triangle indices at its own first scene
+ * triangle, and each slice names its own base slot: the selected object's
+ * unpainted triangles can be the selection tint while a neighbour's stay in the
+ * plain base colour. Enforcer and blocker are shared palette slots, so paint on
+ * every object is drawn, not just the selected one's.
  *
  * Three classifications share it: the support-paint state, the Smart Infill
  * boundary conditions drawn on the part (supports, loads, the condition being
@@ -65,7 +72,12 @@ class PaintColorBuffer(
         return true
     }
 
-    /** Support-paint classification per triangle: 0 = base, 1 = enforcer, 2 = blocker. */
+    /**
+     * The slot each triangle is classified in: [ENFORCER], [BLOCKER], or the base
+     * slot of the object that owns the triangle. Base slots are never the two
+     * painted values, so a triangle counts as painted exactly when its byte is one
+     * of those.
+     */
     private val paintKind = ByteArray(triangleCount)
 
     /** Overlay classification per triangle: 0 = none, else a palette slot. */
@@ -77,6 +89,9 @@ class PaintColorBuffer(
 
     /** What the colour buffer currently holds per triangle. */
     private val rendered = ByteArray(triangleCount)
+
+    /** How many triangles are painted, so an edit needs no mesh-sized scan for [hasPaint]. */
+    private var paintedTriangles = 0
 
     private val colors: FloatBuffer = ByteBuffer
         .allocateDirect(triangleCount * FLOATS_PER_TRIANGLE * Float.SIZE_BYTES)
@@ -104,37 +119,54 @@ class PaintColorBuffer(
     init {
         var i = 0
         while (i < triangleCount) {
-            writeTriangle(i, palette[BASE.toInt()])
+            writeTriangle(i, palette[BASE_SLOT])
             i++
         }
         colors.position(0)
     }
 
     /**
-     * Brings the paint classification in line with [state], rewriting only the
-     * triangles whose colour actually changed.
+     * Brings the object [paint] describes in line with its slice of the scene,
+     * rewriting only the triangles whose colour actually changed.
+     *
+     * [offsetTriangles] is where that object's first triangle sits in the scene
+     * and [countTriangles] how many triangles it owns, so its own indices can be
+     * read against the shared buffer. [baseSlot] is the palette slot its
+     * unpainted triangles draw in — the selection tint for the object being
+     * worked on, the plain base colour for the rest.
      *
      * Classification walks the painted sets (O(painted)) rather than the mesh,
      * and the diff is a byte comparison per triangle - no boxing, no hashing,
      * no per-triangle allocation.
      */
-    fun resync(state: SupportPaintState) {
-        Arrays.fill(nextPaint, BASE)
-        for (triangle in state.enforcerTriangles) {
-            if (triangle in 0 until triangleCount) nextPaint[triangle] = ENFORCER
+    fun resync(
+        paint: SupportPaintState,
+        offsetTriangles: Int = 0,
+        countTriangles: Int = triangleCount - offsetTriangles,
+        baseSlot: Int = BASE_SLOT,
+    ) {
+        val from = offsetTriangles.coerceIn(0, triangleCount)
+        val to = (offsetTriangles + countTriangles).coerceIn(from, triangleCount)
+        if (from == to) return
+        val base = baseSlot.toByte()
+        Arrays.fill(nextPaint, from, to, base)
+        for (triangle in paint.enforcerTriangles) {
+            if (triangle < 0 || triangle >= countTriangles) continue
+            val at = offsetTriangles + triangle
+            if (at >= from && at < to) nextPaint[at] = ENFORCER
         }
-        for (triangle in state.blockerTriangles) {
-            if (triangle in 0 until triangleCount) nextPaint[triangle] = BLOCKER
+        for (triangle in paint.blockerTriangles) {
+            if (triangle < 0 || triangle >= countTriangles) continue
+            val at = offsetTriangles + triangle
+            if (at >= from && at < to) nextPaint[at] = BLOCKER
         }
-        var painted = false
-        var i = 0
-        while (i < triangleCount) {
-            paintKind[i] = nextPaint[i]
-            if (nextPaint[i] != BASE) painted = true
+        var i = from
+        while (i < to) {
+            classify(i, nextPaint[i])
             i++
         }
-        hasPaint = painted
-        rewriteAll()
+        hasPaint = paintedTriangles > 0
+        rewriteRange(from, to)
     }
 
     /**
@@ -146,32 +178,37 @@ class PaintColorBuffer(
      * [regions] is one entry per model triangle: the density bin under it, or -1
      * for none (see SmartInfillOverlay). Conditions win over the tint, so a picked
      * surface keeps the colour of the condition it carries.
+     *
+     * A plate carries one overlay and it belongs to the selected object, so the
+     * whole scratch classification starts empty: an overlay that moved to another
+     * object has to release the triangles it used to claim. [offsetTriangles] and
+     * [countTriangles] place that object inside the scene buffer.
      */
     fun resyncOverlay(
         supports: IntArray,
         loads: IntArray,
         active: IntArray,
         regions: IntArray = IntArray(0),
+        offsetTriangles: Int = 0,
+        countTriangles: Int = triangleCount - offsetTriangles,
     ) {
         Arrays.fill(nextOverlay, NONE)
-        for (triangle in supports) {
-            if (triangle in 0 until triangleCount) nextOverlay[triangle] = SUPPORT
-        }
-        for (triangle in loads) {
-            if (triangle in 0 until triangleCount) nextOverlay[triangle] = LOAD
-        }
-        for (triangle in active) {
-            if (triangle in 0 until triangleCount) nextOverlay[triangle] = ACTIVE
-        }
+        val from = offsetTriangles.coerceIn(0, triangleCount)
+        val to = (offsetTriangles + countTriangles).coerceIn(from, triangleCount)
+        markOverlay(supports, SUPPORT, offsetTriangles, from, to)
+        markOverlay(loads, LOAD, offsetTriangles, from, to)
+        markOverlay(active, ACTIVE, offsetTriangles, from, to)
         for (triangle in regions.indices) {
-            if (triangle >= triangleCount) break
+            if (triangle >= countTriangles) break
+            val at = offsetTriangles + triangle
+            if (at < from || at >= to) break
             val bin = regions[triangle]
-            if (bin < 0 || nextOverlay[triangle] != NONE) continue
+            if (bin < 0 || nextOverlay[at] != NONE) continue
             val slot = REGION_BASE + bin
             // A run with more bins than the palette has colours keeps them plain
             // rather than writing a slot that would read out of bounds.
             if (slot >= paletteSize) continue
-            nextOverlay[triangle] = slot.toByte()
+            nextOverlay[at] = slot.toByte()
         }
         var overlaid = false
         var i = 0
@@ -181,35 +218,44 @@ class PaintColorBuffer(
             i++
         }
         hasOverlay = overlaid
-        rewriteAll()
+        rewriteRange(0, triangleCount)
     }
 
     /**
      * Applies one paint edit when the caller already knows which triangles it
      * touched.
      *
-     * [changed] must be exactly the set of indices the edit may have
-     * reclassified - the brush's expansion. Triangles outside it keep their
-     * current colour, so the cost is O(changed) with no mesh-sized pass.
+     * [changed] must be exactly the set of the object's own indices the edit may
+     * have reclassified - the brush's expansion - and [offsetTriangles]/
+     * [countTriangles] place that object inside the scene buffer. Triangles
+     * outside it keep their current colour, so the cost is O(changed) with no
+     * mesh-sized pass.
      */
-    fun apply(state: SupportPaintState, changed: Set<Int>) {
+    fun apply(
+        paint: SupportPaintState,
+        changed: Set<Int>,
+        offsetTriangles: Int = 0,
+        countTriangles: Int = triangleCount - offsetTriangles,
+        baseSlot: Int = BASE_SLOT,
+    ) {
+        val from = offsetTriangles.coerceIn(0, triangleCount)
+        val to = (offsetTriangles + countTriangles).coerceIn(from, triangleCount)
+        val base = baseSlot.toByte()
         for (triangle in changed) {
-            if (triangle < 0 || triangle >= triangleCount) continue
-            paintKind[triangle] = when {
-                triangle in state.enforcerTriangles -> ENFORCER
-                triangle in state.blockerTriangles -> BLOCKER
-                else -> BASE
-            }
-            refresh(triangle)
+            if (triangle < 0 || triangle >= countTriangles) continue
+            val at = offsetTriangles + triangle
+            if (at < from || at >= to) continue
+            classify(
+                at,
+                when {
+                    triangle in paint.enforcerTriangles -> ENFORCER
+                    triangle in paint.blockerTriangles -> BLOCKER
+                    else -> base
+                },
+            )
+            refresh(at)
         }
-        var painted = false
-        for (value in paintKind) {
-            if (value != BASE) {
-                painted = true
-                break
-            }
-        }
-        hasPaint = painted
+        hasPaint = paintedTriangles > 0
         colors.position(0)
     }
 
@@ -225,6 +271,31 @@ class PaintColorBuffer(
         return range
     }
 
+    /** Records that [triangle] now carries [value]; keeps the painted count exact. */
+    private fun classify(triangle: Int, value: Byte) {
+        val previous = paintKind[triangle]
+        if (previous == value) return
+        val wasPainted = previous == ENFORCER || previous == BLOCKER
+        val isPainted = value == ENFORCER || value == BLOCKER
+        if (wasPainted != isPainted) paintedTriangles += if (isPainted) 1 else -1
+        paintKind[triangle] = value
+    }
+
+    private fun markOverlay(
+        indices: IntArray,
+        value: Byte,
+        offsetTriangles: Int,
+        from: Int,
+        to: Int,
+    ) {
+        for (index in indices) {
+            if (index < 0) continue
+            val at = offsetTriangles + index
+            if (at < from || at >= to) continue
+            nextOverlay[at] = value
+        }
+    }
+
     /** The colour one triangle should show: the overlay wins over paint. */
     private fun refresh(triangle: Int) {
         val slot = overlayKind[triangle]
@@ -235,9 +306,9 @@ class PaintColorBuffer(
         markDirty(triangle)
     }
 
-    private fun rewriteAll() {
-        var i = 0
-        while (i < triangleCount) {
+    private fun rewriteRange(from: Int, to: Int) {
+        var i = from
+        while (i < to) {
             refresh(i)
             i++
         }
@@ -246,7 +317,7 @@ class PaintColorBuffer(
 
     private fun colorFor(value: Byte): FloatArray {
         val slot = value.toInt()
-        return if (slot in palette.indices) palette[slot] else palette[0]
+        return if (slot in palette.indices) palette[slot] else palette[BASE_SLOT]
     }
 
     private fun markDirty(triangle: Int) {
@@ -268,20 +339,22 @@ class PaintColorBuffer(
         }
     }
 
-    private companion object {
-        const val BASE: Byte = 0
-        const val ENFORCER: Byte = 1
-        const val BLOCKER: Byte = 2
-        const val SUPPORT: Byte = 3
-        const val LOAD: Byte = 4
-        const val ACTIVE: Byte = 5
-        const val NONE: Byte = 0
+    companion object {
+        /** Slot 0: the plain base colour of an object that is not selected. */
+        const val BASE_SLOT = 0
+
+        private const val ENFORCER: Byte = 1
+        private const val BLOCKER: Byte = 2
+        private const val SUPPORT: Byte = 3
+        private const val LOAD: Byte = 4
+        private const val ACTIVE: Byte = 5
+        private const val NONE: Byte = 0
 
         /** Region bins start here: slot = REGION_BASE + bin index. */
-        const val REGION_BASE = 6
+        private const val REGION_BASE = 6
 
         /** base, enforcer, blocker, support, load, armed. */
-        const val FIXED_SLOTS = 6
-        const val FLOATS_PER_TRIANGLE = 9
+        private const val FIXED_SLOTS = 6
+        private const val FLOATS_PER_TRIANGLE = 9
     }
 }
