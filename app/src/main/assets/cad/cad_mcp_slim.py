@@ -1571,10 +1571,14 @@ class CadMCPServer:
                 self._orbit_cursor[1] += int(orbit_dy)
                 viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
             if roll:
-                # The twist, asked for on purpose. Rotate about the view's own axis is the roll
-                # a two-finger turn means - the one thing the arcball could only ever do by
-                # accident, and the reason a part used to end up lying on its side.
-                viewport.Rotate(0.0, 0.0, math.radians(float(roll)))
+                # SetTwist, absolute, against a running total. Twist - the relative form - is
+                # accepted by this binding and does nothing at all: a 45-degree turn left the
+                # frame byte-identical, which is 0 pixels of a 480 px frame, so it is not a unit
+                # problem but a call that is quietly ignored, the way SetDrawEdges was.
+                import math
+                total = _GL.get("twist_radians", 0.0) + math.radians(float(roll))
+                _GL["twist_radians"] = total
+                viewport.SetTwist(total)
             if pan_dx or pan_dy:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's
