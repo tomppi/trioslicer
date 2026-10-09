@@ -312,9 +312,15 @@ class CadViewport(
      * away the angle the user arranged to apply them would be a poor trade.
      */
     fun applyViewerSettings(settings: CadViewerSettings) {
-        scope.launch {
+        // Dispatchers.IO, like the frame pump: this talks to the engine over a socket, and a
+        // blocking connect on the main dispatcher is a NetworkOnMainThreadException - which is
+        // how a settings change reported itself as "refused: null" while nothing was wrong.
+        scope.launch(Dispatchers.IO) {
             runCatching { client.viewerSettings(settings) }
-                .onFailure { Log.w(TAG, "the engine refused the viewer settings: " + it.message) }
+                .onFailure {
+                    Log.w(TAG, "viewer settings call failed: " + it::class.java.simpleName +
+                        " / " + it.message + " / cause " + it.cause)
+                }
             refresh()
         }
     }

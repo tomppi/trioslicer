@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.modelling
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
@@ -66,6 +67,16 @@ class CadPreviewClient(
 
     private var socket: Socket? = null
 
+    /**
+     * Serialises commands.
+     *
+     * There is one socket and several callers - the frame loop, an import, the settings sheet -
+     * and two writes interleaved on one stream mix their replies. That failure is quiet and
+     * bizarre: a save came back as "the engine refused the viewer settings: null" while the
+     * engine had never received it.
+     */
+    private val lock = Any()
+
     /** Set by [close]; no command may open a socket after that. */
     @Volatile
     private var closed = false
@@ -80,7 +91,11 @@ class CadPreviewClient(
         type: String,
         params: JSONObject,
         timeoutMs: Int = READ_TIMEOUT_MS,
-    ): JSONObject {
+    ): JSONObject = synchronized(lock) {
+        // One command at a time. The frame loop and the settings sheet both talk over this
+        // socket, and interleaving them mixes two replies into one unparseable stream - which
+        // is how a saved setting came back as "the engine refused the viewer settings: null"
+        // while the engine had never heard of it.
         check(!closed) { "The CAD preview client is closed" }
         val body = JSONObject().put("type", type).put("params", params)
         token()?.let { body.put("token", it) }
@@ -90,6 +105,7 @@ class CadPreviewClient(
             val active = ensureSocket(timeoutMs)
             try {
                 active.getOutputStream().apply { write(payload); flush() }
+                // synchronized() is inline, so this returns from command() itself.
                 return JSONObject(readReply(active.getInputStream()))
             } catch (error: Throwable) {
                 // A dead socket is expected whenever the engine restarts, so drop it and
@@ -231,7 +247,12 @@ class CadPreviewClient(
             .put("edges", settings.edges)
             .put("antialiasing", settings.antialiasing)
         val reply = command("viewer_settings", params, IMPORT_TIMEOUT_MS)
-        if (reply.optString("status") != "success") return null
+        if (reply.optString("status") != "success") {
+            // Say what the engine actually answered. A refused setting that reports only
+            // "null" is a diagnostic dead end, and this one cost an evening.
+            Log.w(TAG, "viewer_settings refused: " + reply)
+            return null
+        }
         return reply.optJSONObject("result")
     }
 
@@ -276,6 +297,8 @@ class CadPreviewClient(
     }
 
     companion object {
+        private const val TAG = "CadPreviewClient"
+
         /** The CAD engine's MCP port. */
         const val DEFAULT_PORT = 9877
 

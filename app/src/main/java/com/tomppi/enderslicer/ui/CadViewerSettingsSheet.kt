@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -183,7 +184,12 @@ private fun <T> CadChoiceRow(
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(title)
         Text(description, style = MaterialTheme.typography.labelSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Scrollable, not just a Row: five chips are wider than a phone, and a clipped chip
+        // is a choice the user cannot make.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
             choices.forEach { choice ->
                 FilterChip(
                     selected = choice == selected,
