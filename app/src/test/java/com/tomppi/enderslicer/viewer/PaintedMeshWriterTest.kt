@@ -23,19 +23,43 @@ class PaintedMeshWriterTest {
         val parts = readParts(file)
         assertEquals(setOf("[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"), parts.keys)
         val model = parts.getValue("3D/3dmodel.model")
+        // OrcaSlicer's console reads paint_supports, and its shipped binary carries no
+        // slic3rpe:custom_supports string at all: a file named the Prusa way arrives unpainted.
         assertTrue(
             "the enforcer nibble must sit on the painted triangle",
-            model.contains("v1=\"0\" v2=\"1\" v3=\"2\" slic3rpe:custom_supports=\"4\""),
+            model.contains("v1=\"0\" v2=\"1\" v3=\"2\" paint_supports=\"4\""),
         )
         assertTrue(
             "the blocker nibble must sit on its painted triangle",
-            model.contains("slic3rpe:custom_supports=\"8\""),
+            model.contains("paint_supports=\"8\""),
         )
         assertEquals("the two triangles share an edge, so four corners are distinct", 4, Regex("<vertex ").findAll(model).count())
         assertEquals("two triangles are written", 2, Regex("<triangle ").findAll(model).count())
         assertTrue(model.contains("unit=\"millimeter\""))
         assertTrue(model.contains("xmlns:slic3rpe=\"http://schemas.slic3r.org/3mf/2017/06\""))
         assertTrue(model.contains("<build><item objectid=\"1\"/></build>"))
+    }
+
+    @Test
+    fun thePrusaDialectNamesPaintTheWayItsLegacyLoaderReadsIt() {
+        val file = File(folder.root, "prusa.3mf")
+
+        PaintedMeshWriter.write(
+            mesh = quadMesh(),
+            paint = SupportPaintState(enforcerTriangles = setOf(0), blockerTriangles = setOf(1)),
+            destination = file,
+            dialect = PlateThreeMfWriter.Dialect.PRUSA_LEGACY,
+        )
+
+        val model = readParts(file).getValue("3D/3dmodel.model")
+        assertTrue(
+            "the legacy loader is PrusaSlicer's only reader that knows this attribute",
+            model.contains("slic3rpe:custom_supports=\"4\""),
+        )
+        assertTrue(
+            "and the Application stamp is what routes the file to it",
+            model.contains("PrusaSlicer-2.9.6"),
+        )
     }
 
     @Test

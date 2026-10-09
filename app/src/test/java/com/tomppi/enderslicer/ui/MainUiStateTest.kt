@@ -184,6 +184,31 @@ class MainUiStateTest {
     }
 
     @Test
+    fun aSecondCopyOfOneFileGetsItsOwnName() {
+        val original = plateObject("a", "/models/part.stl")
+        val second = original.copy(id = "b", name = "part.stl (2)")
+        val state = plateState(original)
+
+        assertEquals(
+            "a name nothing on the plate uses is left alone",
+            "other.stl",
+            state.uniqueModelName("other.stl"),
+        )
+        assertEquals(
+            "a second part from the same file must not share its label: PrusaSlicer's firmware " +
+                "labels carry no instance id for separate objects, so Klipper would treat the two " +
+                "as one cancellable object",
+            "part.stl (2)",
+            state.uniqueModelName("part.stl"),
+        )
+        assertEquals(
+            "and a third",
+            "part.stl (3)",
+            state.withModelAdded(second).uniqueModelName("part.stl"),
+        )
+    }
+
+    @Test
     fun addingAModelSelectsIt() {
         val added = plateState(plateObject("a", "/models/a.stl"))
             .withModelAdded(plateObject("b", "/models/b.stl"))

@@ -453,19 +453,37 @@ print('imported %d mesh(es)' % len(meshes))
 import bpy, os, struct
 base = __DIR__
 published = 0
+used = set()
 for obj in bpy.context.scene.objects:
     if obj.type != 'MESH' or obj.data is None:
         continue
     mesh = obj.data
     mesh.calc_loop_triangles()
+    # A mesh object with no faces writes an 84-byte file that is not a model the app can read,
+    # and the watcher would keep offering it: skip it.
+    if len(mesh.loop_triangles) == 0:
+        continue
     matrix = obj.matrix_world
-    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in obj.name) or "object"
-    final = os.path.join(base, safe + ".stl")
+    mirrored = matrix.to_3x3().determinant() < 0
+    # Two objects whose names differ only in characters this replaces would be written to one
+    # path, and the earlier part would be gone before anything read it.
+    stem = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in obj.name) or "object"
+    name = stem
+    suffix = 2
+    while name in used:
+        name = "%s_%d" % (stem, suffix)
+        suffix += 1
+    used.add(name)
+    final = os.path.join(base, name + ".stl")
     temp = final + ".part"
     with open(temp, "wb") as handle:
         handle.write(struct.pack("<80sI", b"enderslicercura MCP STL", len(mesh.loop_triangles)))
         for triangle in mesh.loop_triangles:
             points = [matrix @ mesh.vertices[index].co for index in triangle.vertices]
+            # A mirrored object - a negative scale, or a mirrored parent - reverses the winding,
+            # and the normal below comes from the winding: every facet would face inwards.
+            if mirrored:
+                points[1], points[2] = points[2], points[1]
             ux, uy, uz = points[1].x - points[0].x, points[1].y - points[0].y, points[1].z - points[0].z
             wx, wy, wz = points[2].x - points[0].x, points[2].y - points[0].y, points[2].z - points[0].z
             nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx

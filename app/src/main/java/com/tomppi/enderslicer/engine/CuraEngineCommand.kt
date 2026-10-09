@@ -399,6 +399,11 @@ object CuraEngineCommand {
             setting("support_mesh", false)
             setting("anti_overhang_mesh", false)
             setting("cutting_mesh", false)
+            // The user's own "All settings" overrides go on every object, not once at the end of
+            // the command line: -s writes to the mesh that was loaded last, so a trailing set
+            // reached only the final object - or its last modifier volume, which is not an object
+            // at all. A per-mesh override means "this print", and that is every part of it.
+            command += extraArguments(extraSettings, catalog)
 
             plateObject.smartInfillModifiers
                 .sortedBy(SmartInfillModifier::densityPercent)
@@ -456,9 +461,8 @@ object CuraEngineCommand {
         }
 
         command += listOf("-o", outputPath)
-        // User-added extras are applied strictly after every app-controlled setting
-        // so they win over defaults and app values alike (last wins).
-        command += extraArguments(extraSettings, catalog)
+        // The extras went on each object's own block above, after that object's settings, so they
+        // win over defaults and app values alike while still reaching every object.
         return command
     }
 

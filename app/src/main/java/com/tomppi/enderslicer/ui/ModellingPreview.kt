@@ -567,9 +567,14 @@ fun ModellingPreview(
             onClick = {
                 plateMessage = "Exporting every object..."
                 scope.launch {
-                    val published = withContext(Dispatchers.IO) {
-                        client.exportEveryObject(File(blenderDir, "exports"))
-                    }
+                    // The engine can be unreachable - still booting, stopped, answering nothing -
+                    // and the client throws for that. The throw used to escape this launch, so the
+                    // message below never ran and the app took the exception.
+                    val published = runCatching {
+                        withContext(Dispatchers.IO) {
+                            client.exportEveryObject(File(blenderDir, "exports"))
+                        }
+                    }.getOrNull()
                     plateMessage = when {
                         published == null -> "The engine did not export the scene"
                         published == 0 -> "The Blender scene has no mesh objects"

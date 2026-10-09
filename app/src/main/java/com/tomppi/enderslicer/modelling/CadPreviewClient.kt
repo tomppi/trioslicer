@@ -412,11 +412,26 @@ class CadPreviewClient(
 import os
 base = __DIR__
 published = 0
+used = set()
 for name in shapes():
-    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)) or "shape"
-    final = os.path.join(base, safe + ".stl")
+    # Two shapes whose names differ only in characters this replaces would be written to one
+    # path, and the earlier part would be gone before anything read it.
+    stem = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name)) or "shape"
+    unique = stem
+    suffix = 2
+    while unique in used:
+        unique = "%s_%d" % (stem, suffix)
+        suffix += 1
+    used.add(unique)
+    final = os.path.join(base, unique + ".stl")
     temp = final + ".part"
-    export_stl(get(name), temp)
+    # One shape the kernel cannot tessellate must not cost the others: report it and carry on, so
+    # the count the app shows matches the parts that actually arrive.
+    try:
+        export_stl(get(name), temp)
+    except Exception as error:
+        print("failed: %s: %s" % (name, error))
+        continue
     os.replace(temp, final)
     published += 1
 print(published)

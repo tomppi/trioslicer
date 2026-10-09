@@ -95,16 +95,28 @@ class PlateThreeMfWriterTest {
         PaintedMeshWriter.write(mesh, paint, single)
 
         val expected = listOf(
-            "<triangle v1=\"0\" v2=\"1\" v3=\"2\" slic3rpe:custom_supports=\"4\"/>",
-            "<triangle v1=\"3\" v2=\"4\" v3=\"5\" slic3rpe:custom_supports=\"8\"/>",
+            "<triangle v1=\"0\" v2=\"1\" v3=\"2\" paint_supports=\"4\"/>",
+            "<triangle v1=\"3\" v2=\"4\" v3=\"5\" paint_supports=\"8\"/>",
         )
-        val painted = Regex("<triangle [^>]*slic3rpe:custom_supports=\"[48]\"/>")
+        val painted = Regex("<triangle [^>]*paint_supports=\"[48]\"/>")
         val fromPlate = painted.findAll(readParts(plate).getValue("3D/3dmodel.model")).map { it.value }.toList()
         assertEquals(expected, fromPlate)
         assertEquals(
             painted.findAll(readParts(single).getValue("3D/3dmodel.model")).map { it.value }.toList(),
             fromPlate,
         )
+        // The same plate written for PrusaSlicer names the attribute its legacy loader reads: the
+        // Orca name reaches no reader that engine's console uses, and the Prusa name reaches no
+        // Orca reader.
+        val prusa = File(folder.root, "plate-prusa.3mf")
+        PlateThreeMfWriter.write(
+            prusa,
+            listOf(PlateThreeMfWriter.Entry("quad", mesh, paint)),
+            Dialect.PRUSA_LEGACY,
+        )
+        val prusaModel = readParts(prusa).getValue("3D/3dmodel.model")
+        assertTrue(prusaModel.contains("slic3rpe:custom_supports=\"4\""))
+        assertTrue(prusaModel.contains("PrusaSlicer-2.9.6"))
     }
 
     @Test

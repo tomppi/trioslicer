@@ -332,7 +332,10 @@ class CuraEngineRunner(private val context: Context) {
                 // A resolved request is one settings file naming every mesh; it has no
                 // way to express a group boundary, and the group boundary is what one
                 // object at a time is. Refuse rather than quietly print the whole plate.
-                require(!sequential) {
+                // One object needs no group boundary, so the switch is harmless there: it is a
+                // plate-wide preference that stays on, and refusing a single-object slice for it
+                // broke a plate that used to slice.
+                require(!sequential || staged.size > 1) {
                     "One object at a time needs the standalone CuraEngine profile: an imported " +
                         "Cura profile is resolved into one settings file, which cannot express a " +
                         "per-object mesh group"
@@ -361,13 +364,15 @@ class CuraEngineRunner(private val context: Context) {
                             supportPaintModifiers = objectModel.supportPaintModifiers,
                         )
                     },
+                    extraSettings = extraSettings,
                 )
                 CuraEngineCommand.buildResolved(
                     executable.absolutePath,
                     definitions.directory.absolutePath,
                     workspace.resolvedSettings.absolutePath,
                     workspace.output.absolutePath,
-                    extraSettings = extraSettings,
+                    // The overrides travel inside the file above, on every model key. Handing
+                    // them to the command line as well would target only the last of them.
                     catalog = extraSettingsCatalog,
                 )
             } else {

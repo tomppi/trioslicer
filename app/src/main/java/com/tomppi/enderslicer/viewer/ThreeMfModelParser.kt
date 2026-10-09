@@ -27,6 +27,14 @@ object ThreeMfModelParser {
 
     private const val DEFAULT_MODEL_PATH = "3D/3dmodel.model"
     private const val SUPPORT_PAINT_ATTRIBUTE = "slic3rpe:custom_supports"
+
+    /**
+     * The same paint under the name OrcaSlicer's readers use.
+     *
+     * The app writes whichever name the target engine reads, and a file can come back in - so both
+     * are parsed rather than only the one this app happens to write today.
+     */
+    private const val ORCA_SUPPORT_PAINT_ATTRIBUTE = "paint_supports"
     private const val MAX_COMPONENT_DEPTH = 32
     private const val POSITION_FLOATS = 3
 
@@ -273,7 +281,10 @@ object ThreeMfModelParser {
                         v1 = attributes.getValue("v1").toInt(),
                         v2 = attributes.getValue("v2").toInt(),
                         v3 = attributes.getValue("v3").toInt(),
-                        state = paintState(attributes.getValue(SUPPORT_PAINT_ATTRIBUTE)),
+                        state = paintState(
+                            attributes.getValue(SUPPORT_PAINT_ATTRIBUTE)
+                                ?: attributes.getValue(ORCA_SUPPORT_PAINT_ATTRIBUTE),
+                        ),
                     ),
                 )
                 "component" -> {

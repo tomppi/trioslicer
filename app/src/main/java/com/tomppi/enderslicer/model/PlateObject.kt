@@ -26,10 +26,6 @@ data class PlateObject(
     /** How much bed this object takes, in bed coordinates. */
     val bounds: MeshBounds get() = mesh.bounds
 
-    /** The same object moved by a whole-plate delta, which is what arrangement computes. */
-    fun movedBy(dxMm: Double, dyMm: Double): PlateObject =
-        withCenter(placement.centerXmm + dxMm, placement.centerYmm + dyMm)
-
     /** The same object re-centred on the bed, keeping its rotation, scale and Z. */
     fun withCenter(centerXmm: Double, centerYmm: Double): PlateObject =
         withPlacement(placement.copy(centerXmm = centerXmm, centerYmm = centerYmm))
@@ -39,10 +35,6 @@ data class PlateObject(
 
     fun withPaint(paint: SupportPaintState): PlateObject =
         copy(supportPaint = paint.clippedToMesh(mesh.triangleCount))
-
-    /** Paint indices address triangles, and every copy of a mesh keeps the same order. */
-    fun withMeshName(displayName: String): PlateObject =
-        copy(name = displayName)
 
     companion object {
         /** A stable identity for a freshly imported model. */

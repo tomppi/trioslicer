@@ -33,12 +33,24 @@ object PaintedMeshWriter {
     /** Serialised state of an unsplit support-blocker triangle. */
     const val BLOCKER_CODE = "8"
 
-    /** Writes [mesh] with [paint] as the only object of a one-object plate. */
-    fun write(mesh: StlMesh, paint: SupportPaintState, destination: File) {
+    /**
+     * Writes [mesh] with [paint] as the only object of a one-object plate.
+     *
+     * [dialect] decides both the file's stamp and the name the paint travels under, and the two
+     * engines need different ones: PrusaSlicer reads painted facets only through its legacy
+     * loader, which it reaches by the Application stamp, while OrcaSlicer's console looks for the
+     * Bambu attribute name. Handing either engine the other's file arrives unpainted.
+     */
+    fun write(
+        mesh: StlMesh,
+        paint: SupportPaintState,
+        destination: File,
+        dialect: PlateThreeMfWriter.Dialect = PlateThreeMfWriter.Dialect.ORCA,
+    ) {
         PlateThreeMfWriter.write(
             file = destination,
             entries = listOf(PlateThreeMfWriter.Entry(name = mesh.displayName, mesh = mesh, paint = paint)),
-            dialect = PlateThreeMfWriter.Dialect.ORCA,
+            dialect = dialect,
         )
     }
 }

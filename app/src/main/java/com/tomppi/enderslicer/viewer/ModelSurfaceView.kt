@@ -919,8 +919,13 @@ class ModelSurfaceView(
                 return false
             }
             val listener = onModelPicked ?: return false
+            // The framework recycles the event as soon as this callback returns, so the probe is
+            // given the coordinates rather than the event. Every other pick here copies them for
+            // the same reason; reading the event on the executor raced the recycle.
+            val screenX = event.x
+            val screenY = event.y
             paintPickExecutor.execute {
-                val hit = modelRenderer.pickTriangle(event.x, event.y) ?: return@execute
+                val hit = modelRenderer.pickTriangle(screenX, screenY) ?: return@execute
                 if (hit.objectIndex != currentSelectedIndex) {
                     post { listener(hit.objectIndex) }
                 }
@@ -2174,18 +2179,43 @@ private class ModelRenderer(
         // the conditions and the selection tint, while the others draw in their
         // plain colour through the constant-attribute path.
         for (index in objectMeshes.indices) {
+            val firstVertex = objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE
+            val vertexCount = objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE
+            // Each object's attributes are re-pointed at its own first vertex and the draw starts
+            // at zero, rather than binding once and starting the draw at the object's offset. The
+            // colour array holds the selected object's colours and nothing else, and a draw that
+            // starts at offset F reads every enabled array from element F: for any object after
+            // the first that read past the end of the colour buffer (garbage) or from the wrong
+            // triangles (shifted paint).
+            if (vbo != 0) {
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+                GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, firstVertex * 6 * 4)
+                GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, firstVertex * 6 * 4 + 12)
+            } else {
+                // A client-side pointer is read as an offset while a buffer is bound, and the
+                // colour buffer may be the one still bound from another object's draw.
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+                buffer.position(firstVertex * 6)
+                GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
+                buffer.position(firstVertex * 6 + 3)
+                GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, buffer)
+            }
             if (colors != null && index == colorObject) {
+                if (colorVbo != 0) {
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
+                    GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, 0)
+                } else {
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+                    colors.buffer.position(0)
+                    GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, colors.buffer)
+                }
                 GLES20.glEnableVertexAttribArray(color)
             } else {
                 GLES20.glDisableVertexAttribArray(color)
                 val rgb = objectColor(index)
                 GLES20.glVertexAttrib3f(color, rgb[0], rgb[1], rgb[2])
             }
-            GLES20.glDrawArrays(
-                GLES20.GL_TRIANGLES,
-                objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE,
-                objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE,
-            )
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
         }
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
         GLES20.glDisableVertexAttribArray(position)

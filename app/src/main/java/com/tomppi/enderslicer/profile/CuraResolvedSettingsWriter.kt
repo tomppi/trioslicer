@@ -41,6 +41,14 @@ internal object CuraResolvedSettingsWriter {
         adaptiveWallModifiers: List<AdaptiveWallModifier> = emptyList(),
         supportPaintModifiers: List<SupportPaintModifier> = emptyList(),
         additionalObjects: List<PlateObject> = emptyList(),
+        /**
+         * The user's own "All settings" overrides.
+         *
+         * They are written onto every model key rather than appended to the command line: the
+         * engine applies a trailing -s to whichever mesh it loaded last, which on this transport
+         * is the last key in this file - one object out of several, or a modifier volume.
+         */
+        extraSettings: Map<String, String> = emptyMap(),
     ) {
         val multiObject = additionalObjects.isNotEmpty()
         val objects = listOf(
@@ -233,6 +241,7 @@ internal object CuraResolvedSettingsWriter {
         objects.forEachIndexed { index, plateObject ->
             val objectTransform = if (index == 0) effectiveModelTransform else plateObject.transform
             val modelValues = JSONObject(resolved.modelValues)
+            extraSettings.forEach { (key, value) -> modelValues.put(key, value) }
             modelValues.put("extruder_nr", 0)
             if (overhangFillEnabled) {
                 // The pinned definitions default bridge detection off, and the

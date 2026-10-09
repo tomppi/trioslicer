@@ -83,6 +83,8 @@ import com.tomppi.enderslicer.storage.readPickedTextTruncated
 import com.tomppi.enderslicer.supportpaint.SupportPaintBrush
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
+import java.util.Locale
+import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.StlMesh
@@ -177,6 +179,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val interruptedExportName: String?,
         /** Display name of a workspace whose configuration fingerprint no longer matches. */
         val skippedWorkspaceName: String?,
+        /**
+         * True when the saved plate could not be read at all.
+         *
+         * A descriptor naming a file that is gone fails validation, and the load path used to
+         * swallow that and carry on: the whole plate came back empty with nothing said.
+         */
+        val workspaceUnreadable: Boolean = false,
     )
 
     /** One model parsed back out of the saved workspace. */
@@ -434,7 +443,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .withModelAdded(
                 PlateObject(
                     id = PlateObject.newId(),
-                    name = source.displayName,
+                    // Two copies of one file are two parts, and the engines label by name.
+                    name = uniqueModelName(source.displayName),
                     sourceMesh = source,
                     mesh = transformed,
                     sourcePath = modelFile.absolutePath,
@@ -584,7 +594,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                     )
                 }
-                persistPlateSoon()
+                onPlateImported()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -652,7 +662,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             next.plateSuffix(),
                     )
                 }
-                persistPlateSoon()
+                onPlateImported()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -736,7 +746,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             next.plateSuffix(),
                     )
                 }
-                persistPlateSoon()
+                onPlateImported()
             }.onFailure { error ->
                 staged.delete()
                 showOperationFailure(error)
@@ -1311,55 +1321,102 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settings: SlicerSettings,
     ): List<PlateObject>? {
         if (models.size < 2) return models
+        // A round bed holds less than its bounding box. Packing into the box put parts off the
+        // bed, and CuraEngine then refused the whole slice; the packer is given the largest
+        // rectangle the shape holds instead. The envelope check below is what actually decides,
+        // so a shape nobody has thought about yet fails loudly rather than silently.
+        val shape = settings.buildPlateShape.trim().lowercase(Locale.US)
+        val round = shape == "elliptic" || shape == "ellipse" || shape == "circular" || shape == "circle"
+        val usableWidth = if (round) settings.machineWidthMm / sqrt(2.0) else settings.machineWidthMm
+        val usableDepth = if (round) settings.machineDepthMm / sqrt(2.0) else settings.machineDepthMm
         val slots = PlateArranger.arrange(
             footprints = models.map { model ->
                 PlateFootprint(model.bounds.width.toDouble(), model.bounds.depth.toDouble())
             },
-            bedWidthMm = settings.machineWidthMm,
-            bedDepthMm = settings.machineDepthMm,
+            bedWidthMm = usableWidth,
+            bedDepthMm = usableDepth,
             spacingMm = preferences.sanitized().spacingMm,
         ) ?: return null
-        // The packer works in bed coordinates with (0,0) at the front-left corner; a centred
-        // origin shifts every slot by half the bed.
-        val shiftX = if (settings.originAtCenter) settings.machineWidthMm / 2.0 else 0.0
-        val shiftY = if (settings.originAtCenter) settings.machineDepthMm / 2.0 else 0.0
-        return models.mapIndexed { index, model ->
+        // The packer works in bed coordinates with (0,0) at the front-left corner of what it was
+        // given: a round bed insets that corner, and a centred origin measures from the middle.
+        val insetX = (settings.machineWidthMm - usableWidth) / 2.0
+        val insetY = (settings.machineDepthMm - usableDepth) / 2.0
+        val shiftX = (if (settings.originAtCenter) settings.machineWidthMm / 2.0 else 0.0) - insetX
+        val shiftY = (if (settings.originAtCenter) settings.machineDepthMm / 2.0 else 0.0) - insetY
+        val placed = models.mapIndexed { index, model ->
             model.withCenter(slots[index].centerXmm - shiftX, slots[index].centerYmm - shiftY)
         }
+        val envelope = PrinterEnvelope.from(printer.withSettings(settings))
+        val onTheBed = placed.all { model ->
+            val bounds = model.bounds
+            listOf(
+                bounds.minX to bounds.minY,
+                bounds.maxX to bounds.minY,
+                bounds.minX to bounds.maxY,
+                bounds.maxX to bounds.maxY,
+            ).all { (x, y) -> envelope.contains(x.toDouble(), y.toDouble(), 0.0) }
+        }
+        return if (onTheBed) placed else null
     }
 
     /** Arranges the plate on demand, whatever the placement mode says. */
     fun arrangePlate() {
         val state = _uiState.value
         if (state.models.size < 2) return
-        val next = arranged(state.models, state.platePreferences, state.settings)
-        if (next == null) {
-            _uiState.update {
-                it.copy(
-                    statusMessage = "The parts do not fit on the bed at " +
+        // Arranging is a plate change like any other, and it goes through the same gate: a plate
+        // that changed while an engine was working would let a finished slice publish G-code for
+        // a plate that no longer exists.
+        if (!beginOperation("Arranging the plate…")) return
+        viewModelScope.launch {
+            runCatching {
+                // The packer re-transforms every object's mesh, so a plate of large models is
+                // seconds of work - off the main thread.
+                val next = withContext(Dispatchers.Default) {
+                    arranged(state.models, state.platePreferences, state.settings)
+                } ?: throw IllegalStateException(
+                    "The parts do not fit on the bed at " +
                         "${state.platePreferences.sanitized().spacingMm} mm apart",
                 )
-            }
-            return
-        }
-        placementHistory.clear()
-        val arrangedState = state.withoutPublishedSlice(
-            "Arranged ${next.size} objects; slice again to export G-code",
-        ).copy(models = next, canUndoPlacement = false, undoPlacementLabel = null)
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { workspaceSnapshot(arrangedState)?.let(workspaceStore::save) }
-            }
-            _uiState.update { arrangedState }
+                placementHistory.clear()
+                val commit = { current: MainUiState ->
+                    // The packer worked from the plate as it was. If anything moved on while it
+                    // ran, its layout is stale and must not be committed over the new plate.
+                    val unchanged = current.models.size == state.models.size &&
+                        current.models.indices.all { current.models[it] === state.models[it] }
+                    if (!unchanged) {
+                        current.copy(isBusy = false)
+                    } else {
+                        current.withoutPublishedSlice(
+                            "Arranged ${next.size} objects; slice again to export G-code",
+                        ).copy(
+                            models = next,
+                            canUndoPlacement = false,
+                            undoPlacementLabel = null,
+                            isBusy = false,
+                        )
+                    }
+                }
+                val snapshot = workspaceSnapshot(commit(_uiState.value))
+                    ?: throw IllegalStateException("The arranged plate could not be saved")
+                withContext(Dispatchers.IO) { workspaceStore.save(snapshot) }
+                _uiState.update { commit(it) }
+            }.onFailure(::showOperationFailure)
         }
     }
 
-    /** Persists the multi-object preferences; an auto-arranging plate rearranges straight away. */
+    /** Persists the multi-object preferences; moving into auto arrange packs the plate at once. */
     fun setPlatePreferences(preferences: PlatePreferences) {
         val sanitized = preferences.sanitized()
+        val previous = _uiState.value.platePreferences
         _uiState.update { it.copy(platePreferences = sanitized) }
         viewModelScope.launch { withContext(Dispatchers.IO) { platePreferencesStore.save(sanitized) } }
-        if (sanitized.placement == PlatePreferences.Placement.AUTO) arrangePlate()
+        // Only a move *into* auto arrange repacks: the gap field reports every keystroke, and
+        // repacking on each one threw away the placements the user had made by hand.
+        if (sanitized.placement == PlatePreferences.Placement.AUTO &&
+            previous.placement != PlatePreferences.Placement.AUTO
+        ) {
+            arrangePlate()
+        }
     }
 
     /** The object the tools act on. Placement undo belongs to one object, so it is dropped. */
@@ -1367,8 +1424,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         if (state.selectedModel?.id == id) return
         placementHistory.clear()
-        _uiState.update {
-            it.copy(selectedModelId = id, canUndoPlacement = false, undoPlacementLabel = null)
+        // The brush size is one tool setting; it lives in the paint state, which is per object,
+        // so it is carried to the object being selected instead of snapping to that object's own.
+        val brushRadiusMm = state.supportPaint.brushRadiusMm
+        _uiState.update { current ->
+            current.copy(selectedModelId = id, canUndoPlacement = false, undoPlacementLabel = null)
+                .withSelectedModel { model ->
+                    model.withPaint(model.supportPaint.copy(brushRadiusMm = brushRadiusMm))
+                }
         }
     }
 
@@ -1376,25 +1439,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeModel(id: String) {
         val state = _uiState.value
         val removed = state.models.firstOrNull { it.id == id } ?: return
+        if (!beginOperation("Removing ${removed.name}…")) return
         placementHistory.clear()
-        // withoutModel is what takes the object off the plate. Rebuilding the state from [state] and
-        // forgetting this call left the object in place while its file was deleted underneath it.
-        val next = state.withoutModel(id)
-            .withoutPublishedSlice("Removed ${removed.name}; slice again to export G-code")
-            .copy(canUndoPlacement = false, undoPlacementLabel = null)
+        // The state is built from whatever is current when it is committed, not from a snapshot
+        // taken before the save: a slice finishing during that save used to have its result
+        // overwritten by the snapshot.
+        val commit = { current: MainUiState ->
+            // withoutModel is what takes the object off the plate. Rebuilding the state from
+            // [current] and forgetting this call left the object in place while its file was
+            // deleted underneath it.
+            current.withoutModel(id)
+                .withoutPublishedSlice("Removed ${removed.name}; slice again to export G-code")
+                .copy(canUndoPlacement = false, undoPlacementLabel = null, isBusy = false)
+        }
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { workspaceSnapshot(next)?.let(workspaceStore::save) }
-                // The staged copy goes with the object - unless another object on the plate was
-                // imported from the same file, which a hand-written descriptor or a duplicated
-                // part can do. Deleting a shared file would leave that one unreadable.
-                val stillUsed = next.models.any { it.sourcePath == removed.sourcePath }
-                if (!stillUsed) {
-                    removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+            runCatching {
+                val next = commit(_uiState.value)
+                if (next.models.isEmpty()) {
+                    // The last object is gone, so there is no plate left to describe. The
+                    // descriptor goes with it rather than being saved or left behind: one naming
+                    // a deleted file fails validation on the next launch and takes every model
+                    // with it. This is clearBuildPlate's work, done without its busy gate,
+                    // because the gate is what is already held here.
+                    val artifactId = state.gcodePath?.let(::File)?.parentFile?.name
+                    withContext(Dispatchers.IO) {
+                        workspaceStore.clear()
+                        File(app.filesDir, "models").listFiles().orEmpty().forEach { it.delete() }
+                        artifactId?.let(engine::releaseArtifact)
+                    }
+                    importedScene = null
+                    _uiState.update { commit(it) }
+                    return@runCatching
                 }
-            }
-            _uiState.update { next }
-            if (next.models.isEmpty()) clearBuildPlate()
+                val snapshot = workspaceSnapshot(next)
+                    ?: throw IllegalStateException("The plate could not be saved")
+                withContext(Dispatchers.IO) {
+                    workspaceStore.save(snapshot)
+                    // The staged copy goes with the object - unless another object on the plate
+                    // was imported from the same file, which a hand-written descriptor or a
+                    // duplicated part can do. Deleting a shared file leaves that one unreadable.
+                    val stillUsed = next.models.any { it.sourcePath == removed.sourcePath }
+                    if (!stillUsed) {
+                        removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+                    }
+                }
+                _uiState.update { commit(it) }
+            }.onFailure(::showOperationFailure)
         }
     }
 
@@ -2025,7 +2115,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 // paint is silently dropped.
                                 val file = if (slicerFork && !model.supportPaint.isEmpty) {
                                     File(stagingDirectory, "model-$index.3mf").also { staged ->
-                                        PaintedMeshWriter.write(model.mesh, model.supportPaint, staged)
+                                        // The dialect is the engine's, not a default: the two forks
+                                        // read paint from differently named attributes, and the
+                                        // Prusa one only through the loader its stamp selects.
+                                        PaintedMeshWriter.write(
+                                            mesh = model.mesh,
+                                            paint = model.supportPaint,
+                                            destination = staged,
+                                            dialect = if (sliceEngine == SlicerEngine.PRUSA) {
+                                                PlateThreeMfWriter.Dialect.PRUSA_LEGACY
+                                            } else {
+                                                PlateThreeMfWriter.Dialect.ORCA
+                                            },
+                                        )
                                     }
                                 } else {
                                     File(stagingDirectory, "model-$index.stl").also { staged ->
@@ -2782,7 +2884,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // saved under other settings must not put its model and placement on
                     // screen under the settings being restored now. A mismatch skips the
                     // workspace instead of half-restoring it, and says so below.
-                    val savedWorkspace = runCatching { workspaceStore.load() }.getOrNull()
+                    val workspaceLoad = runCatching { workspaceStore.load() }
+                    val savedWorkspace = workspaceLoad.getOrNull()
+                    if (workspaceLoad.isFailure) {
+                        // Unreadable, not merely out of date. The descriptor is cleared so it
+                        // cannot fail again on every launch, and the user is told below.
+                        Diagnostics.failure("workspace", workspaceLoad.exceptionOrNull()!!)
+                        runCatching { workspaceStore.clear() }
+                    }
                     val workspaceMatches = savedWorkspace?.configurationFingerprint == fingerprint
                     val workspace = savedWorkspace
                         ?.takeIf { workspaceMatches }
@@ -2835,6 +2944,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         baselineSettings = snapshotBaseline?.settings,
                         interruptedExportName = interruptedExportName,
                         skippedWorkspaceName = skippedWorkspaceName,
+                        workspaceUnreadable = workspaceLoad.isFailure,
                     )
                 }
             }
@@ -2874,6 +2984,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             statusMessage = "Settings changed since $name was saved; " +
                                 "the workspace was not restored - import the model again",
+                        )
+                    }
+                }
+                if (restored.workspaceUnreadable) {
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = "The saved plate could not be read and was not " +
+                                "restored - import the models again",
                         )
                     }
                 }
@@ -3016,6 +3134,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * ones that were already there - so without this second write the descriptor describes the
      * layout from before the new part was placed, and a relaunch inside that window restores it.
      */
+    /**
+     * An import has landed: the plate is not the one the placement undo was recorded against, and
+     * the descriptor has to describe the arranged plate rather than the pre-arrangement one.
+     */
+    private fun onPlateImported() {
+        placementHistory.clear()
+        persistPlateSoon()
+    }
+
     private fun persistPlateSoon() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { runCatching { persistCurrentWorkspace(_uiState.value) } }
@@ -3234,22 +3361,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * the swap is guarded: a plain check-then-null dropped a write that landed
      * between the two statements, and the engine had already claimed that export.
      */
-    private var pendingEngineImport: Pair<File, String>? = null
+    // A queue, not one slot: one "All to plate" writes one file per shape and the watcher hands
+    // them over back to back. The second export used to overwrite the first, and the watcher
+    // claims a file before it calls, so the overwritten one was never offered again.
+    private val pendingEngineImports = ArrayDeque<Pair<File, String>>()
     private val pendingEngineImportLock = Any()
 
     /** Holds a claimed export with the engine it came from, so the drain can name it right. */
     private fun queueEngineImport(file: File, engine: String) {
-        synchronized(pendingEngineImportLock) { pendingEngineImport = file to engine }
+        synchronized(pendingEngineImportLock) { pendingEngineImports.addLast(file to engine) }
     }
 
-    /** Called wherever an operation ends, so a claimed export is not lost. */
+    /** Called wherever the app goes idle, so claimed exports are not lost. */
     private fun drainPendingEngineImport() {
-        val (file, engine) = synchronized(pendingEngineImportLock) {
-            val value = pendingEngineImport
-            pendingEngineImport = null
-            value
-        } ?: return
-        importEngineStl(file, engine)
+        val next = synchronized(pendingEngineImportLock) { pendingEngineImports.removeFirstOrNull() }
+            ?: return
+        importEngineStl(next.first, next.second)
     }
 
         /**

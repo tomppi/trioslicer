@@ -204,7 +204,11 @@ class CadViewport(
      */
     fun exportEveryShape(directory: File, onResult: (Int?) -> Unit = {}) {
         scope.launch {
-            val published = withContext(Dispatchers.IO) { client.exportEveryShape(directory) }
+            // A throw here - the engine booting, stopped, or gone - would escape this launch and
+            // the caller would never be told. The engine not exporting is a result, not a crash.
+            val published = runCatching {
+                withContext(Dispatchers.IO) { client.exportEveryShape(directory) }
+            }.getOrNull()
             onResult(published)
         }
     }

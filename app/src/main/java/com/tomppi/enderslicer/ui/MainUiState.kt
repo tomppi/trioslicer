@@ -19,9 +19,7 @@ import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
-import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
-import com.tomppi.enderslicer.viewer.unionOrNull
 
 data class MainUiState(
     val printer: PrinterDefinition,
@@ -158,12 +156,25 @@ data class MainUiState(
     val supportPaint: SupportPaintState
         get() = selectedModel?.supportPaint ?: SupportPaintState()
 
-    /** Everything on the plate as one box: what has to fit, and what the camera frames. */
-    val plateBounds: MeshBounds? get() = models.map { it.mesh.bounds }.unionOrNull()
-
     /** Adds a model and selects it - a freshly imported object is the one being worked on. */
     fun withModelAdded(model: PlateObject): MainUiState =
         copy(models = models + model, selectedModelId = model.id)
+
+    /**
+     * [name], made unique against the plate.
+     *
+     * Two parts imported from the same file would otherwise carry one name into the plate list
+     * and into the engines' object labels. OrcaSlicer appends the instance to every label;
+     * PrusaSlicer appends one only when a single model object holds several instances, which is
+     * not how a plate of separate parts arrives - so on a Klipper host two parts sharing a name
+     * are one cancellable object, and on any printer they are two rows the user cannot tell apart.
+     */
+    fun uniqueModelName(name: String): String {
+        if (models.none { it.name == name }) return name
+        var index = 2
+        while (models.any { it.name == "$name ($index)" }) index++
+        return "$name ($index)"
+    }
 
     /** Replaces the list, keeping the selection when the object it named still exists. */
     fun withModels(next: List<PlateObject>): MainUiState = copy(

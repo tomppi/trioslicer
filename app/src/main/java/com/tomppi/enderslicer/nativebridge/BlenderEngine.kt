@@ -321,24 +321,21 @@ object BlenderEngine {
         watcherObserver = null
         val exports = File(configDir, "exports")
         exports.mkdirs()
-        var newest: File? = null
         runCatching {
-            // Everything already here is history from a previous run, not a new
-            // arrival. [delivered] lives in memory, so without this the first
-            // poll of every launch treats the whole backlog as freshly exported
-            // and hands the UI one model after another before it settles.
+            // Everything already here is history from a previous run, the newest included.
+            // [delivered] lives in memory, so without this the first poll of every launch treats
+            // the whole backlog as freshly exported and hands the UI one model after another
+            // before it settles. The newest used to be left unclaimed in case it was the export
+            // the user was still waiting for, which cost nothing while an import replaced the
+            // model on the plate; imports add objects now, so a restart re-delivered the last
+            // session's export as a second copy of one part. An export written while the app was
+            // not running is still on disk, and sending it again is one tap.
             val existing = exports
                 .listFiles { f -> f.isFile && f.name.endsWith(".stl", ignoreCase = true) }
                 ?.sortedBy { it.lastModified() }
                 .orEmpty()
-            newest = existing.lastOrNull()
             synchronized(stateLock) {
-                // Everything already here is history from a previous run, not a new
-                // arrival - except the newest, which may be the export the user is
-                // still waiting for. That one is deliberately left unclaimed and
-                // goes through the same claim path as any other below, so a restart
-                // inside one process cannot hand the same model over twice.
-                existing.dropLast(1).forEach { delivered.add(signatureOf(it)) }
+                existing.forEach { delivered.add(signatureOf(it)) }
             }
             val observer = object : FileObserver(
                 exports.absolutePath,
@@ -355,10 +352,6 @@ object BlenderEngine {
         }.onFailure { error -> Log.e(TAG, "export watch failed", error) }
 
         watcherJob = scope.launch {
-            // The export that was waiting when the engine came up is claimed and
-            // handed over exactly like a fresh one: directly or through the pending
-            // replay the listener setter already implements.
-            newest?.let { exportReady(it) }
             Log.i(TAG, "polling exports dir " + exports.absolutePath)
             while (isActive) {
                 try {

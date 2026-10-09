@@ -174,7 +174,7 @@ object PlateThreeMfWriter {
         append("</metadata>\n")
         append(" <resources>\n")
         for ((index, entry) in entries.withIndex()) {
-            writeObject(::append, index + 1, entry)
+            writeObject(::append, index + 1, entry, dialect)
         }
         // The transform is omitted because the meshes already sit on the bed: a
         // missing transform is the identity in both readers. Every object still
@@ -191,9 +191,10 @@ object PlateThreeMfWriter {
     }
 
     /** One object: its mesh, its name and the paint on its triangles. */
-    private fun writeObject(append: (String) -> Unit, id: Int, entry: Entry) {
+    private fun writeObject(append: (String) -> Unit, id: Int, entry: Entry, dialect: Dialect) {
         val mesh = entry.mesh
         val paint = entry.paint
+        val paintAttribute = paintAttribute(dialect)
         val vertices = mesh.interleavedVertices
         val triangleCount = mesh.triangleCount
         val indices = IntArray(triangleCount * 3)
@@ -251,16 +252,29 @@ object PlateThreeMfWriter {
             // (and its deflated size) proportional to the paint, not the model.
             when {
                 paint != null && triangle in paint.enforcerTriangles -> {
-                    append(" ${PaintedMeshWriter.SUPPORT_PAINT_ATTRIBUTE}=\"${PaintedMeshWriter.ENFORCER_CODE}\"")
+                    append(" $paintAttribute=\"${PaintedMeshWriter.ENFORCER_CODE}\"")
                 }
 
                 paint != null && triangle in paint.blockerTriangles -> {
-                    append(" ${PaintedMeshWriter.SUPPORT_PAINT_ATTRIBUTE}=\"${PaintedMeshWriter.BLOCKER_CODE}\"")
+                    append(" $paintAttribute=\"${PaintedMeshWriter.BLOCKER_CODE}\"")
                 }
             }
             append("/>\n")
         }
         append("    </triangles>\n   </mesh>\n  </object>\n")
+    }
+
+    /**
+     * The triangle attribute each reader takes painted supports from.
+     *
+     * OrcaSlicer keeps PrusaSlicer's name only in the reader its GUI uses; its console loads a
+     * 3MF through the Bambu reader, which looks for "paint_supports" and ignores the Prusa name
+     * outright - the shipped console binary carries no "slic3rpe:custom_supports" string at all,
+     * so a file named the Prusa way arrives unpainted. The values are the same encoding.
+     */
+    private fun paintAttribute(dialect: Dialect): String = when (dialect) {
+        Dialect.PRUSA_LEGACY -> "slic3rpe:custom_supports"
+        Dialect.ORCA -> "paint_supports"
     }
 
     /** OrcaSlicer's per-object settings, in the order the plate lists its objects. */
