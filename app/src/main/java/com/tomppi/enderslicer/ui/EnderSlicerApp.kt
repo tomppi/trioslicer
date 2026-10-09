@@ -133,6 +133,7 @@ import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
 import androidx.compose.material.icons.filled.Lock
+import com.tomppi.enderslicer.modelling.EnginePreviewClient
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import com.tomppi.enderslicer.modelling.CadPick
 import com.tomppi.enderslicer.modelling.CadPreviewClient
@@ -1488,6 +1489,30 @@ fun EnderSlicerApp(
                             "picked up once. Nothing removes them afterwards, so this is " +
                             "where they accumulate.",
                         onBack = { blenderFilesOpen = false },
+                        // Load puts a file back in front of the agent. This importer is the
+                        // patient one - it waits for the engine to boot and retries, because a
+                        // single attempt loses that race silently - and it replaces the scene,
+                        // which is what "load this model" means.
+                        onLoad = { file ->
+                            scope.launch(Dispatchers.IO) {
+                                val client = EnginePreviewClient(
+                                    tokenFile = BlenderEngine.tokenFile(blenderDir))
+                                try {
+                                    val ok = client.importModelWhenReady(file)
+                                    Toast.makeText(
+                                        context,
+                                        if (ok) "Loaded " + file.name + " into Blender"
+                                        else "Blender did not accept " + file.name,
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } catch (error: Throwable) {
+                                    Log.w("EnderSlicerApp", "blender load failed: " + error.message)
+                                } finally {
+                                    client.close()
+                                }
+                            }
+                        },
+                        loadLabel = "Load",
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),
