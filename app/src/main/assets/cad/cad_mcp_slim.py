@@ -1549,7 +1549,7 @@ class CadMCPServer:
                                    orientation or "iso", bool(shaded),
                                    fit=bool(reset or orientation))
 
-        if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0:
+        if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0 or roll:
             if orbit_dx or orbit_dy:
                 orbit_dx, orbit_dy = orbit_dx * aa, orbit_dy * aa
                 # StartRotation/Rotation are the gesture API: both take a screen
@@ -1571,14 +1571,27 @@ class CadMCPServer:
                 self._orbit_cursor[1] += int(orbit_dy)
                 viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
             if roll:
-                # SetTwist, absolute, against a running total. Twist - the relative form - is
-                # accepted by this binding and does nothing at all: a 45-degree turn left the
-                # frame byte-identical, which is 0 pixels of a 480 px frame, so it is not a unit
-                # problem but a call that is quietly ignored, the way SetDrawEdges was.
+                # A roll, asked for on purpose.
+                #
+                # The guard above used to leave this out. Every test sent roll on its own, so
+                # this branch never ran once - "the engine ignores SetTwist" was measured on
+                # unreachable code, twice over. The guard mentions roll now.
+                #
+                # V3d_View::SetTwist is what OCCT offers, and its source does exactly what a roll
+                # needs: the camera is rotated about its own axis through its own centre, with the
+                # up vector re-derived from the screen basis afterwards. It also shows the catch -
+                # that basis is built by trying the world Z, then Y, then X, and it throws when
+                # the view direction aligns with none of them, which an iso view never does. So
+                # the relative form is kept as a fallback rather than letting a twist kill the
+                # frame.
                 import math
-                total = _GL.get("twist_radians", 0.0) + math.radians(float(roll))
-                _GL["twist_radians"] = total
-                viewport.SetTwist(total)
+                angle = math.radians(float(roll))
+                total = _GL.get("roll_radians", 0.0) + angle
+                _GL["roll_radians"] = total
+                try:
+                    viewport.SetTwist(total)
+                except Exception:
+                    viewport.Rotate(0.0, 0.0, angle)
             if pan_dx or pan_dy:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's
