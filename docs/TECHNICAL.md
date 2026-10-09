@@ -160,8 +160,15 @@ cannot publish the release itself - that part is by hand:
     git tag v1.8.4 && git push origin v1.8.4        # CI builds and checks the artifact
     gh run list --limit 5                           # the run whose ref is v1.8.4
     gh run download <run-id> --name enderslicercura-apk --dir /tmp/ci-apk
+    cp /tmp/ci-apk/app-release.apk /tmp/ci-apk/TrioSlicer-1.8.4.apk
     gh release create v1.8.4 --verify-tag --title 'TrioSlicer 1.8.4' --notes-file notes.md \
-        /tmp/ci-apk/app-release.apk#TrioSlicer-1.8.4.apk
+        /tmp/ci-apk/TrioSlicer-1.8.4.apk
+
+The asset is a renamed copy of the artifact, not the artifact under a rename suffix:
+`gh release create file#name` is documented but is ignored, and 1.8.5 went up as
+`app-release.apk` because of it. Rename the file instead. The asset must match what the other
+releases carry, because `fetch-cad-payload-android.sh` and CI resolve
+`releases/download/<tag>/<asset>` by name.
 
 The version in `app/build.gradle.kts` and the tag move together, and `versionCode` always moves
 up: that is what lets an install tell two builds apart, and what stops a release from being
