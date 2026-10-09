@@ -1571,27 +1571,31 @@ class CadMCPServer:
                 self._orbit_cursor[1] += int(orbit_dy)
                 viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
             if roll:
-                # A roll, asked for on purpose.
+                # The arcball, walked on purpose - the one roll here that does not depend on
+                # where the camera is pointing.
                 #
-                # The guard above used to leave this out. Every test sent roll on its own, so
-                # this branch never ran once - "the engine ignores SetTwist" was measured on
-                # unreachable code, twice over. The guard mentions roll now.
+                # SetTwist is the documented call and it works from an iso view, which is the only
+                # place it was tested. Its source shows why it cannot be trusted further: it
+                # builds a screen basis by trying the world Z, then Y, then X, and throws when the
+                # view direction aligns with none of them. On the phone the camera was wherever
+                # the agent had left it, and the result was a view that looked reset, with the
+                # frame file alternating between a real render and a nearly blank one twice a
+                # second - SetTwist succeeding at a nonsense basis rather than failing.
                 #
-                # V3d_View::SetTwist is what OCCT offers, and its source does exactly what a roll
-                # needs: the camera is rotated about its own axis through its own centre, with the
-                # up vector re-derived from the screen basis afterwards. It also shows the catch -
-                # that basis is built by trying the world Z, then Y, then X, and it throws when
-                # the view direction aligns with none of them, which an iso view never does. So
-                # the relative form is kept as a fallback rather than letting a twist kill the
-                # frame.
+                # An arcball rolls when the cursor is walked around its start point, and that
+                # works from any direction because the cursor is what defines the turn; it is also
+                # the mechanism this viewport already uses for every ordinary drag. One step per
+                # gesture: from the angle the last twist ended at to the angle this one does.
                 import math
-                angle = math.radians(float(roll))
-                total = _GL.get("roll_radians", 0.0) + angle
-                _GL["roll_radians"] = total
-                try:
-                    viewport.SetTwist(total)
-                except Exception:
-                    viewport.Rotate(0.0, 0.0, angle)
+                center_x, center_y = int(width // 2), int(height // 2)
+                radius = max(40, min(int(width), int(height)) // 4)
+                previous = _GL.get("roll_angle", 0.0)
+                total = previous + math.radians(float(roll))
+                _GL["roll_angle"] = total
+                viewport.StartRotation(int(center_x + radius * math.cos(previous)),
+                                       int(center_y + radius * math.sin(previous)))
+                viewport.Rotation(int(center_x + radius * math.cos(total)),
+                                  int(center_y + radius * math.sin(total)))
             if pan_dx or pan_dy:
                 # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
                 # refuses a float with "incompatible function arguments" - which the app's
