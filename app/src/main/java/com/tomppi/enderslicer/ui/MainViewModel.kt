@@ -584,6 +584,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                     )
                 }
+                persistPlateSoon()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -651,6 +652,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             next.plateSuffix(),
                     )
                 }
+                persistPlateSoon()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -734,6 +736,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             next.plateSuffix(),
                     )
                 }
+                persistPlateSoon()
             }.onFailure { error ->
                 staged.delete()
                 showOperationFailure(error)
@@ -2994,6 +2997,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(statusMessage = "Settings could not be saved; they will not survive a restart")
                 }
             }
+        }
+    }
+
+    /**
+     * Saves the plate as it is now, off the main thread.
+     *
+     * An import saves before it touches the state, so a save that fails fails the import. The
+     * arrangement that follows that save then moves every object on the plate - including the
+     * ones that were already there - so without this second write the descriptor describes the
+     * layout from before the new part was placed, and a relaunch inside that window restores it.
+     */
+    private fun persistPlateSoon() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { persistCurrentWorkspace(_uiState.value) } }
         }
     }
 
