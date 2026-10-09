@@ -106,10 +106,13 @@ objects on the plate for auto-arrangement. Each screen also has an **All to plat
   reaches the only reader that understands it - the legacy loader - through its
   `Application: PrusaSlicer-2.9.6` stamp. This confirms the stamp, the attribute name
   (`slic3rpe:custom_supports`), the per-triangle values and the volume range in practice.
-- **OrcaSlicer**: its reader decodes the same values under `paint_supports` - run against the
-  2.4.2 console, an app-style file round-trips its paint and the same file under the Prusa
-  attribute round-trips with none. Whether a blocker then removes support is **not** verified;
-  `support_type`/`support_style` is where to look first if it does not.
+- **OrcaSlicer, a support blocker**: painted blockers remove support. Its console reads the same
+  values under `paint_supports` - run against the 2.4.2 console, an app-style file round-trips its
+  paint and the same file under the Prusa attribute round-trips with none.
+
+All three engines are therefore confirmed on hardware, by two different routes: the app either
+synthesises modifier volumes the engine never has to understand (CuraEngine), or hands it an
+attribute only its own loader reads and its own support generator acts on (both Slic3r forks).
 
 Everything else claimed above was exercised on the device while the feature was built: several
 objects sliced by all three engines, one-at-a-time G-code from CuraEngine, the clearance refusal,
