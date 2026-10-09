@@ -145,7 +145,7 @@ envelope as the Blender engine:
 | type | params | notes |
 |---|---|---|
 | `ping` | – | liveness; touches no geometry. Needs the token |
-| `shutdown` | – | replies, then releases the socket. The engine parks; it does not exit |
+| `shutdown` | – | replies, then stops: the process exits and the scene goes with it. Parking is the restart file's job, not this |
 | `execute_code` | `code` | the workhorse. namespace: `build123d`, `OCP`, `json`, `math`, `os`, and the scene helpers |
 | `get_scene_info` | – | every shape with volume, bounding box and solid count |
 | `get_object_info` | `name` | one shape, plus solid/face/edge/vertex counts |
@@ -155,7 +155,7 @@ envelope as the Blender engine:
 | `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
 | `clearance` | `cloud`, `name` or `x`,`y`,`z` | distance from the part to a scanned environment |
 | `viewer_settings` | `tessellation`, `background`, `grid`, `grid_step_mm`, `axes`, `projection`, `edges`, `antialiasing` | the viewport's appearance, not the model |
-| `view` | `turn_yaw`, `turn_pitch` (degrees), `pan_dx`, `pan_dy`, `zoom`, `reset`, `orientation`, `select_x/y` | the screen's camera: turn it, or pick a face in it |
+| `view` | `filepath` (required), `turn_yaw`, `turn_pitch` (degrees), `pan_dx`, `pan_dy`, `zoom`, `reset`, `orientation`, `select_x/y` | the screen's camera: turn it, or pick a face in it |
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
@@ -263,7 +263,8 @@ cut, filleted and re-exported.
 `view` turns the camera the way the rest of the app does: **two angles**, not a free rotation.
 
 ```json
-{"type": "view", "params": {"turn_yaw": -35.0, "turn_pitch": 20.0}}
+{"type": "view", "params": {"filepath": "<files>/cad/exports/viewport.png",
+                         "turn_yaw": -35.0, "turn_pitch": 20.0}}
 ```
 
 `turn_yaw` is an azimuth around the world's vertical axis and `turn_pitch` an elevation above

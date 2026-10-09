@@ -7,6 +7,7 @@ import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -108,6 +109,14 @@ class CadPreviewClient(
                 active.getOutputStream().apply { write(payload); flush() }
                 // synchronized() is inline, so this returns from command() itself.
                 return JSONObject(readReply(active.getInputStream()))
+            } catch (error: SocketTimeoutException) {
+                // The engine has one thread and it is still running this command; the answer will
+                // not come back on this socket, and a second attempt would only be refused as
+                // "engine busy" while the first finishes - which is how a slow command came back
+                // as a busy engine. A timeout is reported as what it is.
+                discardSocket()
+                throw IllegalStateException(
+                    "the CAD engine did not answer within " + (timeoutMs / 1000) + "s", error)
             } catch (error: Throwable) {
                 // A dead socket is expected whenever the engine restarts, so drop it and
                 // reconnect once before giving up.

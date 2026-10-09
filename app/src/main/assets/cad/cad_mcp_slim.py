@@ -148,11 +148,35 @@ def _volume_of(shape):
     except Exception:
         pass
     try:
-        from OCP.BRepGProp import BRepGProp
-        from OCP.GProp import GProp_GProps
-        props = GProp_GProps()
-        BRepGProp.VolumeProperties_s(shape.wrapped, props)
+        props = _volume_properties(shape)
         return float(props.Mass())
+    except Exception:
+        return None
+
+
+def _volume_properties(shape):
+    """GProp_GProps for a solid: mass, and with it the centre of mass.
+
+    One call answers both, which is why the centroid does not have to be guessed at from the
+    bounding box.
+    """
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(getattr(shape, "wrapped", shape), props)
+    return props
+
+
+def _centre_of_mass(shape):
+    """Where the material actually balances, or None for something with no volume.
+
+    Not the middle of the bounding box: for an L, a cone or anything with a boss on one side the
+    two are different points, and calling the box centre a "centroid" told an agent to trust a
+    number that was wrong for exactly the parts worth measuring.
+    """
+    try:
+        centre = _volume_properties(shape).CentreOfMass()
+        return [round(centre.X(), 6), round(centre.Y(), 6), round(centre.Z(), 6)]
     except Exception:
         return None
 
@@ -1385,12 +1409,16 @@ class CadMCPServer:
                                         TopAbs_VERTEX)
                 for label, kind in (("solids", TopAbs_SOLID), ("faces", TopAbs_FACE),
                                     ("edges", TopAbs_EDGE), ("vertices", TopAbs_VERTEX)):
+                    # Distinct sub-shapes, not visits. TopExp_Explorer walks the B-rep tree and
+                    # yields a shared edge once per face that uses it, so a 20 mm cube came out as
+                    # 24 edges and 48 vertices where build123d itself says 12 and 8. build123d
+                    # dedups the same way, by hash, for the same reason.
+                    seen = set()
                     explorer = TopExp_Explorer(wrapped, kind)
-                    count = 0
                     while explorer.More():
-                        count += 1
+                        seen.add(hash(explorer.Current()))
                         explorer.Next()
-                    info[label] = count
+                    info[label] = len(seen)
             except Exception as exc:
                 info["topology_error"] = str(exc)
         return info
@@ -1436,6 +1464,14 @@ class CadMCPServer:
         label, shape = _resolve_target(name)
         b3d = kernel()["build123d"]
         extension = ("." + format.lstrip(".")).lower() if format else os.path.splitext(filepath)[1].lower()
+        # A format that disagrees with the file's own extension is refused rather than written.
+        # The app announces and routes an export by its extension, so BREP bytes in a ".stl" were
+        # handed to the STL importer and failed there, far from the call that caused it.
+        named = os.path.splitext(filepath)[1].lower()
+        if format and named and named != extension:
+            raise ValueError(
+                "format %r does not match the file name %r; rename it or drop the argument"
+                % (extension, named))
         writers = {
             ".brep": lambda temp: b3d.export_brep(shape, temp),
             ".gltf": lambda temp: b3d.export_gltf(shape, temp),
@@ -1575,6 +1611,12 @@ class CadMCPServer:
         # is moving wants speed, the frame that settles under it wants the smooth edges. On this
         # device that is the difference between a viewport and a slideshow on a heavy part.
         aa = 2 if (VIEWER["antialiasing"] if antialiasing is None else antialiasing) else 1
+        # The cap is on the pixmap, not on the request: 2048x2048 RGBA is the 16 MB the comment
+        # below names, and rendering at width*aa made a 2048-wide request a 4096-wide pixmap -
+        # 64 MB, plus the same again for the read-back copy. Supersampling is given up rather
+        # than giving up the frame - and only after aa is known, or this reads it unbound.
+        if width * aa > self.RENDER_MAX or height * aa > self.RENDER_MAX:
+            aa = 1
         renderer = _renderer(width * aa, height * aa)
         # fit=False keeps the camera. That is the whole difference between a viewport and a
         # set of stills: FitAll() would undo every rotation the user just made.
@@ -1717,15 +1759,25 @@ class CadMCPServer:
         op.Build()
         if not op.IsDone():
             raise RuntimeError("the section could not be computed")
-        from OCP.TopoDS import TopoDS
-        result = _solid_or_compound(op.Shape())
         b3d = kernel()["build123d"]
-        wrapped = b3d.Shape.cast(result) if hasattr(b3d.Shape, "cast") else None
+        # The result of BRepAlgoAPI_Section is a raw OCP shape, which has no .edges() - pywrap
+        # binds none - so the cast to a build123d Shape is what makes the section readable rather
+        # than reported as "edges: null" whatever it cut through. The cast was computed and never
+        # used before this.
+        result = b3d.Shape.cast(op.Shape()) if hasattr(b3d.Shape, "cast") else op.Shape()
         info = {"shapes": label, "axis": axis.lower(), "offset": offset,
                 "plane_at": round(base, 4),
                 "edges": len(list(result.edges())) if hasattr(result, "edges") else None}
         if out:
-            written = _publish(out, lambda temp: b3d.export_svg(result, temp))
+            # build123d has no export_svg: SVG comes from ExportSVG, added and written. The old
+            # call raised AttributeError every time, so out= could never write a file.
+            def _write_svg(temp):
+                # The unit belongs to the exporter and the path to write(), the same shape the
+                # skill's own DXF example uses: ExportSVG(path, unit=...) passes it twice.
+                exporter = b3d.ExportSVG(unit="mm")
+                exporter.add_shape(result)
+                exporter.write(temp)
+            written = _publish(out, _write_svg)
             info["filepath"] = out
             info["bytes"] = written
         return info
@@ -1753,8 +1805,6 @@ class CadMCPServer:
         replace=False to add alongside instead.
 
         The shape is added under `name`, or the file's stem when none is given, so the
-
-        The shape is added under `name`, or the file's stem when none is given, so the
         agent can address it in the next command exactly as if it had been modelled here.
         """
         k = kernel()
@@ -1771,21 +1821,22 @@ class CadMCPServer:
         load = getattr(b3d, importer)
         # import_stl takes a unit; the others do not.
         shape = load(filepath, unit) if importer == "import_stl" else load(filepath)
-        label = name or os.path.splitext(os.path.basename(filepath))[0]
-        if replace:
-            SCENE.clear()
-        SCENE.add(label, shape)
         # import_svg and import_dxf hand back a ShapeList - build123d's list of wires or faces -
-        # not a shape. Stored as one it reported success, wiped the scene, and broke every later
-        # command that resolved the name: the next frame raised AIS_Shape(list). Refusing it here,
-        # before the scene is cleared, is the honest answer until a profile is turned into
-        # something the scene can hold.
+        # not a shape. Stored as one it reported success, cleared the scene, and broke every later
+        # command that resolved the name: the next frame raised AIS_Shape(list). Refused here,
+        # before anything is cleared, so a refusal costs the caller nothing.
         if not hasattr(shape, "wrapped"):
             raise ValueError(
                 "%s imports as a list of profiles, which the scene cannot hold yet; import it in "
                 "execute_code and add the shape you want"
                 % os.path.splitext(os.path.basename(filepath))[1])
         label = name or os.path.splitext(os.path.basename(filepath))[0]
+        if replace:
+            SCENE.clear()
+        SCENE.add(label, shape)
+        info = _summary(label, shape)
+        info["imported_from"] = filepath
+        info["imported_as"] = importer
         return info
 
     def clearance(self, cloud, name="", x=None, y=None, z=None, samples=16):
@@ -1904,6 +1955,15 @@ class CadMCPServer:
                                    width, height, view, bool(shaded),
                                    highlight=marked)
 
+        # A still is rendered through the same V3d_View the user's screen is using, and that call
+        # fits and re-orients it - so rendering a picture for the agent left the viewport pointing
+        # at the still's camera while the turntable angles still described the old one, and the
+        # next drag jumped. The direction is put back here; the framing stays the still's FitAll
+        # until the user presses Reset view, which is a smaller surprise than a camera that moves
+        # on its own.
+        _apply_turntable(viewport, self._yaw_deg, self._pitch_deg)
+        viewport.Redraw()
+
         def write(temp):
             _write_view(viewport, width, height, temp)
 
@@ -1954,10 +2014,15 @@ def _metrics(shape):
     bbox = _bbox_of(shape)
     if bbox is not None:
         entry["bbox"] = bbox
-        entry["centroid"] = [round((bbox["min"][i] + bbox["max"][i]) / 2.0, 6)
-                             for i in range(3)]
+        # What the box's middle is, named as the box's middle. It used to be reported as
+        # "centroid", which is a different point on any part that is not symmetric - and the
+        # bounding box is still what you want for placing a part, so both are here now.
+        entry["bbox_centre"] = [round((bbox["min"][i] + bbox["max"][i]) / 2.0, 6)
+                                for i in range(3)]
+    centre_of_mass = _centre_of_mass(shape)
+    if centre_of_mass is not None:
+        entry["centroid"] = centre_of_mass
     return entry
-
 
 # --------------------------------------------------------------------------
 # Status file

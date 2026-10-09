@@ -103,6 +103,34 @@ else
   ./scripts/fetch-blender-engine-android.sh
 fi
 
+# The CAD engine is Python over OCCT - 533 MB of packages and libraries - fetched as a release
+# asset rather than built here. It is the engine this script used to skip, so a clean checkout
+# built a green APK with no CAD engine inside it at all.
+cad_staged() {
+  [ -d app/src/main/assets/cad/lib/python3.11/site-packages ] || return 1
+  [ -d app/src/main/assets/cad/libexec ] || return 1
+}
+
+if cad_staged; then
+  echo "  CAD engine    already staged"
+else
+  echo "  CAD engine    fetching (scripts/fetch-cad-payload-android.sh)"
+  ./scripts/fetch-cad-payload-android.sh
+fi
+
+# Klipper's host brings the Python the CAD engine runs on, so the CAD engine needs it even
+# though the two payloads arrive separately.
+klipper_staged() {
+  [ -d app/src/main/assets/klipper/lib/python3.11 ] || return 1
+}
+
+if klipper_staged; then
+  echo "  Klipper host  already staged"
+else
+  echo "  Klipper host  fetching (scripts/fetch-klipper-android.sh)"
+  ./scripts/fetch-klipper-android.sh
+fi
+
 echo
 echo "== staged tree =="
 missing=""
@@ -139,6 +167,11 @@ require_file "${JNI}/libprusa_slicer_exec.so" "PrusaSlicer executable"
 require_file "app/src/main/assets/prusa/resources/presets/prusa-research-fff/PrusaResearch/vendor.yaml" "PrusaSlicer resources"
 require_file "${JNI}/liborca_console_exec.so" "OrcaSlicer console"
 require_file "${JNI}/libfilasim_jni.so" "filaSim engine"
+# The CAD engine is Python, so it has no JNI library to check: what has to be present is the
+# payload's package tree and the engine script itself. Klipper's host is what runs it.
+require_file "app/src/main/assets/cad/cad_mcp_slim.py" "CAD engine script"
+require_file "app/src/main/assets/cad/lib/python3.11/site-packages/OCP.cpython-311.so" "CAD OCCT bindings"
+require_file "app/src/main/assets/klipper/lib/python3.11/os.py" "Klipper host Python"
 require_dir "app/src/main/assets/orca/resources/profiles" "OrcaSlicer profile tree"
 require_file "app/src/main/assets/blender/scripts/startup/blender_mcp_slim.py" "Blender MCP addon"
 require_dir "app/src/main/assets/blender/python/lib/python3.11" "Blender CPython stdlib"
@@ -148,7 +181,7 @@ else
   printf '  MISSING  %s\n' "Blender engine and its runtime libraries"
   missing="yes"
 fi
-[ -z "${missing}" ] || fail "the staged tree is incomplete; the APK would ship without one of the five engines"
+[ -z "${missing}" ] || fail "the staged tree is incomplete; the APK would ship without one of the engines"
 
 echo
 echo "== build =="
