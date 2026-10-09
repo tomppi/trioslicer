@@ -174,13 +174,12 @@ class CadPreviewClient(
      */
     fun view(
         into: File,
-        orbitDx: Float = 0f,
-        orbitDy: Float = 0f,
+        turnYaw: Float = 0f,
+        turnPitch: Float = 0f,
         panDx: Float = 0f,
         panDy: Float = 0f,
         zoom: Float = 1f,
-        /** Degrees to roll the view about its own axis: the two-finger twist. */
-        roll: Float = 0f,
+
         selectX: Int? = null,
         selectY: Int? = null,
         reset: Boolean = false,
@@ -192,16 +191,11 @@ class CadPreviewClient(
     ): CadPick? {
         val params = JSONObject()
             .put("filepath", into.absolutePath)
-            .put("orbit_dx", orbitDx.toDouble())
-            .put("orbit_dy", orbitDy.toDouble())
+            .put("turn_yaw", turnYaw.toDouble())
+            .put("turn_pitch", turnPitch.toDouble())
             .put("pan_dx", panDx.toDouble())
             .put("pan_dy", panDy.toDouble())
             .put("zoom", zoom.toDouble())
-            .apply {
-                // A twist is the only thing sent to the engine as an angle rather than a
-                // distance, so it is the one parameter that is not always present.
-                if (roll != 0f) put("roll", roll.toDouble())
-            }
             .put("reset", reset)
             .put("shaded", shaded)
         if (orientation != null) params.put("orientation", orientation)

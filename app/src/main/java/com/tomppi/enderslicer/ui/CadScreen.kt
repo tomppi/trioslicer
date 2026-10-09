@@ -98,8 +98,6 @@ fun CadScreen(
     onOrbit: (Float, Float) -> Unit,
     onPan: (Float, Float) -> Unit,
     onZoom: (Float) -> Unit,
-    /** Degrees from a two-finger twist: the deliberate roll, which a finger cannot ask for. */
-    onRotate: (Float) -> Unit,
     onSelect: (Int, Int) -> Unit,
     onViewSize: (Int, Int) -> Unit,
     onResetView: () -> Unit,
@@ -195,7 +193,6 @@ fun CadScreen(
                                     onOrbit = onOrbit,
                                     onPan = onPan,
                                     onZoom = onZoom,
-                                    onRotate = onRotate,
                                 )
                             },
                     )
@@ -299,16 +296,12 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
     onOrbit: (Float, Float) -> Unit,
     onPan: (Float, Float) -> Unit,
     onZoom: (Float) -> Unit,
-    onRotate: (Float) -> Unit,
 ) {
     awaitEachGesture {
         val touchSlop = viewConfiguration.touchSlop
         var travelled = Offset.Zero
         var pinched = 1f
         var pastTouchSlop = false
-        // What this gesture turned out to be. Latched at the first decisive movement.
-        var turning = false
-        var turningDecided = false
         awaitFirstDown(requireUnconsumed = false)
         do {
             val event = awaitPointerEvent()
@@ -324,26 +317,10 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
                 val spanBefore = spanOf(event, useCurrent = false)
                 val spanNow = spanOf(event, useCurrent = true)
                 val zoomChange = if (spanBefore > 0f && spanNow > 0f) spanNow / spanBefore else 1f
-                // The twist: how far the line between the fingers turned. Only meaningful with
-                // two fingers down, which is the only time it is used.
-                val twistNow = angleOf(event, useCurrent = true)
-                val twistBefore = angleOf(event, useCurrent = false)
-                val twist = if (twistNow != null && twistBefore != null) {
-                    var delta = twistNow - twistBefore
-                    while (delta > 180f) delta -= 360f
-                    while (delta < -180f) delta += 360f
-                    delta
-                } else {
-                    0f
-                }
 
                 if (!pastTouchSlop) {
                     travelled += panChange
                     pinched *= zoomChange
-                    // A pure twist travels no distance and changes no span, so it needs its own
-                    // way past the slop - otherwise the first degrees of every turn are lost and
-                    // a turn on its own would never start at all.
-                    if (abs(twist) * maxOf(spanNow, spanBefore) > touchSlop) pastTouchSlop = true
                     val pinchMotion = abs(1f - pinched) * maxOf(spanNow, spanBefore)
                     if (travelled.getDistance() > touchSlop || pinchMotion > touchSlop) {
                         pastTouchSlop = true
@@ -351,33 +328,8 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
                 }
                 if (pastTouchSlop) {
                     if (count >= 2) {
-                        // Two fingers can pan, pinch and turn, and one gesture does some of all
-                        // three - so this decides between them rather than doing all of them at
-                        // once. Firing all three was the bug: a turn moves each finger, so
-                        // panChange is never zero during one, and the part slid sideways under
-                        // the hand while it turned. The slide is what the eye reads, so a twist
-                        // looked like a pan and the rotation was invisible.
-                        //
-                        // Measured the same way the touch slop is - the arc the fingers swept,
-                        // in pixels - and the larger motion wins the event.
-                        // Decided once per gesture, then kept until the fingers lift.
-                        //
-                        // Re-deciding every event was why a turn felt insensitive: a real twist
-                        // drifts as it turns, so the travel won the event most of the time and
-                        // only the odd event rotated - most of a deliberate turn was spent
-                        // panning. Once a hand has committed to turning, it is turning.
-                        val arc = abs(twist) * maxOf(spanNow, spanBefore)
-                        val travel = panChange.getDistance()
-                        if (!turningDecided && (arc > touchSlop || travel > touchSlop)) {
-                            turning = arc > travel
-                            turningDecided = true
-                        }
-                        if (turning) {
-                            if (twist != 0f) onRotate(twist)
-                        } else {
-                            if (panChange != Offset.Zero) onPan(panChange.x, panChange.y)
-                            if (zoomChange != 1f) onZoom(zoomChange)
-                        }
+                        if (panChange != Offset.Zero) onPan(panChange.x, panChange.y)
+                        if (zoomChange != 1f) onZoom(zoomChange)
                     } else if (panChange != Offset.Zero) {
                         onOrbit(panChange.x, panChange.y)
                     }
@@ -386,18 +338,6 @@ private suspend fun PointerInputScope.detectOrbitPanZoom(
             }
         } while (!canceled && event.changes.any { it.pressed })
     }
-}
-
-/** The angle of the line between two pressed pointers, or null when there are not two. */
-private fun angleOf(event: PointerEvent, useCurrent: Boolean): Float? {
-    val points = event.changes.filter { it.pressed }.map {
-        if (useCurrent) it.position else it.previousPosition
-    }
-    if (points.size < 2) return null
-    val dx = points[1].x - points[0].x
-    val dy = points[1].y - points[0].y
-    if (dx == 0f && dy == 0f) return null
-    return kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat()
 }
 
 /** Mean distance of the pressed pointers from their centroid, now or a moment ago. */
@@ -409,4 +349,3 @@ private fun spanOf(event: PointerEvent, useCurrent: Boolean): Float {
     val centroid = points.fold(Offset.Zero) { sum, point -> sum + point } / points.size.toFloat()
     return points.fold(0f) { sum, point -> sum + (point - centroid).getDistance() } / points.size
 }
-

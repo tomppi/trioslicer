@@ -586,6 +586,38 @@ def _grid_shape(step, half=100.0):
     return compound
 
 
+def _turntable_angles(direction):
+    """The turntable angles of a view direction, in the convention _apply_turntable uses."""
+    x, y, z = (float(component) for component in direction[:3])
+    length = math.sqrt(x * x + y * y + z * z) or 1.0
+    x, y, z = x / length, y / length, z / length
+    return (math.degrees(math.atan2(x, -y)),
+            math.degrees(math.asin(max(-1.0, min(1.0, z)))))
+
+
+def _apply_turntable(view, yaw_deg, pitch_deg):
+    """Point the camera from a spherical position, with world Z as up.
+
+    SetProj takes the eye's offset from the part. The source is explicit that it sets the
+    camera's *direction* and nothing else, which is what makes it the right call here: the
+    distance and the centre survive, so turning the part cannot move it or resize it. The up
+    then follows from the view's twist, which nothing in this engine sets any more - so a roll
+    is impossible rather than corrected, the same rule the plate's own viewer follows, where the
+    up vector is a constant world Z and the pitch is clamped short of the poles.
+
+    The arcball this replaces (StartRotation/Rotation) rolled as it turned, which is what laid a
+    part on its side whenever the phone was dragged diagonally.
+
+    The convention matches the app's ModellingCamera - azimuth measured from -Y, elevation above
+    the horizontal - so both viewers turn a model the same way.
+    """
+    azimuth = math.radians(yaw_deg)
+    elevation = math.radians(pitch_deg)
+    horizontal = math.cos(elevation)
+    view.SetProj(horizontal * math.sin(azimuth), -horizontal * math.cos(azimuth),
+                 math.sin(elevation))
+
+
 def _apply_viewer(view):
     """Put the viewer's appearance on the view, and collect anything that refuses.
 
@@ -1022,8 +1054,11 @@ class CadMCPServer:
         self._clients = set()
         self._clients_lock = threading.Lock()
         self._shutdown_requested = False
-        # Screen position the orbit gesture has reached, or None between gestures.
-        self._orbit_cursor = None
+        # The camera as a turntable: azimuth around the world's vertical axis and elevation above
+        # the horizontal plane, both absolute rather than drag deltas, so a frame asks for a
+        # camera rather than a movement. Seeded from the view a fit starts at, so the first turn
+        # continues from what is already on screen.
+        self._yaw_deg, self._pitch_deg = _turntable_angles(VIEW_DIRECTIONS["iso"])
         self._executing_since = None
         self._busy_lock = threading.Lock()
 
@@ -1510,8 +1545,8 @@ class CadMCPServer:
         return {"settings": {k: v for k, v in VIEWER.items() if not k.startswith("_")},
                 "readback": readback}
 
-    def view(self, filepath, name="", orbit_dx=0.0, orbit_dy=0.0,
-             pan_dx=0.0, pan_dy=0.0, zoom=1.0, roll=0.0,
+    def view(self, filepath, name="", turn_yaw=0.0, turn_pitch=0.0,
+             pan_dx=0.0, pan_dy=0.0, zoom=1.0,
              select_x=None, select_y=None, reset=False,
              width=640, height=640, shaded=True, orientation=None,
              antialiasing=None):
@@ -1549,72 +1584,38 @@ class CadMCPServer:
                                    orientation or "iso", bool(shaded),
                                    fit=bool(reset or orientation))
 
-        if orbit_dx or orbit_dy or pan_dx or pan_dy or zoom != 1.0 or roll:
-            if orbit_dx or orbit_dy:
-                orbit_dx, orbit_dy = orbit_dx * aa, orbit_dy * aa
-                # StartRotation/Rotation are the gesture API: both take a screen
-                # position and OCCT works out the arcball turn itself. Rotate(Ax, Ay,
-                # Az) is a different call - a rotation about a world axis, through
-                # sqrt(dx^2+dy^2) radians - and it was what this used to do. A drag of
-                # 100 pixels therefore rotated 15.9 turns and landed the cube back on
-                # itself, byte-identical to no drag at all, while a drag of 50 came out
-                # sheared rather than turned.
-                #
-                # The cursor starts at the centre of the viewport, not at (0,0): the
-                # arcball turns about the cursor, and a corner is not where a hand is.
-                if self._orbit_cursor is None:
-                    self._orbit_cursor = [int(width // 2), int(height // 2)]
-                    # Integers: pywrap types both arguments as SupportsInt, and a float is
-                    # refused with "incompatible function arguments".
-                    viewport.StartRotation(self._orbit_cursor[0], self._orbit_cursor[1])
-                self._orbit_cursor[0] += int(orbit_dx)
-                self._orbit_cursor[1] += int(orbit_dy)
-                viewport.Rotation(self._orbit_cursor[0], self._orbit_cursor[1])
-            if roll:
-                # The arcball, walked on purpose - the one roll here that does not depend on
-                # where the camera is pointing.
-                #
-                # SetTwist is the documented call and it works from an iso view, which is the only
-                # place it was tested. Its source shows why it cannot be trusted further: it
-                # builds a screen basis by trying the world Z, then Y, then X, and throws when the
-                # view direction aligns with none of them. On the phone the camera was wherever
-                # the agent had left it, and the result was a view that looked reset, with the
-                # frame file alternating between a real render and a nearly blank one twice a
-                # second - SetTwist succeeding at a nonsense basis rather than failing.
-                #
-                # An arcball rolls when the cursor is walked around its start point, and that
-                # works from any direction because the cursor is what defines the turn; it is also
-                # the mechanism this viewport already uses for every ordinary drag. One step per
-                # gesture: from the angle the last twist ended at to the angle this one does.
-                import math
-                center_x, center_y = int(width // 2), int(height // 2)
-                radius = max(40, min(int(width), int(height)) // 4)
-                previous = _GL.get("roll_angle", 0.0)
-                total = previous + math.radians(float(roll))
-                _GL["roll_angle"] = total
-                viewport.StartRotation(int(center_x + radius * math.cos(previous)),
-                                       int(center_y + radius * math.sin(previous)))
-                viewport.Rotation(int(center_x + radius * math.cos(total)),
-                                  int(center_y + radius * math.sin(total)))
-            if pan_dx or pan_dy:
-                # Integers, like Rotation above: pywrap types Pan's two deltas SupportsInt and
-                # refuses a float with "incompatible function arguments" - which the app's
-                # drag-scaled deltas would always be. OCCT pans by whole pixels in any case.
-                #
-                # The y is negated. Pan works in the window's coordinates, which grow up from
-                # the bottom-left corner; a delta from a finger grows down the screen. Measured
-                # on the phone, before this: Pan(+100, 0) moved the part +102 px right (right,
-                # it should), and Pan(0, +100) moved it 99 px *up* - the part travelling against
-                # the hand on one axis and with it on the other, which is exactly how it was
-                # reported. The arcball above needs no such flip: Rotation() reads y the way the
-                # finger sends it, and a downward drag tips the model to show more of its top,
-                # which is what grabbing the front and pulling it down should do.
-                viewport.Pan(int(round(pan_dx * aa)), -int(round(pan_dy * aa)))
-            if zoom != 1.0:
-                viewport.SetZoom(float(zoom), True)
-            viewport.Redraw()
-        else:
-                self._orbit_cursor = None
+        if reset or orientation:
+            # The render above pointed the camera at a named view and framed the part. The
+            # turntable's angles are taken from the direction it actually applied, so the next
+            # drag continues from what is on screen instead of jumping back to wherever the
+            # angles were left - which is what makes a preset feel like it undid itself.
+            self._yaw_deg, self._pitch_deg = _turntable_angles(
+                VIEW_DIRECTIONS.get(orientation or "iso", VIEW_DIRECTIONS["iso"]))
+
+        if turn_yaw or turn_pitch:
+            # A turn in degrees, added to the angles the camera is already at. Degrees rather than
+            # the drag distance the arcball took: an angle means the same thing at every render
+            # size, so nothing needs scaling by the supersampling factor and the app can send one
+            # number for a 320 px frame and a 1080 px one. Pitch is clamped short of the poles so
+            # that "up" never becomes ambiguous.
+            self._yaw_deg = (self._yaw_deg + float(turn_yaw)) % 360.0
+            self._pitch_deg = max(-89.0, min(89.0, self._pitch_deg + float(turn_pitch)))
+            _apply_turntable(viewport, self._yaw_deg, self._pitch_deg)
+
+        if pan_dx or pan_dy:
+            # Integers: pywrap types Pan's two deltas SupportsInt and refuses a float with
+            # "incompatible function arguments", which the app's drag-scaled deltas would always
+            # be. OCCT pans by whole pixels in any case.
+            #
+            # The y is negated. Pan works in the window's coordinates, which grow up from the
+            # bottom-left corner; a delta from a finger grows down the screen. Measured on the
+            # phone, before this: Pan(+100, 0) moved the part +102 px right (right, it should),
+            # and Pan(0, +100) moved it 99 px *up* - the part travelling against the hand on one
+            # axis and with it on the other, which is exactly how it was reported.
+            viewport.Pan(int(round(pan_dx * aa)), -int(round(pan_dy * aa)))
+        if zoom != 1.0:
+            viewport.SetZoom(float(zoom), True)
+        viewport.Redraw()
 
         picked = None
         if select_x is not None and select_y is not None:

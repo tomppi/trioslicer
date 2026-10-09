@@ -155,6 +155,7 @@ envelope as the Blender engine:
 | `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
 | `clearance` | `cloud`, `name` or `x`,`y`,`z` | distance from the part to a scanned environment |
 | `viewer_settings` | `tessellation`, `background`, `grid`, `grid_step_mm`, `axes`, `projection`, `edges`, `antialiasing` | the viewport's appearance, not the model |
+| `view` | `turn_yaw`, `turn_pitch` (degrees), `pan_dx`, `pan_dy`, `zoom`, `reset`, `orientation`, `select_x/y` | the screen's camera: turn it, or pick a face in it |
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
@@ -256,6 +257,42 @@ cut, filleted and re-exported.
 | BREP | exact solid, OCCT's native format |
 | SVG | 2D curves, for `import_svg_as_buildline_code` |
 | STL | **a surface, not a solid** — see below |
+
+## 4b. The camera is a turntable
+
+`view` turns the camera the way the rest of the app does: **two angles**, not a free rotation.
+
+```json
+{"type": "view", "params": {"turn_yaw": -35.0, "turn_pitch": 20.0}}
+```
+
+`turn_yaw` is an azimuth around the world's vertical axis and `turn_pitch` an elevation above
+the horizontal plane, both in **degrees**, both relative to where the camera already is. Pitch is
+clamped to ±89 degrees and the up vector is world Z, always - so a roll is *impossible* rather
+than corrected, which is the rule the plate's own viewer follows (`ModellingCamera.upVector`, and
+a pitch clamped the same way in `ModellingPreview`). The app's one-finger drag sends
+`dx * 0.35` and `dy * 0.35` degrees, the same rate that viewer uses, so a centimetre of finger
+means the same thing in both places.
+
+This replaced an arcball (`StartRotation`/`Rotation`), which rolls as it turns: a diagonal drag
+left a part lying on its side, which is what was reported. Four other mechanisms were tried
+against the same problem and each failed for its own reason, all measured on the device:
+
+| call | result |
+|---|---|
+| `Rotate(0, 0, a)` about the view axis | rolled correctly, but only from an iso view |
+| `Twist` / `SetTwist` | work from an iso view; build a screen basis from world Z/Y/X and mangle the camera from anywhere else |
+| camera up vector via `SetCamera` | accepted and ignored - the renderer honours eye and centre, not up |
+| rebuilt camera (eye + centre + up) | changed the projection's scale too; the part came back a sixth of its size |
+
+`SetProj` is the one call this driver has always honoured - it is what the view presets use - and
+the source is explicit that it sets the camera's *direction* and nothing else, so the distance and
+the centre survive and turning a part cannot move or resize it.
+
+**Verified** with a world-vertical bar, whose edges stay vertical in the picture for any turn:
+iso, front and a 40-degree turn all measured a lean of **0.0 to 0.5 px**; the arcball leaned it by
+tens of pixels. The app path was checked separately by swiping the dev phone's screen: a 200 px
+horizontal swipe turned the model (22% of the frame changed) and it stayed upright.
 
 ## 4c. The viewport's appearance
 

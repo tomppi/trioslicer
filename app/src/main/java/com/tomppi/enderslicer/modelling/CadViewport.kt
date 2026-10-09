@@ -42,14 +42,23 @@ private const val READY_RETRIES = 3
  * cannot arrive mid-drag.
  */
 /** One request to the engine's camera, or a tap for it to pick at. */
+/**
+ * Degrees of turntable rotation per pixel of finger travel.
+ *
+ * The same number the plate's own viewer uses (ModellingPreview.DegreesPerPixel), so a drag turns
+ * a model by the same amount in both places - the two viewers should not disagree about what a
+ * centimetre of finger means.
+ */
+private const val DEGREES_PER_PIXEL = 0.35f
+
+/** One request to the engine's camera, or a tap for it to pick at. */
 private data class ViewRequest(
-    val orbitDx: Float = 0f,
-    val orbitDy: Float = 0f,
+    val turnYaw: Float = 0f,
+    val turnPitch: Float = 0f,
     val panDx: Float = 0f,
     val panDy: Float = 0f,
     val zoom: Float = 1f,
-    /** Degrees about the view's own axis, from the two-finger twist. */
-    val roll: Float = 0f,
+
     val selectX: Int? = null,
     val selectY: Int? = null,
     val reset: Boolean = false,
@@ -58,7 +67,7 @@ private data class ViewRequest(
 ) {
     /** Whether anything in here moves the camera. Picking and flags do not. */
     val hasMotion: Boolean
-        get() = orbitDx != 0f || orbitDy != 0f || panDx != 0f || panDy != 0f || zoom != 1f || roll != 0f
+        get() = turnYaw != 0f || turnPitch != 0f || panDx != 0f || panDy != 0f || zoom != 1f
 }
 
 /**
@@ -236,12 +245,13 @@ class CadViewport(
             into = frameFile,
             // Scaled with the render: a delta is a distance on the display, and what the
             // engine turns and pans is a distance in the frame it just rendered.
-            orbitDx = deltas.orbitDx * dragScale,
-            orbitDy = deltas.orbitDy * dragScale,
+            // Degrees, deliberately unscaled: the engine's camera is an angle, so a turn is the
+            // same turn whatever size the frame is rendered at.
+            turnYaw = deltas.turnYaw,
+            turnPitch = deltas.turnPitch,
             panDx = deltas.panDx * dragScale,
             panDy = deltas.panDy * dragScale,
             zoom = deltas.zoom,
-            roll = request.roll,
             selectX = request.selectX,
             selectY = request.selectY,
             reset = request.reset,
@@ -268,24 +278,22 @@ class CadViewport(
     }
 
     fun orbit(dx: Float, dy: Float) {
+        // A drag turns a turntable: a fixed number of degrees per pixel of travel, the same
+        // mapping the plate's own viewer uses (ModellingPreview.DegreesPerPixel), so both viewers
+        // answer a finger the same way. Accumulated in degrees rather than pixels because the
+        // camera is an angle - the engine is told how far to turn, not how far the finger moved,
+        // and the supersampled render size therefore never enters into it.
+        //
+        // Yaw falls, pitch rises, for a rightward and a downward drag: the same signs the plate's
+        // viewer uses, which also keeps the arcball's old promise that pulling the front of a part
+        // downwards shows more of its top.
         synchronized(deltaLock) {
             pendingDeltas = pendingDeltas.copy(
-                orbitDx = pendingDeltas.orbitDx + dx,
-                orbitDy = pendingDeltas.orbitDy + dy,
+                turnYaw = pendingDeltas.turnYaw - dx * DEGREES_PER_PIXEL,
+                turnPitch = pendingDeltas.turnPitch + dy * DEGREES_PER_PIXEL,
             )
         }
         pending.trySend(ViewRequest())
-    }
-
-    /**
-     * Rolls the view about its own axis: the two-finger twist, as photo software has.
-     *
-     * Momentary rather than accumulated - a twist is an angle, not a distance travelled - so the
-     * engine is given the degrees from this event and nothing else.
-     */
-    fun rotate(degrees: Float) {
-        if (degrees == 0f) return
-        pending.trySend(ViewRequest(roll = degrees))
     }
 
     fun pan(dx: Float, dy: Float) {
