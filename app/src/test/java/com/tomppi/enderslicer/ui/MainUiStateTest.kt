@@ -3,8 +3,13 @@ package com.tomppi.enderslicer.ui
 import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.engine.LayerEventType
+import com.tomppi.enderslicer.model.ModelPlacement
+import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerEngine
+import com.tomppi.enderslicer.viewer.MeshBounds
+import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -113,5 +118,77 @@ class MainUiStateTest {
 
         assertEquals("Sliced 1.2 MB of validated G-code", dropped.statusMessage)
         assertFalse(dropped.hasCurrentGcode())
+    }
+
+    /** One triangle is a model: the plate helpers count them and read their paths. */
+    private fun plateObject(id: String, path: String): PlateObject {
+        val vertices = floatArrayOf(
+            0f, 0f, 0f, 0f, 0f, 1f,
+            1f, 0f, 0f, 0f, 0f, 1f,
+            0f, 1f, 0f, 0f, 0f, 1f,
+        )
+        val source = StlMesh(
+            displayName = path.substringAfterLast('/'),
+            interleavedVertices = VertexData.fromArray(vertices),
+            triangleCount = 1,
+            bounds = MeshBounds(0f, 0f, 0f, 1f, 1f, 0f),
+        )
+        val placement = ModelPlacement.centeredOnBed(source, bedWidthMm = 220.0, bedDepthMm = 220.0)
+        return PlateObject(
+            id = id,
+            name = source.displayName,
+            sourceMesh = source,
+            mesh = placement.transformed(source),
+            sourcePath = path,
+            placement = placement,
+        )
+    }
+
+    private fun plateState(vararg objects: PlateObject) = MainUiState(
+        printer = printer,
+        models = objects.toList(),
+        selectedModelId = objects.firstOrNull()?.id,
+    )
+
+    @Test
+    fun removingAModelTakesItOffThePlate() {
+        val first = plateObject("a", "/models/a.stl")
+        val second = plateObject("b", "/models/b.stl")
+
+        val next = plateState(first, second).withoutModel("a")
+
+        assertEquals(listOf("b"), next.models.map { it.id })
+        // The one that stayed keeps everything it had. This is the half that regressed: the state
+        // was rebuilt from the old list, so the removed object stayed and only its file went.
+        assertEquals(second.placement, next.models.single().placement)
+        assertEquals(second.sourcePath, next.models.single().sourcePath)
+    }
+
+    @Test
+    fun removingTheSelectedModelSelectsAnother() {
+        val next = plateState(plateObject("a", "/models/a.stl"), plateObject("b", "/models/b.stl"))
+            .withoutModel("a")
+
+        assertEquals("b", next.selectedModelId)
+    }
+
+    @Test
+    fun removingTheLastModelLeavesAnEmptyPlate() {
+        val next = plateState(plateObject("a", "/models/a.stl")).withoutModel("a")
+
+        assertEquals(emptyList<PlateObject>(), next.models)
+        assertNull(next.selectedModelId)
+        assertNull(next.mesh)
+        assertNull(next.modelPath)
+        assertNull(next.modelPlacement)
+    }
+
+    @Test
+    fun addingAModelSelectsIt() {
+        val added = plateState(plateObject("a", "/models/a.stl"))
+            .withModelAdded(plateObject("b", "/models/b.stl"))
+
+        assertEquals(listOf("a", "b"), added.models.map { it.id })
+        assertEquals("b", added.selectedModelId)
     }
 }

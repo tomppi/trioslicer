@@ -1377,13 +1377,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         val removed = state.models.firstOrNull { it.id == id } ?: return
         placementHistory.clear()
-        val next = state.withoutPublishedSlice(
-            "Removed ${removed.name}; slice again to export G-code",
-        ).copy(canUndoPlacement = false, undoPlacementLabel = null)
+        // withoutModel is what takes the object off the plate. Rebuilding the state from [state] and
+        // forgetting this call left the object in place while its file was deleted underneath it.
+        val next = state.withoutModel(id)
+            .withoutPublishedSlice("Removed ${removed.name}; slice again to export G-code")
+            .copy(canUndoPlacement = false, undoPlacementLabel = null)
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { workspaceSnapshot(next)?.let(workspaceStore::save) }
-                removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+                // The staged copy goes with the object - unless another object on the plate was
+                // imported from the same file, which a hand-written descriptor or a duplicated
+                // part can do. Deleting a shared file would leave that one unreadable.
+                val stillUsed = next.models.any { it.sourcePath == removed.sourcePath }
+                if (!stillUsed) {
+                    removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+                }
             }
             _uiState.update { next }
             if (next.models.isEmpty()) clearBuildPlate()
