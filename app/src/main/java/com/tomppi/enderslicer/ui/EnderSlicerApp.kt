@@ -129,9 +129,14 @@ import com.tomppi.enderslicer.viewer.ViewerOrientation
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.app.KeyguardManager
 import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.material.icons.filled.Lock
 import com.tomppi.enderslicer.modelling.EnginePreviewClient
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
@@ -1343,16 +1348,18 @@ fun EnderSlicerApp(
                                             onClick = {
                                                 blenderMenuExpanded = false
                                                 // Blender's token is generated on first use, so
-                                                // this call site asks the engine for it; the CAD
+                                                // this call site asks the engine for it - only
+                                                // once the user has authenticated; the CAD
                                                 // engine writes its own when it starts, so the CAD
                                                 // item below only reads.
-                                                BlenderEngine.ensureToken(File(context.filesDir, "blender"))
-                                                copyMcpToken(
+                                                requestMcpTokenCopy(
                                                     context = context,
-                                                    tokenFile = BlenderEngine.tokenFile(
-                                                        File(context.filesDir, "blender"),
-                                                    ),
                                                     clipLabel = "Blender MCP token",
+                                                    engineName = "Blender",
+                                                    tokenFile = {
+                                                        BlenderEngine.ensureToken(File(context.filesDir, "blender"))
+                                                        BlenderEngine.tokenFile(File(context.filesDir, "blender"))
+                                                    },
                                                 )
                                             },
                                             enabled = !state.isBusy,
@@ -1415,12 +1422,13 @@ fun EnderSlicerApp(
                                             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
                                             onClick = {
                                                 cadMenuExpanded = false
-                                                copyMcpToken(
+                                                requestMcpTokenCopy(
                                                     context = context,
-                                                    tokenFile = CadEngine.tokenFile(
-                                                        File(context.filesDir, "cad"),
-                                                    ),
                                                     clipLabel = "CAD MCP token",
+                                                    engineName = "CAD",
+                                                    tokenFile = {
+                                                        CadEngine.tokenFile(File(context.filesDir, "cad"))
+                                                    },
                                                 )
                                             },
                                             enabled = !state.isBusy,
@@ -2489,8 +2497,99 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
 
 /** More hub: grouped navigation to everything outside the plate. */
 /**
+ * The only way to an engine's MCP token: ask for the user's fingerprint - or, on a
+ * phone with no reader, their screen lock - and copy nothing unless that succeeds.
+ *
+ * The token is a credential for an engine that runs code inside this app, so a stray
+ * tap must not be able to hand it to whoever is holding the phone. That is the same
+ * gesture a banking app puts in front of a payment.
+ *
+ * Cancelling or failing the prompt copies nothing and says so. A phone with no screen
+ * lock at all has nothing to authenticate with, so it is refused with what to do about
+ * it; a phone whose lock carries no fingerprint is not refused - the prompt asks for
+ * the PIN, pattern or password instead, which is why DEVICE_CREDENTIAL is allowed here.
+ *
+ * [tokenFile] is evaluated after authentication, never before it: Blender's token is
+ * generated on first use, so asking the engine for it stays on the far side of the
+ * prompt along with the read.
+ */
+private fun requestMcpTokenCopy(
+    context: Context,
+    clipLabel: String,
+    engineName: String,
+    tokenFile: () -> File,
+) {
+    // BiometricPrompt hosts itself in a fragment, so its host has to be a
+    // FragmentActivity - MainActivity is one. Anything else cannot be asked, so it
+    // gets no token.
+    val activity = context as? FragmentActivity
+    if (activity == null) {
+        Toast.makeText(
+            context,
+            "The MCP token needs the app's own screen to unlock",
+            Toast.LENGTH_SHORT,
+        ).show()
+        return
+    }
+
+    // BIOMETRIC_WEAK already carries BIOMETRIC_STRONG's bits; all three are named to
+    // say what the prompt accepts - any fingerprint (or face), or the device
+    // credential behind it.
+    val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+    // With DEVICE_CREDENTIAL allowed, canAuthenticate reports success whenever the phone
+    // has a lock - fingerprint enrolled or not - so the refusal below is the phone with
+    // no lock at all. The device's own answer is read as well, because a lock the
+    // framework will not confirm is still the user's way in.
+    val canAuthenticate = BiometricManager.from(activity).canAuthenticate(authenticators)
+    val deviceSecure =
+        activity.getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
+    if (canAuthenticate != BiometricManager.BIOMETRIC_SUCCESS && !deviceSecure) {
+        // Short enough that the toast shows all of it: the longer "Set up a fingerprint or
+        // screen lock in Settings to protect this token" was cut off mid-word on the phone,
+        // and there is no tap-through to that Settings page to carry the rest.
+        Toast.makeText(
+            activity,
+            "Set up a screen lock or fingerprint in Settings",
+            Toast.LENGTH_LONG,
+        ).show()
+        return
+    }
+
+    val prompt = BiometricPrompt(
+        activity,
+        ContextCompat.getMainExecutor(activity),
+        object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                copyMcpToken(activity, tokenFile(), clipLabel)
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                // Cancel, back, a locked-out sensor, nothing enrolled: every one of them
+                // leaves the clipboard alone and says so.
+                Toast.makeText(activity, "MCP token not copied", Toast.LENGTH_SHORT).show()
+            }
+        },
+    )
+    prompt.authenticate(
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Copy MCP token")
+            .setSubtitle("Anyone you give this to can run code in the app's $engineName engine")
+            // No setNegativeButtonText: with DEVICE_CREDENTIAL among the allowed
+            // authenticators the builder rejects one ("Negative text must not be set if
+            // device credential authentication is allowed"), and the system prompt puts
+            // its own Cancel beside the "Use PIN/pattern/password" button.
+            .setAllowedAuthenticators(authenticators)
+            .build(),
+    )
+}
+
+/**
  * Puts an engine's MCP token on the clipboard so a modelling agent can be given
- * it directly.
+ * it directly. Reached only through [requestMcpTokenCopy], never directly: the
+ * clipboard write below happens after the user has authenticated.
  *
  * The token file sits in app-private storage and the engine refuses every
  * command, ping included, without it. On a phone without root there is no way

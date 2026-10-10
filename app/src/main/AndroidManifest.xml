@@ -6,6 +6,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The fingerprint (or screen-lock) prompt that guards handing an engine's MCP
+         token to the clipboard. A normal permission: granted at install, no runtime
+         request, and nothing is read from the sensor without the prompt. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!--
       Measuring the printer's resonances with the phone's own accelerometer. Without this
       Android caps the sensor at 200 Hz on API 31 and later; the sensor in this phone runs

@@ -1079,6 +1079,17 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
+
+    // The fingerprint/screen-lock prompt in front of the MCP-token handover. 1.1.0 is
+    // the current stable release in Google's Maven metadata; the 1.4.0 alphas rework
+    // this API around AuthenticationRequest and are not what the rest of the app
+    // depends on. BiometricPrompt hosts its prompt in a fragment, so fragment is named
+    // directly here - the app's own MainActivity extends FragmentActivity - rather
+    // than left at the fragment 1.2.5 that biometric 1.1.0 would pull in beside this
+    // project's Activity 1.13.0.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment:1.9.1")
+
     implementation("androidx.webkit:webkit:1.16.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

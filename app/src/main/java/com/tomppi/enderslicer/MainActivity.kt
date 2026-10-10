@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -17,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
@@ -32,7 +32,13 @@ import com.tomppi.enderslicer.ui.OnboardingStore
 import com.tomppi.enderslicer.ui.SlicerEngineStore
 import com.tomppi.enderslicer.ui.UiScale
 
-class MainActivity : ComponentActivity() {
+/**
+ * A FragmentActivity rather than a bare ComponentActivity: androidx.biometric hosts its
+ * prompt in a fragment, and the two "Copy MCP token" items are gated behind that prompt.
+ * FragmentActivity is a ComponentActivity subclass, so setContent, enableEdgeToEdge and
+ * the viewModels above are unchanged.
+ */
+class MainActivity : FragmentActivity() {
     private val slicerViewModel by viewModels<MainViewModel>()
     private val octoPrintViewModel by viewModels<OctoPrintViewModel>()
 
