@@ -98,6 +98,8 @@ fun ModelToolsOverlay(
     onLayFlat: () -> Unit,
     onReset: () -> Unit,
     onApplyImportedTransform: () -> Unit,
+    /** Opens the cut preview over the plate, where the model is split in two. */
+    onOpenCutUi: () -> Unit,
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
@@ -132,6 +134,7 @@ fun ModelToolsOverlay(
                 onLayFlat = onLayFlat,
                 onReset = onReset,
                 onApplyImportedTransform = onApplyImportedTransform,
+                onOpenCutUi = onOpenCutUi,
                 onOpenSupportPaintUi = onOpenSupportPaintUi,
                 onBrushRadius = onBrushRadius,
                 onClearPaint = onClearPaint,
@@ -239,6 +242,7 @@ private fun ModelToolsGroupPanel(
     onLayFlat: () -> Unit,
     onReset: () -> Unit,
     onApplyImportedTransform: () -> Unit,
+    onOpenCutUi: () -> Unit,
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
@@ -286,6 +290,7 @@ private fun ModelToolsGroupPanel(
                     onLayFlat = onLayFlat,
                     onDropToBed = onDropToBed,
                     onReset = onReset,
+                    onOpenCutUi = onOpenCutUi,
                 )
 
                 ModelToolsGroup.SUPPORT_PAINT -> ModelSupportPaintTools(
@@ -722,15 +727,26 @@ private fun RotateButton(
     }
 }
 
-/** Actions group: the whole-model operations that used to sit mid-menu. */
+/** Actions group: the whole-model operations, splitting first. */
 @Composable
 private fun ModelActionTools(
     onDropToBed: () -> Unit,
     onLayFlat: () -> Unit,
     onReset: () -> Unit,
+    onOpenCutUi: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onOpenCutUi, modifier = Modifier.fillMaxWidth()) {
+            Text("Split at a plane")
+        }
+        Text(
+            "Cut the selected model in two: a slider moves the plane over the plate and Split " +
+                "turns the two sides into objects of their own.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        HorizontalDivider()
         Button(onClick = onLayFlat, modifier = Modifier.fillMaxWidth()) {
             Text("Lay flat on largest face")
         }

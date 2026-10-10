@@ -20,6 +20,18 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
 import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.spanAlong
+
+/**
+ * The name one half of a cut gets, after the way its axis reads: a Z cut leaves
+ * a lower and an upper part, an X cut a left and a right one, a Y cut a front
+ * and a back one.
+ */
+fun cutHalfName(base: String, axis: ModelPlacement.Axis, high: Boolean): String = when (axis) {
+    ModelPlacement.Axis.Z -> if (high) "$base upper" else "$base lower"
+    ModelPlacement.Axis.X -> if (high) "$base right" else "$base left"
+    ModelPlacement.Axis.Y -> if (high) "$base back" else "$base front"
+}
 
 data class MainUiState(
     val printer: PrinterDefinition,
@@ -59,6 +71,17 @@ data class MainUiState(
     /** What undoing would take back, for the button's own label. */
     val undoPlacementLabel: String? = null,
     val paintMode: SupportPaintMode = SupportPaintMode.NONE,
+    /**
+     * True while the Split tool is open: the model view previews the cut.
+     *
+     * A preview only. Nothing is cut until the user commits, and the preview
+     * never touches the mesh - the shader discards the far side of the plane.
+     */
+    val cutActive: Boolean = false,
+    /** Which way the cut runs: Z is a cut from the top, X and Y are side cuts. */
+    val cutAxis: ModelPlacement.Axis = ModelPlacement.Axis.Z,
+    /** Where the cut plane sits along [cutAxis], in build-plate millimetres. */
+    val cutOffsetMm: Double = 0.0,
 
     /**
      * True while the Smart Infill sheet is waiting for a surface tap. A tap is
@@ -214,6 +237,35 @@ data class MainUiState(
     /** The selected object's paint: the brush belongs to the object it paints. */
     val supportPaint: SupportPaintState
         get() = selectedModel?.supportPaint ?: SupportPaintState()
+
+    /** How far the selected object reaches along [axis], or null when the plate is empty. */
+    fun spanAlong(axis: ModelPlacement.Axis): ClosedFloatingPointRange<Float>? =
+        mesh?.bounds?.spanAlong(axis)
+
+    /** How far the selected object reaches along [cutAxis], or null when the plate is empty. */
+    val cutSpanMm: ClosedFloatingPointRange<Float>?
+        get() = spanAlong(cutAxis)
+
+    /**
+     * True when the cut plane is strictly inside the selected object, so both
+     * halves would have geometry. A plane on or outside a bound leaves one side
+     * empty, which is a preview the user can look at but not a split.
+     */
+    val cutInsideModel: Boolean
+        get() {
+            val span = cutSpanMm ?: return false
+            return cutOffsetMm > span.start && cutOffsetMm < span.endInclusive
+        }
+
+    /**
+     * What the two halves of the selected object would be called, low side
+     * first: a Z cut is lower/upper, an X cut left/right, a Y cut front/back.
+     */
+    val cutHalfNames: Pair<String, String>
+        get() {
+            val base = selectedModel?.name.orEmpty()
+            return cutHalfName(base, cutAxis, high = false) to cutHalfName(base, cutAxis, high = true)
+        }
 
     /** Adds a model and selects it - a freshly imported object is the one being worked on. */
     fun withModelAdded(model: PlateObject): MainUiState =

@@ -1532,6 +1532,205 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- Splitting a model in two -------------------------------------------
+
+    /**
+     * Opens or closes the cut preview over the model view.
+     *
+     * Opening puts the plane in the middle of the selected object's own reach on
+     * the axis, which is a cut that always has two halves to look at; the mesh
+     * is not touched either way.
+     */
+    fun setCutActive(active: Boolean) {
+        _uiState.update { current ->
+            if (!active) return@update current.copy(cutActive = false)
+            val span = current.cutSpanMm ?: return@update current.copy(cutActive = false)
+            current.copy(cutActive = true, cutOffsetMm = middleOf(span).toDouble())
+        }
+    }
+
+    /**
+     * Switches the cut between a cut from the top (Z) and the two side cuts.
+     *
+     * The plane is re-centred on the new axis: a number that meant something on
+     * Z says nothing about where the part reaches on X, and keeping it would put
+     * the plane outside the model on the axis just chosen.
+     */
+    fun setCutAxis(axis: ModelPlacement.Axis) {
+        _uiState.update { current ->
+            val span = current.spanAlong(axis)
+            current.copy(
+                cutAxis = axis,
+                cutOffsetMm = span?.let { middleOf(it).toDouble() } ?: current.cutOffsetMm,
+            )
+        }
+    }
+
+    /** Moves the cut plane. The preview follows it; nothing is cut until [splitModel]. */
+    fun setCutOffset(offsetMm: Double) {
+        if (!offsetMm.isFinite()) return
+        _uiState.update { current ->
+            val span = current.cutSpanMm ?: return@update current
+            current.copy(
+                cutOffsetMm = offsetMm.coerceIn(
+                    span.start.toDouble(),
+                    span.endInclusive.toDouble(),
+                ),
+            )
+        }
+    }
+
+    /**
+     * Cuts the selected object at the previewed plane and puts both halves on
+     * the plate, side by side and both standing on the bed.
+     *
+     * This is where the preview becomes geometry: [BedClipper] produces the two
+     * meshes with their cut faces capped - a half whose cut face is left open
+     * slices to nothing, because CuraEngine only stitches an outline whose ends
+     * are within 10 mm - each half is staged as its own STL file (the workspace
+     * descriptor restores an object from the file it names, so two objects
+     * sharing the original's file would both come back whole), and the plate's
+     * own packer lays the plate out again. The two halves are separate objects
+     * the moment this returns, so they move, slice and export like any other
+     * import.
+     */
+    fun splitModel() {
+        val state = _uiState.value
+        val model = state.selectedModel
+        if (model == null) {
+            showOperationFailure(IllegalStateException("Import an STL before splitting it"))
+            return
+        }
+        if (!state.cutInsideModel) {
+            showOperationFailure(
+                IllegalStateException("Move the cut inside " + model.name + " before splitting it"),
+            )
+            return
+        }
+        if (!beginOperation("Splitting " + model.name + "…")) return
+        val axis = state.cutAxis
+        val offsetMm = state.cutOffsetMm
+        val lowName = state.uniqueModelName(state.cutHalfNames.first)
+        val highName = state.uniqueModelName(state.cutHalfNames.second)
+        viewModelScope.launch {
+            // Every file this call writes, so a failure before the plate is
+            // committed leaves nothing orphaned behind.
+            val staged = ArrayList<File>(2)
+            runCatching {
+                val halves = withContext(Dispatchers.Default) {
+                    val placed = model.mesh
+                    val offset = offsetMm.toFloat()
+                    val low = BedClipper.clipClosed(placed, axis, offset, BedClipper.Half.LOW)
+                    val high = BedClipper.clipClosed(placed, axis, offset, BedClipper.Half.HIGH)
+                    check(low.triangleCount > 0 && high.triangleCount > 0) {
+                        "The cut leaves nothing on one side; move it inside the model"
+                    }
+                    listOf(lowName to low, highName to high)
+                }
+                val objects = withContext(Dispatchers.IO) {
+                    halves.map { (name, half) ->
+                        val file = stagedModelFile()
+                        staged += file
+                        StlMeshWriter.writeBinary(half.copy(displayName = name), file)
+                        cutHalfObject(name, half, file, state)
+                    }
+                }
+                val packed = withContext(Dispatchers.Default) {
+                    val replaced = state.models.flatMap { existing ->
+                        if (existing.id == model.id) objects else listOf(existing)
+                    }
+                    arranged(replaced, state.platePreferences, state.settings)
+                        ?: throw IllegalStateException(
+                            "The two halves do not fit on the bed " +
+                                state.platePreferences.sanitized().spacingMm + " mm apart; " +
+                                "nothing was split",
+                        )
+                }
+                // The packer worked from the plate as it was. If anything moved on
+                // while it ran, its layout is stale and must not be committed, and
+                // the halves it was given are not the plate's halves either.
+                val live = _uiState.value
+                val unchanged = live.models.size == state.models.size &&
+                    live.models.indices.all { live.models[it] === state.models[it] }
+                if (!unchanged) {
+                    runCatching { staged.forEach { it.delete() } }
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            statusMessage = "The plate changed while " + model.name +
+                                " was being split; nothing was split",
+                        )
+                    }
+                    return@runCatching
+                }
+                val low = objects.first()
+                val commit = { current: MainUiState ->
+                    current.withoutPublishedSlice(
+                        "Split " + model.name + ": " + low.name + " and " +
+                            objects.last().name + "; slice again to export G-code",
+                    ).copy(
+                        models = packed,
+                        selectedModelId = low.id,
+                        cutActive = false,
+                        canUndoPlacement = false,
+                        undoPlacementLabel = null,
+                        isBusy = false,
+                    )
+                }
+                val descriptor = workspaceSnapshot(commit(_uiState.value))
+                    ?: throw IllegalStateException("The split plate could not be saved")
+                withContext(Dispatchers.IO) {
+                    workspaceStore.save(descriptor)
+                    // Nothing on the plate is restored from the original's file any
+                    // more; it goes the way a removed object's file goes.
+                    if (packed.none { it.sourcePath == model.sourcePath }) {
+                        model.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
+                    }
+                }
+                _uiState.update { commit(it) }
+            }.onFailure { error ->
+                runCatching { staged.forEach { it.delete() } }
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * One half as a plate object of its own.
+     *
+     * The cut mesh is already in build-plate coordinates, so the placement only
+     * drops it onto the bed and centres it - [ModelPlacement.centeredOnBed] plus
+     * [ModelPlacement.transformed] put its own minimum Z on the plate - and the
+     * arranger then moves it beside its other half. Its file is its own, so the
+     * workspace restores these two parts rather than two copies of the original.
+     */
+    private fun cutHalfObject(
+        name: String,
+        half: StlMesh,
+        stagedFile: File,
+        state: MainUiState,
+    ): PlateObject {
+        val placement = ModelPlacement.centeredOnBed(
+            mesh = half,
+            bedWidthMm = state.settings.machineWidthMm,
+            bedDepthMm = state.settings.machineDepthMm,
+            originAtCenter = state.settings.originAtCenter,
+        )
+        return PlateObject(
+            id = PlateObject.newId(),
+            name = name,
+            sourceMesh = half,
+            mesh = placement.transformed(half),
+            sourcePath = stagedFile.absolutePath,
+            placement = placement,
+            supportPaint = SupportPaintState(),
+        )
+    }
+
+    /** The middle of a span: where a cut starts, so both halves are worth looking at. */
+    private fun middleOf(span: ClosedFloatingPointRange<Float>): Float =
+        span.start + (span.endInclusive - span.start) / 2f
+
     fun moveModel(centerXmm: Double, centerYmm: Double, baseZmm: Double) {
         changePlacement("Model position changed") { placement, _ ->
             placement.moved(centerXmm, centerYmm, baseZmm)

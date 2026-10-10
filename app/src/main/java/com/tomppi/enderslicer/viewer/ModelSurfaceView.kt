@@ -26,6 +26,31 @@ import kotlin.math.max
 import kotlin.math.sqrt
 import kotlin.math.tan
 
+/**
+ * A cut the model view previews, in build-plate millimetres.
+ *
+ * Everything at or beyond [offsetMm] along [axis] is discarded by the model
+ * shader, so the part reads as cut open without one vertex being rebuilt: the
+ * slider only changes this value and the mesh on the GPU is untouched. The
+ * cross-section is left open exactly as the CPU clipper [BedClipper] leaves it,
+ * so what shows through the cut is the inside of the part - the same hollow
+ * cross-section the layer view draws.
+ *
+ * It is a preview only. The geometry the engines are handed comes from
+ * [BedClipper] when the user commits the split.
+ */
+data class ModelCutPlane(
+    val axis: ModelPlacement.Axis,
+    val offsetMm: Float,
+) {
+    /** The plane as the shader takes it: unit normal first, then the offset along it. */
+    fun planeFloats(): FloatArray = when (axis) {
+        ModelPlacement.Axis.X -> floatArrayOf(1f, 0f, 0f, offsetMm)
+        ModelPlacement.Axis.Y -> floatArrayOf(0f, 1f, 0f, offsetMm)
+        ModelPlacement.Axis.Z -> floatArrayOf(0f, 0f, 1f, offsetMm)
+    }
+}
+
 class ModelSurfaceView(
     context: Context,
     private val printer: PrinterDefinition,
@@ -316,6 +341,17 @@ class ModelSurfaceView(
     /** One model on the plate: what every single-model caller still means. */
     fun setMesh(mesh: StlMesh?) {
         setMeshes(if (mesh == null) emptyList() else listOf(mesh), 0)
+    }
+
+    /**
+     * Previews a cut on one object of the plate, or clears it with null.
+     *
+     * Only the object at [objectIndex] is cut: the plate's other parts are not
+     * being split and must go on drawing whole.
+     */
+    fun setCutPlane(plane: ModelCutPlane?, objectIndex: Int) {
+        modelRenderer.setCutPlane(plane, objectIndex)
+        requestRender()
     }
 
     fun currentOrientation(): ViewerOrientation = modelRenderer.orientation
@@ -1021,6 +1057,24 @@ private class ModelRenderer(
 
     /** Which object the tools act on: an index into [objectMeshes]. */
     @Volatile private var selectedObject = 0
+
+    /**
+     * The cut previewed on one object, or null when the plate is not being cut.
+     *
+     * A preview only: the shader discards what stands beyond the plane, and the
+     * committed geometry is [BedClipper]'s work. Volatile because the UI thread
+     * moves the plane while the GL thread draws it.
+     */
+    @Volatile private var cutPlane: ModelCutPlane? = null
+
+    /** Which object [cutPlane] cuts. */
+    @Volatile private var cutObject = -1
+
+    /** Previews a cut on one object of the plate, or clears it with null. */
+    fun setCutPlane(plane: ModelCutPlane?, objectIndex: Int) {
+        cutPlane = plane
+        cutObject = objectIndex
+    }
 
     /**
      * One entry per scene triangle: the object that owns it.
@@ -2240,6 +2294,13 @@ private class ModelRenderer(
         val color = GLES20.glGetAttribLocation(meshProgram, "aColor")
         val mvpLocation = GLES20.glGetUniformLocation(meshProgram, "uMvpMatrix")
         val modelLocation = GLES20.glGetUniformLocation(meshProgram, "uModelMatrix")
+        val plateMatrixLocation = GLES20.glGetUniformLocation(meshProgram, "uPlateMatrix")
+        val clipPlaneLocation = GLES20.glGetUniformLocation(meshProgram, "uClipPlane")
+        val clipEnabledLocation = GLES20.glGetUniformLocation(meshProgram, "uClipEnabled")
+        // The plane is the same for every object; only which objects it applies to
+        // changes, and that is the per-object flag below.
+        val cut = cutPlane
+        val cutFloats = cut?.planeFloats()
 
         buffer.position(0)
         ensureMeshUpload(buffer)
@@ -2335,6 +2396,29 @@ private class ModelRenderer(
             placeObject(index)
             GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
             GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
+            // The vertices are already in build-plate coordinates, so the object's
+            // own matrix is the plate position a cut is measured against - not
+            // uModelMatrix, which carries the camera for the lighting.
+            GLES20.glUniformMatrix4fv(
+                plateMatrixLocation,
+                1,
+                false,
+                if (index == selectedObject) modelLocal else identityMatrix,
+                0,
+            )
+            // The cut is a preview of one object's split, so the flag is set per
+            // draw and a neighbour on the plate is never clipped with it.
+            val cutting = cutFloats != null && index == cutObject
+            GLES20.glUniform1f(clipEnabledLocation, if (cutting) 1f else 0f)
+            if (cutting) {
+                GLES20.glUniform4f(
+                    clipPlaneLocation,
+                    cutFloats[0],
+                    cutFloats[1],
+                    cutFloats[2],
+                    cutFloats[3],
+                )
+            }
             val firstVertex = objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE
             val vertexCount = objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE
             if (colors == null) {
@@ -2626,25 +2710,39 @@ private class ModelRenderer(
 val ANNOTATION_COLOR = floatArrayOf(1.00f, 0.76f, 0.22f)
 val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
 
+        // The split preview is a clip plane, not a second mesh: the vertex
+        // shader carries each fragment's build-plate position across, and the
+        // fragment shader throws away what stands beyond the plane. Nothing is
+        // rebuilt while the slider moves, and the mesh on the GPU never changes.
         const val MESH_VERTEX_SHADER = """
             uniform mat4 uMvpMatrix;
             uniform mat4 uModelMatrix;
+            uniform mat4 uPlateMatrix;
             attribute vec3 aPosition;
             attribute vec3 aNormal;
             attribute vec3 aColor;
             varying vec3 vNormal;
             varying vec3 vColor;
+            varying vec3 vPlatePosition;
             void main() {
                 gl_Position = uMvpMatrix * vec4(aPosition, 1.0);
+                vPlatePosition = (uPlateMatrix * vec4(aPosition, 1.0)).xyz;
                 vNormal = normalize(mat3(uModelMatrix) * aNormal);
                 vColor = aColor;
             }
         """
         const val MESH_FRAGMENT_SHADER = """
             precision mediump float;
+            uniform vec4 uClipPlane;
+            uniform float uClipEnabled;
             varying vec3 vNormal;
             varying vec3 vColor;
+            varying vec3 vPlatePosition;
             void main() {
+                if (uClipEnabled > 0.5 &&
+                    dot(uClipPlane.xyz, vPlatePosition) > uClipPlane.w) {
+                    discard;
+                }
                 vec3 normal = normalize(vNormal);
                 if (!gl_FrontFacing) {
                     normal = -normal;

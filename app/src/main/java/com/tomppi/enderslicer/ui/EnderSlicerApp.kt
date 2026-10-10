@@ -121,6 +121,7 @@ import com.tomppi.enderslicer.nonplanar.NonPlanarSettingsStore
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
+import com.tomppi.enderslicer.viewer.ModelCutPlane
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
@@ -1050,6 +1051,8 @@ fun EnderSlicerApp(
         viewModel.setAnnotationActive(false)
         annotationUiOpen = false
     }
+    // The split preview is over the model, so back leaves it the way Close does.
+    BackHandler(enabled = state.cutActive) { viewModel.setCutActive(false) }
     var viewerMode by rememberSaveable { mutableStateOf(ViewerMode.MODEL) }
     var selectedLayerIndex by rememberSaveable { mutableStateOf(0) }
     var modelOrientation by rememberSaveable(stateSaver = ViewerOrientationSaver) {
@@ -1371,6 +1374,7 @@ fun EnderSlicerApp(
                                             leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
                                             onClick = {
                                                 blenderMenuExpanded = false
+                                                viewModel.setCutActive(false)
                                                 viewModel.setAnnotationActive(true)
                                                 annotationUiOpen = true
                                             },
@@ -1763,6 +1767,12 @@ fun EnderSlicerApp(
                                 viewModel.setAnnotationActive(false)
                                 annotationUiOpen = false
                             },
+                            cutActions = CutActions(
+                                onAxis = viewModel::setCutAxis,
+                                onOffset = viewModel::setCutOffset,
+                                onSplit = viewModel::splitModel,
+                                onClose = { viewModel.setCutActive(false) },
+                            ),
                             printerCardExpanded = printerCardExpanded,
                             onPrinterCardToggle = { printerCardExpanded = !printerCardExpanded },
                             noticeExpanded = noticeCardExpanded,
@@ -1842,8 +1852,20 @@ fun EnderSlicerApp(
                                     onLayFlat = viewModel::layModelFlat,
                                     onReset = viewModel::resetModelTransform,
                                     onApplyImportedTransform = viewModel::applyImportedSceneTransform,
+                                    onOpenCutUi = {
+                                        modelToolsOpen = false
+                                        // One tool owns the bottom of the model view: the
+                                        // split slider lands where the brush and the
+                                        // annotation toolbar would be.
+                                        supportPaintUiOpen = false
+                                        annotationUiOpen = false
+                                        viewModel.setPaintMode(SupportPaintMode.NONE)
+                                        viewModel.setAnnotationActive(false)
+                                        viewModel.setCutActive(true)
+                                    },
                                     onOpenSupportPaintUi = {
                                         modelToolsOpen = false
+                                        viewModel.setCutActive(false)
                                         supportPaintUiOpen = true
                                     },
                                     onBrushRadius = viewModel::setBrushRadius,
@@ -2982,6 +3004,8 @@ private fun ViewerPanel(
     onAnnotationZAdjustEnd: () -> Unit,
     annotationActions: AnnotationActions,
     onCloseAnnotationUi: () -> Unit,
+    /** The split tool: the cut plane and the action that commits it. */
+    cutActions: CutActions,
     printerCardExpanded: Boolean,
     onPrinterCardToggle: () -> Unit,
     noticeExpanded: Boolean,
@@ -3108,6 +3132,17 @@ private fun ViewerPanel(
                         view.onAnnotationZAdjust = onAnnotationZAdjust
                         view.onAnnotationZAdjustEnd = onAnnotationZAdjustEnd
                         view.setAnnotationOverlay(state.annotationOverlay)
+                        // The cut preview is a shader clip plane on the selected
+                        // object: moving the slider changes a uniform, and no
+                        // vertex is rebuilt until the split is committed.
+                        view.setCutPlane(
+                            plane = if (state.cutActive) {
+                                ModelCutPlane(state.cutAxis, state.cutOffsetMm.toFloat())
+                            } else {
+                                null
+                            },
+                            objectIndex = state.models.indexOfFirst { it.id == state.selectedModel?.id },
+                        )
                         view.onOrientationChanged = onOrientationChanged
                     },
                 )
@@ -3119,6 +3154,16 @@ private fun ViewerPanel(
                 activeMode = state.paintMode,
                 onPaintMode = onPaintMode,
                 onClose = onCloseSupportPaintUi,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(12.dp),
+            )
+        }
+
+        if (state.cutActive && viewerMode == ViewerMode.MODEL && state.mesh != null) {
+            CutToolbar(
+                state = state,
+                actions = cutActions,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(12.dp),
@@ -3822,6 +3867,106 @@ private fun ActionBar(
                 }
             }
         }
+    }
+}
+
+/** Split tool callbacks, grouped so the viewer signature stays readable. */
+private class CutActions(
+    val onAxis: (ModelPlacement.Axis) -> Unit,
+    val onOffset: (Double) -> Unit,
+    val onSplit: () -> Unit,
+    val onClose: () -> Unit,
+)
+
+/**
+ * The split tool, at the bottom of the model view where the layer viewer keeps
+ * its own controls: which way the cut runs, where the plane sits, and the one
+ * action that commits it.
+ *
+ * The slider is the whole preview - the model above it is clipped by the shader
+ * as the value moves, so what the user sees is what Split will cut.
+ */
+@Composable
+private fun CutToolbar(
+    state: MainUiState,
+    actions: CutActions,
+    modifier: Modifier = Modifier,
+) {
+    val span = state.cutSpanMm ?: return
+    val names = state.cutHalfNames
+    val inside = state.cutInsideModel
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = EnderSlicerDimens.SheetPadding,
+                vertical = EnderSlicerDimens.Space8,
+            ),
+            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Split model", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.width(EnderSlicerDimens.Space8))
+                Text(
+                    "Cut ${state.selectedModel?.name.orEmpty()} in two",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = actions.onClose,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Close") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
+                CutAxisButton("Top", ModelPlacement.Axis.Z, state.cutAxis, actions.onAxis, Modifier.weight(1f))
+                CutAxisButton("Side X", ModelPlacement.Axis.X, state.cutAxis, actions.onAxis, Modifier.weight(1f))
+                CutAxisButton("Side Y", ModelPlacement.Axis.Y, state.cutAxis, actions.onAxis, Modifier.weight(1f))
+            }
+            CompactSliderRow(
+                label = "Cut " + state.cutAxis.name,
+                value = state.cutOffsetMm.toFloat(),
+                range = span.start..span.endInclusive.coerceAtLeast(span.start + 1f),
+                onValueChange = { actions.onOffset(it.toDouble()) },
+                valueText = "%.1f".format(state.cutOffsetMm),
+            )
+            Text(
+                "Split into " + names.first + " and " + names.second,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Button(
+                onClick = actions.onSplit,
+                enabled = inside && !state.isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Split into two parts") }
+            if (!inside) {
+                Text(
+                    "Move the cut inside the model: one side of the plane is empty.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarnAmber,
+                )
+            }
+        }
+    }
+}
+
+/** One direction of the cut: the one in force is a filled button, as the paint modes are. */
+@Composable
+private fun CutAxisButton(
+    label: String,
+    axis: ModelPlacement.Axis,
+    selected: ModelPlacement.Axis,
+    onAxis: (ModelPlacement.Axis) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (axis == selected) {
+        Button(onClick = { onAxis(axis) }, modifier = modifier) { Text(label, maxLines = 1) }
+    } else {
+        OutlinedButton(onClick = { onAxis(axis) }, modifier = modifier) { Text(label, maxLines = 1) }
     }
 }
 

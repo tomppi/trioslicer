@@ -1,5 +1,9 @@
 package com.tomppi.enderslicer.viewer
 
+import com.tomppi.enderslicer.model.ModelPlacement
+import com.tomppi.enderslicer.viewer.BedClipper.Half
+import com.tomppi.enderslicer.viewer.BedClipper.clip
+import com.tomppi.enderslicer.viewer.BedClipper.clipClosed
 import com.tomppi.enderslicer.viewer.BedClipper.clipToBed
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -9,12 +13,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The build-plate clip: what a placement below the bed is staged as.
+ * The axis-aligned clip: the build plate's own cut, and the cut that splits a
+ * model in two.
  *
  * The contract these tests pin down is the one the slice path relies on - a
  * model that does not dip below Z=0 comes back as the very same instance (so it
  * stages byte-for-byte as before), a model that does comes back cut at Z=0 with
- * its winding intact, and a model wholly below the plate comes back empty.
+ * its winding intact, and a model wholly below the plate comes back empty - and
+ * the same three answers hold for the generalised plane on X and Y, which is
+ * what the two halves of a split are.
  */
 class BedClipperTest {
     @Test
@@ -171,6 +178,241 @@ class BedClipperTest {
         assertEquals("the triangle above the plane is sqrt(1.25)/2 mm2", kotlin.math.sqrt(1.25) / 2.0, area(clippedTouching), 1e-5)
         assertEquals("the cut runs between the crossing points", 1.5f, clippedTouching.bounds.maxX, 1e-6f)
         assertEquals("and back to the other one", 0.5f, clippedTouching.bounds.minX, 1e-6f)
+    }
+
+    @Test
+    fun aSideCutOnXLeavesTheTwoHalvesOfTheBox() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        val high = clip(mesh, ModelPlacement.Axis.X, 0f, Half.HIGH)
+        val low = clip(mesh, ModelPlacement.Axis.X, 0f, Half.LOW)
+
+        // By symmetry with the bed cut: the face behind the plane goes, the one
+        // beyond it stays whole, and the four faces the plane runs through keep
+        // three triangles where they had two - 2 + 4 * 3 = 14 per half.
+        assertEquals("the +X half keeps its own face and cuts the crossing ones", 14, high.triangleCount)
+        assertEquals("and the -X half does the same", 14, low.triangleCount)
+        assertEquals("the +X half starts on the plane", 0f, high.bounds.minX, 1e-6f)
+        assertEquals("and reaches the face it started from", 1f, high.bounds.maxX, 0f)
+        assertEquals("the -X half reaches the plane", 0f, low.bounds.maxX, 1e-6f)
+        assertEquals("and starts at its own face", -1f, low.bounds.minX, 0f)
+        // The other two axes are not cut at all - and Z below zero is kept:
+        // this is not the plate's own cut.
+        assertEquals(-1f, high.bounds.minY, 0f)
+        assertEquals(1f, high.bounds.maxY, 0f)
+        assertEquals("below the bed survives a side cut", -2f, high.bounds.minZ, 1e-6f)
+        assertEquals(1f, high.bounds.maxZ, 0f)
+        // Each half is half of the 2 x 2 x 3 box, and the sign only comes out
+        // positive if the winding survived on both sides of the cut.
+        assertEquals("the +X half is half the box", 6.0, signedVolume(high), 1e-5)
+        assertEquals("the -X half is the other half", 6.0, signedVolume(low), 1e-5)
+        assertEquals("and together they are the box", 12.0, signedVolume(high) + signedVolume(low), 1e-5)
+    }
+
+    @Test
+    fun aSideCutOnYLeavesTheTwoHalvesOfTheBox() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        val high = clip(mesh, ModelPlacement.Axis.Y, 0f, Half.HIGH)
+        val low = clip(mesh, ModelPlacement.Axis.Y, 0f, Half.LOW)
+
+        assertEquals("the +Y half keeps its own face and cuts the crossing ones", 14, high.triangleCount)
+        assertEquals("and the -Y half does the same", 14, low.triangleCount)
+        assertEquals("the +Y half starts on the plane", 0f, high.bounds.minY, 1e-6f)
+        assertEquals("and reaches the face it started from", 1f, high.bounds.maxY, 0f)
+        assertEquals("the -Y half reaches the plane", 0f, low.bounds.maxY, 1e-6f)
+        assertEquals("and starts at its own face", -1f, low.bounds.minY, 0f)
+        assertEquals(-1f, high.bounds.minX, 0f)
+        assertEquals(1f, high.bounds.maxX, 0f)
+        assertEquals(-2f, high.bounds.minZ, 1e-6f)
+        assertEquals(1f, high.bounds.maxZ, 0f)
+        assertEquals("the +Y half is half the box", 6.0, signedVolume(high), 1e-5)
+        assertEquals("the -Y half is the other half", 6.0, signedVolume(low), 1e-5)
+    }
+
+    @Test
+    fun aCutOnTheBoundingBoxMinimumRemovesNothingOnTheKeptSide() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        // A plane on the low bound has nothing under it, so the high half is the
+        // whole model - and it comes back as the very same instance, so a cut
+        // that changes no geometry copies nothing and rewrites nothing.
+        assertSame(
+            "a cut on the X minimum leaves the high half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.X, mesh.bounds.minX, Half.HIGH),
+        )
+        assertSame(
+            "a cut on the Y minimum leaves the high half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.Y, mesh.bounds.minY, Half.HIGH),
+        )
+        assertSame(
+            "a cut on the Z minimum leaves the high half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.Z, mesh.bounds.minZ, Half.HIGH),
+        )
+        // Mirrored: a plane on the high bound leaves the low half untouched.
+        assertSame(
+            "a cut on the X maximum leaves the low half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.X, mesh.bounds.maxX, Half.LOW),
+        )
+        assertSame(
+            "a cut on the Y maximum leaves the low half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.Y, mesh.bounds.maxY, Half.LOW),
+        )
+        assertSame(
+            "a cut on the Z maximum leaves the low half alone",
+            mesh,
+            clip(mesh, ModelPlacement.Axis.Z, mesh.bounds.maxZ, Half.LOW),
+        )
+    }
+
+    @Test
+    fun aCutOutsideTheMeshIsReturnedUnchanged() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        // The plane is clear of the model on the removed side, so there is
+        // nothing to cut away: the same instance comes back, vertex data
+        // included, exactly as the bed clip returns a model above the plate.
+        val outsideHigh = listOf(
+            ModelPlacement.Axis.X to mesh.bounds.minX - 5f,
+            ModelPlacement.Axis.Y to mesh.bounds.minY - 5f,
+            ModelPlacement.Axis.Z to mesh.bounds.minZ - 5f,
+        )
+        outsideHigh.forEach { (axis, offset) ->
+            val untouched = clip(mesh, axis, offset, Half.HIGH)
+            assertSame("a cut outside the mesh on " + axis + " is not copied", mesh, untouched)
+            assertSame(
+                "its vertex data is the same instance on " + axis,
+                mesh.interleavedVertices,
+                untouched.interleavedVertices,
+            )
+        }
+        val outsideLow = listOf(
+            ModelPlacement.Axis.X to mesh.bounds.maxX + 5f,
+            ModelPlacement.Axis.Y to mesh.bounds.maxY + 5f,
+            ModelPlacement.Axis.Z to mesh.bounds.maxZ + 5f,
+        )
+        outsideLow.forEach { (axis, offset) ->
+            assertSame(
+                "a low keep outside the mesh on " + axis + " is not copied",
+                mesh,
+                clip(mesh, axis, offset, Half.LOW),
+            )
+        }
+    }
+
+    @Test
+    fun aCutWithTheWholeMeshOnTheRemovedSideYieldsAnEmptyMesh() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        val below = clip(mesh, ModelPlacement.Axis.X, mesh.bounds.minX - 1f, Half.LOW)
+        val above = clip(mesh, ModelPlacement.Axis.Y, mesh.bounds.maxY + 1f, Half.HIGH)
+
+        assertEquals("the whole model was on the removed side", 0, below.triangleCount)
+        assertEquals("no vertex data is kept", 0, below.interleavedVertices.size)
+        assertNotSame("it is not the mesh it came from", mesh, below)
+        assertEquals("nothing is left above the plane either", 0, above.triangleCount)
+    }
+
+    @Test
+    fun cappingClosesTheCutFaceSoTheHalfIsASolid() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        // Every axis, because the cap's winding is built in the plane's own two
+        // coordinates and a wrong-handed pair would turn the cap inside out on
+        // one axis only. The closed half is a solid of known volume - the box is
+        // 2 x 2 x 3 - and the open one is off by exactly the face it is missing,
+        // so the two answers differ on every axis.
+        val cases = listOf(
+            Triple(ModelPlacement.Axis.X, 0.5f, 3.0),
+            Triple(ModelPlacement.Axis.Y, 0.5f, 3.0),
+            Triple(ModelPlacement.Axis.Z, 0.5f, 2.0),
+        )
+        cases.forEach { (axis, offset, volume) ->
+            val open = clip(mesh, axis, offset, Half.HIGH)
+            val closed = clipClosed(mesh, axis, offset, Half.HIGH)
+
+            assertEquals("the open half on " + axis + " is missing its cut face", true, open.triangleCount < closed.triangleCount)
+            assertEquals("the capped half on " + axis + " is a closed solid", volume, signedVolume(closed), 1e-5)
+            assertEquals("and the cap sits on the plane", offset, closed.bounds.spanAlong(axis).start, 1e-6f)
+        }
+        assertEquals("up to the face it started from", 1f, clipClosed(mesh, ModelPlacement.Axis.Z, 0.5f, Half.HIGH).bounds.maxZ, 0f)
+    }
+
+    @Test
+    fun theCapFacesTheHalfThatWasRemoved() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        // A high half stands on the plane, so its cap faces down the axis; a low
+        // half hangs under it and the cap faces up. Both are read off the cap
+        // triangles themselves - the ones lying in the plane.
+        assertEquals(-1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.X, 0f, Half.HIGH), ModelPlacement.Axis.X, 0f))
+        assertEquals(1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.X, 0f, Half.LOW), ModelPlacement.Axis.X, 0f))
+        assertEquals(-1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.Y, 0f, Half.HIGH), ModelPlacement.Axis.Y, 0f))
+        assertEquals(1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.Y, 0f, Half.LOW), ModelPlacement.Axis.Y, 0f))
+        assertEquals(-1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.Z, 0f, Half.HIGH), ModelPlacement.Axis.Z, 0f))
+        assertEquals(1f, capNormal(clipClosed(mesh, ModelPlacement.Axis.Z, 0f, Half.LOW), ModelPlacement.Axis.Z, 0f))
+    }
+
+    @Test
+    fun cappingFollowsTheSameAnswersAsClippingWhenThereIsNothingToClose() {
+        val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
+
+        // A plane with nothing on the removed side, and one with the whole mesh on
+        // it: the same instance and the same empty result as the open clip.
+        assertSame(
+            "a cut outside the mesh is not copied",
+            mesh,
+            clipClosed(mesh, ModelPlacement.Axis.X, mesh.bounds.minX - 5f, Half.HIGH),
+        )
+        assertEquals(
+            "nothing on the kept side comes back empty",
+            0,
+            clipClosed(mesh, ModelPlacement.Axis.X, mesh.bounds.minX - 1f, Half.LOW).triangleCount,
+        )
+        // A lone triangle is not closed geometry: its cross-section cannot chain,
+        // so the cap is refused and the open clip is what comes back.
+        val lone = mesh(
+            floatArrayOf(
+                0f, 0f, -1f, 0f, 0f, 1f,
+                2f, 0f, -1f, 0f, 0f, 1f,
+                1f, 1f, 1f, 0f, 0f, 1f,
+            ),
+        )
+        assertEquals(
+            "an unchained cross-section is left open",
+            clip(lone, ModelPlacement.Axis.X, 1f, Half.HIGH).triangleCount,
+            clipClosed(lone, ModelPlacement.Axis.X, 1f, Half.HIGH).triangleCount,
+        )
+    }
+
+    /** The normal along [axis] of the cap triangle the clip closed [mesh] with. */
+    private fun capNormal(mesh: StlMesh, axis: ModelPlacement.Axis, offsetMm: Float): Float {
+        var offset = 0
+        repeat(mesh.triangleCount) {
+            val vertices = mesh.interleavedVertices
+            val onPlane = (0 until 3).all { vertex ->
+                vertices[offset + vertex * 6 + planeChannel(axis)] == offsetMm
+            }
+            if (onPlane) {
+                val normal = vertices[offset + 3 + planeChannel(axis)]
+                assertEquals("a cap triangle carries the plane normal", 1f, kotlin.math.abs(normal), 0f)
+                return normal
+            }
+            offset += 18
+        }
+        throw AssertionError("the clip produced no cap triangle")
+    }
+
+    /** Where [axis] keeps its own position inside an interleaved vertex. */
+    private fun planeChannel(axis: ModelPlacement.Axis): Int = when (axis) {
+        ModelPlacement.Axis.X -> 0
+        ModelPlacement.Axis.Y -> 1
+        ModelPlacement.Axis.Z -> 2
     }
 
     private fun mesh(floats: FloatArray): StlMesh {
