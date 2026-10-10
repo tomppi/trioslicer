@@ -965,7 +965,18 @@ object SnapFit {
             }
         }
         if (cells.isEmpty()) return null
-        return SeamRim(originMm, side, rise, rect.width, rect.height, cells)
+        // The cells travel with the rim: they are the material behind the
+        // outline, and what an automatic anchor is inset against so its key
+        // stays on the face instead of hanging over the edge.
+        return SeamRim(
+            originMm = originMm,
+            side = side,
+            rise = rise,
+            widthMm = rect.width,
+            heightMm = rect.height,
+            rimPoints = cells,
+            grid = RimGrid(rect.minX, rect.minY, rect.width, rect.height, count, shared),
+        )
     }
 
     /**

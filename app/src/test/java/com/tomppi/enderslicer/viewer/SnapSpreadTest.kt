@@ -72,23 +72,41 @@ class SnapSpreadTest {
         assertTrue("2 to 4 joints, as the option promises: " + proposed.anchors.size, proposed.anchors.size in 2..4)
         val spacing = SnapSpread.spacingFor(probe)
         assertTrue("the spacing is the footprint plus a wall: " + spacing, spacing > probe.dimensions.beamWidthMm)
-        for (first in proposed.anchors.indices) {
-            for (second in first + 1 until proposed.anchors.size) {
-                val gap = distance(proposed.anchors[first], proposed.anchors[second])
-                assertTrue(
-                    "joints " + (first + 1) + " and " + (second + 1) + " are " + gap + " mm apart, " +
-                        "and the minimum is " + spacing,
-                    gap >= spacing - 1e-3f,
-                )
-            }
-        }
-        // Every proposed joint really is on the rim: the app proposes places
-        // where the material is, not places in the middle of the face.
-        val rimPoints = rim.rimPoints
+        // What the spread proposes is what the layout guard lets the user join:
+        // the sampling runs on the guard's own rule, because two anchors a joint
+        // apart can still have their pockets cross when they sit diagonally, and
+        // the device found exactly that - a spread the user could not join.
+        val joints = proposed.anchors.map { jointAt(lowFit, highFit, it) }
+        val wall = joints.maxOf { it.dimensions.beamThicknessMm }
+        val conflicts = SnapLayout.conflicts(joints.map(SnapLayout::footprintOf), wall)
+        assertTrue("a spread that can be joined: " + conflicts, conflicts.isEmpty())
+        // Every proposed joint stands on the rim rather than in the middle of
+        // the face, and stands there INSIDE the outline: the app proposes
+        // places where the joint itself fits, not places on the edge where its
+        // key would hang over it.
+        val grid = rim.grid!!
+        val inset = SnapSpread.anchorInsetFor(probe)
+        val room = SnapSpread.anchorRoomFor(probe)
         for (anchor in proposed.anchors) {
             val plane = rim.plane(anchor)
-            val nearest = rimPoints.minOf { hypot((it.x - plane.x).toDouble(), (it.y - plane.y).toDouble()) }
-            assertTrue("a proposed joint is on the rim: " + nearest + " mm from it", nearest <= 2.0)
+            val nearest = rim.rimPoints.minOf { hypot((it.x - plane.x).toDouble(), (it.y - plane.y).toDouble()) }
+            assertTrue(
+                "a proposed joint is at the rim, not in the middle of the face: " + nearest + " mm from it",
+                nearest <= maxOf(room.maxX, -room.minX) + 2.0f,
+            )
+            val distance = grid.distanceToEdge(grid.columnOf(plane.x), grid.rowOf(plane.y), 16)
+            assertTrue(
+                "and inset from the outline by at least half the key: " + distance + " mm, asked " + inset,
+                distance >= inset - 1e-3f,
+            )
+            val covered = coverage(
+                grid,
+                plane.x + room.minX,
+                plane.x + room.maxX,
+                plane.y + room.minY,
+                plane.y + room.maxY,
+            )
+            assertEquals("with the whole joint on material: " + covered, 1f, covered, 1e-3f)
         }
     }
 
@@ -104,14 +122,42 @@ class SnapSpreadTest {
         val plan = SnapSpread.plan(rim, probe, placed, SnapSpread.MAX_JOINTS)
 
         val proposed = plan as SnapSpread.Plan.Proposed
-        val spacing = SnapSpread.spacingFor(probe)
-        for (anchor in proposed.anchors) {
-            val plane = rim.plane(anchor)
-            for (taken in placed) {
-                val gap = hypot((plane.x - taken.x).toDouble(), (plane.y - taken.y).toDouble()).toFloat()
-                assertTrue("a proposal is " + gap + " mm from a joint already placed", gap >= spacing - 1e-3f)
-            }
-        }
+        // The joints already on the seam are part of the packing, not just of
+        // the distance: the guard's rule is what decides whether they can be
+        // joined, here as it does on the plate.
+        val joints = proposed.anchors.map { jointAt(lowFit, highFit, it) } +
+            placed.map { jointAt(lowFit, highFit, rim.model(it)) }
+        val wall = joints.maxOf { it.dimensions.beamThicknessMm }
+        val conflicts = SnapLayout.conflicts(joints.map(SnapLayout::footprintOf), wall)
+        assertTrue("a spread that keeps clear of what is already placed: " + conflicts, conflicts.isEmpty())
+    }
+
+    @Test
+    fun theSpreadStepsAroundAJointAlreadyOnTheMiddleOfTheSeam() {
+        // The device's other find: a hand-placed joint near the middle of a
+        // 20 mm seam, and the spread's own first joint landing on top of it -
+        // the two then crossed by 0.98 mm and Join refused the whole set. The
+        // seed is packed against what is already there, like every other point.
+        val (low, high) = halves(20f, 20f, 15f, 7.5f)
+        val probe = probeJoint(low, high, Vec3(10f, 10f, 7.5f))
+        val axes = SnapFit.frameAxes(Vec3(0f, 0f, 1f))!!
+        val (lowFit, highFit) = (low to high).fittings(7.5f)
+        val rim = SnapFit.seamRim(lowFit, highFit, axes.first, axes.second, axes.third, Vec3(10f, 10f, 7.5f))!!
+        // The middle of the face is where the seed's own ideal point sits.
+        val placed = listOf(rim.plane(Vec3(10f, 10f, 7.5f)))
+
+        val plan = SnapSpread.plan(rim, probe, placed, SnapSpread.MAX_JOINTS)
+
+        val proposed = plan as SnapSpread.Plan.Proposed
+        assertTrue(
+            "the spread still finds room beside it, and not on it: " + proposed.anchors.size,
+            proposed.anchors.size in 2..4,
+        )
+        val joints = proposed.anchors.map { jointAt(lowFit, highFit, it) } +
+            placed.map { jointAt(lowFit, highFit, rim.model(it)) }
+        val wall = joints.maxOf { it.dimensions.beamThicknessMm }
+        val conflicts = SnapLayout.conflicts(joints.map(SnapLayout::footprintOf), wall)
+        assertTrue("the guard lets the whole set be joined: " + conflicts, conflicts.isEmpty())
     }
 
     @Test
@@ -128,7 +174,7 @@ class SnapSpreadTest {
         val plan = SnapSpread.plan(rim, probe, rim.rimPoints, SnapSpread.MAX_JOINTS)
 
         val refused = plan as SnapSpread.Plan.Refused
-        assertTrue("in the user's terms: " + refused.reason, refused.reason.contains("room for 1 joint"))
+        assertTrue("in the user's terms: " + refused.reason, refused.reason.contains("no room for another"))
         assertTrue("and it names the spacing: " + refused.reason, refused.reason.contains("spacing"))
         assertTrue("and says what to do: " + refused.reason, refused.reason.contains("smaller"))
     }
@@ -200,6 +246,23 @@ class SnapSpreadTest {
     private fun probeJoint(low: StlMesh, high: StlMesh, anchor: Vec3): SnapFitJoint =
         probeJointOn(SnapFitHalf.inPlace(low, anchor.z), SnapFitHalf.inPlace(high, anchor.z), anchor)
 
+    /** One joint of the spread, at [anchor], exactly as the preview would build it. */
+    private fun jointAt(lowFit: SnapFitHalf, highFit: SnapFitHalf, anchor: Vec3): SnapFitJoint {
+        val result = SnapJoint.build(
+            axis = ModelPlacement.Axis.Z,
+            anchorMm = anchor,
+            scale = 1f,
+            lowHalf = lowFit,
+            highHalf = highFit,
+            beamHalf = SnapJoint.JointHalf.LOW,
+        )
+        return when (result) {
+            is SnapJoint.Either.Placed -> result.placement.joint
+            is SnapJoint.Either.Flipped -> result.placement.joint
+            is SnapJoint.Either.Failed -> throw AssertionError("a proposal has to build: " + result.failure.summary)
+        }
+    }
+
     /** One joint on a pair that is already placed, exactly as the preview builds it. */
     private fun probeJointOn(low: SnapFitHalf, high: SnapFitHalf, anchor: Vec3): SnapFitJoint {
         val result = SnapJoint.build(
@@ -238,6 +301,88 @@ class SnapSpreadTest {
         val box = MeshFixtures.box(0f, 0f, 0f, width, depth, height)
         return BedClipper.clipClosed(box, ModelPlacement.Axis.Z, cut, Half.LOW) to
             BedClipper.clipClosed(box, ModelPlacement.Axis.Z, cut, Half.HIGH)
+    }
+
+    @Test
+    fun theAutomaticAnchorsAreInsetSoTheKeyStaysOnASmallFace() {
+        // The device's own complaint: a 20 mm face took its automatic joints
+        // exactly on the outline, and the joint's key - which sits BESIDE the
+        // beam, a whole key away from the anchor - then hung over the edge of
+        // the part. The anchor is inset by half the key's own width now, and
+        // this is what that has to buy: the key on the material, on a face
+        // small enough that a key's width is a real fraction of it.
+        val (low, high) = halves(20f, 20f, 15f, 7.5f)
+        val probe = probeJoint(low, high, Vec3(10f, 10f, 7.5f))
+        val axes = SnapFit.frameAxes(Vec3(0f, 0f, 1f))!!
+        val (lowFit, highFit) = (low to high).fittings(7.5f)
+        val rim = SnapFit.seamRim(lowFit, highFit, axes.first, axes.second, axes.third, Vec3(10f, 10f, 7.5f))!!
+        val grid = rim.grid!!
+        val inset = SnapSpread.anchorInsetFor(probe)
+
+        val plan = SnapSpread.plan(rim, probe, emptyList(), SnapSpread.MAX_JOINTS)
+        val proposed = plan as SnapSpread.Plan.Proposed
+        assertTrue("a 20 mm face still takes a spread: " + proposed.anchors.size, proposed.anchors.size >= 2)
+        for (anchor in proposed.anchors) {
+            val plane = rim.plane(anchor)
+            // Inside the outline by the inset itself. The outline cells cannot
+            // say this: they are a millimetre apart, and one cell of slack is
+            // all the difference between on the rim and a key over the edge.
+            val distance = grid.distanceToEdge(grid.columnOf(plane.x), grid.rowOf(plane.y), 8)
+            assertTrue(
+                "the anchor is inset from the material's edge: " + distance + " mm, asked " + inset,
+                distance >= inset - 1e-3f,
+            )
+            // The key's own footprint about that anchor, as SnapFit covers the
+            // cap with it: it has to be on the material the halves share.
+            val dimensions = probe.dimensions
+            val covered = coverage(
+                grid,
+                plane.x + dimensions.keyOffsetMm - dimensions.keySizeMm * 0.5f,
+                plane.x + dimensions.keyOffsetMm + dimensions.keySizeMm * 0.5f,
+                plane.y - dimensions.keySizeMm * 0.5f,
+                plane.y + dimensions.keySizeMm * 0.5f,
+            )
+            assertEquals("the key sits on the face, not over its edge: " + covered, 1f, covered, 1e-3f)
+        }
+    }
+
+    @Test
+    fun aRimWithNoMaterialToMeasureIsLeftExactlyAsItWas() {
+        // A hand-built rim carries no grid, and the inset is read off the
+        // material rather than guessed: nothing to measure means nothing moves.
+        val (low, high) = halves(80f, 40f, 40f, 20f)
+        val probe = probeJoint(low, high, Vec3(40f, 20f, 20f))
+        val axes = SnapFit.frameAxes(Vec3(0f, 0f, 1f))!!
+        val (lowFit, highFit) = (low to high).fittings(20f)
+        val measured = SnapFit.seamRim(lowFit, highFit, axes.first, axes.second, axes.third, Vec3(40f, 20f, 20f))!!
+        val handBuilt = SeamRim(
+            measured.originMm,
+            measured.side,
+            measured.rise,
+            measured.widthMm,
+            measured.heightMm,
+            measured.rimPoints,
+        )
+
+        assertEquals(measured.rimPoints, SnapSpread.anchorsFor(handBuilt, probe))
+        assertTrue(
+            "a rim with material to measure against is inset from it",
+            SnapSpread.anchorsFor(measured, probe).size != measured.rimPoints.size,
+        )
+    }
+
+    /** How much of one rectangle in the seam's plane is material both halves share. */
+    private fun coverage(grid: RimGrid, minX: Float, maxX: Float, minY: Float, maxY: Float): Float {
+        val samples = 8
+        var inside = 0
+        for (row in 0 until samples) {
+            for (column in 0 until samples) {
+                val x = minX + (maxX - minX) * (column + 0.5f) / samples
+                val y = minY + (maxY - minY) * (row + 0.5f) / samples
+                if (grid.isShared(grid.columnOf(x), grid.rowOf(y))) inside++
+            }
+        }
+        return inside.toFloat() / (samples * samples)
     }
 
     private fun distance(first: Vec3, second: Vec3): Float =

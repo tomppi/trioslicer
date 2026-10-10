@@ -2,20 +2,90 @@ package com.tomppi.enderslicer.viewer
 
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.hypot
 
 /** One point in the seam's own plane, in millimetres from the rim's origin. */
 data class SeamPoint(val x: Float, val y: Float)
 
 /**
+ * The room one joint takes about its own anchor, in the seam's plane: how far
+ * the beam reaches on one side and how far the key reaches on the other.
+ */
+data class AnchorRoom(
+    val minX: Float,
+    val maxX: Float,
+    val minY: Float,
+    val maxY: Float,
+)
+
+/**
+ * The grid the rim was read from: which cells of the shared cross-section are
+ * material, and the rectangle they were sampled in.
+ *
+ * It is what lets a joint's anchor be put INSIDE the outline rather than on it.
+ * The rim is the edge of the material, and an anchor on the edge spends half
+ * the joint's own footprint on air - on a small part the key visibly hangs over
+ * the face. The cells are what says how far inside a point really is.
+ */
+data class RimGrid(
+    val minX: Float,
+    val minY: Float,
+    val widthMm: Float,
+    val heightMm: Float,
+    /** Cells per side: the grid is square, the cells are not. */
+    val samples: Int,
+    /** Row-major, [samples] squared: true where both halves have material. */
+    val shared: BooleanArray,
+) {
+    val cellWidthMm: Float get() = widthMm / samples
+    val cellHeightMm: Float get() = heightMm / samples
+
+    /** The widest a cell is, which is the resolution everything here is read at. */
+    val widestCellMm: Float get() = maxOf(cellWidthMm, cellHeightMm)
+
+    fun isShared(column: Int, row: Int): Boolean =
+        column in 0 until samples && row in 0 until samples && shared[row * samples + column]
+
+    /** The cell a plane point falls in. May be outside the grid. */
+    fun columnOf(x: Float): Int = floor((x - minX) / cellWidthMm).toInt()
+    fun rowOf(y: Float): Int = floor((y - minY) / cellHeightMm).toInt()
+
+    fun centreX(column: Int): Float = minX + widthMm * (column + 0.5f) / samples
+    fun centreY(row: Int): Float = minY + heightMm * (row + 0.5f) / samples
+
+    /**
+     * How far a cell's centre is from the nearest cell that is not shared, in
+     * millimetres, looking no further than [reach] cells away. A cell with
+     * nothing but material within [reach] is reported as [Float.MAX_VALUE]:
+     * the caller only compares against a distance it asked for.
+     */
+    fun distanceToEdge(column: Int, row: Int, reach: Int): Float {
+        var best = Float.MAX_VALUE
+        for (otherRow in row - reach..row + reach) {
+            for (otherColumn in column - reach..column + reach) {
+                if (isShared(otherColumn, otherRow)) continue
+                val dx = (otherColumn - column) * cellWidthMm
+                val dy = (otherRow - row) * cellHeightMm
+                val distance = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                if (distance < best) best = distance
+            }
+        }
+        return best
+    }
+}
+
+/**
  * The rim of the cross-section the two halves share at their mating faces: the
  * material both of them have, sampled and reduced to its own outline.
  *
  * [rimPoints] are the cells of that material which have air on at least one
- * side, in the seam's plane about [originMm]. They are what the automatic
- * spread walks, because a point on the rim is a point where the joint has both
- * something to root in and something to cut, and an even spread along it puts
- * the joints where the material is rather than where the bounding box is.
+ * side, in the seam's plane about [originMm]. They are the outline itself, and
+ * [grid] is the material behind them, which is what an anchor gets inset
+ * against: a point on the rim is a point where the joint has both something to
+ * root in and something to cut, and an even spread along it puts the joints
+ * where the material is rather than where the bounding box is.
  */
 data class SeamRim(
     val originMm: Vec3,
@@ -24,6 +94,8 @@ data class SeamRim(
     val widthMm: Float,
     val heightMm: Float,
     val rimPoints: List<SeamPoint>,
+    /** Null for a rim that was built by hand: there is nothing to measure inset against. */
+    val grid: RimGrid? = null,
 ) {
     /** A plane point as a point in the halves' own coordinates. */
     fun model(point: SeamPoint): Vec3 = originMm + side * point.x + rise * point.y
@@ -81,15 +153,120 @@ object SnapSpread {
         footprintDiameterMm(joint) + joint.dimensions.beamThicknessMm
 
     /**
+     * How far inside the seam's own outline an automatic anchor sits: half the
+     * key's own width.
+     *
+     * The rim is the EDGE of the shared material, so a joint anchored exactly
+     * on it spends half its key on air - which is what a 20 mm cube showed.
+     * This is the floor the anchor keeps whatever else is measured; the key
+     * itself sits BESIDE the anchor, a whole key away from it, and
+     * [anchorRoomFor] carries that distance.
+     */
+    fun anchorInsetFor(joint: SnapFitJoint): Float = joint.dimensions.keySizeMm * 0.5f
+
+    /**
+     * The room one joint takes about its own anchor, in the seam's own plane:
+     * the beam on one side of the anchor and the key on the other, as the joint
+     * was really built.
+     *
+     * The key is not centred on the anchor - it sits clear of the beam, so its
+     * whole width stands off to one side - and that is why half a key width
+     * alone is not enough to keep it on the face. The pad is deliberately NOT
+     * part of the room, exactly as the spacing leaves it out: a whole-seam pad
+     * IS the seam's own cross-section.
+     */
+    fun anchorRoomFor(joint: SnapFitJoint): AnchorRoom {
+        val dimensions = joint.dimensions
+        val halfRise = maxOf(dimensions.beamThicknessMm, dimensions.keySizeMm) * 0.5f
+        return AnchorRoom(
+            minX = -dimensions.beamWidthMm * 0.5f,
+            maxX = dimensions.keyOffsetMm + dimensions.keySizeMm * 0.5f,
+            minY = -halfRise,
+            maxY = halfRise,
+        )
+    }
+
+    /**
+     * The points the spread may anchor to: [rim]'s own outline, moved inside
+     * the material far enough that the joint standing there is on the face.
+     *
+     * Two things are measured per cell: that the whole room the joint takes
+     * about its anchor is material both halves share - so the key cannot hang
+     * over the edge, which is what a 20 mm face showed - and that the anchor is
+     * at least half the key's own width inside the outline. The anchors are the
+     * rim of what is left, so they still follow the seam's own contour and
+     * still trace a hollow seam's walls. A seam with no cell that can hold the
+     * whole joint falls back to its own middle line rather than losing every
+     * anchor, which is the most room the material has to offer. A rim with no
+     * grid to measure against - one built by hand - is returned as it is.
+     */
+    fun anchorsFor(rim: SeamRim, joint: SnapFitJoint): List<SeamPoint> {
+        val grid = rim.grid ?: return rim.rimPoints
+        val inset = anchorInsetFor(joint)
+        if (inset <= 0f) return rim.rimPoints
+        val reach = ceil(inset / minOf(grid.cellWidthMm, grid.cellHeightMm)).toInt() + 1
+        val size = grid.samples
+        val distance = FloatArray(size * size) { -1f }
+        var deepest = 0f
+        for (row in 0 until size) {
+            for (column in 0 until size) {
+                if (!grid.isShared(column, row)) continue
+                val far = grid.distanceToEdge(column, row, reach)
+                // Nothing but material within reach: deeper than anything the
+                // inset can ask for, and only ever compared against it.
+                val value = if (far == Float.MAX_VALUE) inset + grid.widestCellMm else far
+                distance[row * size + column] = value
+                if (value > deepest) deepest = value
+            }
+        }
+        if (deepest <= 0f) return rim.rimPoints
+        val room = anchorRoomFor(joint)
+        // The room is rounded OUTWARD to whole cells: a cell that only part of
+        // the joint stands on is a cell the joint needs, and rounding the other
+        // way left the key's far corner in a cell nobody had checked.
+        val roomColumns = floor(room.minX / grid.cellWidthMm).toInt()..ceil(room.maxX / grid.cellWidthMm).toInt()
+        val roomRows = floor(room.minY / grid.cellHeightMm).toInt()..ceil(room.maxY / grid.cellHeightMm).toInt()
+        val holds = BooleanArray(size * size) { index ->
+            val column = index % size
+            val row = index / size
+            distance[index] >= inset - 1e-4f &&
+                roomColumns.all { across ->
+                    roomRows.all { up -> grid.isShared(column + across, row + up) }
+                }
+        }
+        // The material's own thinnest place is the floor: a seam that cannot
+        // hold the whole joint keeps its middle line rather than losing every
+        // anchor, and says what it is when the joints are built.
+        val kept = if (holds.any { it }) {
+            holds
+        } else {
+            val threshold = minOf(inset, deepest)
+            BooleanArray(size * size) { index -> distance[index] >= threshold - 1e-4f }
+        }
+        val anchors = ArrayList<SeamPoint>()
+        for (row in 0 until size) {
+            for (column in 0 until size) {
+                val index = row * size + column
+                if (!kept[index]) continue
+                val edge = !kept.getOrElse(index - 1) { false } || !kept.getOrElse(index + 1) { false } ||
+                    !kept.getOrElse(index - size) { false } || !kept.getOrElse(index + size) { false }
+                if (edge) anchors += SeamPoint(grid.centreX(column), grid.centreY(row))
+            }
+        }
+        return anchors.takeIf { it.isNotEmpty() } ?: rim.rimPoints
+    }
+
+    /**
      * Up to [maxCount] anchors on [rim], at least [spacingFor] apart from one
      * another and from anything in [occupied].
      *
-     * The points are chosen by farthest-point sampling: the first is the rim
-     * point nearest the middle of the rim, and each next is the point furthest
-     * from everything chosen so far. On a rim that is a band - a hull's
-     * cross-section - that walks the band's own length and spreads the joints
-     * evenly along it rather than clustering them where the sampling happened
-     * to start.
+     * The points are the rim INSET by [anchorInsetFor], so the joint's key sits
+     * on the face rather than over its edge, and they are chosen by
+     * farthest-point sampling: the first is the point nearest the middle of the
+     * rim, and each next is the point furthest from everything chosen so far.
+     * On a rim that is a band - a hull's cross-section - that walks the band's
+     * own length and spreads the joints evenly along it rather than clustering
+     * them where the sampling happened to start.
      */
     fun plan(
         rim: SeamRim,
@@ -97,30 +274,51 @@ object SnapSpread {
         occupied: List<SeamPoint> = emptyList(),
         maxCount: Int = MAX_JOINTS,
     ): Plan {
-        val points = rim.rimPoints
+        val points = anchorsFor(rim, joint)
         if (points.isEmpty()) {
             return Plan.Refused("the two halves share no material at this seam, so there is nowhere to spread a joint")
         }
         val spacing = spacingFor(joint)
+        // The room the joint takes about its own anchor, and the wall that has
+        // to stand between two of them - the layout guard's own two numbers.
+        // Sampling by anything looser proposes placements the guard then
+        // refuses: two anchors a joint's own diameter apart can still have
+        // their pockets cross when they sit diagonally, and the user is left
+        // holding a spread they cannot join.
+        val room = SnapLayout.footprintOf(joint).rect
+        val wall = joint.dimensions.beamThicknessMm
         // The rim's own middle: the first joint goes as near it as the rim
-        // allows, which is a point that exists by construction.
+        // allows, which is a point that exists by construction - and as near it
+        // as the joints ALREADY on the seam allow, which is what the seed used
+        // to skip. A hand-placed joint near the middle of the seam then had the
+        // spread's first joint land on top of it, and the pair could not be
+        // joined at all: the device found exactly that, 0.98 mm of pocket
+        // crossing, after the whole spread had been accepted into the panel.
         val centreX = (points.minOf { it.x } + points.maxOf { it.x }) * 0.5f
         val centreY = (points.minOf { it.y } + points.maxOf { it.y }) * 0.5f
         val chosen = ArrayList<SeamPoint>()
-        points.minByOrNull { hypot((it.x - centreX).toDouble(), (it.y - centreY).toDouble()) }?.let { chosen += it }
+        val seed = points
+            .filter { point -> occupied.all { roomGap(room, point, it) >= wall } }
+            .minByOrNull { hypot((it.x - centreX).toDouble(), (it.y - centreY).toDouble()) }
+            ?: return Plan.Refused(
+                "the joints already on this seam leave no room for another at the " +
+                    millimetres(spacing) + " mm spacing a joint this size needs" +
+                    "; move one, remove one, or make the joints smaller",
+            )
+        chosen += seed
         while (chosen.size < maxCount) {
             var best: SeamPoint? = null
             var bestGap = -1f
             for (point in points) {
                 var nearest = Float.MAX_VALUE
-                for (taken in chosen) nearest = minOf(nearest, distance(point, taken))
-                for (taken in occupied) nearest = minOf(nearest, distance(point, taken))
+                for (taken in chosen) nearest = minOf(nearest, roomGap(room, point, taken))
+                for (taken in occupied) nearest = minOf(nearest, roomGap(room, point, taken))
                 if (nearest > bestGap + 1e-4f) {
                     bestGap = nearest
                     best = point
                 }
             }
-            if (best == null || bestGap < spacing) break
+            if (best == null || bestGap < wall) break
             chosen += best
         }
         // The joints already placed count towards the spacing but are not this
@@ -173,6 +371,27 @@ object SnapSpread {
             widest = maxOf(widest, abs(local.x), abs(local.y))
         }
         return widest
+    }
+
+    /**
+     * How much room is left between two joints whose anchors are [one] and
+     * [other], measured the way [SnapLayout.conflicts] measures it: their
+     * footprints, in the seam's plane, on both axes at once. Negative when the
+     * two rectangles cross, which is the pocket cutting into its neighbour.
+     *
+     * Both joints are taken to be [room], the joint that will stand there: the
+     * spread is deciding whether a place is free, and the shape of the joint
+     * does not change with the place.
+     */
+    private fun roomGap(room: SnapLayout.SeamRect, one: SeamPoint, other: SeamPoint): Float {
+        val dx = other.x - one.x
+        val dy = other.y - one.y
+        val gapX = maxOf(room.minX, room.minX + dx) - minOf(room.maxX, room.maxX + dx)
+        val gapY = maxOf(room.minY, room.minY + dy) - minOf(room.maxY, room.maxY + dy)
+        // Crossing: report the overlap as a negative gap, so it can never pass
+        // a check written as "at least a wall apart".
+        if (gapX <= 0f && gapY <= 0f) return maxOf(gapX, gapY)
+        return hypot(maxOf(gapX, 0f).toDouble(), maxOf(gapY, 0f).toDouble()).toFloat()
     }
 
     private fun distance(first: SeamPoint, second: SeamPoint): Float =

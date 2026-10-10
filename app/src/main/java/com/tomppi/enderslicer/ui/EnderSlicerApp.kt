@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1699,6 +1701,7 @@ fun EnderSlicerApp(
                         ViewerPanel(
                             state = state,
                             viewerMode = viewerMode,
+                            expandedLayout = expandedLayout,
                             selectedLayerIndex = selectedLayerIndex,
                             modelOrientation = modelOrientation,
                             onOrientationChanged = { modelOrientation = it },
@@ -3020,6 +3023,8 @@ private fun MenuSectionLabel(label: String) {
 private fun ViewerPanel(
     state: MainUiState,
     viewerMode: ViewerMode,
+    /** True on the app's expanded (unfolded) layout; the snap panel splits on it. */
+    expandedLayout: Boolean,
     selectedLayerIndex: Int,
     modelOrientation: ViewerOrientation?,
     onOrientationChanged: (ViewerOrientation) -> Unit,
@@ -3265,6 +3270,9 @@ private fun ViewerPanel(
                 state = state,
                 actions = snapActions,
                 onClose = onCloseSnapUi,
+                // The same width breakpoint the model tools sheet splits on: a
+                // fold puts the three groups side by side, a phone stacks them.
+                expandedLayout = expandedLayout,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(12.dp),
@@ -4022,6 +4030,26 @@ private class SnapActions(
 )
 
 /**
+ * What the snap panel's controls may take of the plate before they scroll: a
+ * share of the viewer, with a ceiling so that a tall window does not simply
+ * hand them the model they are used on. The three-column panel needs a fraction
+ * of what the single column does, which is the point of splitting it.
+ *
+ * The share is the binding limit for the wide panel, and it is a share of the
+ * PLATE rather than a number of dp: at 150% the interface draws the same
+ * controls a half larger again, and a 300 dp ceiling then took a third of the
+ * plate back from the model the joints are tapped on.
+ */
+private const val SNAP_WIDE_CONTROLS_FRACTION = 0.28f
+private const val SNAP_PHONE_CONTROLS_FRACTION = 0.5f
+private val SNAP_WIDE_CONTROLS_MAX = 300.dp
+private val SNAP_PHONE_CONTROLS_MAX = 360.dp
+
+/** How much of a seam's joint list is shown before the list scrolls itself. */
+private val SNAP_JOINT_LIST_MAX = 150.dp
+private val SNAP_JOINT_LIST_COLUMN_MAX = 132.dp
+
+/**
  * The snap fit, at the bottom of the model view in the split toolbar's own
  * style: the joints placed on the seam, the controls for the selected one, and
  * the action that joins the halves.
@@ -4031,12 +4059,22 @@ private class SnapActions(
  * rung, its own teeth, its own facing and its own clearance step, and the panel
  * says what each one came out as. The scale is still one control for the whole
  * joint; the hook's own sliders override their dimension in millimetres.
+ *
+ * The controls are grouped by purpose - Setup, then the Hook's dimensions, then
+ * the Fits - and on a window with the app's expanded layout the three groups
+ * stand side by side as three columns of the one panel, the way the Smart
+ * Infill sheet splits its workflow. That is the point of the split: the joints
+ * are placed by tapping the model, so a panel that covers the model cannot be
+ * used at all. A phone-shaped window keeps the single column, and in both the
+ * controls scroll under a status line and a Join button that stay put. The
+ * status line, Join and Close span the panel's width along the bottom.
  */
 @Composable
 private fun SnapToolbar(
     state: MainUiState,
     actions: SnapActions,
     onClose: () -> Unit,
+    expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val selected = state.snapSelectedJoint
@@ -4052,379 +4090,615 @@ private fun SnapToolbar(
     val hookLip = state.snapHookLipMm
         ?: shown?.joint?.dimensions?.lipDepthMm
         ?: (defaults.lipDepthMm * state.snapScale)
-    Card(modifier = modifier) {
-        Column(
-            modifier = Modifier.padding(
-                horizontal = EnderSlicerDimens.SheetPadding,
-                vertical = EnderSlicerDimens.Space8,
-            ),
-            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (specs.isEmpty()) "Snap fit joint" else "Snap fit joints (" + specs.size + ")",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Spacer(Modifier.width(EnderSlicerDimens.Space8))
-                Text(
-                    state.snapLowHalf?.name.orEmpty() + " and " + state.snapHighHalf?.name.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    onClick = onClose,
-                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                ) { Text("Close") }
-            }
-            Text(
-                when {
-                    state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
-                    specs.isEmpty() -> "Tap the model where a joint should sit; every tap adds one."
-                    else -> "Tap again to add another joint, or use Auto to spread them along the seam."
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            // The pair's own actions: the joints, added by hand or proposed by
-            // the app along the rim of the material the two halves share.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+    val beamHalf = state.snapSelectedSpec?.beamHalf ?: state.snapBeamHalf
+    // One call per group, so the three-column panel and the single-column one
+    // cannot drift apart: both are these three, in this order.
+    val setup: @Composable () -> Unit = {
+        SnapSetupGroup(
+            state = state,
+            actions = actions,
+            specs = specs,
+            shown = shown,
+            selected = selected,
+            stacked = expandedLayout,
+        )
+    }
+    val hook: @Composable () -> Unit = {
+        SnapHookGroup(
+            actions = actions,
+            shown = shown,
+            hookLength = hookLength,
+            hookThickness = hookThickness,
+            hookLip = hookLip,
+        )
+    }
+    val fits: @Composable () -> Unit = {
+        SnapFitsGroup(
+            state = state,
+            actions = actions,
+            specs = specs,
+            selected = selected,
+            placed = shown?.joints?.getOrNull(selected),
+            beamHalf = beamHalf,
+            stacked = expandedLayout,
+        )
+    }
+    BoxWithConstraints(modifier = modifier) {
+        // The controls never take the whole plate: the model above the panel is
+        // what a joint is tapped on, and it has to stay visible and reachable.
+        val controlsMax = (
+            maxHeight * if (expandedLayout) SNAP_WIDE_CONTROLS_FRACTION else SNAP_PHONE_CONTROLS_FRACTION
+            ).coerceAtMost(if (expandedLayout) SNAP_WIDE_CONTROLS_MAX else SNAP_PHONE_CONTROLS_MAX)
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(
+                    horizontal = EnderSlicerDimens.SheetPadding,
+                    vertical = EnderSlicerDimens.Space6,
+                ),
+                verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
             ) {
-                OutlinedButton(
-                    onClick = actions.onAuto,
-                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                ) { Text("Auto spread") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (specs.isEmpty()) "Snap fit joint" else "Snap fit joints (" + specs.size + ")",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Spacer(Modifier.width(EnderSlicerDimens.Space8))
+                    Text(
+                        state.snapLowHalf?.name.orEmpty() + " and " + state.snapHighHalf?.name.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // The single column keeps Close beside the title; the wide
+                    // panel puts it across the bottom with the other exits.
+                    if (!expandedLayout) {
+                        TextButton(
+                            onClick = onClose,
+                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                        ) { Text("Close") }
+                    }
+                }
                 Text(
-                    "2-4 joints, even along the rim of the seam's own material",
+                    when {
+                        state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
+                        specs.isEmpty() -> "Tap the model where a joint should sit; every tap adds one."
+                        else -> "Tap again to add another joint, or use Auto to spread them along the seam."
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                if (specs.isNotEmpty()) {
-                    TextButton(
-                        onClick = actions.onClear,
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Clear") }
-                }
-            }
-            // Every joint, and which one the controls below act on.
-            if (specs.isNotEmpty()) {
                 Column(
                     modifier = Modifier
-                        .heightIn(max = 150.dp)
+                        .fillMaxWidth()
+                        .heightIn(max = controlsMax)
                         .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    specs.forEachIndexed { index, spec ->
-                        val placed = shown?.joints?.getOrNull(index)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = { actions.onSelect(index) },
-                                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
-                            ) {
-                                Text(
-                                    (if (index == selected) "▸ " else "") + "Joint " + (index + 1) + " · " +
-                                        spec.tightness.label + " · " + spec.barbs +
-                                        (if (spec.barbs == 1) " tooth" else " teeth") + " · " +
-                                        (if (spec.facing == SnapFacing.SAME) "same way" else "other way"),
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
-                            Spacer(Modifier.weight(1f))
-                            TextButton(
-                                onClick = { actions.onMove(index) },
-                                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
-                            ) { Text("Move") }
-                            TextButton(
-                                onClick = { actions.onRemove(index) },
-                                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
-                            ) { Text("Remove") }
+                    if (expandedLayout) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space12),
+                        ) {
+                            SnapColumn("Setup", Modifier.weight(1f)) { setup() }
+                            SnapColumn("Hook", Modifier.weight(1f)) { hook() }
+                            SnapColumn("Fits", Modifier.weight(1f)) { fits() }
                         }
-                        placed?.let { one ->
-                            // The joint's own rung and reason: the material here,
-                            // not on the seam as a whole. And the click it holds
-                            // at, because a beam with several teeth holds at
-                            // several depths and the panel has to say which.
-                            Text(
-                                "      " + one.joint.rung.label + " · " + one.joint.clickSummary +
-                                    " · " + one.joint.dimensions.barbCount +
-                                    (if (one.joint.dimensions.barbCount == 1) " tooth" else " teeth") +
-                                    (if (one.joint.dimensions.mouthChamferMm > 0f) " · mouth chamfer " +
-                                        "%.0f°".format(one.joint.dimensions.mouthChamferAngleDeg) else ""),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                "      in " + one.beamHalfName + ": " +
-                                    "%.1f mm beam, %.2f mm clearance".format(
-                                        one.joint.dimensions.beamLengthMm,
-                                        one.joint.dimensions.lipClearanceMm,
-                                    ) + (one.joint.rungReason?.let { " · " + it } ?: ""),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            one.joint.clamps.forEach { clamp ->
-                                Text(
-                                    "      " + clamp.reason,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = WarnAmber,
-                                )
-                            }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+                        ) {
+                            SnapColumn("Setup", Modifier.fillMaxWidth()) { setup() }
+                            SnapColumn("Hook", Modifier.fillMaxWidth()) { hook() }
+                            SnapColumn("Fits", Modifier.fillMaxWidth()) { fits() }
                         }
                     }
                 }
-            }
-            // The scale is the base every dimension follows; the three hook
-            // sliders below override their own dimension in millimetres. Each
-            // preview runs when the thumb is let go, not on every frame.
-            CompactSliderRow(
-                label = "Scale",
-                value = state.snapScale,
-                range = MIN_JOINT_SCALE..MAX_JOINT_SCALE,
-                onValueChange = actions.onScale,
-                valueText = "%.2f×".format(state.snapScale),
-                onValueChangeFinished = actions.onCommit,
-            )
-            CompactSliderRow(
-                label = "Hook",
-                value = hookLength,
-                range = HOOK_LENGTH_RANGE,
-                onValueChange = actions.onHookLength,
-                valueText = "%.1f mm".format(hookLength),
-                onValueChangeFinished = actions.onCommit,
-            )
-            CompactSliderRow(
-                label = "Thick",
-                value = hookThickness,
-                range = HOOK_THICKNESS_RANGE,
-                onValueChange = actions.onHookThickness,
-                valueText = "%.2f mm".format(hookThickness),
-                onValueChangeFinished = actions.onCommit,
-            )
-            CompactSliderRow(
-                label = "Lip",
-                value = hookLip,
-                range = HOOK_LIP_RANGE,
-                onValueChange = actions.onHookLip,
-                valueText = "%.2f mm".format(hookLip),
-                onValueChangeFinished = actions.onCommit,
-            )
-            // The Loose/Tight stepping: clearance only, 0.06 mm apart, assigned
-            // by placement order and changeable one joint at a time.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-            ) {
-                Text("Fit:", style = MaterialTheme.typography.labelMedium)
-                SnapTightness.entries.forEach { step ->
-                    val on = selected in specs.indices && specs[selected].tightness == step
-                    if (on) {
-                        Button(
-                            onClick = { actions.onTightness(selected, step) },
-                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                        ) { Text(step.label) }
-                    } else {
-                        OutlinedButton(
-                            onClick = { actions.onTightness(selected, step) },
-                            enabled = selected in specs.indices,
-                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                        ) { Text(step.label) }
-                    }
-                }
-                Text(
-                    "0.06 mm of clearance apart, nothing else",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            // The beam: one tooth by default, up to three with one pawl on the
-            // mate. The teeth are the clicks; the pawl is the step.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-            ) {
-                Text("Teeth:", style = MaterialTheme.typography.labelMedium)
-                (1..SnapFit.MAX_BARBS).forEach { count ->
-                    val on = state.snapBarbs == count
-                    if (on) {
-                        Button(
-                            onClick = { actions.onBarbs(count) },
-                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                        ) { Text(count.toString()) }
-                    } else {
-                        OutlinedButton(
-                            onClick = { actions.onBarbs(count) },
-                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                        ) { Text(count.toString()) }
-                    }
-                }
-                Text(
-                    "one pawl on the mate, several catches on the beam",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            val beamHalf = state.snapSelectedSpec?.beamHalf ?: state.snapBeamHalf
-            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
-                BeamHalfButton("Beam in " + (state.snapLowHalf?.name ?: "lower"), SnapJoint.JointHalf.LOW, beamHalf, actions.onBeamHalf, Modifier.weight(1f))
-                BeamHalfButton("Beam in " + (state.snapHighHalf?.name ?: "upper"), SnapJoint.JointHalf.HIGH, beamHalf, actions.onBeamHalf, Modifier.weight(1f))
-            }
-            // Facing: every joint the same way by default, flipped as a pair.
-            // Mixing is an explicit decision, and only then can one joint turn.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-            ) {
-                Text("Facing:", style = MaterialTheme.typography.labelMedium)
-                OutlinedButton(
-                    onClick = actions.onFlipAll,
-                    enabled = specs.isNotEmpty(),
-                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                ) { Text("Flip all") }
-                if (state.snapMixedFacing) {
-                    Button(
-                        onClick = { actions.onMixedFacing(false) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Mixed") }
-                } else {
-                    OutlinedButton(
-                        onClick = { actions.onMixedFacing(true) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Mix facing") }
-                }
-                if (state.snapMixedFacing && selected in specs.indices) {
-                    OutlinedButton(
-                        onClick = { actions.onJointFacing(selected, specs[selected].facing.flipped()) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Turn this one") }
-                }
-                Text(
-                    if (state.snapMixedFacing) "opposite hooks lock the slide both ways" else "all the same way",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            // The socket mouth chamfer: the lead-in in the hole at 45 degrees, so
-            // a square-faced hook cams in and either facing assembles. It does
-            // not replace the room the beam needs to bend.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-            ) {
-                Text("Socket:", style = MaterialTheme.typography.labelMedium)
-                if (state.snapSocketRamp) {
-                    Button(
-                        onClick = { actions.onSocketRamp(false) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Ramped") }
-                } else {
-                    OutlinedButton(
-                        onClick = { actions.onSocketRamp(true) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Square mouth") }
-                }
-                Text(
-                    if (state.snapSocketRamp) {
-                        "45° chamfer on the pocket mouth; the hook still needs its room to bend"
-                    } else {
-                        "the hook's own ramp is the lead-in"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            // The ladder's switch. Auto fits each joint to the seam; Full asks
-            // for the whole thing anyway. Either way each joint says which rung
-            // it is and why, so a downgrade is a decision the user can see.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
-            ) {
-                Text("Joint:", style = MaterialTheme.typography.labelMedium)
-                if (state.snapFullJoint) {
-                    Button(
-                        onClick = { actions.onFullJoint(false) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Full") }
-                } else {
-                    OutlinedButton(
-                        onClick = { actions.onFullJoint(true) },
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) { Text("Auto") }
-                }
-                Text(
-                    if (state.snapFullJoint) {
-                        "the full joint, as asked for"
-                    } else {
-                        "the fullest joint each place on the seam takes"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            state.snapFailure?.let { failure ->
-                Text(
-                    failure,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (state.snapShownMeshes != null) WarnAmber else MaterialTheme.colorScheme.error,
-                )
-            }
-            shown?.let { preview ->
-                val strain = preview.joint.dimensions.rootStrainPercent
-                Text(
-                    "Root strain %.1f%% at full deflection" .format(strain) +
-                        (if (preview.jointCount > 1) " (worst case, every tooth's lip)" else "") +
-                        "; PLA is happy to about %.0f%%".format(ROOT_STRAIN_HINT_PERCENT),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (strain > ROOT_STRAIN_HINT_PERCENT) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Deflection room %.2f mm below the beam; the pocket floor is cut that deep".format(
-                        preview.joint.dimensions.deflectionRoomMm,
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                preview.repairNote?.let { note ->
+                state.snapFailure?.let { failure ->
                     Text(
-                        "Repaired before joining: " + note,
+                        failure,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state.snapShownMeshes != null) WarnAmber else MaterialTheme.colorScheme.error,
+                    )
+                }
+                Button(
+                    onClick = actions.onApply,
+                    enabled = state.snapShownMeshes != null && !state.isBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (specs.size > 1) "Join the halves with " + specs.size + " joints" else "Join the halves",
+                    )
+                }
+                state.snapBlockedReason?.let { reason ->
+                    Text(
+                        reason,
                         style = MaterialTheme.typography.labelSmall,
                         color = WarnAmber,
                     )
                 }
+                if (expandedLayout) {
+                    TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+                }
             }
-            Button(
-                onClick = actions.onApply,
-                enabled = state.snapShownMeshes != null && !state.isBusy,
-                modifier = Modifier.fillMaxWidth(),
+        }
+    }
+}
+
+/**
+ * One column of the wide panel: its own label and its own stack of controls.
+ * Three of these sit side by side on a foldable and one above the other on a
+ * phone, from the same content either way.
+ */
+@Composable
+private fun SnapColumn(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        content()
+    }
+}
+
+/**
+ * A labelled row of choices with its helper line. In a column the line goes
+ * under the controls instead of beside them, where a caption in the same row
+ * would squeeze the buttons and still be cut off.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SnapChoiceRow(
+    label: String?,
+    /** Null where the controls say the same thing and the column has no room. */
+    caption: String?,
+    stacked: Boolean,
+    content: @Composable () -> Unit,
+) {
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // A column is narrow, and the interface can be scaled up on top
+            // of that: the choices wrap onto a second line rather than being
+            // cut off at the column edge, which is what the third tooth
+            // button did at 150%.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+                verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
             ) {
-                Text(
-                    if (specs.size > 1) "Join the halves with " + specs.size + " joints" else "Join the halves",
-                )
+                label?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+                content()
             }
-            state.snapBlockedReason?.let { reason ->
+            caption?.let {
                 Text(
-                    reason,
+                    it,
                     style = MaterialTheme.typography.labelSmall,
-                    color = WarnAmber,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+    } else {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+        ) {
+            label?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+            content()
+            caption?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Setup: the joints already on the seam, the spread that proposes them, the
+ * rung the ladder is asked for and the scale every dimension follows.
+ */
+@Composable
+private fun SnapSetupGroup(
+    state: MainUiState,
+    actions: SnapActions,
+    specs: List<SnapJointSpec>,
+    shown: SnapPreview?,
+    selected: Int,
+    stacked: Boolean,
+) {
+    // Every joint, and which one the controls act on. Its own scroll: a seam
+    // can carry four, and each one carries its own rung and its own reasons.
+    if (specs.isNotEmpty()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = if (stacked) SNAP_JOINT_LIST_COLUMN_MAX else SNAP_JOINT_LIST_MAX)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            specs.forEachIndexed { index, spec ->
+                SnapJointRow(
+                    index = index,
+                    spec = spec,
+                    placed = shown?.joints?.getOrNull(index),
+                    selected = index == selected,
+                    compact = stacked,
+                    actions = actions,
+                )
+            }
+        }
+    }
+    SnapChoiceRow(
+        label = null,
+        // The wide panel keeps its captions to one line: a column is narrow
+        // enough that a long one wraps and eats the height the split saved.
+        caption = if (stacked) {
+            "2-4 joints, along the seam's own rim"
+        } else {
+            "2-4 joints, even along the rim of the seam's own material"
+        },
+        stacked = stacked,
+    ) {
+        OutlinedButton(
+            onClick = actions.onAuto,
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+        ) { Text("Auto spread") }
+        if (specs.isNotEmpty()) {
+            TextButton(
+                onClick = actions.onClear,
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Clear") }
+        }
+    }
+    // The ladder's switch. Auto fits each joint to the seam; Full asks for the
+    // whole thing anyway. Either way each joint says which rung it is and why,
+    // so a downgrade is a decision the user can see.
+    SnapChoiceRow(
+        label = "Joint:",
+        caption = if (state.snapFullJoint) {
+            "the full joint, as asked for"
+        } else {
+            "the fullest joint each place on the seam takes"
+        },
+        stacked = stacked,
+    ) {
+        if (state.snapFullJoint) {
+            Button(
+                onClick = { actions.onFullJoint(false) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Full") }
+        } else {
+            OutlinedButton(
+                onClick = { actions.onFullJoint(true) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Auto") }
+        }
+    }
+    CompactSliderRow(
+        label = "Scale",
+        value = state.snapScale,
+        range = MIN_JOINT_SCALE..MAX_JOINT_SCALE,
+        onValueChange = actions.onScale,
+        valueText = "%.2f×".format(state.snapScale),
+        onValueChangeFinished = actions.onCommit,
+    )
+}
+
+/**
+ * One joint in the list, with what it came out as and the two edits it takes.
+ * In a column the row's own label is shortened: the teeth and the facing it
+ * used to carry are on the joint's first line of detail either way.
+ */
+@Composable
+private fun SnapJointRow(
+    index: Int,
+    spec: SnapJointSpec,
+    placed: SnapPlacedJoint?,
+    selected: Boolean,
+    compact: Boolean,
+    actions: SnapActions,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextButton(
+            onClick = { actions.onSelect(index) },
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+        ) {
+            Text(
+                (if (selected) "▸ " else "") + "Joint " + (index + 1) + " · " + spec.tightness.label +
+                    if (compact) {
+                        ""
+                    } else {
+                        " · " + spec.barbs + (if (spec.barbs == 1) " tooth" else " teeth") +
+                            " · " + if (spec.facing == SnapFacing.SAME) "same way" else "other way"
+                    },
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = { actions.onMove(index) },
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+        ) { Text("Move") }
+        TextButton(
+            onClick = { actions.onRemove(index) },
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+        ) { Text("Remove") }
+    }
+    placed?.let { one ->
+        // The joint's own rung and reason: the material here, not on the seam
+        // as a whole. And the click it holds at, because a beam with several
+        // teeth holds at several depths and the panel has to say which.
+        Text(
+            "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +
+                one.joint.dimensions.barbCount +
+                (if (one.joint.dimensions.barbCount == 1) " tooth" else " teeth") +
+                " · " + (if (spec.facing == SnapFacing.SAME) "same way" else "other way") +
+                (if (one.joint.dimensions.mouthChamferMm > 0f) {
+                    " · mouth chamfer %.0f°".format(one.joint.dimensions.mouthChamferAngleDeg)
+                } else {
+                    ""
+                }),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "   in " + one.beamHalfName + ": " +
+                "%.1f mm beam, %.2f mm clearance".format(
+                    one.joint.dimensions.beamLengthMm,
+                    one.joint.dimensions.lipClearanceMm,
+                ) + (one.joint.rungReason?.let { " · " + it } ?: ""),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        one.joint.clamps.forEach { clamp ->
+            Text(
+                "   " + clamp.reason,
+                style = MaterialTheme.typography.labelSmall,
+                color = WarnAmber,
+            )
+        }
+    }
+}
+
+/**
+ * Hook: the three dimensions that override their share of the scale, and what
+ * the beam does when it is bent - the strain it reaches and the room the pocket
+ * leaves it.
+ */
+@Composable
+private fun SnapHookGroup(
+    actions: SnapActions,
+    shown: SnapPreview?,
+    hookLength: Float,
+    hookThickness: Float,
+    hookLip: Float,
+) {
+    // Each slider previews when the thumb is let go, not on every frame.
+    CompactSliderRow(
+        label = "Hook",
+        value = hookLength,
+        range = HOOK_LENGTH_RANGE,
+        onValueChange = actions.onHookLength,
+        valueText = "%.1f mm".format(hookLength),
+        onValueChangeFinished = actions.onCommit,
+    )
+    CompactSliderRow(
+        label = "Thick",
+        value = hookThickness,
+        range = HOOK_THICKNESS_RANGE,
+        onValueChange = actions.onHookThickness,
+        valueText = "%.2f mm".format(hookThickness),
+        onValueChangeFinished = actions.onCommit,
+    )
+    CompactSliderRow(
+        label = "Lip",
+        value = hookLip,
+        range = HOOK_LIP_RANGE,
+        onValueChange = actions.onHookLip,
+        valueText = "%.2f mm".format(hookLip),
+        onValueChangeFinished = actions.onCommit,
+    )
+    shown?.let { preview ->
+        val strain = preview.joint.dimensions.rootStrainPercent
+        Text(
+            "Root strain %.1f%% at full deflection".format(strain) +
+                (if (preview.jointCount > 1) " (worst case, every tooth's lip)" else "") +
+                "; PLA is happy to about %.0f%%".format(ROOT_STRAIN_HINT_PERCENT),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (strain > ROOT_STRAIN_HINT_PERCENT) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Deflection room %.2f mm below the beam; the pocket floor is cut that deep".format(
+                preview.joint.dimensions.deflectionRoomMm,
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        preview.repairNote?.let { note ->
+            Text(
+                "Repaired before joining: " + note,
+                style = MaterialTheme.typography.labelSmall,
+                color = WarnAmber,
+            )
+        }
+    }
+}
+
+/**
+ * Fits: how loose each joint is cut, how many catches its beam carries, which
+ * half carries the beam, which way the hook faces and what the socket's mouth
+ * does - plus the click the selected joint is holding at.
+ */
+@Composable
+private fun SnapFitsGroup(
+    state: MainUiState,
+    actions: SnapActions,
+    specs: List<SnapJointSpec>,
+    selected: Int,
+    placed: SnapPlacedJoint?,
+    beamHalf: SnapJoint.JointHalf,
+    stacked: Boolean,
+) {
+    val hasSelected = selected in specs.indices
+    // The click the selected joint is holding at rides on the fit row in a
+    // column: a line of its own was the one thing that fell below the
+    // column, and the fit is where that clearance is decided anyway.
+    val click = placed?.joint?.clickSummary
+    // The Loose/Tight stepping: clearance only, 0.06 mm apart, assigned by
+    // placement order and changeable one joint at a time.
+    SnapChoiceRow(
+        label = "Fit:",
+        caption = when {
+            !stacked -> "0.06 mm of clearance apart, nothing else"
+            click != null -> "0.06 mm apart · " + click
+            else -> "0.06 mm apart"
+        },
+        stacked = stacked,
+    ) {
+        SnapTightness.entries.forEach { step ->
+            val on = hasSelected && specs[selected].tightness == step
+            if (on) {
+                Button(
+                    onClick = { actions.onTightness(selected, step) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(step.label) }
+            } else {
+                OutlinedButton(
+                    onClick = { actions.onTightness(selected, step) },
+                    enabled = hasSelected,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(step.label) }
+            }
+        }
+    }
+    // The beam: one tooth by default, up to three with one pawl on the mate.
+    // The teeth are the clicks; the pawl is the step.
+    SnapChoiceRow(
+        label = "Teeth:",
+        caption = if (stacked) {
+            "one pawl on the mate"
+        } else {
+            "one pawl on the mate, several catches on the beam"
+        },
+        stacked = stacked,
+    ) {
+        (1..SnapFit.MAX_BARBS).forEach { count ->
+            val on = state.snapBarbs == count
+            if (on) {
+                Button(
+                    onClick = { actions.onBarbs(count) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(count.toString()) }
+            } else {
+                OutlinedButton(
+                    onClick = { actions.onBarbs(count) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(count.toString()) }
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
+        BeamHalfButton(
+            "Beam in " + (state.snapLowHalf?.name ?: "lower"),
+            SnapJoint.JointHalf.LOW,
+            beamHalf,
+            actions.onBeamHalf,
+            Modifier.weight(1f),
+        )
+        BeamHalfButton(
+            "Beam in " + (state.snapHighHalf?.name ?: "upper"),
+            SnapJoint.JointHalf.HIGH,
+            beamHalf,
+            actions.onBeamHalf,
+            Modifier.weight(1f),
+        )
+    }
+    // Facing: every joint the same way by default, flipped as a pair. Mixing is
+    // an explicit decision, and only then can one joint turn.
+    SnapChoiceRow(
+        label = "Facing:",
+        caption = when {
+            stacked -> null
+            state.snapMixedFacing -> "opposite hooks lock the slide both ways"
+            else -> "all the same way"
+        },
+        stacked = stacked,
+    ) {
+        OutlinedButton(
+            onClick = actions.onFlipAll,
+            enabled = specs.isNotEmpty(),
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+        ) { Text("Flip all") }
+        if (state.snapMixedFacing) {
+            Button(
+                onClick = { actions.onMixedFacing(false) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Mixed") }
+        } else {
+            OutlinedButton(
+                onClick = { actions.onMixedFacing(true) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Mix facing") }
+        }
+        if (state.snapMixedFacing && hasSelected) {
+            OutlinedButton(
+                onClick = { actions.onJointFacing(selected, specs[selected].facing.flipped()) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Turn this one") }
+        }
+    }
+    // The socket mouth chamfer: the lead-in in the hole at 45 degrees, so a
+    // square-faced hook cams in and either facing assembles. It does not replace
+    // the room the beam needs to bend.
+    SnapChoiceRow(
+        label = "Socket:",
+        caption = when {
+            stacked -> null
+            state.snapSocketRamp -> "45° chamfer on the pocket mouth; the hook still needs its room to bend"
+            else -> "the hook's own ramp is the lead-in"
+        },
+        stacked = stacked,
+    ) {
+        if (state.snapSocketRamp) {
+            Button(
+                onClick = { actions.onSocketRamp(false) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Ramped") }
+        } else {
+            OutlinedButton(
+                onClick = { actions.onSocketRamp(true) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Square mouth") }
+        }
+    }
+    // In the single column there is width for the readout on its own line.
+    if (!stacked) {
+        placed?.let { one ->
+            Text(
+                "Click: " + one.joint.clickSummary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
