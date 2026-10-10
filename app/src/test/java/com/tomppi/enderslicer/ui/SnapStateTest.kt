@@ -416,8 +416,6 @@ class SnapStateTest {
         hookLengthMm = null,
         hookThicknessMm = null,
         hookLipMm = null,
-        lowFaceMm = 20f,
-        highFaceMm = 20f,
     )
 
     /** One joint on the seam, at [point], as a tap would place it. */

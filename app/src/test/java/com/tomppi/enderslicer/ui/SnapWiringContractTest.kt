@@ -39,6 +39,31 @@ class SnapWiringContractTest {
      * job, so onCleared never cancels it. The preview job is a child of the view model's own
      * scope instead.
      */
+    /**
+     * Apply stages the pair back in its OWN frame - the assembled frame a split
+     * leaves and every joint is measured in. Staging the previewed meshes as they
+     * stand gave each half the packer's frame: their mating planes sat 15 and 0
+     * apart, so the pair the tool had just made read as two parts side by side
+     * ("the two parts lie side by side along Z, not across it"), and where the
+     * planes do agree the halves are still tens of millimetres apart across the
+     * seam, so the next joint's pocket cut nothing out of the mate.
+     */
+    @Test
+    fun applyStagesThePairInItsOwnFrame() {
+        val apply = body("fun applySnapJoint(", "private fun middleOf(")
+        assertTrue("the staging is what puts both halves back in the pair's frame", apply.contains("SnapApply.stage("))
+        assertTrue("from the halves that carry that frame", apply.contains("lowHalf = fitLow"))
+        assertTrue(
+            "and the pair records the plane the staged meshes carry",
+            apply.contains("lowFaceMm = stagedPair.lowFaceMm"),
+        )
+        assertTrue(apply.contains("highFaceMm = stagedPair.highFaceMm"))
+        assertTrue(
+            "with the orientation each half already had",
+            apply.contains("cutHalfObject(name, mesh, file, state, linear)"),
+        )
+    }
+
     @Test
     fun thePreviewJobIsAChildOfTheViewModelScope() {
         assertFalse(

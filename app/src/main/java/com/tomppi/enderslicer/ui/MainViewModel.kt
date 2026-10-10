@@ -93,9 +93,9 @@ import com.tomppi.enderslicer.viewer.MeshVolume
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
 import com.tomppi.enderslicer.viewer.PlateThreeMfWriter
+import com.tomppi.enderslicer.viewer.SnapApply
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFit
-import com.tomppi.enderslicer.viewer.SnapFitFrame
 import com.tomppi.enderslicer.viewer.SnapFitGate
 import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapFitHalf
@@ -1821,19 +1821,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * [ModelPlacement.transformed] put its own minimum Z on the plate - and the
      * arranger then moves it beside its other half. Its file is its own, so the
      * workspace restores these two parts rather than two copies of the original.
+     *
+     * [linear] is the orientation the mesh's own frame sits in, for a jointed
+     * half that already had one: the split's halves are unrotated, but a half
+     * the user has rotated since carries that rotation here, and Apply must put
+     * the re-framed mesh back on the plate the way it stood. Centring still
+     * happens on the bed, so only the orientation travels.
      */
     private fun cutHalfObject(
         name: String,
         half: StlMesh,
         stagedFile: File,
         state: MainUiState,
+        linear: List<Double> = ModelPlacement.IDENTITY,
     ): PlateObject {
         val placement = ModelPlacement.centeredOnBed(
             mesh = half,
             bedWidthMm = state.settings.machineWidthMm,
             bedDepthMm = state.settings.machineDepthMm,
             originAtCenter = state.settings.originAtCenter,
-        )
+        ).copy(linear = linear)
         return PlateObject(
             id = PlateObject.newId(),
             name = name,
@@ -2616,13 +2623,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val lowPreview = lowMesh.copy(displayName = lowName)
         val highPreview = highMesh.copy(displayName = highName)
-        // Every joint on a seam sits on the same plane, so the first one's
-        // frames say where each half's mating face is on the plate: Apply
-        // re-centres these meshes and makes them the halves' new own frames.
-        val first = built.first()
-        val firstBeamIsLow = first.beamMesh === ready.lowHalf.mesh
-        val lowFace = if (firstBeamIsLow) plateFace(first.joint.frame, axis) else plateFace(first.joint.socketFrame, axis)
-        val highFace = if (firstBeamIsLow) plateFace(first.joint.socketFrame, axis) else plateFace(first.joint.frame, axis)
         val preview = SnapPreview(
             lowMesh = lowPreview,
             highMesh = highPreview,
@@ -2639,8 +2639,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             hookThicknessMm = state.snapHookThicknessMm,
             hookLipMm = state.snapHookLipMm,
             repairNote = ready.note,
-            lowFaceMm = lowFace,
-            highFaceMm = highFace,
         )
         return SnapPlacement.Done(preview, notices.takeIf { it.isNotEmpty() }?.joinToString("; "))
     }
@@ -2708,18 +2706,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ) : SnapPreviewResult
     }
 
-    /**
-     * Where a half's own mating face now sits along [axis], on the plate.
-     *
-     * The frame's origin is the anchor dropped onto that face, so its component
-     * along the axis is the face's own coordinate - read in the plate frame the
-     * previewed mesh is in, which is the frame Apply re-centres the half into.
-     * A half placed by translation is exact; a rotation of the split plane is
-     * not something the carried face represents, and the split never makes one.
-     */
-    private fun plateFace(frame: SnapFitFrame, axis: ModelPlacement.Axis): Float =
-        frame.originMm.dot(SnapFit.axisDirection(axis))
-
     /** The material two solids share, or 0 when the engine would not answer. */
     private fun seatVolume(first: StlMesh, second: StlMesh): Double =
         when (val shared = MeshBoolean.intersect(first, second)) {
@@ -2768,14 +2754,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val staged = ArrayList<File>(2)
             runCatching {
-                val objects = withContext(Dispatchers.IO) {
-                    listOf(low.name to preview.lowMesh, high.name to preview.highMesh).map { (name, mesh) ->
+                // The pair goes back into its OWN frame before it is staged: the
+                // assembled frame the joints are measured in. Staged as the plate
+                // has them, each new object's own frame keeps the packer's
+                // separation, and the tool cannot work on the pair it has just
+                // made. See SnapApply.stage.
+                val fitLow = state.snapLowFitHalf
+                val fitHigh = state.snapHighFitHalf
+                if (fitLow == null || fitHigh == null) {
+                    throw IllegalStateException(SNAP_PAIR_STALE_MESSAGE)
+                }
+                val applied = withContext(Dispatchers.IO) {
+                    val pair = SnapApply.stage(
+                        lowHalf = fitLow,
+                        highHalf = fitHigh,
+                        lowMesh = preview.lowMesh,
+                        highMesh = preview.highMesh,
+                        lowName = low.name,
+                        highName = high.name,
+                    )
+                    listOf(
+                        Triple(low.name, pair.lowMesh, pair.lowLinear),
+                        Triple(high.name, pair.highMesh, pair.highLinear),
+                    ).map { (name, mesh, linear) ->
                         val file = stagedModelFile()
                         staged += file
                         StlMeshWriter.writeBinary(mesh.copy(displayName = name), file)
-                        cutHalfObject(name, mesh, file, state)
-                    }
+                        cutHalfObject(name, mesh, file, state, linear)
+                    } to pair
                 }
+                val objects = applied.first
+                val stagedPair = applied.second
                 val laidOut = withContext(Dispatchers.Default) {
                     // The replaced halves keep their place in the plate order, so
                     // the packer lays the plate out the way it was, with the two
@@ -2825,17 +2834,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ).afterPlateReplaced().withSnapPair(
                         // The pair is the jointed halves now, so the tool can be
                         // opened again to add a second joint to the same pair.
-                        // Apply re-centres the previewed meshes into fresh
-                        // objects, so each half's new own frame is the plate
-                        // frame they were previewed in, and the faces recorded
-                        // here are the plate faces the preview built them on -
-                        // a measurement of the new meshes would read the beam's
-                        // own tip as the beam half's face.
+                        // Apply stages the previewed meshes through
+                        // [SnapApply.stage], so both new objects' own frames are
+                        // the pair's own assembled frame again, and the faces
+                        // recorded here are the planes that frame carries - a
+                        // measurement of the new meshes would read the beam's own
+                        // tip as the beam half's face.
                         lowHalfId = lowObject.id,
                         highHalfId = highObject.id,
                         axis = state.snapAxis,
-                        lowFaceMm = preview.lowFaceMm,
-                        highFaceMm = preview.highFaceMm,
+                        lowFaceMm = stagedPair.lowFaceMm,
+                        highFaceMm = stagedPair.highFaceMm,
                     )
                 }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))

@@ -199,6 +199,35 @@ All four landed together, and each one changed something the others depend on.
   the tooth nearest the tip catching first and the deepest catch seating the
   halves; the panel names the seated click and lists the rest.
 
+## An applied pair goes back into its OWN frame, not the packer's
+
+Found while testing the persistence: the tool offered a restored pair, and a
+joint on it was refused with "the two parts lie side by side along Z, not
+across it". The preview's two meshes are booleans of the halves where the
+packer left them, and the packer separates the halves in every direction: a
+20 mm split leaves the low half's mating plane at 20 and the high half's at 0,
+and it sets the two side by side tens of millimetres apart across the seam.
+Apply made those meshes the new objects' own frames, so the pair the tool had
+just made was one it could not work on. Two failures came out of that one
+cause, and the second only showed once the first was patched: with the faces as
+the packer leaves them, SnapFit.halvesMeet is false and the next tap is refused
+outright; force the faces to agree and the halves are still side by side in the
+own frame, so the next joint's pocket is built beside the mate's material and
+the panel says it "would cut nothing out of the other half". The automatic
+spread read the same frames as one seam and found no material to read at all.
+
+Apply now puts the previewed meshes back through the placements they were
+previewed with (SnapFitHalf.unplace, in SnapApply.stage), which is the
+assembled frame the split leaves and every joint is measured in, and re-centres
+each half on the bed with its placement's own linear part so a half that was
+rotated stays rotated. The plate, the slice and the print are untouched - the
+first apply's geometry is byte-for-byte where it was - only the frame the
+applied pair is measured in changes. The invariant: on an applied pair
+SnapFit.halvesMeet is true and SnapJoint.build returns Placed or Flipped rather
+than a refusal, and the pocket of a joint built on it really cuts the mate.
+SnapApplyTest builds the second joint with the real engine on a plate packed
+the way the device packs one and measures what it cuts.
+
 ## The deflection gap was missing, and the single-barb joint could not close
 
 Found while adding the socket's ramp, kept because it is the sort of thing the

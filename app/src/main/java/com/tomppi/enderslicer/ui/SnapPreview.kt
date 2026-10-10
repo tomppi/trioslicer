@@ -93,16 +93,6 @@ data class SnapPreview(
     val hookLipMm: Float?,
     /** What a repaired half had to have done to it, or null when neither needed it. */
     val repairNote: String?,
-    /**
-     * Where each half's mating face ends up, along the split axis, in the
-     * coordinates the applied halves will carry.
-     *
-     * Apply re-centres these two meshes and makes them the halves' new own
-     * frames, so the faces the next joint on the pair is measured from are
-     * exactly where they were on the plate before that re-centring.
-     */
-    val lowFaceMm: Float,
-    val highFaceMm: Float,
 ) {
     /** The first joint's own geometry: what a one-joint panel reads. */
     val joint: SnapFitJoint get() = joints.first().joint
