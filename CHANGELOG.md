@@ -4,6 +4,42 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.9] - 2026-10-10
+
+### Added
+
+- **First-run setup is now two steps and neither can be skipped.** Printing setup offers Continue
+  and nothing else - no Skip, and Back says the setup has to be finished instead of quietly
+  leaving. The second step shows the plate as it will actually look, with the interface-scale
+  slider applying **live** while you drag, so legibility is judged on the real screen. Only **Done**
+  opens the app. Anyone who already finished onboarding is never re-onboarded.
+
+### Security
+
+- **Copy MCP token now asks for the device's own authentication** - fingerprint, or the PIN/pattern
+  as fallback, the way a banking app does. The token grants code execution as this app, and on an
+  unlocked phone it was two taps away. The token file is not even read until authentication
+  succeeds, nothing is copied on cancel, and the three refusals each say something different: no
+  screen lock at all tells you to set one, a lock without a fingerprint falls back to the PIN, and
+  a missing token file keeps its own message.
+- **The CAD engine's token is no longer swept into Android backups.** `files/blender/` was
+  excluded from backup; `files/cad/` was not, so a bearer secret could have ridden into a cloud
+  backup or a device-to-device transfer.
+- **A threat model for the token**, `docs/MCP_TOKEN_SECURITY.md`: what it is, that holding it means
+  running arbitrary Python as this app rather than "making models", the blast radius bounded by the
+  app's actual permissions, why a plain file is acceptable, how it is read with and without root,
+  why the shape check cannot tell a wrong value from a right one, rotation, and the options
+  considered and declined with their reasons.
+
+### Fixed
+
+- **Saved presets survive a restore.** `files/persistent-state/` was excluded wholesale, which
+  took the preset library with it on a device migration. The exclusion is narrowed to eleven exact
+  paths: the workspace descriptor (absolute model paths that do not exist on the receiver) and the
+  seven `current-cura-import.*` copies, up to 128 MiB against a 25 MB Auto Backup quota - an
+  over-quota backup fails whole, so excluding them is also what lets the presets fit. The preset
+  library and its `.previous` rollback copy now travel.
+
 ## [1.8.8] - 2026-10-10
 
 ### Added
