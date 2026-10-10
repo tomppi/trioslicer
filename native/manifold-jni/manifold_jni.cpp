@@ -1,8 +1,8 @@
 // JNI shim for the Manifold boolean engine (elalish/manifold, Apache-2.0).
 //
 // This is deliberately small: it loads a triangle soup as a Manifold solid
-// (welding the soup's duplicate vertices), builds a box, runs UNION and
-// SUBTRACT, reports whether a result really is a closed manifold solid, and
+// (welding the soup's duplicate vertices), builds a box, runs UNION, SUBTRACT
+// and INTERSECT, reports whether a result really is a closed manifold solid, and
 // reads the geometry back out as a triangle soup. Every entry point fails soft:
 // a failure is a 0 handle, an empty array or a status string, never a C++
 // exception crossing back into Kotlin.
@@ -273,6 +273,20 @@ Java_com_tomppi_enderslicer_viewer_MeshBoolean_nativeSubtract(JNIEnv* /* env */,
     Manifold a, b;
     if (!Lookup(first, &a) || !Lookup(second, &b)) return kNoHandle;
     Manifold result = a - b;
+    result.Status();
+    return Store(result);
+  } catch (...) {
+    return kNoHandle;
+  }
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_tomppi_enderslicer_viewer_MeshBoolean_nativeIntersect(JNIEnv* /* env */, jobject /* thiz */,
+                                                               jlong first, jlong second) {
+  try {
+    Manifold a, b;
+    if (!Lookup(first, &a) || !Lookup(second, &b)) return kNoHandle;
+    Manifold result = a ^ b;
     result.Status();
     return Store(result);
   } catch (...) {

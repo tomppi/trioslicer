@@ -82,6 +82,30 @@ class MeshRepairTest {
     }
 
     @Test
+    fun twoHolesMeetingAtOneVertexAreBothFilled() {
+        // The top face's fan triangle (0,0,10)-(10,0,10)-(5,5,10) and the front
+        // face's (10,0,0)-(10,0,10)-(5,0,5) share the corner (10,0,10) and
+        // nothing else, so the two three-edged rims meet at that one vertex -
+        // the bowtie a cut through existing vertices leaves behind. A walk that
+        // commits to one way out of the shared vertex comes back to it and used
+        // to refuse the whole boundary with "a boundary that revisits a vertex".
+        val cube = MeshFixtures.fannedBox(0f, 0f, 0f, 10f, 10f, 10f)
+        val open = MeshFixtures.without(cube) { it == 4 || it == 9 }
+        assertTrue("the fixture really has two holes", !MeshFixtures.isClosed(open))
+
+        val repaired = MeshRepair.repair(open)
+
+        assertEquals("both lobes are holes of their own", 2, repaired.report.loopsFound)
+        assertEquals("and both are filled", 2, repaired.report.loopsFilled)
+        assertEquals("six edges in all", 6, repaired.report.edgesClosed)
+        assertEquals("nothing is left open", 0, repaired.report.loopsLeftOpen)
+        assertNull("so there is no refusal to report", repaired.report.reason)
+        assertEquals("closed 2 holes (6 edges)", "closed 2 holes (6 edges)", repaired.report.summary)
+        assertTrue("the patch closes the solid", MeshFixtures.isClosed(repaired.mesh))
+        assertEquals("and the volume is the cube's own", 1000.0, MeshFixtures.signedVolume(repaired.mesh), 1e-3)
+    }
+
+    @Test
     fun aMeshWithNoBoundaryEdgesComesBackAsTheSameInstance() {
         val cube = MeshFixtures.box(0f, 0f, 0f, 10f, 10f, 10f)
 

@@ -83,6 +83,56 @@ object MeshFixtures {
         return fromSoup(name, soup.toFloatArray())
     }
 
+    /**
+     * A box whose face at maxZ is a ring: a [size] x [size] x [height] block
+     * with a [cavity] x [cavity] pocket sunk from that face halfway down. Its
+     * cap is a thin band of material, so a face-sized pad over it has air under
+     * most of its middle - the shape a boat hull's cross-section has to the
+     * joint generator.
+     */
+    fun hollowBox(size: Float, height: Float, cavity: Float, name: String = "hollow-box"): StlMesh {
+        require(cavity < size) { "The cavity has to leave a wall" }
+        val inset = (size - cavity) / 2f
+        val floor = height * 0.5f
+        val soup = ArrayList<Float>()
+        fun point(x: Float, y: Float, z: Float) = floatArrayOf(x, y, z)
+        fun quad(a: FloatArray, b: FloatArray, c: FloatArray, d: FloatArray) {
+            soup.addAll(triangleOf(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]).toList())
+            soup.addAll(triangleOf(a[0], a[1], a[2], c[0], c[1], c[2], d[0], d[1], d[2]).toList())
+        }
+        val a = point(0f, 0f, 0f)
+        val b = point(size, 0f, 0f)
+        val c = point(size, size, 0f)
+        val d = point(0f, size, 0f)
+        val e = point(0f, 0f, height)
+        val f = point(size, 0f, height)
+        val g = point(size, size, height)
+        val h = point(0f, size, height)
+        quad(a, d, c, b) // bottom, -Z
+        quad(a, b, f, e) // front, -Y
+        quad(d, h, g, c) // back, +Y
+        quad(a, e, h, d) // left, -X
+        quad(b, c, g, f) // right, +X
+        val ia = point(inset, inset, height)
+        val ib = point(size - inset, inset, height)
+        val ic = point(size - inset, size - inset, height)
+        val id = point(inset, size - inset, height)
+        quad(e, f, ib, ia) // cap ring, +Z
+        quad(f, g, ic, ib)
+        quad(g, h, id, ic)
+        quad(h, e, ia, id)
+        val fa = point(inset, inset, floor)
+        val fb = point(size - inset, inset, floor)
+        val fc = point(size - inset, size - inset, floor)
+        val fd = point(inset, size - inset, floor)
+        quad(ia, ib, fb, fa) // pocket walls, facing into the pocket
+        quad(ib, ic, fc, fb)
+        quad(ic, id, fd, fc)
+        quad(id, ia, fa, fd)
+        quad(fa, fb, fc, fd) // pocket floor, +Z
+        return fromSoup(name, soup.toFloatArray())
+    }
+
     /** [mesh] without the triangles [drop] selects, as a fresh mesh. */
     fun without(mesh: StlMesh, drop: (Int) -> Boolean): StlMesh {
         val builder = MeshSolidBuilder(mesh.displayName)
@@ -112,25 +162,7 @@ object MeshFixtures {
         floatArrayOf(ax, ay, az, bx, by, bz, cx, cy, cz)
 
     /** Positive when the surface faces outwards and bounds a solid. */
-    fun signedVolume(mesh: StlMesh): Double {
-        var total = 0.0
-        val vertices = mesh.interleavedVertices
-        var offset = 0
-        repeat(mesh.triangleCount) {
-            val ax = vertices[offset].toDouble()
-            val ay = vertices[offset + 1].toDouble()
-            val az = vertices[offset + 2].toDouble()
-            val bx = vertices[offset + 6].toDouble()
-            val by = vertices[offset + 7].toDouble()
-            val bz = vertices[offset + 8].toDouble()
-            val cx = vertices[offset + 12].toDouble()
-            val cy = vertices[offset + 13].toDouble()
-            val cz = vertices[offset + 14].toDouble()
-            total += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6.0
-            offset += 18
-        }
-        return total
-    }
+    fun signedVolume(mesh: StlMesh): Double = MeshVolume.of(mesh)
 
     /**
      * True when every edge is shared by exactly two triangles, welded by

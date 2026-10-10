@@ -193,6 +193,18 @@ class ModelSurfaceView(
     var onSurfacePick: ((MeshPicker.Hit) -> Unit)? = null
 
     /**
+     * When true, a tap on the model places a snap joint: the handler is given
+     * the point it landed on, already in plate coordinates.
+     *
+     * Owns taps the way [annotationActive] does, and only taps: a drag still
+     * orbits, because the joint's position is a point, not a stroke.
+     */
+    var jointPickActive: Boolean = false
+
+    /** Invoked on the UI thread with the model point a joint placement tap hit. */
+    var onJointPick: ((MeshPicker.Hit) -> Unit)? = null
+
+    /**
      * When true, the finger paints the surface: a sample lands where it goes
      * down and another at every move, until it lifts. This is filaSim's brush,
      * and the same shape the support-paint brush already has.
@@ -354,6 +366,19 @@ class ModelSurfaceView(
         requestRender()
     }
 
+    /**
+     * Stands a tool's boolean result in for a plate object's own mesh, or
+     * clears it with an empty map.
+     *
+     * The plate's model list is untouched: what is previewed is display only,
+     * and the meshes the engines would be handed are still the ones on the
+     * plate until the result is committed.
+     */
+    fun setPreviewObjects(previews: Map<Int, StlMesh>) {
+        modelRenderer.setPreviewObjects(previews)
+        requestRender()
+    }
+
     fun currentOrientation(): ViewerOrientation = modelRenderer.orientation
 
     /**
@@ -415,6 +440,13 @@ class ModelSurfaceView(
                 previousX = event.x
                 previousY = event.y
                 panning = false
+                if (jointPickActive) {
+                    // Where the joint goes is the point the tap lands on, and the
+                    // picker runs off the UI thread like every other probe here:
+                    // the coordinates are copied, not the event.
+                    pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
+                    schedulePaintPick()
+                }
                 if (surfacePickActive) {
                     // Ask whether this gesture began on the model. Until the answer
                     // arrives the touch is held rather than guessed at.
@@ -784,6 +816,11 @@ class ModelSurfaceView(
                 while (true) {
                     val coordinates = pendingPaintCoordinates.getAndSet(null) ?: break
                     val hit = modelRenderer.pickTriangle(coordinates[0], coordinates[1])
+                    // The joint is placed where the ray meets the half the user
+                    // can actually see, so the cut preview's clip is part of the
+                    // pick. Without it the probe answered with a point on the
+                    // half standing behind the visible one.
+                    val jointPick = jointPickActive
                     // The stroke's first sample answers a question rather than
                     // painting: a miss is an answer here, not a reason to skip.
                     if (brushProbePending.getAndSet(false)) {
@@ -791,6 +828,10 @@ class ModelSurfaceView(
                         continue
                     }
                     if (hit == null) continue
+                    if (jointPick) {
+                        post { onJointPick?.invoke(hit) }
+                        continue
+                    }
                     // The object index is read here, on the UI thread, so the answer cannot race
                     // a selection change on the GL thread.
                     val picked = hit.objectIndex == currentSelectedIndex
@@ -918,6 +959,10 @@ class ModelSurfaceView(
      */
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         queueEvent { modelRenderer.releaseGpuBuffers() }
+        // The published frame names a viewport and matrices of a context that is
+        // going away, so a pick that arrives before the next draw misses rather
+        // than answering from a camera nobody is looking through any more.
+        MeshPicker.clearFrame()
         super.surfaceDestroyed(holder)
     }
 
@@ -966,7 +1011,7 @@ class ModelSurfaceView(
             // A tap paints nothing, so a paint mode does not own it: tapping the part you want to
             // work on is exactly what a brush needs, and it was the only way to change the target
             // without leaving the paint screen.
-            if (!cameraInteractive || annotationActive ||
+            if (!cameraInteractive || annotationActive || jointPickActive ||
                 surfacePickActive || gizmoMode != TransformGizmoMode.NONE
             ) {
                 return false
@@ -1181,6 +1226,147 @@ private class ModelRenderer(
     @Volatile private var dragOffsetX = 0f
     @Volatile private var dragOffsetY = 0f
     @Volatile private var dragOffsetZ = 0f
+
+    /**
+     * Meshes a tool is previewing in place of a plate object's own.
+     *
+     * The snap fit's live preview: a boolean result replaces the half it was
+     * computed from, without the plate's model list changing at all - and
+     * because the joint moves both halves, it is a map and not one mesh. The
+     * scene's single concatenated buffer cannot carry these: they arrive after
+     * the scene was built, and re-concatenating a plate of millions of
+     * triangles for a preview is exactly the copy a preview exists to avoid, so
+     * each gets a buffer of its own, uploaded once per result.
+     */
+    @Volatile private var previewObjects: Map<Int, StlMesh> = emptyMap()
+
+    private var previewUploaded: Map<Int, StlMesh> = emptyMap()
+    private var previewVbo = 0
+    private var previewBuffers: Array<FloatBuffer?> = emptyArray()
+    private var previewIndices: IntArray = IntArray(0)
+
+    /** Where each previewed mesh starts inside [previewVbo], in bytes. */
+    private var previewSlots: IntArray = IntArray(0)
+
+    /** Replaces the previewed objects; an empty map returns the plate to its own meshes. */
+    fun setPreviewObjects(previews: Map<Int, StlMesh>) {
+        previewObjects = previews
+    }
+
+    /**
+     * Uploads the preview meshes, once per set.
+     *
+     * Runs on the GL thread from the draw, so the context is current and a
+     * result that arrived between frames is uploaded before it is drawn.
+     */
+    private fun ensurePreviewUpload() {
+        val previews = previewObjects
+        if (previewUploaded === previews && previewBuffers.size == previews.size) return
+        releasePreviewBuffers()
+        previewUploaded = previews
+        if (previews.isEmpty()) return
+        val indices = previews.keys.sorted()
+        previewIndices = indices.toIntArray()
+        val buffers = arrayOfNulls<FloatBuffer>(indices.size)
+        var totalFloats = 0
+        previewBuffers = buffers
+        indices.forEachIndexed { slot, index ->
+            val preview = previews.getValue(index)
+            val floats = preview.interleavedVertices
+            val direct = floats.directOrNull()
+            val buffer = direct ?: floats.arrayOrNull()?.let(::floatBuffer)
+            buffers[slot] = buffer
+            if (buffer != null) {
+                buffer.position(0)
+                totalFloats += buffer.remaining()
+            }
+        }
+        if (totalFloats == 0) return
+        // One buffer holds every previewed mesh: it is allocated once at its
+        // full size and each mesh is written at its own byte offset, so a set of
+        // results costs one id and one allocation rather than one per half.
+        val ids = IntArray(1)
+        GLES20.glGenBuffers(1, ids, 0)
+        previewVbo = ids[0]
+        if (previewVbo == 0) return
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, previewVbo)
+        GLES20.glBufferData(
+            GLES20.GL_ARRAY_BUFFER,
+            totalFloats * Float.SIZE_BYTES,
+            null,
+            GLES20.GL_DYNAMIC_DRAW,
+        )
+        var accepted = GLES20.glGetError() == GLES20.GL_NO_ERROR
+        previewSlots = IntArray(buffers.size)
+        var offsetBytes = 0
+        buffers.forEachIndexed { slot, buffer ->
+            previewSlots[slot] = offsetBytes
+            if (buffer == null) return@forEachIndexed
+            buffer.position(0)
+            GLES20.glBufferSubData(
+                GLES20.GL_ARRAY_BUFFER,
+                offsetBytes,
+                buffer.remaining() * Float.SIZE_BYTES,
+                buffer,
+            )
+            if (GLES20.glGetError() != GLES20.GL_NO_ERROR) accepted = false
+            offsetBytes += buffer.remaining() * Float.SIZE_BYTES
+        }
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        if (!accepted) releasePreviewBuffers()
+    }
+
+    /** Deletes the preview buffers and forgets which meshes they held. */
+    private fun releasePreviewBuffers() {
+        if (previewVbo != 0) {
+            GLES20.glDeleteBuffers(1, intArrayOf(previewVbo), 0)
+            previewVbo = 0
+        }
+        previewUploaded = emptyMap()
+        previewBuffers = emptyArray()
+        previewIndices = IntArray(0)
+        previewSlots = IntArray(0)
+    }
+
+    /**
+     * The trait pointers for one buffer.
+     *
+     * The colour array is left bound exactly as the caller set it: it is
+     * scene-wide and read from element zero, and a preview mesh has no slice of
+     * it, so the preview draws in the object's constant colour.
+     */
+    private fun bindTraits(
+        buffer: FloatBuffer?,
+        vbo: Int,
+        position: Int,
+        normal: Int,
+        byteOffset: Int,
+    ) {
+        if (vbo != 0) {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+            GLES20.glEnableVertexAttribArray(position)
+            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, FLOATS_PER_VERTEX_BYTES, byteOffset)
+            GLES20.glEnableVertexAttribArray(normal)
+            GLES20.glVertexAttribPointer(
+                normal,
+                3,
+                GLES20.GL_FLOAT,
+                false,
+                FLOATS_PER_VERTEX_BYTES,
+                byteOffset + 12,
+            )
+        } else if (buffer != null) {
+            // No VBO in play at all: the pointer has to be a client address,
+            // which means nothing may be bound when the call is made.
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glEnableVertexAttribArray(position)
+            buffer.position(0)
+            GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, FLOATS_PER_VERTEX_BYTES, buffer)
+            GLES20.glEnableVertexAttribArray(normal)
+            buffer.position(3)
+            GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, FLOATS_PER_VERTEX_BYTES, buffer)
+        }
+    }
 
     private val projection = FloatArray(16)
     private val view = FloatArray(16)
@@ -1424,31 +1610,26 @@ private class ModelRenderer(
     }
 
     /**
-     * The camera as the picker sees it.
+     * Picks against the plate as drawn.
      *
-     * The bounds are the whole plate's, so a pick projects through exactly the fit
-     * the frame was drawn with: a plate of several objects fits differently from
-     * any one of them.
+     * The cut preview is a shader clip plane on one object, so a picking ray has
+     * to leave the discarded half out of the test: without that, a tap on the
+     * open cut face of the visible half landed on the half standing behind it -
+     * the phase-one gap this feature is the first to suffer from. The clip
+     * applies to the object being cut and to no other, exactly as the shader
+     * flag is set per draw.
      */
-    private fun cameraSnapshot() = MeshPicker.CameraSnapshot(
-        viewportWidth = viewportWidth.toFloat(),
-        viewportHeight = viewportHeight.toFloat(),
-        yaw = yaw,
-        pitch = pitch,
-        zoom = zoom,
-        panX = panX,
-        panY = panY,
-        meshBounds = mesh?.bounds,
-    )
-
     fun pickTriangle(screenX: Float, screenY: Float): MeshPicker.Hit? {
         val scene = mesh ?: return null
+        val cut = cutPlane
+        val clip = if (cut != null) MeshPicker.PickClip(cut.axis, cut.offsetMm) else null
         val hit = MeshPicker.pick(
             mesh = scene,
-            printer = printer,
-            camera = cameraSnapshot(),
             screenX = screenX,
             screenY = screenY,
+            clip = clip,
+            clipObject = cutObject,
+            owners = triangleOwners,
         ) ?: return null
         return objectHit(hit)
     }
@@ -1484,13 +1665,12 @@ private class ModelRenderer(
      */
     fun annotationGestureAt(screenX: Float, screenY: Float): AnnotationGesture? {
         val scene = mesh ?: return null
-        val camera = cameraSnapshot()
-        val ray = MeshPicker.ray(printer, camera, screenX, screenY) ?: return null
+        val ray = MeshPicker.ray(screenX, screenY) ?: return null
         // An annotation describes the selected object - the session is cleared when
         // another model is loaded - so a surface point on a neighbour is not a face
         // of it. It counts as a miss and lands on the plane, exactly like a tap
         // beside the part, rather than exporting another object's triangle index.
-        val hit = MeshPicker.pick(scene, printer, camera, screenX, screenY)
+        val hit = MeshPicker.pick(scene, screenX, screenY)
             ?.let(::objectHit)
             ?.takeIf { it.objectIndex == selectedObject }
         val bounds = selectedMesh()?.bounds ?: scene.bounds
@@ -1586,8 +1766,6 @@ private class ModelRenderer(
         val overlay = gizmoOverlay ?: return null
         val scene = mesh ?: return null
         if (overlay.handles.isEmpty()) return null
-        val camera = cameraSnapshot()
-        val probe = DepthProbe()
         val hits = ArrayList<GizmoHit>(overlay.handles.size * 8)
         val candidates = ArrayList<GizmoDrag.HandleCandidate>(overlay.handles.size * 8)
         overlay.handles.forEach { handle ->
@@ -1596,14 +1774,14 @@ private class ModelRenderer(
                 val x = handle.points[index * 3]
                 val y = handle.points[index * 3 + 1]
                 val z = handle.points[index * 3 + 2]
-                val screen = MeshPicker.project(printer, camera, x, y, z) ?: continue
+                val screen = MeshPicker.project(x, y, z) ?: continue
                 val dx = screen[0] - screenX
                 val dy = screen[1] - screenY
                 hits.add(GizmoHit(handle.axis, handle.kind))
                 candidates.add(
                     GizmoDrag.HandleCandidate(
                         screenDistancePx = kotlin.math.sqrt(dx * dx + dy * dy),
-                        depthMm = probe.of(x, y, z),
+                        depthMm = MeshPicker.depthOf(x, y, z) ?: 0f,
                     ),
                 )
             }
@@ -1611,48 +1789,10 @@ private class ModelRenderer(
         // What the model is doing under the finger: a handle further away than
         // that surface is behind the model, and reaching through the part to grab a
         // ring on its far side is exactly what felt wrong.
-        val surface = MeshPicker.pick(scene, printer, camera, screenX, screenY)
-        val surfaceDepth = surface?.let { probe.of(it.x, it.y, it.z) }
+        val surface = MeshPicker.pick(scene, screenX, screenY)
+        val surfaceDepth = surface?.let { MeshPicker.depthOf(it.x, it.y, it.z) }
         val chosen = GizmoDrag.chooseHandle(candidates, tolerancePx, surfaceDepth)
         return if (chosen >= 0) hits[chosen] else null
-    }
-
-    /**
-     * How far a plate point is from the camera, for judging what is in front.
-     *
-     * Built from the camera snapshot rather than read from the matrices the GL
-     * thread is using, so a touch cannot catch one of them half-written.
-     */
-    private inner class DepthProbe {
-        private val combined = FloatArray(16)
-        private val point = FloatArray(4)
-        private val projected = FloatArray(4)
-        private val view = FloatArray(16)
-        private val scene = FloatArray(16)
-
-        init {
-            val aspect = viewportWidth.toFloat() / max(viewportHeight, 1).toFloat()
-            val fit = sceneFit(aspect)
-            Matrix.setLookAtM(view, 0, 0f, -fit.distance, fit.distance * 0.62f, 0f, 0f, 0f, 0f, 0f, 1f)
-            Matrix.translateM(view, 0, panX, panY, 0f)
-            Matrix.setIdentityM(scene, 0)
-            Matrix.rotateM(scene, 0, pitch, 1f, 0f, 0f)
-            Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
-            Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
-            Matrix.multiplyMM(combined, 0, view, 0, scene, 0)
-        }
-
-        /** Bigger is further from the eye. */
-        fun of(x: Float, y: Float, z: Float): Float {
-            point[0] = x
-            point[1] = y
-            point[2] = z
-            point[3] = 1f
-            Matrix.multiplyMV(projected, 0, combined, 0, point, 0)
-            return kotlin.math.sqrt(
-                projected[0] * projected[0] + projected[1] * projected[1] + projected[2] * projected[2],
-            )
-        }
     }
 
     /** Millimetres along [axis] for a screen drag on its arrow. */
@@ -1666,9 +1806,8 @@ private class ModelRenderer(
             ModelPlacement.Axis.Y -> Point3(pivot.x, pivot.y + length, pivot.z)
             ModelPlacement.Axis.Z -> Point3(pivot.x, pivot.y, pivot.z + length)
         }
-        val camera = cameraSnapshot()
-        val from = MeshPicker.project(printer, camera, pivot.x, pivot.y, pivot.z) ?: return 0f
-        val to = MeshPicker.project(printer, camera, tip.x, tip.y, tip.z) ?: return 0f
+        val from = MeshPicker.project(pivot.x, pivot.y, pivot.z) ?: return 0f
+        val to = MeshPicker.project(tip.x, tip.y, tip.z) ?: return 0f
         val fallback = BedPlaneDrag.millimetresPerPixel(
             distanceMm = cameraDistance(),
             viewportHeightPx = viewportHeight,
@@ -1696,14 +1835,11 @@ private class ModelRenderer(
         val overlay = gizmoOverlay ?: return null
         val handle = overlay.handles.firstOrNull { it.axis == axis && it.kind == GizmoHandleKind.RING } ?: return null
         if (mesh == null) return null
-        val camera = cameraSnapshot()
         val count = handle.points.size / 3
         if (count < 4) return null
         val projected = FloatArray(count * 2)
         for (index in 0 until count) {
             val screen = MeshPicker.project(
-                printer,
-                camera,
                 handle.points[index * 3],
                 handle.points[index * 3 + 1],
                 handle.points[index * 3 + 2],
@@ -1787,7 +1923,6 @@ private class ModelRenderer(
         val aspect = viewportWidth.toFloat() / viewportHeight.toFloat()
         val fit = sceneFit(aspect)
         val distance = fit.distance
-
         Matrix.perspectiveM(projection, 0, FIELD_OF_VIEW_DEGREES, aspect, fit.nearPlane, fit.farPlane)
         Matrix.setLookAtM(view, 0, 0f, -distance, distance * 0.62f, 0f, 0f, 0f, 0f, 0f, 1f)
         Matrix.translateM(view, 0, panX, panY, 0f)
@@ -1797,6 +1932,17 @@ private class ModelRenderer(
         Matrix.rotateM(scene, 0, yaw, 0f, 0f, 1f)
         // In plate coordinates, so the offset turns with the model it moves.
         Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
+
+        // The frame's own matrix, published for the picker: an object is drawn
+        // through it plus its own preview transform below, and the plate as a
+        // whole through exactly this. Copying it out here, before any draw
+        // overwrites the scratch matrices, is what makes every pick, projection
+        // and depth test in the viewer answer about the geometry actually on
+        // screen. It used to be recomputed in the picker, and the two fits came
+        // out different: taps landed past the model and selected nothing.
+        Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
+        Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
+        MeshPicker.publish(mvp, viewportWidth, viewportHeight)
 
         // The preview belongs to one object: the one the tools act on, which is
         // the one every commit transforms. Putting it in the scene moved the
@@ -1878,12 +2024,10 @@ private class ModelRenderer(
     fun annotationHandleAt(screenX: Float, screenY: Float, radiusPx: Float): SegmentEnd? {
         val overlay = annotationOverlay ?: return null
         if (overlay.handles.isEmpty() || mesh == null) return null
-        val camera = cameraSnapshot()
         var best: SegmentEnd? = null
         var bestDistance = radiusPx
         for ((end, position) in overlay.handles) {
-            val screen = MeshPicker.project(printer, camera, position.x, position.y, position.z)
-                ?: continue
+            val screen = MeshPicker.project(position.x, position.y, position.z) ?: continue
             val dx = screen[0] - screenX
             val dy = screen[1] - screenY
             val distance = kotlin.math.sqrt(dx * dx + dy * dy)
@@ -2240,6 +2384,7 @@ private class ModelRenderer(
      */
     fun releaseGpuBuffers() {
         releaseMeshBuffer()
+        releasePreviewBuffers()
         if (colorVbo != 0) {
             GLES20.glDeleteBuffers(1, intArrayOf(colorVbo), 0)
             colorVbo = 0
@@ -2304,6 +2449,8 @@ private class ModelRenderer(
 
         buffer.position(0)
         ensureMeshUpload(buffer)
+        val previews = previewObjects
+        ensurePreviewUpload()
         val vbo = meshVbo
         val colors = paintColors
         val data = colors?.buffer
@@ -2418,6 +2565,52 @@ private class ModelRenderer(
                     cutFloats[2],
                     cutFloats[3],
                 )
+            }
+            val shown = previews[index]
+            if (shown != null) {
+                // A tool is previewing this object: the boolean result stands in
+                // for it, drawn where it is - the preview is in plate
+                // coordinates, exactly as the mesh it replaces is.
+                val slot = previewIndices.indexOf(index)
+                if (slot >= 0) {
+                    // The palette is the scene's own, one colour per scene
+                    // vertex: the preview's vertices are boolean output and
+                    // have no slice of it, so the constant branch draws them.
+                    // The object's paint still stands for support paint and
+                    // blocker volumes - it is a property of the plate object,
+                    // not of the triangles underneath it.
+                    val rgb = objectColor(index)
+                    GLES20.glVertexAttrib3f(color, rgb[0], rgb[1], rgb[2])
+                    if (colors != null && data != null) GLES20.glDisableVertexAttribArray(color)
+                    bindTraits(
+                        buffer = previewBuffers.getOrNull(slot),
+                        vbo = previewVbo,
+                        position = position,
+                        normal = normal,
+                        byteOffset = previewSlots.getOrElse(slot) { 0 },
+                    )
+                    GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, shown.triangleCount * VERTICES_PER_TRIANGLE)
+                    // The scene-wide traits go back as they were for the objects
+                    // after this one: the mesh buffer's pointers, and the colour
+                    // array when the plate has one.
+                    if (colors != null && data != null) {
+                        GLES20.glEnableVertexAttribArray(color)
+                        if (colorVbo != 0) {
+                            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, colorVbo)
+                            GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, 0)
+                        } else {
+                            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+                            data.position(0)
+                            GLES20.glVertexAttribPointer(color, 3, GLES20.GL_FLOAT, false, 3 * 4, data)
+                        }
+                    }
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+                    GLES20.glEnableVertexAttribArray(position)
+                    GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, 0)
+                    GLES20.glEnableVertexAttribArray(normal)
+                    GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, 12)
+                    continue
+                }
             }
             val firstVertex = objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE
             val vertexCount = objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE
@@ -2692,6 +2885,9 @@ private class ModelRenderer(
 
         /** Interleaved vertex: three position floats, then three normal ones. */
         const val FLOATS_PER_VERTEX = 6
+
+        /** The same vertex in bytes, which is what a GL stride and offset take. */
+        const val FLOATS_PER_VERTEX_BYTES = FLOATS_PER_VERTEX * 4
 
         /** Three vertices to a triangle, so eighteen floats to a scene triangle. */
         const val VERTICES_PER_TRIANGLE = 3

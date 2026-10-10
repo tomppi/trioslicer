@@ -19,7 +19,13 @@ import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
+import com.tomppi.enderslicer.viewer.GizmoOverlay
+import com.tomppi.enderslicer.viewer.SnapFitHalf
+import com.tomppi.enderslicer.viewer.SnapFitRung
+import com.tomppi.enderslicer.viewer.SnapGhost
+import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.spanAlong
 
 /**
@@ -31,6 +37,49 @@ fun cutHalfName(base: String, axis: ModelPlacement.Axis, high: Boolean): String 
     ModelPlacement.Axis.Z -> if (high) "$base upper" else "$base lower"
     ModelPlacement.Axis.X -> if (high) "$base right" else "$base left"
     ModelPlacement.Axis.Y -> if (high) "$base back" else "$base front"
+}
+
+/**
+ * What the snap fit says when the pair a split recorded is not the plate it was
+ * recorded on: a half was deleted or replaced, another model was split since,
+ * or a restored workspace has different objects. That is an ordinary thing for
+ * a plate to do, so it is a sentence rather than an exception.
+ */
+internal const val SNAP_PAIR_STALE_MESSAGE =
+    "The plate changed since the split - split the model again and retry"
+
+/**
+ * The two halves a split recorded, as the plate has them now.
+ *
+ * [Stale] is the missing half, the replaced half and the empty plate alike: the
+ * caller has nothing to boolean either way, and the one thing it can say is
+ * what [Stale.reason] carries.
+ */
+sealed interface SnapPairLookup {
+    data class Found(val lowIndex: Int, val highIndex: Int) : SnapPairLookup
+
+    object Stale : SnapPairLookup {
+        val reason: String get() = SNAP_PAIR_STALE_MESSAGE
+    }
+}
+
+/**
+ * [name] without the half-of-a-cut suffix it already carries.
+ *
+ * Splitting a model twice - a half re-cut on another axis, or a pair split
+ * again - otherwise stacks the suffixes: "part lower" cut along X would leave
+ * "part lower left" and "part lower right", and cutting one of those along Z
+ * would leave "part lower left lower". The suffix is replaced, not added to,
+ * and every object name stays one half away from the one it was cut from.
+ */
+fun cutBaseName(name: String): String {
+    for (axis in ModelPlacement.Axis.entries) {
+        for (high in listOf(false, true)) {
+            val suffix = cutHalfName("", axis, high)
+            if (suffix.isNotEmpty() && name.endsWith(suffix)) return name.dropLast(suffix.length)
+        }
+    }
+    return name
 }
 
 data class MainUiState(
@@ -82,6 +131,57 @@ data class MainUiState(
     val cutAxis: ModelPlacement.Axis = ModelPlacement.Axis.Z,
     /** Where the cut plane sits along [cutAxis], in build-plate millimetres. */
     val cutOffsetMm: Double = 0.0,
+
+    /**
+     * True while the Snap fit tool is open: the model view places a joint by tap.
+     *
+     * The two halves and the axis are not asked for, they are what the split
+     * left behind: [snapLowHalfId] and [snapHighHalfId] name the two objects the
+     * split produced, in the order the cut's own axis reads, and a session ends
+     * the moment either of them leaves the plate. Nothing here is a second
+     * source of truth about which objects were split.
+     */
+    val snapActive: Boolean = false,
+    /** The half on the low side of the split. */
+    val snapLowHalfId: String? = null,
+    /** The half on the high side of the split. */
+    val snapHighHalfId: String? = null,
+    /** The axis the pair was split on, which is the assembly direction. */
+    val snapAxis: ModelPlacement.Axis = ModelPlacement.Axis.Z,
+    /**
+     * Each half's own mating face along [snapAxis], in that half's own mesh
+     * coordinates: the plane the split ran, which the split knows exactly and
+     * the plate's layout cannot move. Carried per half because a half that
+     * already carries a joint no longer ends at its face, so re-measuring it
+     * after a joint would put the next one in the wrong place.
+     */
+    val snapLowFaceMm: Float? = null,
+    val snapHighFaceMm: Float? = null,
+    /** The tapped point on the model, or null before the first tap. */
+    val snapAnchorPoint: Vec3? = null,
+    /**
+     * Which half the tap landed on, so the point can be read in that half's own
+     * coordinates - the plate moved the two halves apart, and the same plate
+     * point is a different spot in each half's frame.
+     */
+    val snapAnchorHalfId: String? = null,
+    /** One control for the whole joint: every dimension and clearance scales with it. */
+    val snapScale: Float = 1f,
+    /** Which half the user asked to carry the beam. */
+    val snapBeamHalf: SnapJoint.JointHalf = SnapJoint.JointHalf.LOW,
+    /**
+     * True when the user asked for the full joint whatever the seam's own
+     * cross-section says: the ladder's fit checks are then skipped and the pad
+     * is built anyway, as the user is responsible for the result.
+     */
+    val snapFullJoint: Boolean = false,
+    /**
+     * The last previewed result: the two booleaned halves and the joint they
+     * carry. Null while nothing has been previewed yet.
+     */
+    val snapPreview: SnapPreview? = null,
+    /** Why the last attempt produced nothing, in the user's terms. */
+    val snapFailure: String? = null,
 
     /**
      * True while the Smart Infill sheet is waiting for a surface tap. A tap is
@@ -263,7 +363,7 @@ data class MainUiState(
      */
     val cutHalfNames: Pair<String, String>
         get() {
-            val base = selectedModel?.name.orEmpty()
+            val base = cutBaseName(selectedModel?.name.orEmpty())
             return cutHalfName(base, cutAxis, high = false) to cutHalfName(base, cutAxis, high = true)
         }
 
@@ -306,6 +406,171 @@ data class MainUiState(
 
     /** Takes one object off the plate, selecting another if the removed one was selected. */
     fun withoutModel(id: String): MainUiState = withModels(models.filterNot { it.id == id })
+
+    // --- The snap fit -------------------------------------------------------
+
+    /** The half of the split on the low side of the assembly axis, or null when it is gone. */
+    val snapLowHalf: PlateObject?
+        get() = snapLowHalfId?.let { id -> models.firstOrNull { it.id == id } }
+
+    /** The half of the split on the high side, or null when it is gone. */
+    val snapHighHalf: PlateObject?
+        get() = snapHighHalfId?.let { id -> models.firstOrNull { it.id == id } }
+
+    /**
+     * Where the two halves of the split stand in the plate order, or [SnapPairLookup.Stale]
+     * when one of them is no longer on the plate.
+     *
+     * The places matter as much as the objects: the plate's packer lays the
+     * plate out with fresh objects, so the parts a commit has to select and
+     * remember afterwards are followed by their index in the plate order, not
+     * by identity - which is what a lookup by identity got wrong.
+     */
+    val snapPairIndices: SnapPairLookup
+        get() {
+            val lowId = snapLowHalfId ?: return SnapPairLookup.Stale
+            val highId = snapHighHalfId ?: return SnapPairLookup.Stale
+            val lowIndex = models.indexOfFirst { it.id == lowId }
+            val highIndex = models.indexOfFirst { it.id == highId }
+            if (lowIndex < 0 || highIndex < 0 || lowIndex == highIndex) return SnapPairLookup.Stale
+            return SnapPairLookup.Found(lowIndex, highIndex)
+        }
+
+    /** True when both halves of the last split are still on the plate. */
+    val snapHalvesPresent: Boolean
+        get() = snapLowHalfId != null && snapHighHalfId != null &&
+            snapLowHalf != null && snapHighHalf != null && snapLowHalfId != snapHighHalfId
+
+    /**
+     * True when the Snap fit tool has both halves to work on: a split has
+     * happened and neither half has left the plate since.
+     */
+    val snapAvailable: Boolean get() = snapHalvesPresent
+
+    /**
+     * The low half as the joint builder needs it: placed, with its own mating
+     * face carried, or null when it is gone or the plane it was split on was
+     * never recorded.
+     *
+     * Null is not fatal here - the panel says so - but it is the one thing a
+     * joint cannot be built without: the face is what every feature is measured
+     * from, and the placed mesh on its own would put them wherever the packer
+     * left the half.
+     */
+    val snapLowFitHalf: SnapFitHalf? by lazy {
+        val half = snapLowHalf ?: return@lazy null
+        val face = snapLowFaceMm ?: return@lazy null
+        SnapFitHalf.placed(half.sourceMesh, half.mesh, face)
+    }
+
+    /** The high half as the joint builder needs it; see [snapLowFitHalf]. */
+    val snapHighFitHalf: SnapFitHalf? by lazy {
+        val half = snapHighHalf ?: return@lazy null
+        val face = snapHighFaceMm ?: return@lazy null
+        SnapFitHalf.placed(half.sourceMesh, half.mesh, face)
+    }
+
+    /**
+     * The tapped point in the pair's own coordinates - the frame the joint is
+     * built in, and the frame each half's mating face is carried in.
+     *
+     * Read through the placement of the half the tap landed on: the plate has
+     * moved the halves apart since the split, and the same plate point is a
+     * different spot in each half's own frame. Null before the first tap, and
+     * when that half is no longer one of the pair.
+     */
+    val snapAnchorLocalMm: Vec3? by lazy {
+        val tapped = snapAnchorPoint ?: return@lazy null
+        val half = when (snapAnchorHalfId) {
+            snapLowHalfId -> snapLowFitHalf
+            snapHighHalfId -> snapHighFitHalf
+            else -> null
+        } ?: return@lazy null
+        half.toLocal(tapped)
+    }
+
+    /**
+     * The preview while the settings that produced it are still the current
+     * ones, null otherwise.
+     *
+     * [snapPreview] carries the anchor and the scale it was built at, so a
+     * slider that has moved on is not previewed with, and Apply cannot stage
+     * geometry the user did not ask for.
+     */
+    val snapShownMeshes: SnapPreview? by lazy {
+        val preview = snapPreview ?: return@lazy null
+        preview.takeIf {
+            it.anchorPoint == snapAnchorPoint && it.scale == snapScale && it.beamHalf == snapBeamHalf &&
+                it.fullJoint == snapFullJoint
+        }
+    }
+
+    /**
+     * The joint drawn where it will go, or null when the plate already shows it.
+     *
+     * While the preview stands there is nothing to ghost - the previewed halves
+     * *are* the jointed geometry - and it also goes when the settings have moved
+     * on enough that the joint can no longer be built at all, because then there
+     * is nothing to put in.
+     */
+    val snapGhost: GizmoOverlay? by lazy {
+        if (!snapActive || snapShownMeshes != null) return@lazy null
+        val anchor = snapAnchorLocalMm ?: return@lazy null
+        val low = snapLowFitHalf ?: return@lazy null
+        val high = snapHighFitHalf ?: return@lazy null
+        val joint = when (
+            val built = SnapJoint.build(
+                axis = snapAxis,
+                anchorMm = anchor,
+                scale = snapScale,
+                lowHalf = low,
+                highHalf = high,
+                beamHalf = snapBeamHalf,
+                requested = if (snapFullJoint) SnapFitRung.FULL else null,
+            )
+        ) {
+            is SnapJoint.Either.Placed -> built.placement.joint
+            is SnapJoint.Either.Flipped -> built.placement.joint
+            is SnapJoint.Either.Failed -> return@lazy null
+        }
+        SnapGhost.overlay(joint)
+    }
+
+    /**
+     * Why Apply cannot run yet, or null when it can.
+     *
+     * A disabled primary action always says what is missing, so this is the same
+     * sentence the plate shows rather than a second one invented for the panel.
+     */
+    val snapBlockedReason: String?
+        get() = when {
+            snapLowHalfId == null || snapHighHalfId == null ->
+                "Split a model first: the snap fit joins the two halves a split made."
+            // A pair was recorded and the plate no longer holds it: the halves
+            // were deleted, replaced by another split, or restored away.
+            !snapHalvesPresent -> SNAP_PAIR_STALE_MESSAGE
+            snapLowFaceMm == null || snapHighFaceMm == null ->
+                "The plane this pair was split on is not known; split the model again."
+            snapAnchorPoint == null -> "Tap the model to place the joint on the seam."
+            else -> null
+        }
+
+    /**
+     * The snap session, gone: the tool closed, the preview dropped and the
+     * failure forgotten.
+     *
+     * The pair a split recorded stays, so [snapAvailable] still answers for it
+     * and a cancelled session can be opened again without splitting twice.
+     * Called from every path that replaces or drops a half, because a preview
+     * is geometry for objects that may no longer exist.
+     */
+    fun withoutSnap(): MainUiState = copy(
+        snapActive = false,
+        snapAnchorPoint = null,
+        snapAnchorHalfId = null,
+        snapPreview = null,
+        snapFailure = null,
+    )
 
     /** The stored result is exportable; completeness is the cached value from when it was stored. */
     fun hasCurrentGcode(): Boolean = sliceResultId != null && gcodePath != null && gcodeComplete

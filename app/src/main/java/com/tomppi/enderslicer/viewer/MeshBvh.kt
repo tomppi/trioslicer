@@ -13,6 +13,10 @@ import kotlin.math.min
  * triangle. On a 280k-triangle STL that is 280k intersection tests per pick,
  * and a paint stroke issues a pick per sample.
  *
+ * A pick can also be asked to leave a cut preview's discarded half out of the
+ * test: the preview is a shader clip plane, so without that the picker walked
+ * straight through it and hit geometry the user could not see.
+ *
  * The hierarchy is built once per mesh, so a pick becomes a handful of node
  * tests plus the triangles inside a few leaves. Positions are read through
  * [VertexData], which keeps large meshes in their off-heap direct buffer
@@ -43,6 +47,9 @@ class MeshBvh private constructor(
     fun raycast(
         ox: Float, oy: Float, oz: Float,
         dx: Float, dy: Float, dz: Float,
+        clip: MeshPicker.PickClip? = null,
+        clipObject: Int = -1,
+        owners: IntArray? = null,
     ): Hit? {
         if (triangleCount == 0) return null
         val invX = 1f / parallelSafe(dx)
@@ -67,6 +74,12 @@ class MeshBvh private constructor(
                 val start = nodeStart[node]
                 for (i in start until start + count) {
                     val triangle = order[i]
+                    if (clip != null && clipObject >= 0 && owners != null &&
+                        (owners.getOrElse(triangle) { 0 }) == clipObject &&
+                        clip.hides(vertices, triangle)
+                    ) {
+                        continue
+                    }
                     val t = intersect(triangle, ox, oy, oz, dx, dy, dz) ?: continue
                     if (t > RAY_EPSILON && t < bestT) {
                         bestT = t

@@ -75,6 +75,18 @@ object MeshBoolean {
         boolean(first, second, "subtract") { a, b -> nativeSubtract(a, b) }
 
     /**
+     * Only the material [first] and [second] share.
+     *
+     * The joint does not need this - it is the measurement of whether a feature
+     * really landed in the half it was built for. Two closed solids that do not
+     * touch are still closed, so neither "the union produced a solid" nor the
+     * mesh's own closedness says the beam is attached; the shared volume does,
+     * and this is the engine's own answer to it.
+     */
+    fun intersect(first: StlMesh, second: StlMesh): Result =
+        boolean(first, second, "intersect") { a, b -> nativeIntersect(a, b) }
+
+    /**
      * True when [mesh] is a closed solid the engine accepts: its own status is
      * NoError *and* an independent edge pairing finds every edge shared by
      * exactly two triangles. False when the library is unavailable, so a caller
@@ -192,6 +204,9 @@ object MeshBoolean {
 
     @JvmName("nativeSubtract")
     internal external fun nativeSubtract(first: Long, second: Long): Long
+
+    @JvmName("nativeIntersect")
+    internal external fun nativeIntersect(first: Long, second: Long): Long
 
     @JvmName("nativeStatus")
     internal external fun nativeStatus(handle: Long): String

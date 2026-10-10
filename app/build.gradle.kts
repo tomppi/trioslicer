@@ -1044,6 +1044,16 @@ tasks.matching { it.name.startsWith("assemble") || it.name == "bundleDebug" || i
 }
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    // The JVM tests that prove a boolean really intersects a half run the same
+    // Manifold engine the phone runs, through a host build of the same JNI shim
+    // (scripts/build-manifold-host.sh): the packaged copy is arm64-v8a only, so
+    // there is nothing else for a host JVM to load. Absent, those tests skip and
+    // say which script stages it.
+    systemProperty(
+        "java.library.path",
+        rootProject.file(".build/manifold-host/out").absolutePath + File.pathSeparator +
+            System.getProperty("java.library.path"),
+    )
     testLogging {
         events("failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

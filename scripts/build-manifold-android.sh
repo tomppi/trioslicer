@@ -170,8 +170,8 @@ echo "== JNI entry points (all must be present) =="
 # The symbols are read into a file first: grep -q would leave nm on a broken
 # pipe, and pipefail would then call a successful match a failure.
 nm -D "$STAGE_DIR/libmanifold_jni.so" > "$WORK/jni-symbols.txt"
-for ENTRY in nativeVersion nativeLoadMesh nativeBox nativeUnion nativeSubtract nativeStatus \
-             nativeIsClosed nativeReadMesh nativeVolume nativeLiveHandles nativeRelease; do
+for ENTRY in nativeVersion nativeLoadMesh nativeBox nativeUnion nativeSubtract nativeIntersect \
+             nativeStatus nativeIsClosed nativeReadMesh nativeVolume nativeLiveHandles nativeRelease; do
   grep -q " T Java_com_tomppi_enderslicer_viewer_MeshBoolean_$ENTRY$" "$WORK/jni-symbols.txt" &&
     echo "  ok  $ENTRY" || { echo "  MISSING $ENTRY" >&2; exit 1; }
 done

@@ -160,10 +160,21 @@ object MeshRepair {
         }
         val solid = (0 until welded).any { !open[it] }
 
-        // Chain the boundary into loops; each boundary vertex has one way out on
-        // well-formed geometry, and anything else is reported rather than fixed.
-        val outgoing = HashMap<Int, Int>(boundary.size * 2)
-        for (edge in boundary) outgoing.putIfAbsent((edge ushr 32).toInt(), edge.toInt())
+        // Boundary edges by the vertex they leave. On well-formed geometry every
+        // boundary vertex has exactly one way out and the walk closes one loop.
+        // A cap whose outline pinches - two lobes of a cross-section meeting at
+        // one vertex, which is what a cut through existing vertices leaves - has
+        // vertices with more than one way out, and a walk that commits to the
+        // first of them wanders into the wrong lobe and comes back to a vertex
+        // it is already standing on. Instead the edges are consumed one at a
+        // time: arriving at a vertex already on the walk's own path closes a
+        // simple loop there, which is filled on its own, and the walk carries on
+        // from that vertex with the next unused edge. A boundary that still does
+        // not close is reported, not guessed at.
+        val outgoing = HashMap<Int, MutableList<Long>>(boundary.size * 2)
+        for (edge in boundary) {
+            outgoing.getOrPut((edge ushr 32).toInt()) { ArrayList(2) }.add(edge)
+        }
 
         val used = HashSet<Long>(boundary.size * 2)
         val patch = ArrayList<Float>()
@@ -173,56 +184,30 @@ object MeshRepair {
         var edgesClosed = 0
         for (start in boundary) {
             if (start in used) continue
-            loopsFound++
-            val loop = ArrayList<Int>()
-            loop.add((start ushr 32).toInt())
+            val loops = ArrayList<List<Int>>()
+            val path = ArrayList<Int>()
+            path.add((start ushr 32).toInt())
             var edge = start
             var failure: String? = null
             while (true) {
                 used.add(edge)
                 val to = edge.toInt()
-                if (to == loop[0]) break
-                if (loop.contains(to)) {
-                    failure = "a boundary that revisits a vertex"
-                    break
-                }
-                loop.add(to)
-                if (loop.size > limits.maxLoopEdges) {
-                    failure = "a hole of more than " + limits.maxLoopEdges + " edges"
-                    break
-                }
-                val next = outgoing[to]
-                if (next == null) {
-                    failure = "a boundary that ends without closing"
-                    break
-                }
-                edge = edgeKey(to, next)
-            }
-
-            if (failure == null && !solid) {
-                // Filling one loop of an open surface would only build a shell
-                // with no inside, so an open surface is refused whole.
-                failure = OPEN_SURFACE
-            }
-
-            if (failure == null) {
-                // The fill needs to reach across the hole; a rim edge or a fan
-                // spoke longer than the cap means this is not a small hole.
-                for (corner in loop.indices) {
-                    val next = loop[(corner + 1) % loop.size]
-                    if (distance(positions, loop[corner], next) > limits.maxFillEdgeMm) {
-                        failure = "a hole spanning more than " + limits.maxFillEdgeMm + " mm"
+                val revisited = path.indexOf(to)
+                if (revisited >= 0) {
+                    loops.add(ArrayList(path.subList(revisited, path.size)))
+                    while (path.size > revisited + 1) path.removeAt(path.size - 1)
+                } else {
+                    path.add(to)
+                    if (path.size > limits.maxLoopEdges + 1) {
+                        failure = "a hole of more than " + limits.maxLoopEdges + " edges"
                         break
                     }
                 }
-                if (failure == null) {
-                    for (corner in 1 until loop.size) {
-                        if (distance(positions, loop[0], loop[corner]) > limits.maxFillEdgeMm) {
-                            failure = "a hole spanning more than " + limits.maxFillEdgeMm + " mm"
-                            break
-                        }
-                    }
-                }
+                val next = outgoing[to]?.firstOrNull { it !in used } ?: break
+                edge = next
+            }
+            if (failure == null && path.size > 1) {
+                failure = "a boundary that ends without closing"
             }
 
             if (failure != null) {
@@ -233,24 +218,61 @@ object MeshRepair {
                 var cursor = edge
                 var guard = 0
                 while (guard++ <= boundary.size) {
-                    val following = outgoing[cursor.toInt()] ?: break
-                    val next = edgeKey(cursor.toInt(), following)
+                    val following = outgoing[cursor.toInt()]?.firstOrNull { it !in used } ?: break
+                    val next = edgeKey(cursor.toInt(), following.toInt())
                     if (next == start || !used.add(next)) break
                     cursor = next
                 }
                 failures[failure] = (failures[failure] ?: 0) + 1
-                continue
+                loopsFound++
             }
 
-            // Fan from the loop's first vertex, wound against the loop so the
-            // patch's normals face the same way as the surface around it.
-            for (corner in 1 until loop.size - 1) {
-                add(positions, patch, loop[0])
-                add(positions, patch, loop[corner + 1])
-                add(positions, patch, loop[corner])
+            for (loop in loops) {
+                loopsFound++
+                var loopFailure: String? = if (loop.size > limits.maxLoopEdges) {
+                    "a hole of more than " + limits.maxLoopEdges + " edges"
+                } else if (!solid) {
+                    // Filling one loop of an open surface would only build a
+                    // shell with no inside, so an open surface is refused whole.
+                    OPEN_SURFACE
+                } else {
+                    null
+                }
+
+                if (loopFailure == null) {
+                    // The fill needs to reach across the hole; a rim edge or a fan
+                    // spoke longer than the cap means this is not a small hole.
+                    for (corner in loop.indices) {
+                        val next = loop[(corner + 1) % loop.size]
+                        if (distance(positions, loop[corner], next) > limits.maxFillEdgeMm) {
+                            loopFailure = "a hole spanning more than " + limits.maxFillEdgeMm + " mm"
+                            break
+                        }
+                    }
+                }
+                if (loopFailure == null) {
+                    for (corner in 1 until loop.size) {
+                        if (distance(positions, loop[0], loop[corner]) > limits.maxFillEdgeMm) {
+                            loopFailure = "a hole spanning more than " + limits.maxFillEdgeMm + " mm"
+                            break
+                        }
+                    }
+                }
+                if (loopFailure != null) {
+                    failures[loopFailure] = (failures[loopFailure] ?: 0) + 1
+                    continue
+                }
+
+                // Fan from the loop's first vertex, wound against the loop so the
+                // patch's normals face the same way as the surface around it.
+                for (corner in 1 until loop.size - 1) {
+                    add(positions, patch, loop[0])
+                    add(positions, patch, loop[corner + 1])
+                    add(positions, patch, loop[corner])
+                }
+                loopsFilled++
+                edgesClosed += loop.size
             }
-            loopsFilled++
-            edgesClosed += loop.size
         }
 
         val reason = if (failures.isEmpty()) {

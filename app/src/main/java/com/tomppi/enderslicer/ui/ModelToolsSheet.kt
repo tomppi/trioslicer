@@ -100,6 +100,8 @@ fun ModelToolsOverlay(
     onApplyImportedTransform: () -> Unit,
     /** Opens the cut preview over the plate, where the model is split in two. */
     onOpenCutUi: () -> Unit,
+    /** Opens the snap fit tool over the two halves the last split made. */
+    onOpenSnapUi: () -> Unit,
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
@@ -135,6 +137,7 @@ fun ModelToolsOverlay(
                 onReset = onReset,
                 onApplyImportedTransform = onApplyImportedTransform,
                 onOpenCutUi = onOpenCutUi,
+                onOpenSnapUi = onOpenSnapUi,
                 onOpenSupportPaintUi = onOpenSupportPaintUi,
                 onBrushRadius = onBrushRadius,
                 onClearPaint = onClearPaint,
@@ -243,6 +246,7 @@ private fun ModelToolsGroupPanel(
     onReset: () -> Unit,
     onApplyImportedTransform: () -> Unit,
     onOpenCutUi: () -> Unit,
+    onOpenSnapUi: () -> Unit,
     onOpenSupportPaintUi: () -> Unit,
     onBrushRadius: (Double) -> Unit,
     onClearPaint: () -> Unit,
@@ -287,10 +291,12 @@ private fun ModelToolsGroupPanel(
                 )
 
                 ModelToolsGroup.ACTIONS -> ModelActionTools(
+                    state = state,
                     onLayFlat = onLayFlat,
                     onDropToBed = onDropToBed,
                     onReset = onReset,
                     onOpenCutUi = onOpenCutUi,
+                    onOpenSnapUi = onOpenSnapUi,
                 )
 
                 ModelToolsGroup.SUPPORT_PAINT -> ModelSupportPaintTools(
@@ -730,10 +736,12 @@ private fun RotateButton(
 /** Actions group: the whole-model operations, splitting first. */
 @Composable
 private fun ModelActionTools(
+    state: MainUiState,
     onDropToBed: () -> Unit,
     onLayFlat: () -> Unit,
     onReset: () -> Unit,
     onOpenCutUi: () -> Unit,
+    onOpenSnapUi: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -743,6 +751,25 @@ private fun ModelActionTools(
         Text(
             "Cut the selected model in two: a slider moves the plane over the plate and Split " +
                 "turns the two sides into objects of their own.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // The joint goes on the pair the split made, so this is open only while
+        // both halves are still on the plate: the split is what defines the
+        // assembly axis, and asking the user to nominate two objects would let
+        // them nominate a pair that meets no plane at all.
+        OutlinedButton(
+            onClick = onOpenSnapUi,
+            enabled = state.snapAvailable && !state.isBusy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Snap fit joint") }
+        Text(
+            if (state.snapAvailable) {
+                "Put a cantilever snap fit across the seam the split made: tap the model to place " +
+                    "it, scale it, then join the two halves."
+            } else {
+                "Split the model first: the joint joins the two halves a split made."
+            },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

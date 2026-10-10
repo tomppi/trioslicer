@@ -123,8 +123,10 @@ import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelCutPlane
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
+import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ViewerOrientation
 import android.content.ClipData
@@ -1053,6 +1055,8 @@ fun EnderSlicerApp(
     }
     // The split preview is over the model, so back leaves it the way Close does.
     BackHandler(enabled = state.cutActive) { viewModel.setCutActive(false) }
+    // The snap fit owns the plate's taps while it is open, so back leaves it too.
+    BackHandler(enabled = state.snapActive) { viewModel.setSnapActive(false) }
     var viewerMode by rememberSaveable { mutableStateOf(ViewerMode.MODEL) }
     var selectedLayerIndex by rememberSaveable { mutableStateOf(0) }
     var modelOrientation by rememberSaveable(stateSaver = ViewerOrientationSaver) {
@@ -1767,12 +1771,30 @@ fun EnderSlicerApp(
                                 viewModel.setAnnotationActive(false)
                                 annotationUiOpen = false
                             },
+                            onJointPick = { hit ->
+                                // The picker answers in plate coordinates, and
+                                // names the object the ray hit. Both matter: the
+                                // plate moved the halves apart after the split,
+                                // so the tap is only a place in the joint's own
+                                // frame once the half it landed on is known.
+                                viewModel.placeSnapAnchor(
+                                    Vec3(hit.x, hit.y, hit.z),
+                                    state.models.getOrNull(hit.objectIndex)?.id,
+                                )
+                            },
                             cutActions = CutActions(
                                 onAxis = viewModel::setCutAxis,
                                 onOffset = viewModel::setCutOffset,
                                 onSplit = viewModel::splitModel,
                                 onClose = { viewModel.setCutActive(false) },
                             ),
+                            snapActions = SnapActions(
+                                onScale = viewModel::setSnapScale,
+                                onBeamHalf = viewModel::setSnapBeamHalf,
+                                onFullJoint = viewModel::setSnapFullJoint,
+                                onApply = viewModel::applySnapJoint,
+                            ),
+                            onCloseSnapUi = { viewModel.setSnapActive(false) },
                             printerCardExpanded = printerCardExpanded,
                             onPrinterCardToggle = { printerCardExpanded = !printerCardExpanded },
                             noticeExpanded = noticeCardExpanded,
@@ -1861,7 +1883,23 @@ fun EnderSlicerApp(
                                         annotationUiOpen = false
                                         viewModel.setPaintMode(SupportPaintMode.NONE)
                                         viewModel.setAnnotationActive(false)
+                                        viewModel.setCutActive(false)
+                                        viewModel.setSnapActive(false)
                                         viewModel.setCutActive(true)
+                                    },
+                                    onOpenSnapUi = {
+                                        // The joint and the cut preview are two
+                                        // screens of one workflow, and only one
+                                        // owns the model's taps: the split defines
+                                        // the axis the joint is built on, so the
+                                        // cut preview steps aside here.
+                                        modelToolsOpen = false
+                                        supportPaintUiOpen = false
+                                        annotationUiOpen = false
+                                        viewModel.setPaintMode(SupportPaintMode.NONE)
+                                        viewModel.setAnnotationActive(false)
+                                        viewModel.setCutActive(false)
+                                        viewModel.setSnapActive(true)
                                     },
                                     onOpenSupportPaintUi = {
                                         modelToolsOpen = false
@@ -2977,6 +3015,8 @@ private fun ViewerPanel(
     onSurfacePickEnd: () -> Unit,
     /** A tap on a part: the index in the plate's model list the viewer was given. */
     onModelPicked: (Int) -> Unit,
+    /** A tap while the Snap fit tool is open: the model point the ray hit. */
+    onJointPick: (MeshPicker.Hit) -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -3006,6 +3046,9 @@ private fun ViewerPanel(
     onCloseAnnotationUi: () -> Unit,
     /** The split tool: the cut plane and the action that commits it. */
     cutActions: CutActions,
+    /** The snap fit tool, over the pair the split left behind. */
+    snapActions: SnapActions,
+    onCloseSnapUi: () -> Unit,
     printerCardExpanded: Boolean,
     onPrinterCardToggle: () -> Unit,
     noticeExpanded: Boolean,
@@ -3100,11 +3143,38 @@ private fun ViewerPanel(
                     },
                     update = { view ->
                         // Everything on the plate is drawn; the tools stay on the selected one.
+                        //
+                        // The snap fit's live preview is drawn in place of the
+                        // halves it was booleaned from. The plate's own list is
+                        // untouched - what changes is only what this view puts
+                        // on the screen, and the preview meshes travel with the
+                        // state that produced them.
+                        val preview = state.snapShownMeshes
+                        val previewIndices = if (preview == null) {
+                            emptyMap()
+                        } else {
+                            listOf(
+                                state.snapLowHalfId to preview.lowMesh,
+                                state.snapHighHalfId to preview.highMesh,
+                            ).mapNotNull { (id, mesh) ->
+                                val index = state.models.indexOfFirst { it.id == id }
+                                if (index >= 0) index to mesh else null
+                            }.toMap()
+                        }
                         view.setMeshes(
                             meshes = state.models.map { it.mesh },
-                            selectedIndex = state.models.indexOfFirst { it.id == state.selectedModel?.id }
-                                .coerceAtLeast(0),
+                            selectedIndex = if (preview != null) {
+                                previewIndices.keys.minOrNull()
+                                    ?: state.models.indexOfFirst { it.id == state.selectedModel?.id }
+                                        .coerceAtLeast(0)
+                            } else {
+                                state.models.indexOfFirst { it.id == state.selectedModel?.id }
+                                    .coerceAtLeast(0)
+                            },
                         )
+                        view.setPreviewObjects(previewIndices)
+                        view.jointPickActive = state.snapActive
+                        view.onJointPick = onJointPick
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
@@ -3164,6 +3234,17 @@ private fun ViewerPanel(
             CutToolbar(
                 state = state,
                 actions = cutActions,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(12.dp),
+            )
+        }
+
+        if (state.snapActive && viewerMode == ViewerMode.MODEL) {
+            SnapToolbar(
+                state = state,
+                actions = snapActions,
+                onClose = onCloseSnapUi,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(12.dp),
@@ -3877,6 +3958,182 @@ private class CutActions(
     val onSplit: () -> Unit,
     val onClose: () -> Unit,
 )
+
+/** Snap fit callbacks, grouped the same way. */
+private class SnapActions(
+    val onScale: (Float) -> Unit,
+    val onBeamHalf: (SnapJoint.JointHalf) -> Unit,
+    val onFullJoint: (Boolean) -> Unit,
+    val onApply: () -> Unit,
+)
+
+/**
+ * The snap fit, at the bottom of the model view in the split toolbar's own
+ * style: one slider for the whole joint, one choice of which half carries the
+ * beam, and the action that joins them.
+ *
+ * The scale is one control on purpose. Every dimension of the joint - the key,
+ * the beam, the barb and all three clearances - is multiplied by it, so there
+ * is nothing here to tune per dimension and nothing that can be forgotten at
+ * one setting and wrong at another.
+ */
+@Composable
+private fun SnapToolbar(
+    state: MainUiState,
+    actions: SnapActions,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val beamHalf = state.snapBeamHalf
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = EnderSlicerDimens.SheetPadding,
+                vertical = EnderSlicerDimens.Space8,
+            ),
+            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Snap fit joint", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.width(EnderSlicerDimens.Space8))
+                Text(
+                    state.snapLowHalf?.name.orEmpty() + " and " + state.snapHighHalf?.name.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onClose,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Close") }
+            }
+            Text(
+                if (state.snapAnchorPoint == null) {
+                    "Tap the model where the joint should sit; the point is put on the seam."
+                } else {
+                    "Tap again to move the joint. The ghost shows where it will go."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            CompactSliderRow(
+                label = "Scale",
+                value = state.snapScale,
+                range = MIN_JOINT_SCALE..MAX_JOINT_SCALE,
+                onValueChange = actions.onScale,
+                valueText = "%.2f×".format(state.snapScale),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
+                BeamHalfButton("Beam in " + (state.snapLowHalf?.name ?: "lower"), SnapJoint.JointHalf.LOW, beamHalf, actions.onBeamHalf, Modifier.weight(1f))
+                BeamHalfButton("Beam in " + (state.snapHighHalf?.name ?: "upper"), SnapJoint.JointHalf.HIGH, beamHalf, actions.onBeamHalf, Modifier.weight(1f))
+            }
+            // The ladder's switch. Auto fits the joint to the seam; Full asks
+            // for the whole thing anyway. Either way the line under it says
+            // which rung is being placed and why, so a downgrade is a decision
+            // the user can see rather than a silent one.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+            ) {
+                Text("Joint:", style = MaterialTheme.typography.labelMedium)
+                if (state.snapFullJoint) {
+                    Button(
+                        onClick = { actions.onFullJoint(false) },
+                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                    ) { Text("Full") }
+                } else {
+                    OutlinedButton(
+                        onClick = { actions.onFullJoint(true) },
+                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                    ) { Text("Auto") }
+                }
+                Text(
+                    if (state.snapFullJoint) {
+                        "the full joint, as asked for"
+                    } else {
+                        "the lightest joint this seam takes"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            state.snapFailure?.let { failure ->
+                Text(
+                    failure,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            state.snapPreview?.takeIf { state.snapShownMeshes != null }?.let { preview ->
+                Text(
+                    (if (preview.beamInChosenHalf) {
+                        "Joint in " + state.snapLowHalf?.name.orEmpty()
+                    } else {
+                        "Joint in " + state.snapHighHalf?.name.orEmpty()
+                    }) + ": " +
+                        "%.1f mm beam, %.1f mm key, %.2f mm clearance".format(
+                            preview.joint.dimensions.beamLengthMm,
+                            preview.joint.dimensions.keySizeMm,
+                            preview.joint.dimensions.lipClearanceMm,
+                        ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    preview.joint.rung.label + " · " +
+                        (preview.joint.rungReason ?: "pad, key and cantilever"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                preview.repairNote?.let { note ->
+                    Text(
+                        "Repaired before joining: " + note,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WarnAmber,
+                    )
+                }
+            }
+            Button(
+                onClick = actions.onApply,
+                enabled = state.snapShownMeshes != null && !state.isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Join the halves") }
+            state.snapBlockedReason?.let { reason ->
+                Text(
+                    reason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarnAmber,
+                )
+            }
+        }
+    }
+}
+
+/** One half's claim on the beam: the one in force is filled, as the cut's axis is. */
+@Composable
+private fun BeamHalfButton(
+    label: String,
+    half: SnapJoint.JointHalf,
+    selected: SnapJoint.JointHalf,
+    onHalf: (SnapJoint.JointHalf) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (half == selected) {
+        Button(onClick = { onHalf(half) }, modifier = modifier, contentPadding = PaddingValues(horizontal = 2.dp)) {
+            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    } else {
+        OutlinedButton(
+            onClick = { onHalf(half) },
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 2.dp),
+        ) { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    }
+}
 
 /**
  * The split tool, at the bottom of the model view where the layer viewer keeps

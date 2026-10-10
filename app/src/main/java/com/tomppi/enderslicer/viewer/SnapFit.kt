@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.viewer
 
+import com.tomppi.enderslicer.model.ModelPlacement
 import kotlin.math.abs
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -34,6 +35,17 @@ import kotlin.math.tan
  * scale with [SnapFitParameters] like every other dimension, so one slider
  * drives the whole joint.
  *
+ * Each solid is built in the frame of the half it belongs to, relative to that
+ * half's OWN mating face: the union - beam, barb and key - in the beam half's
+ * frame, the pocket in the mate's, and the two frames are placed through the
+ * placements the halves carry. Where the halves happen to sit on the bed is
+ * therefore not an input to the geometry at all. It matters: the plate's packer
+ * moves the halves several millimetres apart after a split, and a frame built
+ * around the midpoint of the gap between them lands in mid-air - the pocket
+ * cuts nothing and the union adds a floating block, closed and manifold and
+ * wrong. The split knows the plane in each half's own coordinates, and that is
+ * what [SnapFitHalf.faceMm] carries here.
+ *
  * The beam is unioned into the half on the low side of the plane and the pocket
  * is cut from the half on the high side; flipping the axis swaps which half
  * carries the beam. The beam's length is clamped to the material the other half
@@ -45,159 +57,542 @@ import kotlin.math.tan
  */
 object SnapFit {
     /**
-     * Builds the joint, or returns null when these halves and this scale cannot
-     * hold one: halves that do not straddle a plane in that order, a mate too
-     * thin for the beam, a low half too thin to root it, or a scale or angle
+     * Builds the best joint this seam can carry, or null when even the lightest
+     * one cannot be put there: halves that do not meet on one plane, a mate too
+     * thin for a beam, a beam half too thin to root one, or a scale or angle
      * that is not a positive number.
+     *
+     * The rungs are walked fullest first - pad, key and cantilever, then key and
+     * cantilever, then the cantilever alone shrunk to the material - and the
+     * joint says which rung it came out as and why the fuller ones were dropped.
+     * [requested] pins one rung: a user asking for the full joint gets the full
+     * joint, coverage and all, and only geometry that cannot be built refuses.
      */
     fun generate(
         axis: Vec3,
+        /** The tapped point, in the two halves' own (unplaced) coordinates. */
         anchorMm: Vec3,
         scale: Float,
-        lowHalf: StlMesh,
-        highHalf: StlMesh,
+        beamHalf: SnapFitHalf,
+        socketHalf: SnapFitHalf,
         parameters: SnapFitParameters = SnapFitParameters(),
+        requested: SnapFitRung? = null,
     ): SnapFitJoint? {
         if (!axis.isFinite() || !anchorMm.isFinite() || !scale.isFinite() || scale <= 0f) return null
         if (!parameters.isUsable()) return null
-        if (lowHalf.triangleCount <= 0 || highHalf.triangleCount <= 0) return null
+        if (beamHalf.mesh.triangleCount <= 0 || socketHalf.mesh.triangleCount <= 0) return null
 
         val direction = axis.normalized() ?: return null
-        val low = extent(lowHalf, direction)
-        val high = extent(highHalf, direction)
-        if (low == null || high == null) return null
-        // The halves must be on either side of one plane, in this order. A pair
-        // the wrong way round overlaps by the whole model and is refused here.
-        if (low.endInclusive > high.start + PLANE_TOLERANCE_MM) return null
-        val plane = (low.endInclusive + high.start) * 0.5f
-
-        val rampAngle = parameters.rampAngleDeg
-        val keySize = parameters.keySizeMm * scale
-        val keyHeight = parameters.keyHeightMm * scale
-        val keyClearance = parameters.keyClearanceMm * scale
-        val beamWidth = parameters.beamWidthMm * scale
-        val beamThickness = parameters.beamThicknessMm * scale
-        val lipDepth = parameters.lipDepthMm * scale
-        val lipClearance = parameters.lipClearanceMm * scale
-        val matingClearance = parameters.matingClearanceMm * scale
-        val keyGap = parameters.keyGapMm * scale
-        // The key's socket and the beam's pocket are separate solids; they may
-        // not touch, or the pocket would be one shape with a step in it.
-        if (keyGap <= keyClearance + lipClearance) return null
-
-        // Leave a wall of at least a beam-thickness beyond the beam's tip, and
-        // the same below its root.
-        val wall = beamThickness
-        val mateDepth = high.endInclusive - plane
-        val ownDepth = plane - low.start
-        val beamLength = minOf(parameters.beamLengthMm * scale, mateDepth - wall)
-        val beamRoot = minOf(parameters.beamRootMm * scale, ownDepth - wall)
-        if (beamLength <= 0f || beamRoot <= 0f) return null
-        val lipRun = lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
-        if (beamLength <= lipRun + lipClearance) return null
-
-        val half = beamThickness * 0.5f
-        val lipBack = beamLength - lipRun
-        val keyCentre = beamWidth * 0.5f + keyGap + keySize * 0.5f
-
-        // The frame's origin is the anchor dropped onto the mating plane, so the
-        // beam sits where the user tapped and the plane is local z = 0.
-        val alongAnchor = anchorMm.dot(direction)
-        val origin = anchorMm - direction * (alongAnchor - plane)
         val side = perpendicularTo(direction)
         val rise = direction.cross(side)
-        val frame = SnapFitFrame(origin, direction, side, rise, plane)
 
-        val dimensions = SnapFitDimensions(
-            scale = scale,
-            keySizeMm = keySize,
-            keyHeightMm = keyHeight,
-            keyClearanceMm = keyClearance,
-            keyOffsetMm = keyCentre,
-            beamLengthMm = beamLength,
-            beamWidthMm = beamWidth,
-            beamThicknessMm = beamThickness,
-            beamRootMm = beamRoot,
-            lipDepthMm = lipDepth,
-            lipRunMm = lipRun,
-            lipClearanceMm = lipClearance,
-            matingClearanceMm = matingClearance,
-            rampAngleDeg = rampAngle,
-            beamTipMm = beamLength,
-            lipBackMm = lipBack,
-        )
+        val beamSpan = span(beamHalf, direction) ?: return null
+        val socketSpan = span(socketHalf, direction) ?: return null
+        // Each half's own mating face, along the assembly direction - the plane
+        // the split carried into the half, not one measured from where the
+        // packer happened to put it. The beam's half must not reach past the
+        // mate's face: a pair the wrong way round overlaps by the whole model
+        // and is refused here.
+        val face = beamHalf.faceMm
+        val mateFace = socketHalf.faceMm
+        if (face > mateFace + PLANE_TOLERANCE_MM) return null
 
-        // ------------------------------------------------------------- union
-        val union = MeshSolidBuilder(UNION_NAME)
-        // The beam and its barb are one prism: a cross-section in the (rise,
-        // axis) plane, extruded across the beam's width. Building them as one
-        // closed shell keeps the boolean from having to reconcile two shells
-        // that share a face.
-        addPrism(
-            union,
-            frame,
-            listOf(
-                Vec3(-beamWidth * 0.5f, -half, -beamRoot),
-                Vec3(-beamWidth * 0.5f, -half, beamLength),
-                Vec3(-beamWidth * 0.5f, half, beamLength),
-                Vec3(-beamWidth * 0.5f, half + lipDepth, lipBack),
-                Vec3(-beamWidth * 0.5f, half, lipBack),
-                Vec3(-beamWidth * 0.5f, half, -beamRoot),
-            ),
-            Vec3(1f, 0f, 0f),
-            beamWidth,
-        )
-        // The square key, disjoint from the beam by the key gap.
-        addPrism(
-            union,
-            frame,
-            listOf(
-                Vec3(keyCentre - keySize * 0.5f, -keySize * 0.5f, -beamRoot),
-                Vec3(keyCentre + keySize * 0.5f, -keySize * 0.5f, -beamRoot),
-                Vec3(keyCentre + keySize * 0.5f, keySize * 0.5f, -beamRoot),
-                Vec3(keyCentre - keySize * 0.5f, keySize * 0.5f, -beamRoot),
-            ),
-            Vec3(0f, 0f, 1f),
-            keyHeight + beamRoot,
-        )
+        // How much material each half has behind its own face. A half that
+        // already carries a joint no longer ends at its mating face, which is
+        // why the face is carried rather than measured.
+        val ownDepth = face - beamSpan.start
+        val mateDepth = socketSpan.endInclusive - mateFace
 
-        // ---------------------------------------------------------- subtract
-        val socket = MeshSolidBuilder(SOCKET_NAME)
-        // The beam and barb plus clearance, as one pocket. It starts below the
-        // plane by the mating clearance, so the pocket is open at the mate's
-        // mating face and that face is relieved around the joint instead of
-        // bottoming out on the other half.
-        val pocketSide = beamWidth * 0.5f + lipClearance
-        addPrism(
-            socket,
-            frame,
-            listOf(
-                Vec3(-pocketSide, -half - lipClearance, -matingClearance),
-                Vec3(-pocketSide, -half - lipClearance, beamLength + lipClearance),
-                Vec3(-pocketSide, half + lipDepth + lipClearance, beamLength + lipClearance),
-                Vec3(-pocketSide, half + lipDepth + lipClearance, lipBack - lipClearance),
-                Vec3(-pocketSide, half + lipClearance, lipBack - lipClearance),
-                Vec3(-pocketSide, half + lipClearance, -matingClearance),
-            ),
-            Vec3(1f, 0f, 0f),
-            beamWidth + 2f * lipClearance,
-        )
-        // The key's socket, the key plus the key's own clearance.
-        val keySide = keySize * 0.5f + keyClearance
-        addPrism(
-            socket,
-            frame,
-            listOf(
-                Vec3(keyCentre - keySide, -keySide, -matingClearance),
-                Vec3(keyCentre + keySide, -keySide, -matingClearance),
-                Vec3(keyCentre + keySide, keySide, -matingClearance),
-                Vec3(keyCentre - keySide, keySide, -matingClearance),
-            ),
-            Vec3(0f, 0f, 1f),
-            keyHeight + keyClearance + matingClearance,
-        )
+        // Each frame's origin is the anchor dropped onto that half's own mating
+        // face, so each half's plane is local z = 0 in its own frame and the
+        // beam sits where the user tapped.
+        val alongAnchor = anchorMm.dot(direction)
+        val beamOrigin = anchorMm - direction * (alongAnchor - face)
+        val socketOrigin = anchorMm - direction * (alongAnchor - mateFace)
+        val beamFrame = SnapFitFrame(beamOrigin, direction, side, rise, face)
+        val socketFrame = SnapFitFrame(socketOrigin, direction, side, rise, mateFace)
 
-        return SnapFitJoint(union.build(), socket.build(), frame, dimensions)
+        // Size from the part, not from millimetres. The face the two halves
+        // share says how big a feature the seam can carry, and the material on
+        // each side of it says how far the beam may reach; the parameters are
+        // ceilings, never starting points. A 10 mm cube therefore gets a
+        // millimetre-scale joint rather than one half the width of its face.
+        val faceOverlap = sharedFace(beamHalf, socketHalf, side, rise, anchorMm)
+        val reference = faceOverlap?.let { minOf(it.width, it.height) } ?: (2f * minOf(ownDepth, mateDepth))
+
+        val rampAngle = parameters.rampAngleDeg
+        val keyClearance = parameters.keyClearanceMm * scale
+        val matingClearance = parameters.matingClearanceMm * scale
+        val lipClearance = parameters.lipClearanceMm * scale
+        val keyGap = minOf(parameters.keyGapMm, parameters.keySizeMm * 0.5f) * scale
+        val keySize = minOf(parameters.keySizeMm, KEY_FRACTION * reference) * scale
+        // The key is sunk flush: it never stands further out than the beam is
+        // thick, so the face reads as a face rather than as a block.
+        val keyHeight = minOf(parameters.keyHeightMm, parameters.beamThicknessMm) * scale
+        val beamWidth = minOf(parameters.beamWidthMm, BEAM_WIDTH_FRACTION * reference) * scale
+        val fullThickness = minOf(parameters.beamThicknessMm, BEAM_THICKNESS_FRACTION * reference) * scale
+        val stepDepth = minOf(parameters.stepDepthMm * scale, STEP_DEPTH_FRACTION * mateDepth, fullThickness)
+        val stepClearance = minOf(matingClearance, stepDepth * 0.5f)
+        val stepRim = minOf(parameters.stepRimMm * scale, STEP_RIM_FRACTION * reference)
+        val keyCentre = beamWidth * 0.5f + keyGap + keySize * 0.5f
+
+        // The ladder's plan: what the seam's own cross-section will carry. The
+        // cap triangles are the material at the mating face, so a pad or a key
+        // whose footprint mostly hangs over air would print as a floating block,
+        // and the rung below it is the honest answer.
+        val cap = capTriangles(beamHalf, direction, side, rise, face, anchorMm)
+        val bossFace = faceOverlap?.inset(stepRim + stepClearance)
+        val keyFace = LocalRect(
+            keyCentre - keySize * 0.5f,
+            keyCentre + keySize * 0.5f,
+            -keySize * 0.5f,
+            keySize * 0.5f,
+        )
+        val padCovered = bossFace != null && covers(cap, bossFace, PAD_COVERAGE)
+        val keyCovered = covers(cap, keyFace, KEY_COVERAGE)
+        val padWhy = when {
+            faceOverlap == null -> "the two cross-sections barely overlap"
+            bossFace == null || stepDepth <= 0f || stepDepth + stepClearance >= mateDepth ->
+                "the mate is too shallow for the whole-seam pad"
+            !padCovered -> "the seam is hollow where the whole-seam pad would sit"
+            else -> "the pad does not fit this seam"
+        }
+        val keyWhy = when {
+            !keyCovered && !padCovered -> "the seam is hollow where the pad and key would sit"
+            !keyCovered -> "the seam is hollow where the key would sit"
+            keyGap <= keyClearance + lipClearance -> "there is no room to keep a key clear of the beam"
+            keyHeight + keyClearance + matingClearance >= mateDepth -> "the mate is too shallow for the key"
+            else -> "the wall is too narrow for the key"
+        }
+        val padFits = bossFace != null && stepDepth > 0f && stepDepth + stepClearance < mateDepth && padCovered
+        val keyFits = keyGap > keyClearance + lipClearance &&
+            keyHeight + keyClearance + matingClearance < mateDepth &&
+            keyCovered
+        val ladder = requested ?: when {
+            padFits -> SnapFitRung.FULL
+            keyFits -> SnapFitRung.SIMPLE
+            else -> SnapFitRung.MINIMAL
+        }
+        fun rungReason(built: SnapFitRung, planned: SnapFitRung): String? = when {
+            requested != null -> null
+            built == SnapFitRung.FULL -> null
+            // The plan said a fuller rung but its beam could not be built at
+            // all: the reason is the material, not the feature that was tried.
+            built.ordinal < planned.ordinal -> "the material is too thin for the fuller joint; " +
+                if (built == SnapFitRung.SIMPLE) "key and cantilever only" else "a bare cantilever only"
+            built == SnapFitRung.SIMPLE -> padWhy + "; key and cantilever only"
+            else -> keyWhy + "; a bare cantilever only"
+        }
+
+        fun buildRung(rung: SnapFitRung): SnapFitJoint? {
+            // The lightest rung shrinks its beam to the material it has, so a
+            // thin wall still gets a cantilever rather than a refusal.
+            val beamThickness = when (rung) {
+                SnapFitRung.MINIMAL -> minOf(fullThickness, 0.5f * ownDepth, 0.5f * mateDepth)
+                else -> fullThickness
+            }
+            if (beamThickness <= 0f) return null
+            val lipDepth = when (rung) {
+                SnapFitRung.MINIMAL -> minOf(parameters.lipDepthMm * scale, beamThickness * 0.5f)
+                else -> minOf(parameters.lipDepthMm, parameters.beamThicknessMm * 0.5f) * scale
+            }
+            // Leave a wall of at least a beam-thickness beyond the beam's tip,
+            // and the same below its root.
+            val wall = beamThickness
+            val beamLength = minOf(parameters.beamLengthMm * scale, BEAM_DEPTH_FRACTION * mateDepth, mateDepth - wall)
+            val beamRoot = minOf(parameters.beamRootMm * scale, ROOT_FRACTION * ownDepth, ownDepth - wall)
+            if (beamLength <= 0f || beamRoot <= 0f) return null
+            val lipRun = lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
+            if (beamLength <= lipRun + lipClearance) return null
+
+            val half = beamThickness * 0.5f
+            val lipBack = beamLength - lipRun
+            val withKey = rung != SnapFitRung.MINIMAL
+            val withPad = rung == SnapFitRung.FULL
+            val stepRoot = minOf(beamRoot, STEP_ROOT_FRACTION * ownDepth)
+            val rimmed = if (withPad) faceOverlap?.inset(stepRim) else null
+            if (withPad && (bossFace == null || rimmed == null)) return null
+
+            val dimensions = SnapFitDimensions(
+                scale = scale,
+                keySizeMm = keySize,
+                keyHeightMm = keyHeight,
+                keyClearanceMm = keyClearance,
+                keyOffsetMm = keyCentre,
+                beamLengthMm = beamLength,
+                beamWidthMm = beamWidth,
+                beamThicknessMm = beamThickness,
+                beamRootMm = beamRoot,
+                lipDepthMm = lipDepth,
+                lipRunMm = lipRun,
+                lipClearanceMm = lipClearance,
+                matingClearanceMm = matingClearance,
+                rampAngleDeg = rampAngle,
+                beamTipMm = beamLength,
+                lipBackMm = lipBack,
+                stepDepthMm = stepDepth,
+                stepRootMm = stepRoot,
+                stepRimMm = stepRim,
+                stepClearanceMm = stepClearance,
+            )
+
+            // ------------------------------------------------------------- union
+            val union = MeshSolidBuilder(UNION_NAME)
+            // The beam and its barb are one prism: a cross-section in the (rise,
+            // axis) plane, extruded across the beam's width. Building them as one
+            // closed shell keeps the boolean from having to reconcile two shells
+            // that share a face.
+            addPrism(
+                union,
+                beamFrame,
+                listOf(
+                    Vec3(-beamWidth * 0.5f, -half, -beamRoot),
+                    Vec3(-beamWidth * 0.5f, -half, beamLength),
+                    Vec3(-beamWidth * 0.5f, half, beamLength),
+                    Vec3(-beamWidth * 0.5f, half + lipDepth, lipBack),
+                    Vec3(-beamWidth * 0.5f, half, lipBack),
+                    Vec3(-beamWidth * 0.5f, half, -beamRoot),
+                ),
+                Vec3(1f, 0f, 0f),
+                beamWidth,
+            )
+            // The square key, disjoint from the beam by the key gap.
+            if (withKey) {
+                addPrism(
+                    union,
+                    beamFrame,
+                    listOf(
+                        Vec3(keyCentre - keySize * 0.5f, -keySize * 0.5f, -beamRoot),
+                        Vec3(keyCentre + keySize * 0.5f, -keySize * 0.5f, -beamRoot),
+                        Vec3(keyCentre + keySize * 0.5f, keySize * 0.5f, -beamRoot),
+                        Vec3(keyCentre - keySize * 0.5f, keySize * 0.5f, -beamRoot),
+                    ),
+                    Vec3(0f, 0f, 1f),
+                    keyHeight + beamRoot,
+                )
+            }
+
+            // ---------------------------------------------------------- subtract
+            val socket = MeshSolidBuilder(SOCKET_NAME)
+            // The beam and barb plus clearance, as one pocket. It starts below the
+            // plane by the mating clearance, so the pocket is open at the mate's
+            // mating face and that face is relieved around the joint instead of
+            // bottoming out on the other half.
+            val pocketSide = beamWidth * 0.5f + lipClearance
+            addPrism(
+                socket,
+                socketFrame,
+                listOf(
+                    Vec3(-pocketSide, -half - lipClearance, -matingClearance),
+                    Vec3(-pocketSide, -half - lipClearance, beamLength + lipClearance),
+                    Vec3(-pocketSide, half + lipDepth + lipClearance, beamLength + lipClearance),
+                    Vec3(-pocketSide, half + lipDepth + lipClearance, lipBack - lipClearance),
+                    Vec3(-pocketSide, half + lipClearance, lipBack - lipClearance),
+                    Vec3(-pocketSide, half + lipClearance, -matingClearance),
+                ),
+                Vec3(1f, 0f, 0f),
+                beamWidth + 2f * lipClearance,
+            )
+            if (withKey) {
+                // The key's socket, the key plus the key's own clearance.
+                val keySide = keySize * 0.5f + keyClearance
+                addPrism(
+                    socket,
+                    socketFrame,
+                    listOf(
+                        Vec3(keyCentre - keySide, -keySide, -matingClearance),
+                        Vec3(keyCentre + keySide, -keySide, -matingClearance),
+                        Vec3(keyCentre + keySide, keySide, -matingClearance),
+                        Vec3(keyCentre - keySide, keySide, -matingClearance),
+                    ),
+                    Vec3(0f, 0f, 1f),
+                    keyHeight + keyClearance + matingClearance,
+                )
+            }
+
+            // The step's two solids. The boss is inset by the rim plus the
+            // clearance and the recess by the rim alone, so the boss sits inside
+            // the recess with a printable gap all round; both are plain boxes in
+            // the frame, which is the whole reason a step this shape can be cut
+            // with the same box booleans the rest of the joint uses.
+            val registration = MeshSolidBuilder(REGISTRATION_NAME)
+            val recess = MeshSolidBuilder(RECESS_NAME)
+            if (withPad && bossFace != null && rimmed != null) {
+                boxLocal(registration, beamFrame, bossFace, -stepRoot, stepDepth)
+                boxLocal(recess, socketFrame, rimmed, -stepClearance, stepDepth + stepClearance)
+            }
+
+            // The solids were laid out in the halves' own frames; the booleans
+            // and the viewer work in plate coordinates, so each goes through the
+            // placement of the half it belongs to. Nothing here has looked at
+            // where the other half is - that is the whole point.
+            return SnapFitJoint(
+                union.build().placedBy(beamHalf, UNION_NAME),
+                socket.build().placedBy(socketHalf, SOCKET_NAME),
+                registration.build().placedBy(beamHalf, REGISTRATION_NAME),
+                recess.build().placedBy(socketHalf, RECESS_NAME),
+                beamHalf.placed(beamFrame),
+                socketHalf.placed(socketFrame),
+                dimensions,
+                rung,
+                null,
+            )
+        }
+
+        // Walk the ladder from the rung the material (or the user) asked for
+        // down to the lightest one: a rung whose beam cannot fit falls through
+        // to the next, and only when none of them fits is there no joint.
+        val rungs = if (requested != null) {
+            listOf(requested)
+        } else {
+            SnapFitRung.entries.filter { it.ordinal >= ladder.ordinal }
+        }
+        for (rung in rungs) {
+            val joint = buildRung(rung) ?: continue
+            return joint.copy(rungReason = rungReason(rung, ladder))
+        }
+        return null
+    }
+
+    /**
+     * The face the two halves share, in the halves' own plane: the overlap of
+     * their outlines, in their own (side, rise) millimetres. Reading both
+     * outlines in the halves' own coordinates is what makes the answer the
+     * seam's real cross-section - read on the plate, the packer's sideways
+     * offset would shrink it to nothing. Null when they do not overlap at all,
+     * which leaves the joint without a registration step rather than with one
+     * hanging off the part.
+     */
+    private fun sharedFace(
+        beamHalf: SnapFitHalf,
+        socketHalf: SnapFitHalf,
+        side: Vec3,
+        rise: Vec3,
+        /** The tapped point, in the halves' own coordinates: the frames' origin. */
+        origin: Vec3,
+    ): LocalRect? {
+        val first = outline(beamHalf, side, rise, origin) ?: return null
+        val second = outline(socketHalf, side, rise, origin) ?: return null
+        return first.intersect(second)
+    }
+
+    /** How far a half reaches along [direction], in that half's own coordinates. */
+    private fun span(half: SnapFitHalf, direction: Vec3): ClosedFloatingPointRange<Float>? {
+        val along = half.probe(direction) ?: return null
+        val vertices = half.mesh.interleavedVertices
+        val count = half.mesh.triangleCount * 3
+        if (count <= 0) return null
+        var low = Float.POSITIVE_INFINITY
+        var high = Float.NEGATIVE_INFINITY
+        for (vertex in 0 until count) {
+            val base = vertex * MeshSolidBuilder.FLOATS_PER_VERTEX
+            val at = along(vertices[base], vertices[base + 1], vertices[base + 2])
+            if (at < low) low = at
+            if (at > high) high = at
+        }
+        return if (low <= high) low..high else null
+    }
+
+    /**
+     * A half's outline in the halves' (side, rise) plane, relative to [origin] -
+     * the tapped point, which is the frame both features are laid out in. The
+     * subtraction is what makes the rectangle frame-local: the halves' own
+     * coordinates run over the whole bed, and a rectangle left in them would
+     * put the pad wherever the model happened to sit.
+     */
+    private fun outline(half: SnapFitHalf, side: Vec3, rise: Vec3, origin: Vec3): LocalRect? {
+        val across = half.probe(side) ?: return null
+        val through = half.probe(rise) ?: return null
+        if (half.mesh.triangleCount <= 0) return null
+        val originX = origin.dot(side)
+        val originY = origin.dot(rise)
+        val vertices = half.mesh.interleavedVertices
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        for (vertex in 0 until half.mesh.triangleCount * 3) {
+            val base = vertex * MeshSolidBuilder.FLOATS_PER_VERTEX
+            val x = across(vertices[base], vertices[base + 1], vertices[base + 2]) - originX
+            val y = through(vertices[base], vertices[base + 1], vertices[base + 2]) - originY
+            if (x < minX) minX = x
+            if (x > maxX) maxX = x
+            if (y < minY) minY = y
+            if (y > maxY) maxY = y
+        }
+        return LocalRect(minX, maxX, minY, maxY)
+    }
+
+    /**
+     * The triangles of a half that lie on its own mating face, projected into
+     * the halves' (side, rise) plane: the material a face-level feature would
+     * actually sit on.
+     *
+     * A hollow cross-section - a hull, a tube - shows up here as a thin band
+     * with air where the middle is, which is how the ladder tells a pad that
+     * would print as a floating block from one that lands on the seam.
+     */
+    private fun capTriangles(
+        half: SnapFitHalf,
+        direction: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        face: Float,
+        /** The tapped point, in the halves' own coordinates: the frames' origin. */
+        origin: Vec3,
+    ): List<CapTriangle> {
+        val along = half.probe(direction) ?: return emptyList()
+        val across = half.probe(side) ?: return emptyList()
+        val through = half.probe(rise) ?: return emptyList()
+        val originX = origin.dot(side)
+        val originY = origin.dot(rise)
+        val vertices = half.mesh.interleavedVertices
+        val triangles = ArrayList<CapTriangle>()
+        val xs = FloatArray(3)
+        val ys = FloatArray(3)
+        for (triangle in 0 until half.mesh.triangleCount) {
+            val base = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            var onFace = true
+            for (corner in 0 until 3) {
+                val at = base + corner * MeshSolidBuilder.FLOATS_PER_VERTEX
+                val x = vertices[at]
+                val y = vertices[at + 1]
+                val z = vertices[at + 2]
+                if (abs(along(x, y, z) - face) > CAP_PLANE_TOLERANCE_MM) {
+                    onFace = false
+                    break
+                }
+                xs[corner] = across(x, y, z) - originX
+                ys[corner] = through(x, y, z) - originY
+            }
+            if (onFace) triangles += CapTriangle(xs[0], ys[0], xs[1], ys[1], xs[2], ys[2])
+        }
+        return triangles
+    }
+
+    /** How much of [face] has cap material under it, on a fixed sample grid. */
+    private fun covers(cap: List<CapTriangle>, face: LocalRect, required: Float): Boolean {
+        if (cap.isEmpty()) return false
+        var inside = 0
+        for (row in 0 until COVERAGE_SAMPLES) {
+            for (column in 0 until COVERAGE_SAMPLES) {
+                val x = face.minX + face.width * (column + 0.5f) / COVERAGE_SAMPLES
+                val y = face.minY + face.height * (row + 0.5f) / COVERAGE_SAMPLES
+                if (cap.any { it.contains(x, y) }) inside++
+            }
+        }
+        return inside >= required * COVERAGE_SAMPLES * COVERAGE_SAMPLES
+    }
+
+    /** One cap triangle, in the halves' (side, rise) plane. */
+    private class CapTriangle(
+        private val ax: Float,
+        private val ay: Float,
+        private val bx: Float,
+        private val by: Float,
+        private val cx: Float,
+        private val cy: Float,
+    ) {
+        private val area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+        fun contains(x: Float, y: Float): Boolean {
+            if (abs(area) < CAP_AREA_EPSILON) return false
+            val first = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+            val second = (cx - bx) * (y - by) - (cy - by) * (x - bx)
+            val third = (ax - cx) * (y - cy) - (ay - cy) * (x - cx)
+            return if (area > 0f) {
+                first >= -CAP_EDGE_EPSILON && second >= -CAP_EDGE_EPSILON && third >= -CAP_EDGE_EPSILON
+            } else {
+                first <= CAP_EDGE_EPSILON && second <= CAP_EDGE_EPSILON && third <= CAP_EDGE_EPSILON
+            }
+        }
+    }
+
+    /**
+     * [mesh], laid out in [half]'s own coordinates, as that half sits on the
+     * plate. The joint's solids are tiny, so the copy is not worth avoiding; the
+     * halves themselves are never copied, which is why the measurements walk
+     * the placed mesh through [SnapFitHalf.probe].
+     */
+    private fun StlMesh.placedBy(half: SnapFitHalf, name: String): StlMesh {
+        if (half.isInPlace) return copy(displayName = name)
+        val builder = MeshSolidBuilder(name)
+        val points = FloatArray(9)
+        for (triangle in 0 until triangleCount) {
+            val base = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            for (corner in 0 until 3) {
+                val at = base + corner * MeshSolidBuilder.FLOATS_PER_VERTEX
+                val plate = half.toPlate(Vec3(interleavedVertices[at], interleavedVertices[at + 1], interleavedVertices[at + 2]))
+                points[corner * 3] = plate.x
+                points[corner * 3 + 1] = plate.y
+                points[corner * 3 + 2] = plate.z
+            }
+            builder.addTriangle(
+                points[0], points[1], points[2],
+                points[3], points[4], points[5],
+                points[6], points[7], points[8],
+            )
+        }
+        return builder.build()
+    }
+
+    /** [frame], laid out in [half]'s own coordinates, as that half sits on the plate. */
+    private fun SnapFitHalf.placed(frame: SnapFitFrame): SnapFitFrame {
+        val origin = toPlate(frame.originMm)
+        val axis = directionToPlate(frame.axis)
+        val side = directionToPlate(frame.side)
+        val rise = directionToPlate(frame.rise)
+        return SnapFitFrame(origin, axis, side, rise, origin.dot(axis))
+    }
+
+    private fun SnapFitHalf.directionToPlate(direction: Vec3): Vec3 {
+        val m = transform.linear
+        return Vec3(
+            (m[0] * direction.x + m[1] * direction.y + m[2] * direction.z).toFloat(),
+            (m[3] * direction.x + m[4] * direction.y + m[5] * direction.z).toFloat(),
+            (m[6] * direction.x + m[7] * direction.y + m[8] * direction.z).toFloat(),
+        ).normalized() ?: direction
+    }
+
+    /** An axis-aligned box in frame-local millimetres, wound outwards. */
+    private fun boxLocal(builder: MeshSolidBuilder, frame: SnapFitFrame, face: LocalRect, low: Float, high: Float) {
+        val corners = arrayOf(
+            Vec3(face.minX, face.minY, low), Vec3(face.maxX, face.minY, low),
+            Vec3(face.maxX, face.maxY, low), Vec3(face.minX, face.maxY, low),
+            Vec3(face.minX, face.minY, high), Vec3(face.maxX, face.minY, high),
+            Vec3(face.maxX, face.maxY, high), Vec3(face.minX, face.maxY, high),
+        ).map { frame.model(it) }
+        fun face(a: Int, b: Int, c: Int, d: Int) {
+            builder.addFace(corners[a], corners[b], corners[c])
+            builder.addFace(corners[a], corners[c], corners[d])
+        }
+        face(0, 3, 2, 1) // bottom, -z
+        face(4, 5, 6, 7) // top, +z
+        face(0, 1, 5, 4) // -y
+        face(3, 7, 6, 2) // +y
+        face(0, 4, 7, 3) // -x
+        face(1, 2, 6, 5) // +x
+    }
+
+    /** A rectangle in the frame's plane, in local millimetres. */
+    private data class LocalRect(val minX: Float, val maxX: Float, val minY: Float, val maxY: Float) {
+        val width: Float get() = maxX - minX
+        val height: Float get() = maxY - minY
+
+        fun inset(by: Float): LocalRect? {
+            val rect = LocalRect(minX + by, maxX - by, minY + by, maxY - by)
+            return rect.takeIf { it.width > 0f && it.height > 0f }
+        }
+
+        fun intersect(other: LocalRect): LocalRect? {
+            val rect = LocalRect(
+                maxOf(minX, other.minX),
+                minOf(maxX, other.maxX),
+                maxOf(minY, other.minY),
+                minOf(maxY, other.maxY),
+            )
+            return rect.takeIf { it.width > 0f && it.height > 0f }
+        }
     }
 
     /**
@@ -281,6 +676,30 @@ object SnapFit {
         return reference.cross(direction).normalized() ?: Vec3(1f, 0f, 0f)
     }
 
+    /** How far a mesh reaches along one of the plate's own axes. */
+    fun extentAlongAxis(mesh: StlMesh, axis: ModelPlacement.Axis): ClosedFloatingPointRange<Float>? =
+        extent(mesh, axisDirection(axis))
+
+    /** How far a half reaches along one of the plate's own axes, in its own coordinates. */
+    fun spanAlongAxis(half: SnapFitHalf, axis: ModelPlacement.Axis): ClosedFloatingPointRange<Float>? =
+        span(half, axisDirection(axis))
+
+    /**
+     * Whether two halves, each carrying its own mating face, straddle one plane
+     * in this order: the low half's material below its face, the high half's
+     * above its own. False when they overlap - two parts side by side, or the
+     * same part twice - which is a pair with no seam to put a joint on.
+     */
+    fun halvesMeet(lowHalf: SnapFitHalf, highHalf: SnapFitHalf): Boolean =
+        lowHalf.faceMm <= highHalf.faceMm + PLANE_TOLERANCE_MM
+
+    /** The unit direction of a plate axis: the assembly direction of a cut run on it. */
+    fun axisDirection(axis: ModelPlacement.Axis): Vec3 = when (axis) {
+        ModelPlacement.Axis.X -> Vec3(1f, 0f, 0f)
+        ModelPlacement.Axis.Y -> Vec3(0f, 1f, 0f)
+        ModelPlacement.Axis.Z -> Vec3(0f, 0f, 1f)
+    }
+
     /** The span of a mesh's vertices along [direction]. */
     private fun extent(mesh: StlMesh, direction: Vec3): ClosedFloatingPointRange<Float>? {
         val vertices = mesh.interleavedVertices
@@ -357,8 +776,174 @@ object SnapFit {
 
     private const val UNION_NAME = "snap-fit joint"
     private const val SOCKET_NAME = "snap-fit socket"
+    private const val REGISTRATION_NAME = "snap-fit registration"
+    private const val RECESS_NAME = "snap-fit recess"
     private const val PLANE_TOLERANCE_MM = 1e-3f
+
+    // The ladder's thresholds. A pad wants most of its footprint on material;
+    // a key is small enough to take a little less. Five samples an axis is
+    // enough to tell a solid cross-section from a hollow one and cheap enough
+    // to run on every preview.
+    private const val PAD_COVERAGE = 0.6f
+    private const val KEY_COVERAGE = 0.5f
+    private const val COVERAGE_SAMPLES = 5
+
+    /** How close to its own face a triangle has to be to count as cap. */
+    private const val CAP_PLANE_TOLERANCE_MM = 0.01f
+    private const val CAP_AREA_EPSILON = 1e-9f
+    private const val CAP_EDGE_EPSILON = 1e-6f
+
+    // Every feature is a share of the part, and the parameters above are its
+    // ceiling: an eighth of the face for the key, a fifth for the beam's width,
+    // an eighth for its thickness, a quarter of the mate's depth for its reach.
+    private const val KEY_FRACTION = 0.12f
+    private const val BEAM_WIDTH_FRACTION = 0.18f
+    private const val BEAM_THICKNESS_FRACTION = 0.12f
+    private const val BEAM_DEPTH_FRACTION = 0.25f
+    private const val ROOT_FRACTION = 0.3f
+
+    // The step is shallower still: a face-level offset, not a tongue.
+    private const val STEP_DEPTH_FRACTION = 0.08f
+    private const val STEP_RIM_FRACTION = 0.08f
+    private const val STEP_ROOT_FRACTION = 0.2f
     private val DEGREES_TO_RADIANS = (Math.PI / 180.0).toFloat()
+}
+
+/**
+ * How much joint a seam can carry, fullest first.
+ *
+ * A ladder rather than a yes/no: a complicated seam - a hollow hull, a thin
+ * curved wall - gets the lightest joint that still attaches, and a heavier one
+ * can come later. This is a stepping stone, not a verdict on the model, and the
+ * user can always ask for the full joint anyway; nothing here blocks him.
+ */
+enum class SnapFitRung(val label: String) {
+    /** Whole-seam pad and matching recess, square key, and the ramped cantilever. */
+    FULL("Full joint"),
+
+    /**
+     * The key and the cantilever without the pad: often the only thing a thin
+     * curved wall can take.
+     */
+    SIMPLE("Simplified joint"),
+
+    /** The bare ramped cantilever, shrunk to whatever material there is. */
+    MINIMAL("Minimal joint"),
+}
+
+/**
+ * One half of a split, as the joint builder needs it: the half as it sits on
+ * the plate, the plane of its mating face in the half's OWN coordinates, and
+ * the placement that maps one to the other.
+ *
+ * The face is carried rather than measured off the mesh, because a half that
+ * already carries a joint no longer ends at its mating face - the beam's root
+ * pushed the beam half's bound up and the pocket pulled the mate's down - and
+ * because measuring on the plate would read the packer's separation as part of
+ * the joint. The split knows the plane in the half's own coordinates, and this
+ * is where it travels.
+ */
+data class SnapFitHalf(
+    /** The half as placed on the plate: the mesh the booleans and the measurements run over. */
+    val mesh: StlMesh,
+    /**
+     * The mating face along the assembly direction, in the half's own
+     * coordinates. [SnapJoint] negates it when the joint is walked the other
+     * way, so positive is always the side the beam grows towards.
+     */
+    val faceMm: Float,
+    /** The half's own coordinates to the plate's. */
+    val transform: StlSliceTransform,
+) {
+    init {
+        require(faceMm.isFinite()) { "A half's mating face must be a finite offset" }
+    }
+
+    /** True when this half's own coordinates already are the plate's. */
+    val isInPlace: Boolean
+        get() = transform.translationXmm == 0.0 && transform.translationYmm == 0.0 &&
+            transform.translationZmm == 0.0 &&
+            transform.linear.indices.all { abs(transform.linear[it] - IN_PLACE[it]) < 1e-9 }
+
+    /** [pointMm], in this half's own coordinates, or null when [transform] has no inverse. */
+    fun toLocal(pointMm: Vec3): Vec3? {
+        val inverse = inverse() ?: return null
+        val x = pointMm.x - transform.translationXmm
+        val y = pointMm.y - transform.translationYmm
+        val z = pointMm.z - transform.translationZmm
+        return Vec3(
+            (inverse[0] * x + inverse[1] * y + inverse[2] * z).toFloat(),
+            (inverse[3] * x + inverse[4] * y + inverse[5] * z).toFloat(),
+            (inverse[6] * x + inverse[7] * y + inverse[8] * z).toFloat(),
+        ).takeIf { it.isFinite() }
+    }
+
+    /** [pointMm], given in this half's own coordinates, as it sits on the plate. */
+    fun toPlate(pointMm: Vec3): Vec3 {
+        val m = transform.linear
+        return Vec3(
+            (m[0] * pointMm.x + m[1] * pointMm.y + m[2] * pointMm.z + transform.translationXmm).toFloat(),
+            (m[3] * pointMm.x + m[4] * pointMm.y + m[5] * pointMm.z + transform.translationYmm).toFloat(),
+            (m[6] * pointMm.x + m[7] * pointMm.y + m[8] * pointMm.z + transform.translationZmm).toFloat(),
+        )
+    }
+
+    /**
+     * A reader of this half's own coordinates along [localDirection] for a point
+     * given in plate coordinates: the inverse of the placement applied to the
+     * direction once, so walking a large placed mesh costs one dot per vertex
+     * and no allocation. Null when the placement has no inverse.
+     */
+    fun probe(localDirection: Vec3): ((Float, Float, Float) -> Float)? {
+        val inverse = inverse() ?: return null
+        // local·d = (p - t)·(invᵀ d)
+        val dx = (inverse[0] * localDirection.x + inverse[3] * localDirection.y + inverse[6] * localDirection.z).toFloat()
+        val dy = (inverse[1] * localDirection.x + inverse[4] * localDirection.y + inverse[7] * localDirection.z).toFloat()
+        val dz = (inverse[2] * localDirection.x + inverse[5] * localDirection.y + inverse[8] * localDirection.z).toFloat()
+        val tx = transform.translationXmm.toFloat()
+        val ty = transform.translationYmm.toFloat()
+        val tz = transform.translationZmm.toFloat()
+        return { x, y, z -> (x - tx) * dx + (y - ty) * dy + (z - tz) * dz }
+    }
+
+    /** The inverse of the linear part, row-major, or null when there is none. */
+    private fun inverse(): DoubleArray? {
+        val m = transform.linear
+        val det = m[0] * (m[4] * m[8] - m[5] * m[7]) -
+            m[1] * (m[3] * m[8] - m[5] * m[6]) +
+            m[2] * (m[3] * m[7] - m[4] * m[6])
+        if (!det.isFinite() || abs(det) < 1e-12) return null
+        return doubleArrayOf(
+            (m[4] * m[8] - m[5] * m[7]) / det, (m[2] * m[7] - m[1] * m[8]) / det, (m[1] * m[5] - m[2] * m[4]) / det,
+            (m[5] * m[6] - m[3] * m[8]) / det, (m[0] * m[8] - m[2] * m[6]) / det, (m[2] * m[3] - m[0] * m[5]) / det,
+            (m[3] * m[7] - m[4] * m[6]) / det, (m[1] * m[6] - m[0] * m[7]) / det, (m[0] * m[4] - m[1] * m[3]) / det,
+        )
+    }
+
+    companion object {
+        private val IN_PLACE = ModelPlacement.IDENTITY
+
+        /** A half whose own coordinates already are the plate's - an unplaced mesh. */
+        fun inPlace(mesh: StlMesh, faceMm: Float): SnapFitHalf =
+            SnapFitHalf(mesh, faceMm, StlSliceTransform(IN_PLACE, 0.0, 0.0, 0.0))
+
+        /**
+         * [mesh], as [placed] has it: the transform the placed copy carries
+         * when it was made by [ModelPlacement.transformed], and otherwise the
+         * translation its bounds imply - which is what a fixture that placed
+         * the mesh by hand means. The mating face stays in [mesh]'s own
+         * coordinates.
+         */
+        fun placed(mesh: StlMesh, placed: StlMesh, faceMm: Float): SnapFitHalf {
+            val transform = placed.slicingTransform ?: StlSliceTransform(
+                linear = IN_PLACE,
+                translationXmm = (placed.bounds.minX - mesh.bounds.minX).toDouble(),
+                translationYmm = (placed.bounds.minY - mesh.bounds.minY).toDouble(),
+                translationZmm = (placed.bounds.minZ - mesh.bounds.minZ).toDouble(),
+            )
+            return SnapFitHalf(placed, faceMm, transform)
+        }
+    }
 }
 
 /**
@@ -388,6 +973,14 @@ data class SnapFitDimensions(
     val beamTipMm: Float,
     /** The lip's square catch face, along the assembly axis from the plane. */
     val lipBackMm: Float,
+    /** How proud the whole-seam registration boss stands of the mating face. */
+    val stepDepthMm: Float,
+    /** How deep the boss roots into its own half, below the mating face. */
+    val stepRootMm: Float,
+    /** The rim the step leaves around the seam. */
+    val stepRimMm: Float,
+    /** The clearance between the boss and its recess, and under it. */
+    val stepClearanceMm: Float,
 )
 
 /**
@@ -413,14 +1006,37 @@ data class SnapFitFrame(
     }
 }
 
-/** The two solids, ready for [MeshBoolean], and the geometry they were built to. */
+/** The solids, ready for [MeshBoolean], and the geometry they were built to. */
 data class SnapFitJoint(
     /** Union this into the half on the low side of the plane. */
     val unionSolid: StlMesh,
     /** Subtract this from the half on the high side. */
     val subtractSolid: StlMesh,
+    /**
+     * The whole-seam registration boss, unioned into the beam's half after
+     * [unionSolid]: it is a solid of its own because a mesh holding two
+     * overlapping shells is not manifold, and the engine is what fuses them.
+     */
+    val registrationSolid: StlMesh,
+    /** The matching recess, subtracted from the socket half after [subtractSolid]. */
+    val registrationRecess: StlMesh,
+    /**
+     * The beam half's own frame, on the plate: the plane is that half's mating
+     * face, and local z is the assembly direction. [socketFrame] is the mate's,
+     * with the same local z sense; the two differ by nothing but each half's
+     * placement, so the features line up when the halves are pushed together.
+     */
     val frame: SnapFitFrame,
+    val socketFrame: SnapFitFrame,
     val dimensions: SnapFitDimensions,
+    /** Which rung of the ladder this joint is: what it actually carries. */
+    val rung: SnapFitRung,
+    /**
+     * Why the fuller rungs were dropped, in the user's terms - "the seam is
+     * hollow where the whole-seam pad would sit; key and cantilever only" - or
+     * null when nothing was dropped, or when a rung was pinned by the caller.
+     */
+    val rungReason: String?,
 )
 
 /**
@@ -454,11 +1070,20 @@ data class SnapFitParameters(
     val keyGapMm: Float = 1f,
     /** The barb's lead-in angle; 45 degrees is the printable default. */
     val rampAngleDeg: Float = 45f,
+    /**
+     * How far the whole-seam registration step stands proud of the mating
+     * face, as a ceiling: the step is sized from the part like every other
+     * feature, so a small model gets a shallow rebate rather than this value.
+     */
+    val stepDepthMm: Float = 1f,
+    /** The rim the step leaves around the seam, as a ceiling in millimetres. */
+    val stepRimMm: Float = 2f,
 ) {
     internal fun isUsable(): Boolean {
         val lengths = listOf(
             keySizeMm, keyHeightMm, keyClearanceMm, beamLengthMm, beamWidthMm, beamThicknessMm,
             beamRootMm, lipDepthMm, lipClearanceMm, matingClearanceMm, keyGapMm,
+            stepDepthMm, stepRimMm,
         )
         return lengths.all { it.isFinite() && it > 0f } &&
             rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg < 89f

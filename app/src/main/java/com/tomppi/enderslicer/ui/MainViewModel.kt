@@ -87,10 +87,21 @@ import java.util.Locale
 import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.BedClipper
+import com.tomppi.enderslicer.viewer.MeshBoolean
 import com.tomppi.enderslicer.viewer.MeshPicker
+import com.tomppi.enderslicer.viewer.MeshVolume
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
 import com.tomppi.enderslicer.viewer.PlateThreeMfWriter
+import com.tomppi.enderslicer.viewer.SnapFit
+import com.tomppi.enderslicer.viewer.SnapFitFrame
+import com.tomppi.enderslicer.viewer.SnapFitGate
+import com.tomppi.enderslicer.viewer.SnapFitRung
+import com.tomppi.enderslicer.viewer.SnapFitHalf
+import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapPad
+import com.tomppi.enderslicer.viewer.SolidSplitter
+import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ThreeMfModelParser
@@ -99,6 +110,7 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -127,6 +139,27 @@ private const val MAX_CONFIG_SNAPSHOT_BYTES = 8L * 1024L * 1024L
 
 /** The engine's request log is text; the export stops here rather than reading a runaway log whole. */
 private const val MAX_DIAGNOSTIC_LOG_BYTES = 8L * 1024L * 1024L
+
+/**
+ * How long a joint's inputs must sit still before the boolean runs.
+ *
+ * A slider reports every frame it moves, and each report is a union, a
+ * subtraction and the mesh copies around them. Long enough to collapse a drag
+ * into one operation, short enough that letting go feels like it did something.
+ */
+private const val SNAP_PREVIEW_DEBOUNCE_MILLIS = 220L
+
+/**
+ * The joint's scale slider: half-size to double.
+ *
+ * One control for the whole joint. [SnapFitParameters] multiplies every
+ * dimension it has - the key, the beam, the barb and all three clearances - by
+ * this, so there is nothing to tune per dimension and nothing that can be
+ * forgotten at one setting and wrong at another. It is exposed to the panel
+ * itself because the slider's range is the same value the view model clamps to.
+ */
+const val MIN_JOINT_SCALE = 0.5f
+const val MAX_JOINT_SCALE = 2f
 
 /** Said when a placement would leave the whole model under the bed. */
 private const val ENTIRELY_BELOW_BED_MESSAGE =
@@ -249,6 +282,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val initialStartGcode = BuiltInGcode.defaultStartGcode
     private val initialEndGcode = BuiltInGcode.defaultEndGcode
     private var importedSettingsBaseline: SlicerSettings? = null
+
+    /**
+     * The joint's booleans, one at a time and only after a pause.
+     *
+     * A slider reports every frame it moves, and each report would otherwise be
+     * a union plus a subtraction over the whole half; the debounce collapses a
+     * drag into the value it was let go at, and cancelling the running job is
+     * what stops a stale result from landing on top of a newer one.
+     */
+    private val snapPreviewScope = CoroutineScope(viewModelScope.coroutineContext + Job())
+    private var snapPreviewJob: Job? = null
 
     /**
      * The selected object's untransformed mesh.
@@ -1584,10 +1628,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Cuts the selected object at the previewed plane and puts both halves on
      * the plate, side by side and both standing on the bed.
      *
-     * This is where the preview becomes geometry: [BedClipper] produces the two
-     * meshes with their cut faces capped - a half whose cut face is left open
-     * slices to nothing, because CuraEngine only stitches an outline whose ends
-     * are within 10 mm - each half is staged as its own STL file (the workspace
+     * This is where the preview becomes geometry: [SolidSplitter] produces the
+     * two meshes - with the mesh boolean where the engine takes the model, so
+     * each half is a closed solid by construction, and with [BedClipper]'s
+     * capped cut as the fallback - each half is staged as its own STL file (the workspace
      * descriptor restores an object from the file it names, so two objects
      * sharing the original's file would both come back whole), and the plate's
      * own packer lays the plate out again. The two halves are separate objects
@@ -1617,16 +1661,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // committed leaves nothing orphaned behind.
             val staged = ArrayList<File>(2)
             runCatching {
-                val halves = withContext(Dispatchers.Default) {
+                val cut = withContext(Dispatchers.Default) {
                     val placed = model.mesh
                     val offset = offsetMm.toFloat()
-                    val low = BedClipper.clipClosed(placed, axis, offset, BedClipper.Half.LOW)
-                    val high = BedClipper.clipClosed(placed, axis, offset, BedClipper.Half.HIGH)
-                    check(low.triangleCount > 0 && high.triangleCount > 0) {
+                    val split = SolidSplitter.split(placed, axis, offset)
+                    check(split.low.triangleCount > 0 && split.high.triangleCount > 0) {
                         "The cut leaves nothing on one side; move it inside the model"
                     }
-                    listOf(lowName to low, highName to high)
+                    // Which of the two cuts ran is the one thing the user cannot
+                    // see in the halves, and the one thing worth having in a bug
+                    // report: the boolean makes closed solids, the clipper is
+                    // the fallback for a model the engine would not take.
+                    Diagnostics.info(
+                        "split",
+                        model.name + " on " + axis.name + " at " + offset + " mm via " + split.path +
+                            ": low " + split.low.triangleCount + " tris, high " + split.high.triangleCount + " tris",
+                    )
+                    split
                 }
+                val halves = listOf(lowName to cut.low, highName to cut.high)
                 val objects = withContext(Dispatchers.IO) {
                     halves.map { (name, half) ->
                         val file = stagedModelFile()
@@ -1667,7 +1720,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val commit = { current: MainUiState ->
                     current.withoutPublishedSlice(
                         "Split " + model.name + ": " + low.name + " and " +
-                            objects.last().name + "; slice again to export G-code",
+                            objects.last().name + cutPathNote(cut.path) +
+                            "; slice again to export G-code",
                     ).copy(
                         models = packed,
                         selectedModelId = low.id,
@@ -1675,6 +1729,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         canUndoPlacement = false,
                         undoPlacementLabel = null,
                         isBusy = false,
+                    ).withoutSnap().copy(
+                        // The split is what defines the assembly axis, so the two
+                        // halves it just made are the pair the snap fit offers -
+                        // recorded here, where their ids are in hand, rather than
+                        // asked for again when the tool opens. The plane travels
+                        // with them, in each half's own coordinates: the packer
+                        // moves the halves apart, and a joint measured from where
+                        // they landed would be built in the gap.
+                        snapLowHalfId = low.id,
+                        snapHighHalfId = objects.last().id,
+                        snapAxis = axis,
+                        snapLowFaceMm = offsetMm.toFloat(),
+                        snapHighFaceMm = offsetMm.toFloat(),
                     )
                 }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))
@@ -1693,6 +1760,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showOperationFailure(error)
             }
         }
+    }
+
+    /**
+     * The half-line a split's status message carries about how it was cut.
+     *
+     * The halves themselves do not say which path ran, and a report of a bad
+     * split is worth exactly as much as that answer: the boolean is the path
+     * that makes closed solids, so a split that fell back to the clipper is the
+     * one to look at when a half will not take a joint.
+     */
+    private fun cutPathNote(path: SolidSplitter.Path): String = when (path) {
+        SolidSplitter.Path.BOOLEAN -> " (cut by the mesh boolean)"
+        SolidSplitter.Path.CLIPPER -> " (cut by the clipper: the boolean engine would not take this model)"
     }
 
     /**
@@ -1725,6 +1805,571 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             placement = placement,
             supportPaint = SupportPaintState(),
         )
+    }
+
+    // --- The snap fit -------------------------------------------------------
+
+    /**
+     * Opens the Snap fit tool over the cut's own pair of halves.
+     *
+     * There is no pair to nominate: the split recorded the two objects and the
+     * axis, and this only refuses when one of them has left the plate or the
+     * boolean engine is not packaged for this device - both of which are things
+     * a tap cannot fix.
+     */
+    fun setSnapActive(active: Boolean) {
+        if (!active) {
+            snapPreviewJob?.cancel()
+            _uiState.update { it.withoutSnap() }
+            return
+        }
+        val state = _uiState.value
+        if (!state.snapAvailable) {
+            showOperationFailure(
+                IllegalStateException("Split a model first: the snap fit joins the two halves a split made"),
+            )
+            return
+        }
+        // Available only once the library has been asked for: the flag is about
+        // a library that failed to load, not one that has not been loaded yet.
+        MeshBoolean.ensureLoaded()
+        if (!MeshBoolean.isAvailable) {
+            showOperationFailure(
+                IllegalStateException(
+                    "The mesh boolean engine is not available on this device, so a joint cannot be made",
+                ),
+            )
+            return
+        }
+        Diagnostics.info("snap fit", "opened over the split pair; Manifold " + MeshBoolean.engineVersion)
+        _uiState.update {
+            it.copy(
+                snapActive = true,
+                snapAnchorPoint = null,
+                snapAnchorHalfId = null,
+                snapScale = 1f,
+                snapPreview = null,
+                snapFailure = null,
+            )
+        }
+        previewSnapJoint()
+    }
+
+    /**
+     * Records the tapped point, and the half it landed on, and re-previews.
+     *
+     * The tap is a point on whatever surface the picker hit, which is almost
+     * never exactly on the mating plane, so it is stored as tapped and read in
+     * the tapped half's own coordinates wherever it is used. Which half matters:
+     * the plate has moved the two apart since the split, so the same plate point
+     * is a different spot in each half's frame, and the pair of point and half is
+     * what keeps the two features on the same physical place. [tappedHalfId] is
+     * that half's object id, taken from the picker's own object index.
+     */
+    fun placeSnapAnchor(point: Vec3, tappedHalfId: String? = null) {
+        if (!_uiState.value.snapActive) return
+        _uiState.update {
+            it.copy(snapAnchorPoint = point, snapAnchorHalfId = tappedHalfId, snapFailure = null)
+        }
+        previewSnapJoint()
+    }
+
+    /** The one control every dimension of the joint follows, clearances included. */
+    fun setSnapScale(scale: Float) {
+        if (!scale.isFinite()) return
+        _uiState.update { it.copy(snapScale = scale.coerceIn(MIN_JOINT_SCALE, MAX_JOINT_SCALE)) }
+        previewSnapJoint()
+    }
+
+    /** Which half the beam goes into; the other half gets the matching pocket. */
+    fun setSnapBeamHalf(half: SnapJoint.JointHalf) {
+        _uiState.update { it.copy(snapBeamHalf = half) }
+        previewSnapJoint()
+    }
+
+    /**
+     * Pins the full joint, or hands the choice back to the material.
+     *
+     * Auto is the ladder: the seam's own cross-section decides whether the pad,
+     * the key or only the cantilever is placed, and the panel says which and
+     * why. Pinning Full skips those fit checks and builds the pad anyway - the
+     * user is responsible for the result, and the panel tells him what is being
+     * placed rather than blocking him.
+     */
+    fun setSnapFullJoint(full: Boolean) {
+        _uiState.update { it.copy(snapFullJoint = full) }
+        previewSnapJoint()
+    }
+
+    /**
+     * Schedules the boolean preview after a pause.
+     *
+     * Debounced because the scale slider reports every frame it moves and each
+     * report would otherwise be a union and a subtraction over the whole half -
+     * the union alone measured under 2 ms on the phone, but the copies around it
+     * are 11 ms, which is a stutter per frame. The pending job is cancelled, so
+     * what lands is always the value the slider stopped at.
+     */
+    private fun previewSnapJoint() {
+        snapPreviewJob?.cancel()
+        if (!_uiState.value.snapActive) return
+        snapPreviewJob = snapPreviewScope.launch {
+            delay(SNAP_PREVIEW_DEBOUNCE_MILLIS)
+            runCatching { computeSnapPreview() }.onFailure(::showOperationFailure)
+        }
+    }
+
+    /**
+     * Runs the joint's two booleans in-process and puts the result on the plate.
+     *
+     * Everything is measured from the state as it is when this runs, not from
+     * what was scheduled: the halves are the ones on the plate, and the preview
+     * is dropped rather than committed if anything moved while the boolean ran.
+     */
+    private suspend fun computeSnapPreview() {
+        val state = _uiState.value
+        val anchorPoint = state.snapAnchorPoint ?: return
+        // The tap read in the half it landed on. The joint is built in the
+        // halves' own frames, and the plate has moved the two apart since the
+        // split, so the same plate point is a different spot in each frame.
+        val anchorLocal = state.snapAnchorLocalMm ?: run {
+            _uiState.update { it.copy(snapPreview = null, snapFailure = SNAP_PAIR_STALE_MESSAGE) }
+            return
+        }
+        val scale = state.snapScale
+        val beamHalf = state.snapBeamHalf
+        val fullJoint = state.snapFullJoint
+        val axis = state.snapAxis
+        // The pair the split recorded may not be the plate any more: a half
+        // deleted, a re-split, a restored workspace. The panel is told which,
+        // in the same sentence Apply uses, rather than the preview quietly
+        // never arriving.
+        val lowHalf = state.snapLowHalf
+        val highHalf = state.snapHighHalf
+        if (lowHalf == null || highHalf == null) {
+            _uiState.update { it.copy(snapPreview = null, snapFailure = SNAP_PAIR_STALE_MESSAGE) }
+            return
+        }
+        val lowFit = state.snapLowFitHalf
+        val highFit = state.snapHighFitHalf
+        if (lowFit == null || highFit == null) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "The plane this pair was split on is not known; split the model again.",
+                )
+            }
+            return
+        }
+        val prepared = withContext(Dispatchers.Default) prepared@{
+            val lowReady = SnapFitGate.prepare(lowFit.mesh, SnapFitGate.NativeEngine, lowHalf.name)
+            if (lowReady is SnapFitGate.Result.Refused) {
+                return@prepared SnapPreviewResult.Refused(lowReady.reason)
+            }
+            val highReady = SnapFitGate.prepare(highFit.mesh, SnapFitGate.NativeEngine, highHalf.name)
+            if (highReady is SnapFitGate.Result.Refused) {
+                return@prepared SnapPreviewResult.Refused(highReady.reason)
+            }
+            val lowPrepared = (lowReady as SnapFitGate.Result.Prepared).ready
+            val highPrepared = (highReady as SnapFitGate.Result.Prepared).ready
+            val note = listOfNotNull(lowPrepared.note, highPrepared.note)
+                .takeIf { it.isNotEmpty() }?.joinToString("; ")
+            // The gate's repair, if any, replaces the mesh the joint measures;
+            // the half's own face and placement travel with it unchanged.
+            SnapPreviewResult.Prepared(
+                lowHalf = lowFit.copy(mesh = lowPrepared.mesh),
+                highHalf = highFit.copy(mesh = highPrepared.mesh),
+                anchorMm = anchorLocal,
+                note = note,
+            )
+        }
+        val ready = when (prepared) {
+            is SnapPreviewResult.Refused -> {
+                _uiState.update { it.copy(snapPreview = null, snapFailure = prepared.reason) }
+                return
+            }
+            is SnapPreviewResult.Prepared -> prepared
+        }
+        val built = SnapJoint.build(
+            axis = axis,
+            anchorMm = ready.anchorMm,
+            scale = scale,
+            lowHalf = ready.lowHalf,
+            highHalf = ready.highHalf,
+            beamHalf = beamHalf,
+            requested = if (fullJoint) SnapFitRung.FULL else null,
+        )
+        val base = when (built) {
+            is SnapJoint.Either.Placed -> built.placement
+            is SnapJoint.Either.Flipped -> built.placement
+            is SnapJoint.Either.Failed -> {
+                _uiState.update { it.copy(snapPreview = null, snapFailure = built.failure.summary) }
+                return
+            }
+        }
+        // The full joint's pad is contoured to the material it stands on, and
+        // when the wall is too thin for a rim the ladder's lesser rung is used
+        // and says so: a pad that collapses to nothing is not a pad.
+        val placement = withContext(Dispatchers.Default) {
+            contouredOrLesser(base, ready, axis, scale, beamHalf)
+        }
+        if (placement == null) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = SnapPad.TOO_THIN_REASON + ", and the lesser joints do not fit either",
+                )
+            }
+            return
+        }
+        val union = withContext(Dispatchers.Default) {
+            SnapFitGate.NativeEngine.union(placement.beamMesh, placement.joint.unionSolid)
+        }
+        if (union !is MeshBoolean.Result.Success) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "The joint could not be joined on: " + (union as MeshBoolean.Result.Failure).reason,
+                )
+            }
+            return
+        }
+        // The whole-seam registration step, when this rung of the ladder carries
+        // one. Its solids are separate meshes because one mesh holding two
+        // overlapping shells is not manifold, so the engine is what fuses the
+        // boss onto the beam's half and cuts the matching recess out of the
+        // other - but on the lighter rungs there is no boss, and the engine
+        // refuses an empty mesh rather than answering with the half again.
+        val withStep = placement.joint.rung == SnapFitRung.FULL
+        val registered = if (withStep) {
+            withContext(Dispatchers.Default) {
+                SnapFitGate.NativeEngine.union(union.mesh, placement.joint.registrationSolid)
+            }
+        } else {
+            union
+        }
+        if (registered !is MeshBoolean.Result.Success) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "The registration step could not be joined on: " +
+                        (registered as MeshBoolean.Result.Failure).reason,
+                )
+            }
+            return
+        }
+        val socket = withContext(Dispatchers.Default) {
+            SnapFitGate.NativeEngine.subtract(placement.socketMesh, placement.joint.subtractSolid)
+        }
+        if (socket !is MeshBoolean.Result.Success) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "The matching pocket could not be cut: " +
+                        (socket as MeshBoolean.Result.Failure).reason,
+                )
+            }
+            return
+        }
+        val recessed = if (withStep) {
+            withContext(Dispatchers.Default) {
+                SnapFitGate.NativeEngine.subtract(socket.mesh, placement.joint.registrationRecess)
+            }
+        } else {
+            socket
+        }
+        if (recessed !is MeshBoolean.Result.Success) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "The matching recess could not be cut: " +
+                        (recessed as MeshBoolean.Result.Failure).reason,
+                )
+            }
+            return
+        }
+        // A joint that shares no volume with the half it is rooted in is a
+        // floating block: the engine unions it happily and every closedness
+        // check passes, which is exactly the failure this refuses. It is also
+        // what a tap over a hollow middle produces, so the answer is a plain
+        // sentence and another tap, not a preview of something useless.
+        val beamGain = registered.volumeMm3 - MeshVolume.of(placement.beamMesh)
+        val mateLoss = MeshVolume.of(placement.socketMesh) - recessed.volumeMm3
+        if (beamGain <= MATERIAL_EPSILON_MM3 || mateLoss <= MATERIAL_EPSILON_MM3) {
+            _uiState.update {
+                it.copy(
+                    snapPreview = null,
+                    snapFailure = "There is no material where you tapped for the joint to hold; " +
+                        "tap another spot on the seam.",
+                )
+            }
+            return
+        }
+        // Which half carries the beam decides which result is which half, and
+        // where each half's mating face now is on the plate: the applied halves
+        // are re-centred from these meshes, so their new own frame is this one
+        // and these faces are what the next joint on the pair starts from.
+        val beamIsLow = placement.beamMesh === ready.lowHalf.mesh
+        val lowPreview = (if (beamIsLow) registered.mesh else recessed.mesh)
+            .copy(displayName = lowHalf.name)
+        val highPreview = (if (beamIsLow) recessed.mesh else registered.mesh)
+            .copy(displayName = highHalf.name)
+        val beamFrame = placement.joint.frame
+        val socketFrame = placement.joint.socketFrame
+        // The proof the preview is geometry and not an empty boolean: how much
+        // material each half gained or lost, and how much of the joint really
+        // sits in the half it was built for. Only asked for while the log is
+        // being kept - the two intersections are extra engine work.
+        if (Diagnostics.isEnabled()) {
+            Diagnostics.info(
+                "snap fit",
+                "preview rung=" + placement.joint.rung.name +
+                    (placement.joint.rungReason?.let { " (" + it + ")" } ?: "") +
+                    ": beam half +" + millimetres(registered.volumeMm3 - MeshVolume.of(placement.beamMesh)) +
+                    " mm3 (seat " + millimetres(seatVolume(placement.beamMesh, placement.joint.unionSolid)) +
+                    " mm3), mate -" + millimetres(MeshVolume.of(placement.socketMesh) - recessed.volumeMm3) +
+                    " mm3 (pocket " + millimetres(seatVolume(placement.socketMesh, placement.joint.subtractSolid)) +
+                    " mm3), faces at " +
+                    millimetres((if (beamIsLow) plateFace(beamFrame, axis) else plateFace(socketFrame, axis)).toDouble()) +
+                    "/" +
+                    millimetres((if (beamIsLow) plateFace(socketFrame, axis) else plateFace(beamFrame, axis)).toDouble()) +
+                    " mm on " + axis.name,
+            )
+        }
+        val preview = SnapPreview(
+            lowMesh = lowPreview,
+            highMesh = highPreview,
+            joint = placement.joint,
+            anchorPoint = anchorPoint,
+            scale = scale,
+            beamHalf = beamHalf,
+            beamInChosenHalf = placement.chosenHalfCarriesBeam,
+            repairNote = ready.note,
+            fullJoint = fullJoint,
+            lowFaceMm = if (beamIsLow) plateFace(beamFrame, axis) else plateFace(socketFrame, axis),
+            highFaceMm = if (beamIsLow) plateFace(socketFrame, axis) else plateFace(beamFrame, axis),
+        )
+        _uiState.update { current ->
+            // The inputs moved while the boolean ran - another tap, another
+            // scale, a different half, or the plate itself: this result is for
+            // geometry that is no longer the one asked about, so it is dropped
+            // rather than shown as if it were current.
+            val stale = !current.snapActive ||
+                current.snapLowHalfId != lowHalf.id ||
+                current.snapHighHalfId != highHalf.id ||
+                current.snapAnchorPoint != anchorPoint ||
+                current.snapScale != scale ||
+                current.snapBeamHalf != beamHalf ||
+                current.snapFullJoint != fullJoint
+            if (stale) current else current.copy(snapPreview = preview, snapFailure = flipNotice(built))
+        }
+    }
+
+    /**
+     * The joint to place: the pad contoured to the half's own material, or the
+     * ladder's next rung when the wall is too thin for a rim.
+     *
+     * The contour is what keeps a full joint on a hollow part honest - the pad
+     * follows the walls instead of spanning the void - and it is the engine
+     * that says whether enough material survives to be a rim. When it does
+     * not, dropping a rung and naming why is the ladder's own answer, not a
+     * failure to place anything.
+     */
+    private fun contouredOrLesser(
+        base: SnapJoint.Placement,
+        ready: SnapPreviewResult.Prepared,
+        axis: ModelPlacement.Axis,
+        scale: Float,
+        beamHalf: SnapJoint.JointHalf,
+    ): SnapJoint.Placement? {
+        if (base.joint.rung != SnapFitRung.FULL) return base
+        val contoured = SnapPad.contour(base.joint, base.beamMesh)
+        if (contoured != null) return base.copy(joint = contoured)
+        for (rung in listOf(SnapFitRung.SIMPLE, SnapFitRung.MINIMAL)) {
+            val lesser = SnapJoint.build(
+                axis = axis,
+                anchorMm = ready.anchorMm,
+                scale = scale,
+                lowHalf = ready.lowHalf,
+                highHalf = ready.highHalf,
+                beamHalf = beamHalf,
+                requested = rung,
+            )
+            val placement = when (lesser) {
+                is SnapJoint.Either.Placed -> lesser.placement
+                is SnapJoint.Either.Flipped -> lesser.placement
+                is SnapJoint.Either.Failed -> continue
+            }
+            val reason = SnapPad.TOO_THIN_REASON + "; " + rung.label.lowercase() + " only"
+            return placement.copy(joint = placement.joint.copy(rungReason = reason))
+        }
+        return null
+    }
+
+    /** The one line a flip deserves; null when the joint went where it was asked to. */
+    private fun flipNotice(built: SnapJoint.Either): String? =
+        (built as? SnapJoint.Either.Flipped)?.why?.summary
+
+    private sealed interface SnapPreviewResult {
+        /** One half, or both, refused the watertight pre-flight; nothing was booleaned. */
+        data class Refused(val reason: String) : SnapPreviewResult
+
+        data class Prepared(
+            /** The two halves, each with its own mating face and placement. */
+            val lowHalf: SnapFitHalf,
+            val highHalf: SnapFitHalf,
+            /** The tap, in the halves' own coordinates. */
+            val anchorMm: Vec3,
+            val note: String?,
+        ) : SnapPreviewResult
+    }
+
+    /**
+     * Where a half's own mating face now sits along [axis], on the plate.
+     *
+     * The frame's origin is the anchor dropped onto that face, so its component
+     * along the axis is the face's own coordinate - read in the plate frame the
+     * previewed mesh is in, which is the frame Apply re-centres the half into.
+     * A half placed by translation is exact; a rotation of the split plane is
+     * not something the carried face represents, and the split never makes one.
+     */
+    private fun plateFace(frame: SnapFitFrame, axis: ModelPlacement.Axis): Float =
+        frame.originMm.dot(SnapFit.axisDirection(axis))
+
+    /** The material two solids share, or 0 when the engine would not answer. */
+    private fun seatVolume(first: StlMesh, second: StlMesh): Double =
+        when (val shared = MeshBoolean.intersect(first, second)) {
+            is MeshBoolean.Result.Success -> shared.volumeMm3
+            is MeshBoolean.Result.Failure -> Double.NaN
+        }
+
+    /** One decimal place, locale-independent: these numbers land in a log line. */
+    private fun millimetres(value: Double): String = String.format(Locale.ROOT, "%.1f", value)
+
+    /** Less material moved than this and the joint is floating, not attached. */
+    private val MATERIAL_EPSILON_MM3 = 0.01
+
+    /**
+     * Commits the previewed joint: the two booleaned halves replace the two
+     * halves on the plate, through the same staging path the split uses - each
+     * with its own STL file, laid out by the plate's own packer and saved into
+     * the workspace - so a relaunch restores both and both slice.
+     */
+    fun applySnapJoint() {
+        val state = _uiState.value
+        val preview = state.snapShownMeshes
+        if (preview == null) {
+            val reason = state.snapBlockedReason
+                ?: "The joint preview is still being built; try again in a moment"
+            showOperationFailure(IllegalStateException(reason))
+            return
+        }
+        // The pair the split recorded, as the plate has it now. A half that has
+        // left the plate since - deleted, replaced by another split, or swapped
+        // out by a restored workspace - is a normal thing for a plate to have
+        // done, and it says so in words instead of failing on a lookup.
+        val pair = state.snapPairIndices
+        if (pair !is SnapPairLookup.Found) {
+            showOperationFailure(IllegalStateException(SNAP_PAIR_STALE_MESSAGE))
+            return
+        }
+        val low = state.models[pair.lowIndex]
+        val high = state.models[pair.highIndex]
+        if (!beginOperation("Joining " + low.name + " and " + high.name + "...")) return
+        snapPreviewJob?.cancel()
+        viewModelScope.launch {
+            val staged = ArrayList<File>(2)
+            runCatching {
+                val objects = withContext(Dispatchers.IO) {
+                    listOf(low.name to preview.lowMesh, high.name to preview.highMesh).map { (name, mesh) ->
+                        val file = stagedModelFile()
+                        staged += file
+                        StlMeshWriter.writeBinary(mesh.copy(displayName = name), file)
+                        cutHalfObject(name, mesh, file, state)
+                    }
+                }
+                val laidOut = withContext(Dispatchers.Default) {
+                    // The replaced halves keep their place in the plate order, so
+                    // the packer lays the plate out the way it was, with the two
+                    // jointed parts where the two originals stood.
+                    val replacing = mapOf(low.id to objects.first(), high.id to objects.last())
+                    val replaced = state.models.map { existing -> replacing[existing.id] ?: existing }
+                    val packed = arranged(replaced, state.platePreferences, state.settings)
+                        ?: throw IllegalStateException(
+                            "The jointed halves do not fit on the bed " +
+                                state.platePreferences.sanitized().spacingMm + " mm apart; nothing was changed",
+                        )
+                    // arranged() returns fresh objects, so the jointed parts are
+                    // found by their place in the plate order and never by
+                    // identity. A list that no longer holds those places is the
+                    // same stale pair as above, said the same way.
+                    val lowObject = packed.getOrNull(pair.lowIndex)
+                    val highObject = packed.getOrNull(pair.highIndex)
+                    if (lowObject == null || highObject == null) {
+                        throw IllegalStateException(SNAP_PAIR_STALE_MESSAGE)
+                    }
+                    Triple(packed, lowObject, highObject)
+                }
+                val packed = laidOut.first
+                val lowObject = laidOut.second
+                val highObject = laidOut.third
+                val live = _uiState.value
+                val unchanged = live.models.size == state.models.size &&
+                    live.models.indices.all { live.models[it] === state.models[it] }
+                if (!unchanged) {
+                    runCatching { staged.forEach { it.delete() } }
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            statusMessage = "The plate changed while the joint was being applied; " +
+                                "nothing was changed",
+                        )
+                    }
+                    return@runCatching
+                }
+                val message = "Joined " + low.name + " and " + high.name +
+                    " with a snap fit; slice again to export G-code"
+                val commit = { current: MainUiState ->
+                    current.withoutPublishedSlice(message).copy(
+                        models = packed,
+                        selectedModelId = lowObject.id,
+                        isBusy = false,
+                    ).withoutSnap().copy(
+                        // The pair is the jointed halves now, so the tool can be
+                        // opened again to add a second joint to the same pair.
+                        // Apply re-centres the previewed meshes into fresh
+                        // objects, so each half's new own frame is the plate
+                        // frame they were previewed in, and the faces recorded
+                        // here are the plate faces the preview built them on -
+                        // a measurement of the new meshes would read the beam's
+                        // own tip as the beam half's face.
+                        snapLowHalfId = lowObject.id,
+                        snapHighHalfId = highObject.id,
+                        snapAxis = state.snapAxis,
+                        snapLowFaceMm = preview.lowFaceMm,
+                        snapHighFaceMm = preview.highFaceMm,
+                    )
+                }
+                val descriptor = workspaceSnapshot(commit(_uiState.value))
+                    ?: throw IllegalStateException("The joined plate could not be saved")
+                withContext(Dispatchers.IO) {
+                    workspaceStore.save(descriptor)
+                    // The halves the joint replaced are no longer on the plate, so
+                    // the files they were restored from go the way a removed
+                    // object's file goes - unless something else still came from one.
+                    listOf(low, high).forEach { replaced ->
+                        val path = replaced.sourcePath
+                        if (path != null && packed.none { it.sourcePath == path }) {
+                            File(path).takeIf { it.isFile }?.delete()
+                        }
+                    }
+                }
+                _uiState.update { commit(it) }
+            }.onFailure { error ->
+                runCatching { staged.forEach { it.delete() } }
+                showOperationFailure(error)
+            }
+        }
     }
 
     /** The middle of a span: where a cut starts, so both halves are worth looking at. */

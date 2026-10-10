@@ -54,6 +54,65 @@ chamfer is the fix, in that order.
   snaps more smoothly and needs less clearance to engage. A sphere in a spherical socket is a
   distinct, very printable joint type.
 
+## Whole-seam registration (the default registration, from the user's 3D Slash reference)
+
+The user's reference shows a 64 mm cube with a rectangular rebate cut into one face and the
+other part carrying a boss that mates into it. That is REGISTRATION over the whole seam
+rather than at one point, and it is now the default: offset the mating faces so the beam's
+half carries a shallow boss across the whole face (a box unioned on, inset by a rim) and the
+other half the matching recess (a box subtracted, inset by the rim and clearanced). The
+square key stays as a local feature, but it is sized from the part and sunk flush, so it
+reads as a catch rather than a block.
+
+- Sized from the part, never from millimetres: the key is about an eighth of the seam's
+  width, the beam about a fifth of it across and a quarter of the mate's material long, the
+  step around an eighth of the material deep. The parameters are ceilings; the part decides.
+- The step's solids are separate meshes, because a single mesh holding two overlapping shells
+  is not manifold - the engine unions the boss on and cuts the recess out.
+- It registers in both sideways axes over the entire seam and is far more forgiving to print
+  than a small key on a large face. Several local keys at the corners approximate it.
+- Retention is still the ramped cantilever: the step registers, the barb holds.
+
+## The joint is a ladder, not a yes/no
+
+A complicated seam - a boat hull, a thin curved wall - cannot always carry the
+whole joint. The pad is a whole-seam feature, and a hollow cross-section leaves
+it sitting over air; the square key can be wider than the wall it is cut into.
+So the generator fits the fullest joint the seam's own cross-section actually
+takes, and refuses only when nothing at all fits:
+
+1. **Full** - whole-seam pad and matching recess, square key, ramped cantilever.
+2. **Simplified** - the key and the cantilever, no pad. Often the only thing a
+   thin curved wall can take.
+3. **Minimal** - the bare ramped cantilever, shrunk to the material there is.
+
+Which rung was used is shown in the panel, with the reason the fuller ones were
+dropped ("the seam is hollow where the whole-seam pad would sit; key and
+cantilever only"). The same control pins the full joint, so the app never blocks
+the user: it says what it is placing and why, and he decides.
+
+THIS IS A STEPPING STONE. A complicated model gets the simple solution first;
+a better joint for it can come later. The ladder is not a verdict on what any
+model deserves, and the lighter rungs are not a permanent limit.
+
+## The pad follows the material, not the face
+
+The whole-seam pad began as a box across the seam. On a solid part that is the
+right shape; on a hollow one it is a wall standing in the middle of the void,
+which is what a forced full joint on a Benchy used to place. So the pad box is
+intersected with the half's own solid and what survives is the material's own
+cross-section - a rim that follows the hull and the cabin walls. That rim is
+inset a little (a share of the local material, never more than a third of the
+thinnest wall found, so a thin wall keeps a rim or the pad is refused), and the
+recess is built from the same contoured shape plus the clearance, so the two
+still mate: a proper contoured tongue and groove.
+
+If the wall cannot keep a rim - a Benchy hull is about a millimetre, and the
+boolean engine itself will not resolve a shell that thin - the pad is refused
+and the ladder drops a rung and says why ("the wall here is too thin for a pad
+with a rim; a bare cantilever only"). The refusal is the ladder working, not a
+failure.
+
 ## Still to settle
 
 - The small hook at the upper right of the sketch: the beam's anchor, or a second catch?
