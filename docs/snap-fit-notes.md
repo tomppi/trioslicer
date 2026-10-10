@@ -113,6 +113,39 @@ and the ladder drops a rung and says why ("the wall here is too thin for a pad
 with a rim; a bare cantilever only"). The refusal is the ladder working, not a
 failure.
 
+## Queued: multiple barbs along one beam (cable-tie principle)
+
+Asked for and NOT yet built: several barbs on one cantilever, each a 45 degree
+ramp with a square catch, so the mate's pawl catches whichever one it reaches
+and the joint offers several engagement depths from one lever. Pitch derived
+from the lip depth (ramp run plus a lip-depth flat), 1 to 3 barbs, default 1 so
+nothing changes unless asked.
+
+The design conclusion reached while working the geometry, so the next attempt
+does not have to rediscover it:
+
+- A MATCHING SERIES of grooves in the mate does NOT give distinct stable
+  clicks: with the same pitch on both parts, either every barb nests at once
+  (one stable position) or none does. The cable tie works differently.
+- The correct shape is ONE PAWL on the mate and SEVERAL TEETH on the beam. The
+  mate's single step (the pawl) sits at the DEEPEST catch, and its deep slot
+  spans from the pocket mouth back past the shallowest barb, so every barb but
+  the one being caught is inside the slot. As the parts close, the beam's
+  barbs pass under the pawl one at a time and spring out: the click positions
+  are beamLength - catch_i, the first click is the barb nearest the tip
+  (loose), the last is the deepest (seated).
+- The panel must name the engaged click ("first click - loose" ... "seated -
+  tight") and, if there is no assembly-depth control, report the seated one as
+  the designed engagement plus the list of click depths; the risk of this
+  design is a half-closed joint that cannot say where it stopped.
+- Deflection accumulates while the lip rides each ramp, so the strain readout
+  takes N x lipDepth as the worst case; the deepest engagement must still clear
+  the material it bends through.
+
+This joins the multi-joint work (several joints on one seam, Loose/Tight
+clearance stepping, socket-mouth chamfer, per-joint facing) - also asked for
+and not yet built.
+
 ## Still to settle
 
 - The small hook at the upper right of the sketch: the beam's anchor, or a second catch?
