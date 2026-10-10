@@ -70,11 +70,12 @@ class SnapJointTest {
 
     @Test
     fun aHalfWithNoRoomIsReportedAsAFlipRatherThanSilentlyBuilt() {
-        // A tall low half under a 2 mm lid: a beam asking to sit in the lid has
-        // 2 mm of material to cross, and the default parameters need 8 mm of
-        // reach plus a wall, so the chosen half genuinely cannot take it.
+        // A tall low half under a sub-millimetre lid: a beam asking to sit in
+        // the lid has less than a millimetre of material to cross, and even the
+        // lightest rung needs its ramp's run plus clearance beyond that, so the
+        // chosen half genuinely cannot take it.
         val lowMesh = MeshFixtures.box(0f, 0f, 0f, 40f, 40f, 40f)
-        val highMesh = MeshFixtures.box(0f, 0f, 40f, 40f, 40f, 42f)
+        val highMesh = MeshFixtures.box(0f, 0f, 40f, 40f, 40f, 40.8f)
         val low = SnapFitHalf.inPlace(lowMesh, 40f)
         val high = SnapFitHalf.inPlace(highMesh, 40f)
 

@@ -3964,10 +3964,13 @@ private class CutActions(
     val onClose: () -> Unit,
 )
 
-/** The hook's own controls, in millimetres: floor to a generous ceiling. */
-private val HOOK_LENGTH_RANGE = 1f..20f
-private val HOOK_THICKNESS_RANGE = 0.4f..3f
-private val HOOK_LIP_RANGE = 0.2f..2f
+// The hook's own controls, in millimetres. The slider's top end is generous on
+// purpose: the real limit is the mate's own material, and a ceiling a user can
+// hit with the slider would leave him stuck. The panel says when the material
+// clamped the value.
+private val HOOK_LENGTH_RANGE = 1f..60f
+private val HOOK_THICKNESS_RANGE = 0.4f..6f
+private val HOOK_LIP_RANGE = 0.2f..4f
 
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f

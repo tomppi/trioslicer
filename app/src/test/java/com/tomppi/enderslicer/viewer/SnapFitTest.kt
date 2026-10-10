@@ -214,8 +214,8 @@ class SnapFitTest {
         assertTrue("a key of about a tenth of the face: " + dimensions.keySizeMm, dimensions.keySizeMm <= 1.5f)
         assertTrue("a beam no wider: " + dimensions.beamWidthMm, dimensions.beamWidthMm <= 2f)
         assertTrue(
-            "and no longer than a quarter of the mate's material: " + dimensions.beamLengthMm,
-            dimensions.beamLengthMm <= 0.25f * 5f + 1e-4f,
+            "and no longer than the mate's own material leaves room for: " + dimensions.beamLengthMm,
+            dimensions.beamLengthMm <= 5f - dimensions.beamThicknessMm + 1e-3f,
         )
         assertTrue(
             "so the union is a feature on the face, not half of it: " + joint.unionSolid.bounds.width,
@@ -257,11 +257,11 @@ class SnapFitTest {
         assertEquals(2f * first.keyHeightMm, second.keyHeightMm, 1e-4f)
         assertEquals(2f * first.keyOffsetMm, second.keyOffsetMm, 1e-4f)
         // The beam's reach is the one dimension the part can refuse: at twice
-        // the scale it is twice as long only while a quarter of the mate's
-        // depth still allows it.
+        // the scale it is twice as long only while the mate's own material,
+        // less the wall the tip must leave, still allows it.
         assertEquals(
             "the beam's reach scales until the mate's material caps it",
-            minOf(2f * first.beamLengthMm, 0.25f * 40f),
+            minOf(2f * first.beamLengthMm, 40f - second.beamThicknessMm),
             second.beamLengthMm,
             1e-3f,
         )
@@ -428,6 +428,38 @@ class SnapFitTest {
             4f + long.dimensions.lipClearanceMm,
             long.subtractSolid.bounds.maxZ - 20f,
             1e-2f,
+        )
+    }
+
+    @Test
+    fun aMaximumHookReachesMostOfTheMatesDepth() {
+        // A 20 mm cube split in half: 10 mm of mate. The slider's top end must
+        // reach what the material allows, not a token share of it.
+        val cube = MeshFixtures.box(0f, 0f, 0f, 20f, 20f, 20f)
+        val low = BedClipper.clipClosed(cube, ModelPlacement.Axis.Z, 10f, Half.LOW)
+        val high = BedClipper.clipClosed(cube, ModelPlacement.Axis.Z, 10f, Half.HIGH)
+
+        val joint = joint(
+            low,
+            high,
+            anchor = Vec3(10f, 10f, 10f),
+            face = 10f,
+            parameters = SnapFitParameters(beamLengthOverrideMm = 60f),
+        )
+
+        assertTrue(
+            "a maximum hook reaches well past half the mate: " + joint.dimensions.beamLengthMm,
+            joint.dimensions.beamLengthMm > 5f,
+        )
+        assertTrue(
+            "and stops only where the far wall begins: " + joint.dimensions.beamLengthMm,
+            joint.dimensions.beamLengthMm <= 10f - joint.dimensions.beamThicknessMm + 1e-3f,
+        )
+        val clamp = joint.clamps.firstOrNull { it.label == "hook length" }
+        assertNotNull("the material limit is stated: " + joint.clamps, clamp)
+        assertTrue(
+            "in the user's terms: " + clamp!!.reason,
+            clamp.reason.contains("mate has only") && clamp.reason.contains("clamped"),
         )
     }
 

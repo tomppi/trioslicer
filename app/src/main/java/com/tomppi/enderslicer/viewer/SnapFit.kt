@@ -220,8 +220,13 @@ object SnapFit {
             // Leave a wall of at least a beam-thickness beyond the beam's tip,
             // and the same below its root.
             val wall = beamThickness
+            // The ONLY physical limit on the hook's length is the mate's own
+            // material: past it the tip breaks out of the far face. A share of
+            // the depth is not a limit - clamping downward protects the user
+            // from the safe direction, since root strain falls with the square
+            // of the length - so the hook runs as long as the material takes.
             val askedLength = parameters.beamLengthOverrideMm ?: parameters.beamLengthMm * scale
-            val beamLength = minOf(askedLength, BEAM_DEPTH_FRACTION * mateDepth, mateDepth - wall)
+            val beamLength = minOf(askedLength, mateDepth - wall)
             val beamRoot = minOf(parameters.beamRootMm * scale, ROOT_FRACTION * ownDepth, ownDepth - wall)
             if (beamLength <= 0f || beamRoot <= 0f) return null
             val lipRun = lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
@@ -866,7 +871,6 @@ object SnapFit {
     private const val KEY_FRACTION = 0.12f
     private const val BEAM_WIDTH_FRACTION = 0.18f
     private const val BEAM_THICKNESS_FRACTION = 0.12f
-    private const val BEAM_DEPTH_FRACTION = 0.25f
     private const val ROOT_FRACTION = 0.3f
 
     // The step is shallower still: a face-level offset, not a tongue.
