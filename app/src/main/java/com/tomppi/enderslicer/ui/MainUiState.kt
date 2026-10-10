@@ -21,6 +21,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
 import com.tomppi.enderslicer.viewer.GizmoOverlay
 import com.tomppi.enderslicer.viewer.SnapFitHalf
+import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapGhost
 import com.tomppi.enderslicer.viewer.SnapJoint
@@ -175,6 +176,14 @@ data class MainUiState(
      * is built anyway, as the user is responsible for the result.
      */
     val snapFullJoint: Boolean = false,
+    /**
+     * The hook dimensions the user typed, in millimetres, or null to take the
+     * scale's own share. The scale stays the base; each of these overrides its
+     * own dimension and is clamped by the material like any other.
+     */
+    val snapHookLengthMm: Float? = null,
+    val snapHookThicknessMm: Float? = null,
+    val snapHookLipMm: Float? = null,
     /**
      * The last previewed result: the two booleaned halves and the joint they
      * carry. Null while nothing has been previewed yet.
@@ -501,7 +510,8 @@ data class MainUiState(
         val preview = snapPreview ?: return@lazy null
         preview.takeIf {
             it.anchorPoint == snapAnchorPoint && it.scale == snapScale && it.beamHalf == snapBeamHalf &&
-                it.fullJoint == snapFullJoint
+                it.fullJoint == snapFullJoint && it.hookLengthMm == snapHookLengthMm &&
+                it.hookThicknessMm == snapHookThicknessMm && it.hookLipMm == snapHookLipMm
         }
     }
 
@@ -526,6 +536,11 @@ data class MainUiState(
                 lowHalf = low,
                 highHalf = high,
                 beamHalf = snapBeamHalf,
+                parameters = SnapFitParameters(
+                    beamLengthOverrideMm = snapHookLengthMm,
+                    beamThicknessOverrideMm = snapHookThicknessMm,
+                    lipDepthOverrideMm = snapHookLipMm,
+                ),
                 requested = if (snapFullJoint) SnapFitRung.FULL else null,
             )
         ) {

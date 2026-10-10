@@ -30,7 +30,7 @@ class SnapPadTest {
         val high = MeshFixtures.box(0f, 0f, 20f, 40f, 40f, 40f)
         val joint = fullJoint(hollow, high)
 
-        val contoured = SnapPad.contour(joint, hollow)
+        val contoured = SnapPad.contour(joint, SnapFitHalf.inPlace(hollow, 20f), SnapFitHalf.inPlace(high, 20f))
         assertNotNull("a hollow seam still gets a contoured pad", contoured)
 
         val plain = MeshVolume.of(joint.registrationSolid)
@@ -59,7 +59,7 @@ class SnapPadTest {
         val high = MeshFixtures.box(0f, 0f, 20f, 40f, 40f, 40f, name = "high half")
         val joint = fullJoint(low, high)
 
-        val contoured = SnapPad.contour(joint, low)
+        val contoured = SnapPad.contour(joint, SnapFitHalf.inPlace(low, 20f), SnapFitHalf.inPlace(high, 20f))
         assertNotNull("a solid seam keeps its pad", contoured)
 
         val plain = MeshVolume.of(joint.registrationSolid)
@@ -97,15 +97,16 @@ class SnapPadTest {
         // Benchy hull is about a millimetre, and a pad there is refused rather
         // than emitted as a sliver - which is what puts the reason in the
         // panel and drops the joint to the lesser hook.
+        val highHalf = SnapFitHalf.inPlace(high, 20f)
         val paper = MeshFixtures.hollowBox(size = 40f, height = 20f, cavity = 39.7f)
         assertNull(
             "a paper-thin wall cannot carry a pad",
-            SnapPad.contour(fullJoint(paper, high), paper),
+            SnapPad.contour(fullJoint(paper, high), SnapFitHalf.inPlace(paper, 20f), highHalf),
         )
         val hull = MeshFixtures.hollowBox(size = 40f, height = 20f, cavity = 38f)
         assertNull(
             "nor can a hull-thin millimetre wall",
-            SnapPad.contour(fullJoint(hull, high), hull),
+            SnapPad.contour(fullJoint(hull, high), SnapFitHalf.inPlace(hull, 20f), highHalf),
         )
 
         // The same shape with enough wall is exactly what the contour is for:
@@ -113,18 +114,87 @@ class SnapPadTest {
         val walled = MeshFixtures.hollowBox(size = 40f, height = 20f, cavity = 32f)
         assertNotNull(
             "a 4 mm wall can carry a contoured pad",
-            SnapPad.contour(fullJoint(walled, high), walled),
+            SnapPad.contour(fullJoint(walled, high), SnapFitHalf.inPlace(walled, 20f), highHalf),
         )
     }
 
-    /** The full rung, forced, on two in-place halves with their faces at Z = 20. */
-    private fun fullJoint(low: StlMesh, high: StlMesh): SnapFitJoint {
+    /**
+     * The assertion that would have caught a one-sided joint: what the pad adds
+     * to the beam half and what the recess takes out of the mate have to be the
+     * same step, and each has to be big enough to see. A recess built in the
+     * wrong frame cuts nothing and fails on the first number.
+     */
+    @Test
+    fun thePadAndTheRecessAreComplementaryOnEverySeam() {
+        assumeTrue(
+            "the host Manifold build is not on java.library.path; run scripts/build-manifold-host.sh",
+            MeshBoolean.ensureLoaded(),
+        )
+        val small = MeshFixtures.box(0f, 0f, 0f, 10f, 10f, 5f, name = "small lower")
+        val smallUpper = MeshFixtures.box(0f, 0f, 5f, 10f, 10f, 10f, name = "small upper")
+        val large = MeshFixtures.box(0f, 0f, 0f, 100f, 100f, 50f, name = "large lower")
+        val largeUpper = MeshFixtures.box(0f, 0f, 50f, 100f, 100f, 100f, name = "large upper")
+        val hollow = MeshFixtures.hollowBox(size = 40f, height = 20f, cavity = 30f)
+        val hollowUpper = MeshFixtures.box(0f, 0f, 20f, 40f, 40f, 40f, name = "hollow upper")
+
+        val cases = listOf(
+            Case("10 mm cube", small, smallUpper, 5f, Vec3(5f, 5f, 5f)),
+            Case("100 mm cube", large, largeUpper, 50f, Vec3(50f, 50f, 50f)),
+            Case("hollow seam", hollow, hollowUpper, 20f, Vec3(20f, 20f, 20f)),
+        )
+        for (case in cases) {
+            val joint = fullJoint(case.low, case.high, case.face, case.anchor)
+            val contoured = SnapPad.contour(
+                joint,
+                SnapFitHalf.inPlace(case.low, case.face),
+                SnapFitHalf.inPlace(case.high, case.face),
+            )
+            assertNotNull(case.name + ": the contoured pair is built", contoured)
+            val pad = contoured!!.registrationSolid
+            val recess = contoured.registrationRecess
+            assertTrue(
+                case.name + ": the recess lands on the mate, not in the gap",
+                overlaps(recess.bounds, case.high.bounds),
+            )
+            val proud = MeshVolume.of(pad) - sharedVolume(pad, case.low)
+            val removed = sharedVolume(recess, case.high)
+            assertTrue(case.name + ": the pad adds a step: " + proud + " mm3", proud >= MIN_STEP_MM3)
+            assertTrue(case.name + ": the recess cuts a step: " + removed + " mm3", removed >= MIN_STEP_MM3)
+            assertTrue(
+                case.name + ": and they match within the clearance: pad " + proud + ", recess " + removed,
+                removed >= proud * 0.8 && removed <= proud * 1.6 + 1.0,
+            )
+            println("PROOF " + case.name + " pad_added=" + proud + " recess_removed=" + removed)
+        }
+    }
+
+    private class Case(
+        val name: String,
+        val low: StlMesh,
+        val high: StlMesh,
+        val face: Float,
+        val anchor: Vec3,
+    )
+
+    /** True when two boxes share any volume at all. */
+    private fun overlaps(first: MeshBounds, second: MeshBounds): Boolean =
+        minOf(first.maxX, second.maxX) > maxOf(first.minX, second.minX) &&
+            minOf(first.maxY, second.maxY) > maxOf(first.minY, second.minY) &&
+            minOf(first.maxZ, second.maxZ) > maxOf(first.minZ, second.minZ)
+
+    /** The full rung, forced, on two in-place halves with their faces at Z = [face]. */
+    private fun fullJoint(
+        low: StlMesh,
+        high: StlMesh,
+        face: Float = 20f,
+        anchor: Vec3 = Vec3(20f, 20f, 20f),
+    ): SnapFitJoint {
         val joint = SnapFit.generate(
             Vec3(0f, 0f, 1f),
-            Vec3(20f, 20f, 20f),
+            anchor,
             1f,
-            SnapFitHalf.inPlace(low, 20f),
-            SnapFitHalf.inPlace(high, 20f),
+            SnapFitHalf.inPlace(low, face),
+            SnapFitHalf.inPlace(high, face),
             SnapFitParameters(),
             SnapFitRung.FULL,
         )
@@ -132,6 +202,9 @@ class SnapPadTest {
         assertEquals(SnapFitRung.FULL, joint!!.rung)
         return joint
     }
+
+    /** A step smaller than this is not a step. */
+    private val MIN_STEP_MM3 = 1.0
 
     private fun sharedVolume(solid: StlMesh, half: StlMesh): Double {
         val shared = MeshBoolean.intersect(solid, half)

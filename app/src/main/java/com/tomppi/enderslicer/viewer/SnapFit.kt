@@ -130,8 +130,24 @@ object SnapFit {
         // thick, so the face reads as a face rather than as a block.
         val keyHeight = minOf(parameters.keyHeightMm, parameters.beamThicknessMm) * scale
         val beamWidth = minOf(parameters.beamWidthMm, BEAM_WIDTH_FRACTION * reference) * scale
-        val fullThickness = minOf(parameters.beamThicknessMm, BEAM_THICKNESS_FRACTION * reference) * scale
-        val stepDepth = minOf(parameters.stepDepthMm * scale, STEP_DEPTH_FRACTION * mateDepth, fullThickness)
+        // The scale sets every dimension; a parameter the user has typed a
+        // millimetre value for overrides its own share of that, and the
+        // material's ceilings still apply on top.
+        val thicknessCeiling = BEAM_THICKNESS_FRACTION * reference * scale
+        val fullThickness = parameters.beamThicknessOverrideMm
+            ?.let { minOf(it, thicknessCeiling) }
+            ?: minOf(parameters.beamThicknessMm, BEAM_THICKNESS_FRACTION * reference) * scale
+        // The step's depth along the assembly axis is an ABSOLUTE step - order
+        // half a millimetre to one and a half - clamped only by the material it
+        // is cut into, never sized as a fraction of it: a rebate a tenth of a
+        // millimetre deep is not a rebate, and on a big part a fraction of the
+        // material is invisible.
+        val stepDepth = minOf(
+            parameters.stepDepthMm * scale,
+            STEP_DEPTH_MAX_MM,
+            STEP_DEPTH_MATERIAL_SHARE * mateDepth,
+            fullThickness,
+        )
         val stepClearance = minOf(matingClearance, stepDepth * 0.5f)
         val stepRim = minOf(parameters.stepRimMm * scale, STEP_RIM_FRACTION * reference)
         val keyCentre = beamWidth * 0.5f + keyGap + keySize * 0.5f
@@ -164,7 +180,8 @@ object SnapFit {
             keyHeight + keyClearance + matingClearance >= mateDepth -> "the mate is too shallow for the key"
             else -> "the wall is too narrow for the key"
         }
-        val padFits = bossFace != null && stepDepth > 0f && stepDepth + stepClearance < mateDepth && padCovered
+        val padFits = bossFace != null && stepDepth >= STEP_DEPTH_MIN_MM &&
+            stepDepth + stepClearance < mateDepth && padCovered
         val keyFits = keyGap > keyClearance + lipClearance &&
             keyHeight + keyClearance + matingClearance < mateDepth &&
             keyCovered
@@ -187,19 +204,24 @@ object SnapFit {
         fun buildRung(rung: SnapFitRung): SnapFitJoint? {
             // The lightest rung shrinks its beam to the material it has, so a
             // thin wall still gets a cantilever rather than a refusal.
+            val askedThickness = fullThickness
             val beamThickness = when (rung) {
                 SnapFitRung.MINIMAL -> minOf(fullThickness, 0.5f * ownDepth, 0.5f * mateDepth)
                 else -> fullThickness
             }
             if (beamThickness <= 0f) return null
-            val lipDepth = when (rung) {
-                SnapFitRung.MINIMAL -> minOf(parameters.lipDepthMm * scale, beamThickness * 0.5f)
-                else -> minOf(parameters.lipDepthMm, parameters.beamThicknessMm * 0.5f) * scale
+            val lipCeiling = when (rung) {
+                SnapFitRung.MINIMAL -> beamThickness * 0.5f
+                else -> beamThickness * 0.5f
             }
+            val askedLip = parameters.lipDepthOverrideMm
+                ?: minOf(parameters.lipDepthMm, parameters.beamThicknessMm * 0.5f) * scale
+            val lipDepth = minOf(askedLip, lipCeiling)
             // Leave a wall of at least a beam-thickness beyond the beam's tip,
             // and the same below its root.
             val wall = beamThickness
-            val beamLength = minOf(parameters.beamLengthMm * scale, BEAM_DEPTH_FRACTION * mateDepth, mateDepth - wall)
+            val askedLength = parameters.beamLengthOverrideMm ?: parameters.beamLengthMm * scale
+            val beamLength = minOf(askedLength, BEAM_DEPTH_FRACTION * mateDepth, mateDepth - wall)
             val beamRoot = minOf(parameters.beamRootMm * scale, ROOT_FRACTION * ownDepth, ownDepth - wall)
             if (beamLength <= 0f || beamRoot <= 0f) return null
             val lipRun = lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
@@ -212,6 +234,42 @@ object SnapFit {
             val stepRoot = minOf(beamRoot, STEP_ROOT_FRACTION * ownDepth)
             val rimmed = if (withPad) faceOverlap?.inset(stepRim) else null
             if (withPad && (bossFace == null || rimmed == null)) return null
+
+            // What the user asked for that the material would not take. A
+            // slider that stops moving without saying why is worse than no
+            // slider, so every clamp travels with the joint.
+            val clamps = ArrayList<SnapFitClamp>()
+            if (askedLength > beamLength + CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "hook length",
+                    askedMm = askedLength,
+                    actualMm = beamLength,
+                    reason = "the mate has only " + millimetres(mateDepth) + " mm of material; " +
+                        "hook length clamped to " + millimetres(beamLength) + " mm",
+                )
+            }
+            if (askedThickness > beamThickness + CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "hook thickness",
+                    askedMm = askedThickness,
+                    actualMm = beamThickness,
+                    reason = "the material only takes a " + millimetres(beamThickness) +
+                        " mm hook; thickness clamped",
+                )
+            }
+            if (askedLip > lipDepth + CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "hook lip",
+                    askedMm = askedLip,
+                    actualMm = lipDepth,
+                    reason = "the hook is " + millimetres(beamThickness) + " mm thick; lip depth clamped to " +
+                        millimetres(lipDepth) + " mm",
+                )
+            }
+            // The root strain a full deflection puts on the cantilever:
+            // eps = 3 h d / (2 L^2) for a rectangular beam of thickness h
+            // deflected by d over its free length L. A readout, never a gate.
+            val rootStrainPercent = 1.5f * beamThickness * lipDepth / (beamLength * beamLength) * 100f
 
             val dimensions = SnapFitDimensions(
                 scale = scale,
@@ -234,6 +292,7 @@ object SnapFit {
                 stepRootMm = stepRoot,
                 stepRimMm = stepRim,
                 stepClearanceMm = stepClearance,
+                rootStrainPercent = rootStrainPercent,
             )
 
             // ------------------------------------------------------------- union
@@ -336,6 +395,7 @@ object SnapFit {
                 dimensions,
                 rung,
                 null,
+                clamps,
             )
         }
 
@@ -780,6 +840,13 @@ object SnapFit {
     private const val RECESS_NAME = "snap-fit recess"
     private const val PLANE_TOLERANCE_MM = 1e-3f
 
+    /** Below this, a ceiling and the value it clamped are the same number. */
+    private const val CLAMP_EPSILON_MM = 1e-3f
+
+    /** One decimal place, locale-independent: these sentences land in the panel. */
+    private fun millimetres(value: Float): String =
+        String.format(java.util.Locale.ROOT, "%.1f", value)
+
     // The ladder's thresholds. A pad wants most of its footprint on material;
     // a key is small enough to take a little less. Five samples an axis is
     // enough to tell a solid cross-section from a hollow one and cheap enough
@@ -803,7 +870,12 @@ object SnapFit {
     private const val ROOT_FRACTION = 0.3f
 
     // The step is shallower still: a face-level offset, not a tongue.
-    private const val STEP_DEPTH_FRACTION = 0.08f
+    // The step's own depth, in millimetres: an absolute step, at least half a
+    // millimetre and never more than one and a half, with the material able to
+    // pull it shorter.
+    private const val STEP_DEPTH_MIN_MM = 0.5f
+    private const val STEP_DEPTH_MAX_MM = 1.5f
+    private const val STEP_DEPTH_MATERIAL_SHARE = 0.3f
     private const val STEP_RIM_FRACTION = 0.08f
     private const val STEP_ROOT_FRACTION = 0.2f
     private val DEGREES_TO_RADIANS = (Math.PI / 180.0).toFloat()
@@ -906,6 +978,71 @@ data class SnapFitHalf(
         return { x, y, z -> (x - tx) * dx + (y - ty) * dy + (z - tz) * dz }
     }
 
+    /** [mesh], given in this half's own coordinates, as it sits on the plate. */
+    fun place(mesh: StlMesh, name: String): StlMesh {
+        if (isInPlace) return mesh.copy(displayName = name)
+        val builder = MeshSolidBuilder(name)
+        val vertices = mesh.interleavedVertices
+        val points = FloatArray(9)
+        for (triangle in 0 until mesh.triangleCount) {
+            val base = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            for (corner in 0 until 3) {
+                val at = base + corner * MeshSolidBuilder.FLOATS_PER_VERTEX
+                val plate = toPlate(Vec3(vertices[at], vertices[at + 1], vertices[at + 2]))
+                points[corner * 3] = plate.x
+                points[corner * 3 + 1] = plate.y
+                points[corner * 3 + 2] = plate.z
+            }
+            builder.addTriangle(
+                points[0], points[1], points[2],
+                points[3], points[4], points[5],
+                points[6], points[7], points[8],
+            )
+        }
+        return builder.build()
+    }
+
+    /**
+     * [mesh], given on the plate, in this half's own coordinates. The two
+     * halves of a split share those coordinates, which is what lets a shape
+     * contoured on one half be the matching shape on the other.
+     */
+    fun unplace(mesh: StlMesh, name: String): StlMesh? {
+        if (isInPlace) return mesh.copy(displayName = name)
+        val inverse = inverse() ?: return null
+        val builder = MeshSolidBuilder(name)
+        val vertices = mesh.interleavedVertices
+        val points = FloatArray(9)
+        for (triangle in 0 until mesh.triangleCount) {
+            val base = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            for (corner in 0 until 3) {
+                val at = base + corner * MeshSolidBuilder.FLOATS_PER_VERTEX
+                val x = vertices[at] - transform.translationXmm
+                val y = vertices[at + 1] - transform.translationYmm
+                val z = vertices[at + 2] - transform.translationZmm
+                points[corner * 3] = (inverse[0] * x + inverse[1] * y + inverse[2] * z).toFloat()
+                points[corner * 3 + 1] = (inverse[3] * x + inverse[4] * y + inverse[5] * z).toFloat()
+                points[corner * 3 + 2] = (inverse[6] * x + inverse[7] * y + inverse[8] * z).toFloat()
+            }
+            builder.addTriangle(
+                points[0], points[1], points[2],
+                points[3], points[4], points[5],
+                points[6], points[7], points[8],
+            )
+        }
+        return builder.build()
+    }
+
+    /** [direction], given on the plate, in this half's own coordinates. */
+    fun toLocalDirection(direction: Vec3): Vec3 {
+        val inverse = inverse() ?: return direction
+        return Vec3(
+            (inverse[0] * direction.x + inverse[1] * direction.y + inverse[2] * direction.z).toFloat(),
+            (inverse[3] * direction.x + inverse[4] * direction.y + inverse[5] * direction.z).toFloat(),
+            (inverse[6] * direction.x + inverse[7] * direction.y + inverse[8] * direction.z).toFloat(),
+        ).normalized() ?: direction
+    }
+
     /** The inverse of the linear part, row-major, or null when there is none. */
     private fun inverse(): DoubleArray? {
         val m = transform.linear
@@ -981,6 +1118,22 @@ data class SnapFitDimensions(
     val stepRimMm: Float,
     /** The clearance between the boss and its recess, and under it. */
     val stepClearanceMm: Float,
+    /**
+     * The bending strain at the beam's root at full deflection, in per cent:
+     * eps = 3 h d / (2 L^2), the closed form for a rectangular cantilever of
+     * thickness h, free length L, deflected by d (the lip depth). A readout,
+     * never a gate.
+     */
+    val rootStrainPercent: Float,
+)
+
+/** One dimension the material clamped short of what the user asked for. */
+data class SnapFitClamp(
+    val label: String,
+    val askedMm: Float,
+    val actualMm: Float,
+    /** The whole sentence the panel shows. */
+    val reason: String,
 )
 
 /**
@@ -1037,6 +1190,8 @@ data class SnapFitJoint(
      * null when nothing was dropped, or when a rung was pinned by the caller.
      */
     val rungReason: String?,
+    /** Every dimension the material clamped, with the sentence that says why. */
+    val clamps: List<SnapFitClamp>,
 )
 
 /**
@@ -1078,6 +1233,16 @@ data class SnapFitParameters(
     val stepDepthMm: Float = 1f,
     /** The rim the step leaves around the seam, as a ceiling in millimetres. */
     val stepRimMm: Float = 2f,
+    /**
+     * The hook length the user typed, in millimetres, or null to take the
+     * scaled parameter. The scale still sets everything else; these override
+     * their own dimension and are clamped by the material like any other.
+     */
+    val beamLengthOverrideMm: Float? = null,
+    /** The hook thickness the user typed, in millimetres, or null. */
+    val beamThicknessOverrideMm: Float? = null,
+    /** The lip depth the user typed, in millimetres, or null. */
+    val lipDepthOverrideMm: Float? = null,
 ) {
     internal fun isUsable(): Boolean {
         val lengths = listOf(
@@ -1085,7 +1250,9 @@ data class SnapFitParameters(
             beamRootMm, lipDepthMm, lipClearanceMm, matingClearanceMm, keyGapMm,
             stepDepthMm, stepRimMm,
         )
+        val overrides = listOfNotNull(beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm)
         return lengths.all { it.isFinite() && it > 0f } &&
+            overrides.all { it.isFinite() && it > 0f } &&
             rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg < 89f
     }
 }

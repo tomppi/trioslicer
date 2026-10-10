@@ -98,6 +98,7 @@ import com.tomppi.enderslicer.viewer.SnapFitFrame
 import com.tomppi.enderslicer.viewer.SnapFitGate
 import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapFitHalf
+import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapPad
 import com.tomppi.enderslicer.viewer.SolidSplitter
@@ -1878,6 +1879,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSnapScale(scale: Float) {
         if (!scale.isFinite()) return
         _uiState.update { it.copy(snapScale = scale.coerceIn(MIN_JOINT_SCALE, MAX_JOINT_SCALE)) }
+    }
+
+    /**
+     * The hook's own dimensions, in millimetres, each overriding its share of
+     * the scale. They are stored without previewing - a slider that rebuilt the
+     * booleans on every frame would stutter - and [commitSnapPreview] runs them
+     * once the finger is up.
+     */
+    fun setSnapHookLength(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        _uiState.update { it.copy(snapHookLengthMm = millimetres) }
+    }
+
+    fun setSnapHookThickness(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        _uiState.update { it.copy(snapHookThicknessMm = millimetres) }
+    }
+
+    fun setSnapHookLip(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        _uiState.update { it.copy(snapHookLipMm = millimetres) }
+    }
+
+    /** Runs the preview for the settings the sliders have settled on. */
+    fun commitSnapPreview() {
         previewSnapJoint()
     }
 
@@ -1990,6 +2016,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             is SnapPreviewResult.Prepared -> prepared
         }
+        val parameters = SnapFitParameters(
+            beamLengthOverrideMm = state.snapHookLengthMm,
+            beamThicknessOverrideMm = state.snapHookThicknessMm,
+            lipDepthOverrideMm = state.snapHookLipMm,
+        )
         val built = SnapJoint.build(
             axis = axis,
             anchorMm = ready.anchorMm,
@@ -1997,6 +2028,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lowHalf = ready.lowHalf,
             highHalf = ready.highHalf,
             beamHalf = beamHalf,
+            parameters = parameters,
             requested = if (fullJoint) SnapFitRung.FULL else null,
         )
         val base = when (built) {
@@ -2011,7 +2043,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // when the wall is too thin for a rim the ladder's lesser rung is used
         // and says so: a pad that collapses to nothing is not a pad.
         val placement = withContext(Dispatchers.Default) {
-            contouredOrLesser(base, ready, axis, scale, beamHalf)
+            contouredOrLesser(base, ready, axis, scale, beamHalf, parameters)
         }
         if (placement == null) {
             _uiState.update {
@@ -2093,18 +2125,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // check passes, which is exactly the failure this refuses. It is also
         // what a tap over a hollow middle produces, so the answer is a plain
         // sentence and another tap, not a preview of something useless.
-        val beamGain = registered.volumeMm3 - MeshVolume.of(placement.beamMesh)
-        val mateLoss = MeshVolume.of(placement.socketMesh) - recessed.volumeMm3
-        if (beamGain <= MATERIAL_EPSILON_MM3 || mateLoss <= MATERIAL_EPSILON_MM3) {
-            _uiState.update {
-                it.copy(
-                    snapPreview = null,
-                    snapFailure = "There is no material where you tapped for the joint to hold; " +
-                        "tap another spot on the seam.",
-                )
-            }
+        val beamGain = union.volumeMm3 - MeshVolume.of(placement.beamMesh)
+        val pocketLoss = MeshVolume.of(placement.socketMesh) - socket.volumeMm3
+        val padGain = registered.volumeMm3 - union.volumeMm3
+        val recessLoss = socket.volumeMm3 - recessed.volumeMm3
+        // Each half of the joint stands on its own: a beam rooted in nothing
+        // and a pad with no recess cut for it are both half a joint, and a
+        // closedness check cannot tell either from a good one.
+        val failure = when {
+            beamGain < MIN_FEATURE_MM3 ->
+                "There is no material where you tapped for the beam to root in; tap another spot on the seam."
+            recessLoss < MIN_FEATURE_MM3 && placement.joint.rung == SnapFitRung.FULL ->
+                "The matching recess would cut nothing out of the other half; tap another spot or use the automatic joint."
+            padGain < MIN_FEATURE_MM3 && placement.joint.rung == SnapFitRung.FULL ->
+                "The whole-seam pad has nothing to hold on to here; tap another spot or use the automatic joint."
+            else -> null
+        }
+        if (failure != null) {
+            _uiState.update { it.copy(snapPreview = null, snapFailure = failure) }
             return
         }
+
         // Which half carries the beam decides which result is which half, and
         // where each half's mating face now is on the plate: the applied halves
         // are re-centred from these meshes, so their new own frame is this one
@@ -2125,11 +2166,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "snap fit",
                 "preview rung=" + placement.joint.rung.name +
                     (placement.joint.rungReason?.let { " (" + it + ")" } ?: "") +
-                    ": beam half +" + millimetres(registered.volumeMm3 - MeshVolume.of(placement.beamMesh)) +
+                    ": beam root +" + millimetres(beamGain) +
                     " mm3 (seat " + millimetres(seatVolume(placement.beamMesh, placement.joint.unionSolid)) +
-                    " mm3), mate -" + millimetres(MeshVolume.of(placement.socketMesh) - recessed.volumeMm3) +
-                    " mm3 (pocket " + millimetres(seatVolume(placement.socketMesh, placement.joint.subtractSolid)) +
-                    " mm3), faces at " +
+                    " mm3), deflection pocket -" + millimetres(pocketLoss) +
+                    " mm3, pad +" + millimetres(padGain) +
+                    " mm3, recess -" + millimetres(recessLoss) +
+                    " mm3, faces at " +
                     millimetres((if (beamIsLow) plateFace(beamFrame, axis) else plateFace(socketFrame, axis)).toDouble()) +
                     "/" +
                     millimetres((if (beamIsLow) plateFace(socketFrame, axis) else plateFace(beamFrame, axis)).toDouble()) +
@@ -2146,6 +2188,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             beamInChosenHalf = placement.chosenHalfCarriesBeam,
             repairNote = ready.note,
             fullJoint = fullJoint,
+            hookLengthMm = state.snapHookLengthMm,
+            hookThicknessMm = state.snapHookThicknessMm,
+            hookLipMm = state.snapHookLipMm,
             lowFaceMm = if (beamIsLow) plateFace(beamFrame, axis) else plateFace(socketFrame, axis),
             highFaceMm = if (beamIsLow) plateFace(socketFrame, axis) else plateFace(beamFrame, axis),
         )
@@ -2160,7 +2205,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 current.snapAnchorPoint != anchorPoint ||
                 current.snapScale != scale ||
                 current.snapBeamHalf != beamHalf ||
-                current.snapFullJoint != fullJoint
+                current.snapFullJoint != fullJoint ||
+                current.snapHookLengthMm != state.snapHookLengthMm ||
+                current.snapHookThicknessMm != state.snapHookThicknessMm ||
+                current.snapHookLipMm != state.snapHookLipMm
             if (stale) current else current.copy(snapPreview = preview, snapFailure = flipNotice(built))
         }
     }
@@ -2181,9 +2229,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         axis: ModelPlacement.Axis,
         scale: Float,
         beamHalf: SnapJoint.JointHalf,
+        parameters: SnapFitParameters,
     ): SnapJoint.Placement? {
         if (base.joint.rung != SnapFitRung.FULL) return base
-        val contoured = SnapPad.contour(base.joint, base.beamMesh)
+        val beamFit = if (base.beamMesh === ready.lowHalf.mesh) ready.lowHalf else ready.highHalf
+        val socketFit = if (base.beamMesh === ready.lowHalf.mesh) ready.highHalf else ready.lowHalf
+        val contoured = SnapPad.contour(base.joint, beamFit, socketFit)
         if (contoured != null) return base.copy(joint = contoured)
         for (rung in listOf(SnapFitRung.SIMPLE, SnapFitRung.MINIMAL)) {
             val lesser = SnapJoint.build(
@@ -2193,6 +2244,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 lowHalf = ready.lowHalf,
                 highHalf = ready.highHalf,
                 beamHalf = beamHalf,
+                parameters = parameters,
                 requested = rung,
             )
             val placement = when (lesser) {
@@ -2246,8 +2298,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** One decimal place, locale-independent: these numbers land in a log line. */
     private fun millimetres(value: Double): String = String.format(Locale.ROOT, "%.1f", value)
 
-    /** Less material moved than this and the joint is floating, not attached. */
-    private val MATERIAL_EPSILON_MM3 = 0.01
+    /**
+     * Less material moved than this and there is no feature there: a joint
+     * whose beam, pad or recess moves less than half a cubic millimetre is
+     * half a joint, and the panel says so instead of showing it.
+     */
+    private val MIN_FEATURE_MM3 = 0.5
 
     /**
      * Commits the previewed joint: the two booleaned halves replace the two

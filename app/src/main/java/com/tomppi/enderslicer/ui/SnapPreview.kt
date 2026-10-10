@@ -29,6 +29,10 @@ data class SnapPreview(
     val beamInChosenHalf: Boolean,
     /** True when the full joint was asked for rather than fitted to the seam. */
     val fullJoint: Boolean,
+    /** The hook dimensions this was built with, in mm, or null for the scale's own. */
+    val hookLengthMm: Float?,
+    val hookThicknessMm: Float?,
+    val hookLipMm: Float?,
     /** What a repaired half had to have done to it, or null when neither needed it. */
     val repairNote: String?,
     /**

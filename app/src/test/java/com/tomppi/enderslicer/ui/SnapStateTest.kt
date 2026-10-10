@@ -200,6 +200,9 @@ class SnapStateTest {
             beamInChosenHalf = true,
             repairNote = null,
             fullJoint = false,
+            hookLengthMm = null,
+            hookThicknessMm = null,
+            hookLipMm = null,
             lowFaceMm = 20f,
             highFaceMm = 20f,
         )

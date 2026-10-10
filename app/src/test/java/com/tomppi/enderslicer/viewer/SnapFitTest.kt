@@ -224,7 +224,9 @@ class SnapFitTest {
 
         // The registration step: a shallow boss across the seam, and a recess
         // that matches it with a printable gap all round.
-        assertTrue("a face-level step: " + dimensions.stepDepthMm, dimensions.stepDepthMm <= 0.5f)
+        // The step's depth is an absolute millimetre-or-so step, not a share of
+        // the material: on a 10 mm cube it is the parameter's own millimetre.
+        assertTrue("a face-level step: " + dimensions.stepDepthMm, dimensions.stepDepthMm in 0.5f..1.5f)
         val boss = joint.registrationSolid.bounds
         val recess = joint.registrationRecess.bounds
         assertTrue("the boss leaves a rim inside the face", boss.width < 10f && boss.depth < 10f)
@@ -406,6 +408,83 @@ class SnapFitTest {
     }
 
     @Test
+    fun theHookLengthMovesTheBeamAndThePocketTogether() {
+        val (low, high) = halves()
+        val short = joint(low, high, parameters = SnapFitParameters(beamLengthOverrideMm = 2f))
+        val long = joint(low, high, parameters = SnapFitParameters(beamLengthOverrideMm = 4f))
+
+        assertEquals("the short hook is the length that was asked for", 2f, short.dimensions.beamLengthMm, 1e-3f)
+        assertEquals("and the long one too", 4f, long.dimensions.beamLengthMm, 1e-3f)
+        assertEquals("the beam reaches its tip past the face", 22f, short.unionSolid.bounds.maxZ, 1e-2f)
+        assertEquals("and further when it is longer", 24f, long.unionSolid.bounds.maxZ, 1e-2f)
+        assertEquals(
+            "the pocket follows the beam, one clearance deeper",
+            2f + short.dimensions.lipClearanceMm,
+            short.subtractSolid.bounds.maxZ - 20f,
+            1e-2f,
+        )
+        assertEquals(
+            "and so does the longer one's",
+            4f + long.dimensions.lipClearanceMm,
+            long.subtractSolid.bounds.maxZ - 20f,
+            1e-2f,
+        )
+    }
+
+    @Test
+    fun aLengthBeyondTheMaterialIsClampedAndSaysWhy() {
+        val (low, high) = halves()
+        val joint = joint(low, high, parameters = SnapFitParameters(beamLengthOverrideMm = 50f))
+
+        assertTrue("the length is clamped by the mate", joint.dimensions.beamLengthMm < 20f)
+        val clamp = joint.clamps.firstOrNull { it.label == "hook length" }
+        assertNotNull("and the panel is told why", clamp)
+        assertEquals("with what was asked", 50f, clamp!!.askedMm, 1e-3f)
+        assertEquals("and what was built", joint.dimensions.beamLengthMm, clamp.actualMm, 1e-3f)
+        assertTrue(
+            "in the user's terms: " + clamp.reason,
+            clamp.reason.contains("mate has only") && clamp.reason.contains("clamped"),
+        )
+    }
+
+    @Test
+    fun theStrainReadoutIsTheClosedFormForTheBeam() {
+        val (low, high) = halves()
+        val joint = joint(low, high)
+        val dimensions = joint.dimensions
+
+        val expected = 1.5f * dimensions.beamThicknessMm * dimensions.lipDepthMm /
+            (dimensions.beamLengthMm * dimensions.beamLengthMm) * 100f
+        assertEquals("eps = 3 h d / (2 L^2)", expected, dimensions.rootStrainPercent, 1e-4f)
+    }
+
+    @Test
+    fun theHookControlsDoNotChangeTheRungOrThePad() {
+        val (low, high) = halves()
+        val plain = joint(low, high)
+        val tuned = joint(
+            low,
+            high,
+            parameters = SnapFitParameters(
+                beamLengthOverrideMm = 3f,
+                beamThicknessOverrideMm = 0.8f,
+                lipDepthOverrideMm = 0.35f,
+            ),
+        )
+
+        assertEquals("the rung is the material's decision, not the hook's", plain.rung, tuned.rung)
+        assertEquals(
+            "and the pad's footprint is untouched by the hook controls",
+            plain.registrationSolid.bounds.width,
+            tuned.registrationSolid.bounds.width,
+            1e-2f,
+        )
+        assertEquals(3f, tuned.dimensions.beamLengthMm, 1e-3f)
+        assertEquals(0.8f, tuned.dimensions.beamThicknessMm, 1e-3f)
+        assertEquals(0.35f, tuned.dimensions.lipDepthMm, 1e-3f)
+    }
+
+    @Test
     fun theFullJointCanBeAskedForOnAHollowSeamAnyway() {
         // The ladder is a suggestion, not a gate: the user is responsible for
         // the result, so asking for the full joint gets the full joint.
@@ -458,6 +537,7 @@ class SnapFitTest {
         scale: Float = 1f,
         anchor: Vec3 = ANCHOR,
         face: Float = 20f,
+        parameters: SnapFitParameters = this.parameters,
     ): SnapFitJoint {
         val result = SnapFit.generate(
             Vec3(0f, 0f, 1f),

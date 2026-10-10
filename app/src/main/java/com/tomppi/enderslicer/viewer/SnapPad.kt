@@ -54,7 +54,8 @@ object SnapPad {
      */
     fun contour(
         joint: SnapFitJoint,
-        beamHalf: StlMesh,
+        beamHalf: SnapFitHalf,
+        socketHalf: SnapFitHalf,
         engine: Engine = NativeEngine,
     ): SnapFitJoint? {
         val frame = joint.frame
@@ -72,7 +73,7 @@ object SnapPad {
             -dimensions.stepRootMm - margin,
             dimensions.stepDepthMm + margin,
         )
-        val piece = engine.intersect(beamHalf, region).meshOrNull() ?: return null
+        val piece = engine.intersect(beamHalf.mesh, region).meshOrNull() ?: return null
 
         // The inset is a share of the local material, not a fixed number: a
         // 1 mm hull wall cannot lose half a millimetre from each side and
@@ -98,11 +99,19 @@ object SnapPad {
         // root, so the tongue fills the recess it will be given.
         val tongue = stack(shaped, frame, dimensions, engine) ?: return null
 
-        // The recess: the same shape, clearanced in the plane and sunk a
-        // clearance deeper, so the two mate with a printable gap all round.
-        val clearanced = dilate(tongue, frame, dimensions.stepClearanceMm, engine) ?: return null
-        val lifted = translate(clearanced, frame.axis * dimensions.stepClearanceMm)
-        val recess = engine.union(clearanced, lifted).meshOrNull() ?: return null
+        // The recess is the MATE's half of the same shape. The contour was
+        // read off the beam half, so it is moved into the halves' shared own
+        // coordinates and placed through the mate's own placement: built in
+        // the beam's frame it would sit in the gap and cut nothing, which is
+        // exactly how a one-sided joint was shipped once.
+        val local = beamHalf.unplace(tongue, RECESS_NAME) ?: return null
+        val localAxis = beamHalf.toLocalDirection(frame.axis)
+        val localSide = beamHalf.toLocalDirection(frame.side)
+        val localRise = beamHalf.toLocalDirection(frame.rise)
+        val clearanced = dilate(local, localSide, localRise, dimensions.stepClearanceMm, engine) ?: return null
+        val lifted = translate(clearanced, localAxis * dimensions.stepClearanceMm)
+        val localRecess = engine.union(clearanced, lifted).meshOrNull() ?: return null
+        val recess = socketHalf.place(localRecess, RECESS_NAME)
         return joint.copy(registrationSolid = tongue, registrationRecess = recess)
     }
 
@@ -128,10 +137,16 @@ object SnapPad {
     }
 
     /** [solid] grown by [clearance] across the seam's plane, never along it. */
-    private fun dilate(solid: StlMesh, frame: SnapFitFrame, clearance: Float, engine: Engine): StlMesh? {
+    private fun dilate(
+        solid: StlMesh,
+        side: Vec3,
+        rise: Vec3,
+        clearance: Float,
+        engine: Engine,
+    ): StlMesh? {
         if (clearance <= 0f) return solid
         var grown = solid
-        for (direction in listOf(frame.side, frame.side * -1f, frame.rise, frame.rise * -1f)) {
+        for (direction in listOf(side, side * -1f, rise, rise * -1f)) {
             val shifted = translate(solid, direction * clearance)
             grown = engine.union(grown, shifted).meshOrNull() ?: return null
         }
@@ -216,6 +231,8 @@ object SnapPad {
         }
         return eroded
     }
+
+    private const val RECESS_NAME = "snap-fit contoured recess"
 
     /** How far the tongue's contour pulls back from the part's own surface. */
     private const val INSET_MM = 0.5f

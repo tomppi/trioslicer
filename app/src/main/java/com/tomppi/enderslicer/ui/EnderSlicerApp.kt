@@ -123,6 +123,7 @@ import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelCutPlane
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
@@ -1792,6 +1793,10 @@ fun EnderSlicerApp(
                                 onScale = viewModel::setSnapScale,
                                 onBeamHalf = viewModel::setSnapBeamHalf,
                                 onFullJoint = viewModel::setSnapFullJoint,
+                                onHookLength = viewModel::setSnapHookLength,
+                                onHookThickness = viewModel::setSnapHookThickness,
+                                onHookLip = viewModel::setSnapHookLip,
+                                onCommit = viewModel::commitSnapPreview,
                                 onApply = viewModel::applySnapJoint,
                             ),
                             onCloseSnapUi = { viewModel.setSnapActive(false) },
@@ -3959,11 +3964,24 @@ private class CutActions(
     val onClose: () -> Unit,
 )
 
+/** The hook's own controls, in millimetres: floor to a generous ceiling. */
+private val HOOK_LENGTH_RANGE = 1f..20f
+private val HOOK_THICKNESS_RANGE = 0.4f..3f
+private val HOOK_LIP_RANGE = 0.2f..2f
+
+/** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
+private const val ROOT_STRAIN_HINT_PERCENT = 2f
+
 /** Snap fit callbacks, grouped the same way. */
 private class SnapActions(
     val onScale: (Float) -> Unit,
     val onBeamHalf: (SnapJoint.JointHalf) -> Unit,
     val onFullJoint: (Boolean) -> Unit,
+    val onHookLength: (Float) -> Unit,
+    val onHookThickness: (Float) -> Unit,
+    val onHookLip: (Float) -> Unit,
+    /** Runs when a slider is released: the preview follows once, not per frame. */
+    val onCommit: () -> Unit,
     val onApply: () -> Unit,
 )
 
@@ -4018,12 +4036,51 @@ private fun SnapToolbar(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // The scale is the base every dimension follows; the three hook
+            // sliders below override their own dimension in millimetres. Each
+            // preview runs when the thumb is let go, not on every frame.
+            val shown = state.snapPreview?.takeIf { state.snapShownMeshes != null }
+            val defaults = SnapFitParameters()
+            val hookLength = state.snapHookLengthMm
+                ?: shown?.joint?.dimensions?.beamLengthMm
+                ?: (defaults.beamLengthMm * state.snapScale)
+            val hookThickness = state.snapHookThicknessMm
+                ?: shown?.joint?.dimensions?.beamThicknessMm
+                ?: (defaults.beamThicknessMm * state.snapScale)
+            val hookLip = state.snapHookLipMm
+                ?: shown?.joint?.dimensions?.lipDepthMm
+                ?: (defaults.lipDepthMm * state.snapScale)
             CompactSliderRow(
                 label = "Scale",
                 value = state.snapScale,
                 range = MIN_JOINT_SCALE..MAX_JOINT_SCALE,
                 onValueChange = actions.onScale,
                 valueText = "%.2f×".format(state.snapScale),
+                onValueChangeFinished = actions.onCommit,
+            )
+            CompactSliderRow(
+                label = "Hook",
+                value = hookLength,
+                range = HOOK_LENGTH_RANGE,
+                onValueChange = actions.onHookLength,
+                valueText = "%.1f mm".format(hookLength),
+                onValueChangeFinished = actions.onCommit,
+            )
+            CompactSliderRow(
+                label = "Thick",
+                value = hookThickness,
+                range = HOOK_THICKNESS_RANGE,
+                onValueChange = actions.onHookThickness,
+                valueText = "%.2f mm".format(hookThickness),
+                onValueChangeFinished = actions.onCommit,
+            )
+            CompactSliderRow(
+                label = "Lip",
+                value = hookLip,
+                range = HOOK_LIP_RANGE,
+                onValueChange = actions.onHookLip,
+                valueText = "%.2f mm".format(hookLip),
+                onValueChangeFinished = actions.onCommit,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
                 BeamHalfButton("Beam in " + (state.snapLowHalf?.name ?: "lower"), SnapJoint.JointHalf.LOW, beamHalf, actions.onBeamHalf, Modifier.weight(1f))
@@ -4053,7 +4110,7 @@ private fun SnapToolbar(
                     if (state.snapFullJoint) {
                         "the full joint, as asked for"
                     } else {
-                        "the lightest joint this seam takes"
+                        "the fullest joint this seam takes"
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4088,6 +4145,24 @@ private fun SnapToolbar(
                         (preview.joint.rungReason ?: "pad, key and cantilever"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // What the material took back, in the user's terms: a slider
+                // that stops moving without saying why is worse than no slider.
+                preview.joint.clamps.forEach { clamp ->
+                    Text(
+                        clamp.reason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WarnAmber,
+                    )
+                }
+                val strain = preview.joint.dimensions.rootStrainPercent
+                Text(
+                    "Root strain %.1f%% at full deflection (PLA is happy to about %.0f%%)".format(
+                        strain,
+                        ROOT_STRAIN_HINT_PERCENT,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (strain > ROOT_STRAIN_HINT_PERCENT) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 preview.repairNote?.let { note ->
                     Text(
@@ -4403,17 +4478,22 @@ private fun CompactSliderRow(
     range: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit,
     valueText: String? = null,
+    /** Runs once when the thumb is let go: the expensive follow-up goes here. */
+    onValueChangeFinished: (() -> Unit)? = null,
+    labelWidth: androidx.compose.ui.unit.Dp = 52.dp,
+    valueWidth: androidx.compose.ui.unit.Dp = 44.dp,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(52.dp),
+            modifier = Modifier.width(labelWidth),
         )
         Slider(
             value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = range,
             modifier = Modifier
                 .weight(1f)
@@ -4424,7 +4504,7 @@ private fun CompactSliderRow(
                 text = it,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
-                    .width(44.dp)
+                    .width(valueWidth)
                     .padding(start = EnderSlicerDimens.Space6),
                 maxLines = 1,
             )
