@@ -1,6 +1,8 @@
 package com.tomppi.enderslicer.viewer
 
 import android.content.ContentValues
+import android.content.ContentUris
+import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -121,7 +123,14 @@ class MeshBooleanDeviceTest {
                 " filled=" + repaired.report.loopsFilled + " edges=" + repaired.report.edgesClosed +
                 " left_open=" + repaired.report.loopsLeftOpen,
         )
-        assertTrue("the hole was found and filled", repaired.report.loopsFilled >= 1)
+        // The recorded claim this test used to carry - a repair that left ten loops
+        // open - no longer reproduces: a JVM replay of this same damage (see
+        // MeshRepairReplayTest) closes ONE EIGHT-EDGE hole and leaves nothing open.
+        // The device must show the same thing, and it is pinned here rather than
+        // asserted loosely, so a change that silently stops closing the hole fails.
+        assertEquals("one hole was found", 1, repaired.report.loopsFound)
+        assertEquals("and filled", 1, repaired.report.loopsFilled)
+        assertEquals("its eight boundary edges were closed", 8, repaired.report.edgesClosed)
         assertEquals("and nothing was left open", 0, repaired.report.loopsLeftOpen)
         publish("snap-fit-repaired.stl", repaired.mesh)
 
@@ -167,17 +176,21 @@ class MeshBooleanDeviceTest {
      * hang part of the joint off the edge.
      */
     private fun fitJoint(low: StlMesh, high: StlMesh, plane: Float): SnapFitJoint {
+        // The generator takes each half as placed, carrying its own mating face; a bare
+        // StlMesh has no face, and the joint would be measured from nowhere.
+        val lowHalf = SnapFitHalf.inPlace(low, plane)
+        val highHalf = SnapFitHalf.inPlace(high, plane)
         val direction = Vec3(1f, 0f, 0f)
         val faceCentre = Vec3(
             plane,
             (low.bounds.minY + low.bounds.maxY) * 0.5f,
             (low.bounds.minZ + low.bounds.maxZ) * 0.5f,
         )
-        val first = SnapFit.generate(direction, faceCentre, 1f, low, high)
+        val first = SnapFit.generate(direction, faceCentre, 1f, lowHalf, highHalf)
         assertNotNull("the joint must fit this cut face", first)
         val local = localXOf(first!!.unionSolid, first.frame)
         val anchor = faceCentre - first.frame.side * ((local.first + local.second) * 0.5f)
-        val joint = SnapFit.generate(direction, anchor, 1f, low, high)
+        val joint = SnapFit.generate(direction, anchor, 1f, lowHalf, highHalf)
         assertNotNull("the joint must fit this cut face", joint)
         return joint!!
     }
@@ -291,32 +304,70 @@ class MeshBooleanDeviceTest {
         return MeshBounds(minX, minY, minZ, maxX, maxY, maxZ)
     }
 
-    /** Writes the mesh as a binary STL and puts it where the phone can find it. */
+    /**
+     * Writes the mesh as a binary STL and puts it where the phone can find it.
+     *
+     * Publishing is a convenience - the STLs are left in Downloads/dsh-agent for a human to
+     * look at - so a MediaStore that will not take the row must not fail the run that did the
+     * engineering. A name a previous run already published is overwritten in place rather
+     * than inserted again (a second insert of an existing path violates the unique _data
+     * constraint, which is what used to fail this test before it reached its last phase), and
+     * anything MediaStore still refuses is reported with the local path instead.
+     */
     private fun publish(name: String, mesh: StlMesh) {
         val directory = File(context.cacheDir, "snap-fit-device").apply { mkdirs() }
         val file = File(directory, name)
         StlMeshWriter.writeBinary(mesh, file)
         assertTrue("the STL was written", file.length() > 84L)
 
+        val published = runCatching { publishToDownloads(name, file) }.getOrNull()
+        if (published == null) {
+            println("PROOF published-local " + file.absolutePath + " bytes=" + file.length())
+        } else {
+            println("PROOF published " + published + " bytes=" + file.length())
+        }
+    }
+
+    /** The Downloads row for [name], or null when MediaStore would not take it this run. */
+    private fun publishToDownloads(name: String, file: File): Uri? {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val existing = runCatching {
+            resolver.query(
+                collection,
+                arrayOf(MediaStore.MediaColumns._ID),
+                MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                arrayOf(name),
+                null,
+            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+        }.getOrNull()
+        if (existing != null) {
+            // The row is already there: write the new bytes over it. No insert, no pending
+            // transition, and no second row for one path.
+            resolver.openOutputStream(ContentUris.withAppendedId(collection, existing), "wt")?.use { output ->
+                file.inputStream().use { input -> input.copyTo(output) }
+            }
+            return ContentUris.withAppendedId(collection, existing)
+        }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + PUBLISH_DIR)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-        if (uri == null) {
-            println("PROOF published-local " + file.absolutePath)
-            return
+        val uri = resolver.insert(collection, values) ?: return null
+        runCatching {
+            resolver.openOutputStream(uri)?.use { output ->
+                file.inputStream().use { input -> input.copyTo(output) }
+            }
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }.onFailure { error ->
+            runCatching { resolver.delete(uri, null, null) }
+            throw error
         }
-        resolver.openOutputStream(uri)?.use { output ->
-            file.inputStream().use { input -> input.copyTo(output) }
-        }
-        values.clear()
-        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-        resolver.update(uri, values, null, null)
-        println("PROOF published " + uri + " bytes=" + file.length())
+        return uri
     }
 
     /** The volume the surface bounds, positive for an outward-facing mesh. */

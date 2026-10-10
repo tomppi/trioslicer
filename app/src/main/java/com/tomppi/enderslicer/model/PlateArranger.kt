@@ -29,6 +29,13 @@ object PlateArranger {
         bedWidthMm: Double,
         bedDepthMm: Double,
         spacingMm: Double,
+        /**
+         * The gap two neighbours need regardless of [spacingMm] - the print head's own
+         * clearance when the plate is printed one object at a time. The bed-edge margin
+         * stays [spacingMm]: the head sweep is a pair condition, not a bed one, and
+         * charging it to the edges as well would refuse plates that fit.
+         */
+        neighborClearanceMm: Double = 0.0,
     ): List<PlateSlot>? {
         if (footprints.isEmpty()) return emptyList()
 
@@ -40,6 +47,11 @@ object PlateArranger {
         }
         // A negative or non-finite spacing simply means no gap.
         val spacing = if (spacingMm.isFinite() && spacingMm > 0.0) spacingMm else 0.0
+        val neighbour = if (neighborClearanceMm.isFinite() && neighborClearanceMm > spacing) {
+            neighborClearanceMm
+        } else {
+            spacing
+        }
         val usableWidth = bedWidthMm - 2.0 * spacing
         val usableDepth = bedDepthMm - 2.0 * spacing
 
@@ -67,7 +79,7 @@ object PlateArranger {
             val needed = if (row.isEmpty()) {
                 sizes[index].widthMm
             } else {
-                rowWidth + spacing + sizes[index].widthMm
+                rowWidth + neighbour + sizes[index].widthMm
             }
             if (row.isNotEmpty() && needed > usableWidth + EPSILON) {
                 rows.add(row)
@@ -86,10 +98,10 @@ object PlateArranger {
         var rowFront = spacing
         for (current in rows) {
             var rowDepth = 0.0
-            var currentWidth = -spacing
+            var currentWidth = -neighbour
             for (index in current) {
                 rowDepth = maxOf(rowDepth, sizes[index].depthMm)
-                currentWidth += sizes[index].widthMm + spacing
+                currentWidth += sizes[index].widthMm + neighbour
             }
             if (rowFront + rowDepth > usableDepth + spacing + EPSILON) return null
 
@@ -97,9 +109,9 @@ object PlateArranger {
             val centerY = rowFront + rowDepth / 2.0
             for (index in current) {
                 slots[index] = PlateSlot(cursor + sizes[index].widthMm / 2.0, centerY)
-                cursor += sizes[index].widthMm + spacing
+                cursor += sizes[index].widthMm + neighbour
             }
-            rowFront += rowDepth + spacing
+            rowFront += rowDepth + neighbour
         }
 
         val placed = ArrayList<PlateSlot>(sizes.size)

@@ -1,12 +1,15 @@
 package com.tomppi.enderslicer.engine
 
 import com.tomppi.enderslicer.model.ModelPlacement
+import com.tomppi.enderslicer.model.PlateArranger
+import com.tomppi.enderslicer.model.PlateFootprint
 import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -152,6 +155,53 @@ class SequentialPrintCheckTest {
         )
         // The same plate always produces the same message.
         assertEquals(reason, SequentialPrintCheck.refuseReason(models, SlicerSettings()))
+    }
+
+    /**
+     * The app arranges its own plates, so the arranger has to leave what this check needs:
+     * the packer used to lay parts out with the user's gap alone, and every plate of two or
+     * more that Arrange had just made was then refused by Slice as too close for the head.
+     *
+     * The arrangement here is the one MainViewModel.arranged() makes - [PlateArranger]
+     * called with [SequentialPrintCheck.headClearanceMm] over the user's gap when sequential
+     * printing is on - and the negative control is the same call without it.
+     */
+    @Test
+    fun aSequentiallyArrangedPlateIsOneTheCheckAccepts() {
+        val settings = SlicerSettings()
+        val footprints = List(4) { PlateFootprint(40.0, 40.0) }
+        val clearance = SequentialPrintCheck.headClearanceMm(settings) + 0.5
+
+        val arranged = requireNotNull(PlateArranger.arrange(footprints, 220.0, 220.0, 6.0, clearance)) {
+            "four 40 mm parts at the head clearance must still fit a 220 mm bed"
+        }.mapIndexed { index, slot ->
+            plateObject(
+                "part $index",
+                minX = (slot.centerXmm - 20.0).toFloat(),
+                maxX = (slot.centerXmm + 20.0).toFloat(),
+                minY = (slot.centerYmm - 20.0).toFloat(),
+                maxY = (slot.centerYmm + 20.0).toFloat(),
+            )
+        }
+        assertNull(
+            "Arrange now followed by Slice must not refuse the app's own layout",
+            SequentialPrintCheck.refuseReason(arranged, settings),
+        )
+
+        // The defect itself: the same parts packed with the user's 6 mm gap are refused.
+        val tight = requireNotNull(PlateArranger.arrange(footprints, 220.0, 220.0, 6.0)).mapIndexed { index, slot ->
+            plateObject(
+                "tight $index",
+                minX = (slot.centerXmm - 20.0).toFloat(),
+                maxX = (slot.centerXmm + 20.0).toFloat(),
+                minY = (slot.centerYmm - 20.0).toFloat(),
+                maxY = (slot.centerYmm + 20.0).toFloat(),
+            )
+        }
+        assertNotNull(
+            "with only the user's gap, the plate the app arranges is refused",
+            SequentialPrintCheck.refuseReason(tight, settings),
+        )
     }
 
     /**

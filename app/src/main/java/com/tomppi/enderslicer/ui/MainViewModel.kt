@@ -115,7 +115,6 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -131,6 +130,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 private const val CONFIG_SNAPSHOT_FORMAT = "enderslicer-config-snapshot"
+
+/**
+ * Kept between two parts on a sequentially printed plate, over [SequentialPrintCheck]'s own
+ * head clearance: the check refuses a gap that only equals the sweep, and float placements are
+ * not exact to the last bit.
+ */
+private const val SEQUENTIAL_HEAD_CLEARANCE_MARGIN_MM = 0.5
 private const val CONFIG_SNAPSHOT_VERSION = 1
 private const val PAINT_PERSIST_DEBOUNCE_MILLIS = 400L
 private const val EXTRAS_PERSIST_DEBOUNCE_MILLIS = 250L
@@ -239,9 +245,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val supportPaint: SupportPaintState,
         val path: String,
         val name: String,
+        /** The identity the descriptor saved, so a snap pair survives a relaunch. */
+        val id: String?,
     ) {
         fun toPlateObject(): PlateObject = PlateObject(
-            id = PlateObject.newId(),
+            id = id ?: PlateObject.newId(),
             name = name,
             sourceMesh = source,
             mesh = transformed,
@@ -296,7 +304,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * drag into the value it was let go at, and cancelling the running job is
      * what stops a stale result from landing on top of a newer one.
      */
-    private val snapPreviewScope = CoroutineScope(viewModelScope.coroutineContext + Job())
     private var snapPreviewJob: Job? = null
 
     /**
@@ -1347,6 +1354,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.onSuccess {
                 importedScene = null
                 _uiState.update { current ->
+                    // The plate is empty, so every joint and every previewed half the
+                    // session holds belongs to an object that is gone.
                     current.withoutPublishedSlice().copy(
                         models = emptyList(),
                         selectedModelId = null,
@@ -1357,7 +1366,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                         isBusy = false,
                         statusMessage = "Build plate cleared; import an STL to begin",
-                    )
+                    ).withoutSnap()
                 }
             }.onFailure(::showOperationFailure)
         }
@@ -1387,13 +1396,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val round = shape == "elliptic" || shape == "ellipse" || shape == "circular" || shape == "circle"
         val usableWidth = if (round) settings.machineWidthMm / sqrt(2.0) else settings.machineWidthMm
         val usableDepth = if (round) settings.machineDepthMm / sqrt(2.0) else settings.machineDepthMm
+        val platePreferences = preferences.sanitized()
         val slots = PlateArranger.arrange(
             footprints = models.map { model ->
                 PlateFootprint(model.bounds.width.toDouble(), model.bounds.depth.toDouble())
             },
             bedWidthMm = usableWidth,
             bedDepthMm = usableDepth,
-            spacingMm = preferences.sanitized().spacingMm,
+            spacingMm = platePreferences.spacingMm,
+            // One object at a time is a plate the app's own check has to accept, and the
+            // packer is the only thing that can leave room for the head: with the user's
+            // spacing alone, every plate of two or more that Arrange had just laid out was
+            // refused by Slice as too close for the print head. The margin is what keeps a
+            // gap that lands exactly on the sweep from still counting as touching.
+            neighborClearanceMm = if (platePreferences.sequential) {
+                SequentialPrintCheck.headClearanceMm(settings) + SEQUENTIAL_HEAD_CLEARANCE_MARGIN_MM
+            } else {
+                0.0
+            },
         ) ?: return null
         // The packer works in bed coordinates with (0,0) at the front-left corner of what it was
         // given: a round bed insets that corner, and a centred origin measures from the middle.
@@ -1456,6 +1476,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 "tap Arrange now again",
                         )
                     } else {
+                        // The packer returns fresh objects at fresh placements, so a
+                        // standing preview describes the plate that was just rearranged
+                        // away, and the session goes with it.
                         current.withoutPublishedSlice(
                             "Arranged ${next.size} objects; slice again to export G-code",
                         ).copy(
@@ -1463,7 +1486,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             canUndoPlacement = false,
                             undoPlacementLabel = null,
                             isBusy = false,
-                        )
+                        ).withoutSnap()
                     }
                 }
                 val snapshot = workspaceSnapshot(commit(_uiState.value))
@@ -1534,6 +1557,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.withoutModel(id)
                 .withoutPublishedSlice("Removed ${removed.name}; slice again to export G-code")
                 .copy(canUndoPlacement = false, undoPlacementLabel = null, isBusy = false)
+                // The object that left may have been a half, so the session and its previewed
+                // halves go; the pair itself stays, and says it is stale if one of them went.
+                .withoutSnap()
         }
         viewModelScope.launch {
             runCatching {
@@ -1734,7 +1760,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         canUndoPlacement = false,
                         undoPlacementLabel = null,
                         isBusy = false,
-                    ).withoutSnap().copy(
+                    ).afterPlateReplaced().withSnapPair(
                         // The split is what defines the assembly axis, so the two
                         // halves it just made are the pair the snap fit offers -
                         // recorded here, where their ids are in hand, rather than
@@ -1742,11 +1768,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // with them, in each half's own coordinates: the packer
                         // moves the halves apart, and a joint measured from where
                         // they landed would be built in the gap.
-                        snapLowHalfId = low.id,
-                        snapHighHalfId = objects.last().id,
-                        snapAxis = axis,
-                        snapLowFaceMm = offsetMm.toFloat(),
-                        snapHighFaceMm = offsetMm.toFloat(),
+                        lowHalfId = low.id,
+                        highHalfId = objects.last().id,
+                        axis = axis,
+                        lowFaceMm = offsetMm.toFloat(),
+                        highFaceMm = offsetMm.toFloat(),
                     )
                 }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))
@@ -1759,10 +1785,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         model.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
                     }
                 }
+                // The plate the history was recorded against no longer exists: every step
+                // in it is a placement of the whole model on the pre-split plate, and
+                // undoing one would put that placement on a half. The commit drops the
+                // button; this is what makes the forgotten step unreachable.
+                placementHistory.clear()
                 _uiState.update { commit(it) }
             }.onFailure { error ->
                 runCatching { staged.forEach { it.delete() } }
-                showOperationFailure(error)
+                // Apply runs from the snap panel, so its failure belongs on the line the
+                // panel shows, the same as its refusals do.
+                showSnapFailure(error)
             }
         }
     }
@@ -1830,7 +1863,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val state = _uiState.value
         if (!state.snapAvailable) {
-            showOperationFailure(
+            showSnapFailure(
                 IllegalStateException("Split a model first: the snap fit joins the two halves a split made"),
             )
             return
@@ -1839,7 +1872,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // a library that failed to load, not one that has not been loaded yet.
         MeshBoolean.ensureLoaded()
         if (!MeshBoolean.isAvailable) {
-            showOperationFailure(
+            showSnapFailure(
                 IllegalStateException(
                     "The mesh boolean engine is not available on this device, so a joint cannot be made",
                 ),
@@ -2226,9 +2259,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun previewSnapJoint() {
         snapPreviewJob?.cancel()
         if (!_uiState.value.snapActive) return
-        snapPreviewJob = snapPreviewScope.launch {
+        // A child of the view model's own scope: the job this used to live in replaced the
+        // view model's job with a fresh one, so onCleared never cancelled it and a boolean
+        // could run on after the view model was gone.
+        snapPreviewJob = viewModelScope.launch {
             delay(SNAP_PREVIEW_DEBOUNCE_MILLIS)
-            runCatching { computeSnapPreview() }.onFailure(::showOperationFailure)
+            runCatching { computeSnapPreview() }.onFailure(::showSnapFailure)
         }
     }
 
@@ -2259,6 +2295,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(snapPreview = null, snapFailure = SNAP_PAIR_STALE_MESSAGE) }
             return
         }
+        val lowPlacement = lowHalf.placement
+        val highPlacement = highHalf.placement
         val lowFit = state.snapLowFitHalf
         val highFit = state.snapHighFitHalf
         if (lowFit == null || highFit == null) {
@@ -2347,6 +2385,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val stale = !current.snapActive ||
                     current.snapLowHalfId != lowHalf.id ||
                     current.snapHighHalfId != highHalf.id ||
+                    // The ids can stand while a half has been moved, which is a different
+                    // half for every purpose the joint has: drop the result and let the
+                    // placement change's own re-preview build it where it now stands.
+                    current.snapLowHalf?.placement != lowPlacement ||
+                    current.snapHighHalf?.placement != highPlacement ||
                     current.snapJoints != specs ||
                     current.snapScale != scale ||
                     current.snapFullJoint != fullJoint ||
@@ -2585,6 +2628,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             highMesh = highPreview,
             joints = placed,
             specs = specs,
+            lowHalfId = state.snapLowHalfId,
+            highHalfId = state.snapHighHalfId,
+            lowPlacement = state.snapLowHalf?.placement,
+            highPlacement = state.snapHighHalf?.placement,
             scale = scale,
             fullJoint = fullJoint,
             socketRamp = state.snapSocketRamp,
@@ -2702,7 +2749,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (preview == null) {
             val reason = state.snapBlockedReason
                 ?: "The joint preview is still being built; try again in a moment"
-            showOperationFailure(IllegalStateException(reason))
+            showSnapFailure(IllegalStateException(reason))
             return
         }
         // The pair the split recorded, as the plate has it now. A half that has
@@ -2711,7 +2758,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // done, and it says so in words instead of failing on a lookup.
         val pair = state.snapPairIndices
         if (pair !is SnapPairLookup.Found) {
-            showOperationFailure(IllegalStateException(SNAP_PAIR_STALE_MESSAGE))
+            showSnapFailure(IllegalStateException(SNAP_PAIR_STALE_MESSAGE))
             return
         }
         val low = state.models[pair.lowIndex]
@@ -2775,7 +2822,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         models = packed,
                         selectedModelId = lowObject.id,
                         isBusy = false,
-                    ).withoutSnap().copy(
+                    ).afterPlateReplaced().withSnapPair(
                         // The pair is the jointed halves now, so the tool can be
                         // opened again to add a second joint to the same pair.
                         // Apply re-centres the previewed meshes into fresh
@@ -2784,11 +2831,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // here are the plate faces the preview built them on -
                         // a measurement of the new meshes would read the beam's
                         // own tip as the beam half's face.
-                        snapLowHalfId = lowObject.id,
-                        snapHighHalfId = highObject.id,
-                        snapAxis = state.snapAxis,
-                        snapLowFaceMm = preview.lowFaceMm,
-                        snapHighFaceMm = preview.highFaceMm,
+                        lowHalfId = lowObject.id,
+                        highHalfId = highObject.id,
+                        axis = state.snapAxis,
+                        lowFaceMm = preview.lowFaceMm,
+                        highFaceMm = preview.highFaceMm,
                     )
                 }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))
@@ -2805,10 +2852,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+                // Apply replaces both halves with the jointed meshes, so the placement
+                // history - recorded against the objects that just left the plate - goes
+                // with them, exactly as it does for a split.
+                placementHistory.clear()
                 _uiState.update { commit(it) }
             }.onFailure { error ->
                 runCatching { staged.forEach { it.delete() } }
-                showOperationFailure(error)
+                // Apply runs from the snap panel, so its failure belongs on the line the
+                // panel shows, the same as its refusals do.
+                showSnapFailure(error)
             }
         }
     }
@@ -4188,6 +4241,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             },
                         )
                 }
+                // The joint stands on the halves, so a placement change is a change to the
+                // joint's own input: the preview key drops the old one on that update, and
+                // this rebuilds it for where the half stands now. Without the rebuild the
+                // panel would sit with Join disabled and a ghost on screen until some other
+                // control happened to be touched.
+                if (_uiState.value.snapActive) previewSnapJoint()
             }.onFailure(::showOperationFailure)
         }
     }
@@ -4312,6 +4371,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             supportPaint = entry.supportPaint,
                                             path = entry.modelPath,
                                             name = entry.modelDisplayName,
+                                            id = entry.id,
                                         )
                                     }.getOrNull()
                                 }
@@ -4410,6 +4470,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // by hand - can still hold two parts with one name, which the engines then label
         // identically and a Klipper host treats as one cancellable object.
         val seenNames = HashSet<String>()
+        val seenIds = HashSet<String>()
         val objects = workspace.objects.map { restored ->
             val model = restored.toPlateObject()
             val unique = if (seenNames.add(model.name)) {
@@ -4419,7 +4480,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .map { "${model.name} ($it)" }
                     .first { seenNames.add(it) }
             }
-            model.copy(name = unique)
+            model.copy(
+                // A descriptor written by hand can hold one identity twice; the second of a
+                // pair gets a fresh one rather than aliasing the first, because the plate's
+                // whole addressing assumes an id names one object.
+                id = if (seenIds.add(model.id)) model.id else PlateObject.newId(),
+                name = unique,
+            )
+        }
+        // The pair the descriptor saved, once both halves really are on the plate it
+        // describes. Anything less - an older descriptor with no pair at all, a damaged one,
+        // or a half whose file could not be parsed - restores as a plate that simply has no
+        // snap fit on offer, never as a plate that failed to load. That is the property the
+        // descriptor's other tolerances keep, and the pair must not cost it.
+        val pair = snapshot.snap?.takeIf { saved ->
+            saved.lowHalfId != saved.highHalfId &&
+                objects.any { it.id == saved.lowHalfId } &&
+                objects.any { it.id == saved.highHalfId }
         }
         _uiState.update { current ->
             current.withoutPublishedSlice()
@@ -4432,6 +4509,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "Restored ${snapshot.modelDisplayName} workspace; slice again to create validated G-code"
                     },
                 )
+                // The tool can be opened again on a restored pair, which is the whole point of
+                // saving it: without this, the only way back to the joint was another split,
+                // and that destroys the joint already applied.
+                .withSnapPair(
+                    lowHalfId = pair?.lowHalfId,
+                    highHalfId = pair?.highHalfId,
+                    axis = pair?.axis ?: ModelPlacement.Axis.Z,
+                    lowFaceMm = pair?.lowFaceMm,
+                    highFaceMm = pair?.highFaceMm,
+                )
+                .withoutSnap()
         }
     }
 
@@ -4446,7 +4534,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             configurationFingerprint = workspaceFingerprint(state),
             supportPaint = selected.supportPaint,
             models = state.models.mapNotNull { it.toWorkspaceEntry() },
+            snap = state.toSnapshotSnap(),
         )
+    }
+
+    /**
+     * The split pair as the descriptor saves it, or null when there is no pair to save.
+     *
+     * Only a pair that is really on the plate is written: a pair left behind by a removed
+     * half would restore as a tool that offers nothing, which the plate can say for itself
+     * without the file remembering it.
+     */
+    private fun MainUiState.toSnapshotSnap(): WorkspaceStateStore.SnapState? {
+        if (!snapHalvesPresent) return null
+        val low = snapLowHalfId ?: return null
+        val high = snapHighHalfId ?: return null
+        val lowFace = snapLowFaceMm ?: return null
+        val highFace = snapHighFaceMm ?: return null
+        return WorkspaceStateStore.SnapState(low, high, snapAxis, lowFace, highFace)
     }
 
     /**
@@ -4482,6 +4587,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             modelDisplayName = name,
             placement = placement,
             supportPaint = supportPaint,
+            id = id,
         )
     }
 
@@ -4839,6 +4945,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onFailure(::showOperationFailure)
         }
+    }
+
+    /**
+     * A snap fit failure, on the line the tool's panel actually shows.
+     *
+     * Every other operation reports through [showOperationFailure], whose message is the
+     * title of the plate's notice card - and that card is folded by default. The snap panel
+     * is open in front of the user while its own work runs, and the line it shows is
+     * [MainUiState.snapFailure]; a refusal that wrote only the folded card left a tap that
+     * did nothing the user could see. Both lines are written: the panel says it now, and the
+     * card still carries it once the panel is closed.
+     */
+    private fun showSnapFailure(error: Throwable) {
+        if (error is CancellationException) {
+            // A cancelled preview is the debounce working, not a failure to report.
+            showOperationFailure(error)
+            return
+        }
+        Diagnostics.failure("snap fit", error)
+        val message = error.message ?: error::class.java.simpleName
+        _uiState.update { it.copy(isBusy = false, statusMessage = message, snapFailure = message) }
     }
 
     private fun showOperationFailure(error: Throwable) {

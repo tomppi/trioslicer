@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.ui
 
+import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
@@ -68,6 +69,19 @@ data class SnapPreview(
     val joints: List<SnapPlacedJoint>,
     /** The specs this was built from, for the panel and for the staleness test. */
     val specs: List<SnapJointSpec>,
+    /**
+     * The two plate objects this was built from, and where they stood, for the staleness
+     * test.
+     *
+     * The specs are not the whole input: the geometry is the halves themselves, and a half
+     * that has been rotated, scaled, moved or swapped out since leaves this preview
+     * describing a plate that no longer exists. Comparing ids alone would let a placement
+     * change through, which is what a long-press rotate does under a standing preview.
+     */
+    val lowHalfId: String? = null,
+    val highHalfId: String? = null,
+    val lowPlacement: ModelPlacement? = null,
+    val highPlacement: ModelPlacement? = null,
     val scale: Float,
     /** True when the full joint was asked for rather than fitted to the seam. */
     val fullJoint: Boolean,

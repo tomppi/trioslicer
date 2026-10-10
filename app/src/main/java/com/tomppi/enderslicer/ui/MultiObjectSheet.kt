@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.data.PlatePreferences
+import com.tomppi.enderslicer.model.SlicerEngine
 
 /**
  * The plate's own settings: where several objects go and how they are printed.
@@ -36,9 +37,16 @@ internal fun MultiObjectSheet(
     onArrangeNow: () -> Unit,
     /** How many objects are on the plate, for the explanatory line. */
     objectCount: Int,
+    /** The engine that will slice the plate, for what it can and cannot put in the G-code. */
+    engine: SlicerEngine,
     onDismiss: () -> Unit,
 ) {
     var settings by remember(preferences) { mutableStateOf(preferences) }
+
+    // Only the two Slic3r forks write object markers here. CuraEngine writes a ;MESH comment
+    // naming its own staging file and nothing else, so the switch below would promise
+    // something the slice cannot keep.
+    val labelsSupported = engine != SlicerEngine.CURA
 
     // One place that both shows a change and reports it, so no control can forget one of them.
     fun apply(next: PlatePreferences) {
@@ -125,11 +133,27 @@ internal fun MultiObjectSheet(
         )
         SettingSwitch(
             title = "Label each object in the G-code",
-            description = "Writes a marker around each object, so the printer screen can cancel " +
-                "one object on its own and the layer list can say which object a move belongs to.",
+            description = if (labelsSupported) {
+                "Writes a marker around each object, so the printer screen can cancel " +
+                    "one object on its own and the layer list can say which object a move belongs to."
+            } else {
+                "Not available on CuraEngine, which writes no object markers in its G-code."
+            },
             checked = settings.objectLabels,
             onChecked = { apply(settings.copy(objectLabels = it)) },
         )
+        if (!labelsSupported) {
+            // A promise the engine cannot keep is worse than no setting: the user turns it on,
+            // slices, and looks for the object list on the printer screen. CuraEngine's output
+            // carries only ;MESH: comments naming a staging file that the workspace deletes.
+            Text(
+                "This build of CuraEngine emits no M486 or EXCLUDE_OBJECT markers, so a " +
+                    "CuraEngine plate cannot be cancelled object by object however this is set. " +
+                    "Slice with PrusaSlicer or OrcaSlicer for labelled objects.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
 
         Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
             Text("Done")

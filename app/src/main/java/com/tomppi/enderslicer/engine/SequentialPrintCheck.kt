@@ -4,6 +4,7 @@ import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.viewer.MeshBounds
 import java.util.Locale
+import kotlin.math.abs
 
 /**
  * Refuses a plate that cannot be printed one object at a time.
@@ -60,6 +61,27 @@ object SequentialPrintCheck {
         }
         return null
     }
+
+    /**
+     * The smallest gap between two footprints that this check will not refuse, in mm.
+     *
+     * The guard refuses a pair when either object's own sweep reaches the other, and a sweep
+     * grows a footprint by the head's extents - so two objects separated along an axis by more
+     * than the largest extent on that axis can never reach each other there, whatever their
+     * ranges on the other axis are. The arranger is isotropic, so it is given the largest of
+     * the two axes' extents. Being exactly the sweep is not enough - the check refuses a gap
+     * that merely equals it - so the arranger adds its own margin on top.
+     *
+     * This exists because the app arranges its own plates: without it the packer left only the
+     * user's spacing, and Slice then refused every plate of two or more objects that Arrange
+     * had just laid out.
+     */
+    fun headClearanceMm(settings: SlicerSettings): Double = maxOf(
+        abs(settings.printheadXMinMm),
+        abs(settings.printheadXMaxMm),
+        abs(settings.printheadYMinMm),
+        abs(settings.printheadYMaxMm),
+    )
 
     /**
      * Where the nozzle can stand while printing [model]: its footprint grown by the head polygon.

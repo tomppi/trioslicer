@@ -2196,6 +2196,7 @@ fun EnderSlicerApp(
                     onPreferences = viewModel::setPlatePreferences,
                     onArrangeNow = viewModel::arrangePlate,
                     objectCount = state.models.size,
+                    engine = engine,
                     onDismiss = { multiObjectOpen = false },
                 )
             }

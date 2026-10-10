@@ -100,9 +100,17 @@ class SnapJointTest {
             flipped.placement.joint.frame.axis.z,
             1e-6f,
         )
+        // The half that could not take its part is the MATE: the lid is too thin for the
+        // pocket the beam in the low half would need. The sentence used to blame the half
+        // the user chose - which then became the half the flipped beam was built into.
         assertTrue(
             "and the sentence names the half that could not take it: " + flipped.why.summary,
-            flipped.why.summary.startsWith("The lower half"),
+            flipped.why.summary.startsWith("The upper half"),
+        )
+        assertEquals(SnapJoint.JointHalf.HIGH, flipped.why.half)
+        assertTrue(
+            "and says which part of it the beam could not have: " + flipped.why.summary,
+            flipped.why.summary.contains("too little material for the beam's pocket"),
         )
     }
 

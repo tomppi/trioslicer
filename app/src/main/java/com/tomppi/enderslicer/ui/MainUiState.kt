@@ -555,17 +555,29 @@ data class MainUiState(
     ).tightenedBy(spec.tightness.stepMm)
 
     /**
-     * The preview while the settings that produced it are still the current
-     * ones, null otherwise.
+     * The preview while everything that produced it is still the current plate
+     * and the current settings, null otherwise.
      *
-     * [snapPreview] carries the anchor and the scale it was built at, so a
-     * slider that has moved on is not previewed with, and Apply cannot stage
-     * geometry the user did not ask for.
+     * [snapPreview] carries the anchor, the scale and the hook dimensions it was
+     * built at, so a slider that has moved on is not previewed with, and Apply
+     * cannot stage geometry the user did not ask for. It also carries the two
+     * halves and their placements, because those ARE the geometry: a half
+     * rotated under a standing preview used to leave the preview current, so the
+     * model view snapped back to the un-rotated half and Apply committed it.
+     *
+     * Requiring both halves here is also what keeps the panel honest about a
+     * pair that is gone: no halves, no preview, so Join is disabled for the same
+     * reason [snapBlockedReason] gives rather than doing nothing when tapped.
      */
     val snapShownMeshes: SnapPreview? by lazy {
         val preview = snapPreview ?: return@lazy null
+        val low = snapLowHalf
+        val high = snapHighHalf
         preview.takeIf {
-            it.specs == snapJoints && it.scale == snapScale && it.fullJoint == snapFullJoint &&
+            low != null && high != null &&
+                it.lowHalfId == low.id && it.highHalfId == high.id &&
+                it.lowPlacement == low.placement && it.highPlacement == high.placement &&
+                it.specs == snapJoints && it.scale == snapScale && it.fullJoint == snapFullJoint &&
                 it.socketRamp == snapSocketRamp && it.hookLengthMm == snapHookLengthMm &&
                 it.hookThicknessMm == snapHookThicknessMm && it.hookLipMm == snapHookLipMm
         }
@@ -624,6 +636,40 @@ data class MainUiState(
             snapJoints.isEmpty() -> "Tap the model to place a joint on the seam."
             else -> null
         }
+
+    /**
+     * The split pair a descriptor recorded or a commit just made, as state.
+     *
+     * One place both paths put the pair, so the tool is offered again on exactly the same
+     * terms after a relaunch as it is right after the split: a null id - an older descriptor
+     * - is no pair at all, which is what "Split the model first" means.
+     */
+    fun withSnapPair(
+        lowHalfId: String?,
+        highHalfId: String?,
+        axis: ModelPlacement.Axis,
+        lowFaceMm: Float?,
+        highFaceMm: Float?,
+    ): MainUiState = copy(
+        snapLowHalfId = lowHalfId,
+        snapHighHalfId = highHalfId,
+        snapAxis = axis,
+        snapLowFaceMm = lowFaceMm,
+        snapHighFaceMm = highFaceMm,
+    )
+
+    /**
+     * The plate has been replaced around new objects: the placement undo belonged to the
+     * objects that just left, and a previewed half is geometry for one of them.
+     *
+     * Every path that replaces the plate - a split, a joint applied, an arrangement - goes
+     * through this, so no path can forget one of the two. The view model clears the history
+     * itself; the flags here are what the Undo control reads.
+     */
+    fun afterPlateReplaced(): MainUiState = withoutSnap().copy(
+        canUndoPlacement = false,
+        undoPlacementLabel = null,
+    )
 
     /**
      * The snap session, gone: the tool closed, the preview dropped and the

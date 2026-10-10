@@ -12,9 +12,11 @@ import com.tomppi.enderslicer.model.ModelPlacement
  * edge, with the surface the cut opened, and where the plane passes through a
  * vertex the walk that builds the cap can revisit a vertex and leave a
  * non-manifold boundary behind. On the XYZ calibration cube every plane in the
- * model did that: the front half came back with "closed 1 hole (5 edges), left 1
- * open: a boundary that revisits a vertex" from [MeshRepair], and the snap gate
- * has to refuse a half in that state.
+ * model used to do that: the front half came back with "closed 1 hole (5 edges),
+ * left 1 open: a boundary that revisits a vertex" from [MeshRepair], and the snap
+ * gate refuses a half in that state. The sliver weld has since closed that
+ * particular case - the clipper's half of the cube is a closed solid now - but a
+ * mesh the engine will not take is still cut and capped this way.
  *
  * A boolean has none of that to get wrong. The model is a closed solid, the
  * half-space box is a closed solid, and subtracting one from the other is a

@@ -100,13 +100,25 @@ object SnapJoint {
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
         val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested)
         if (flipped != null) {
+            // Which half the sentence names. The chosen round roots the beam in the chosen
+            // half and reaches into the mate, so the material can refuse it in two places:
+            // the chosen half's own depth behind its face (the beam's root) or the mate's
+            // depth beyond its own (the beam's reach and its pocket). This used to assert the
+            // first whatever had happened, so a thin MATE was reported as the chosen half
+            // having too little material - and since the flipped joint is built into that very
+            // mate, the sentence said the opposite of what had just been done.
+            val short = shortHalfForFlip(axis, scale, lowHalf, highHalf, beamHalf, parameters)
+            val reason = when (short) {
+                beamHalf -> "has too little material for the beam at this scale; the joint was " +
+                    "built into the other half instead"
+                null -> "cannot take the beam with this mate at this scale; the joint was built " +
+                    "into the other half instead"
+                else -> "has too little material for the beam's pocket at this scale; the beam " +
+                    "was built into it instead"
+            }
             return Either.Flipped(
                 placementOf(flipped, lowHalf, highHalf, otherHalf, false),
-                Failure(
-                    beamHalf,
-                    "has too little material for the beam at this scale; the joint was built into " +
-                        "the other half instead",
-                ),
+                Failure(short ?: beamHalf, reason),
             )
         }
         return Either.Failed(
@@ -164,6 +176,48 @@ object SnapJoint {
             socketMesh = if (beamIsLow) highHalf.mesh else lowHalf.mesh,
             chosenHalfCarriesBeam = chosenHalfCarriesBeam,
         )
+    }
+
+    /**
+     * Which half of the requested round the material refused, or null when neither side is
+     * the obvious one.
+     *
+     * Measured the way [reasonFor] measures: the chosen half's own depth behind its mating
+     * face, and the mate's depth beyond its own. A half whose own depth does not even reach
+     * the beam's wall has nowhere to root the beam; a mate with less than the beam's reach
+     * plus that wall has nowhere for the beam to go. The first is the half the user chose,
+     * the second is the mate - and the sentence has to name whichever it was.
+     */
+    private fun shortHalfForFlip(
+        axis: ModelPlacement.Axis,
+        scale: Float,
+        lowHalf: SnapFitHalf,
+        highHalf: SnapFitHalf,
+        beamHalf: JointHalf,
+        parameters: SnapFitParameters,
+    ): JointHalf? {
+        val chosenIsHigh = beamHalf == JointHalf.HIGH
+        val chosen = if (chosenIsHigh) highHalf else lowHalf
+        val mate = if (chosenIsHigh) lowHalf else highHalf
+        val chosenSpan = SnapFit.spanAlongAxis(chosen, axis) ?: return beamHalf
+        val mateSpan = SnapFit.spanAlongAxis(mate, axis) ?: return beamHalf
+        val ownDepth = if (chosenIsHigh) {
+            chosenSpan.endInclusive - chosen.faceMm
+        } else {
+            chosen.faceMm - chosenSpan.start
+        }
+        val mateDepth = if (chosenIsHigh) {
+            mate.faceMm - mateSpan.start
+        } else {
+            mateSpan.endInclusive - mate.faceMm
+        }
+        val wall = parameters.beamThicknessMm * scale
+        val needed = parameters.beamLengthMm * scale + wall
+        return when {
+            ownDepth <= wall -> beamHalf
+            mateDepth <= needed -> if (chosenIsHigh) JointHalf.LOW else JointHalf.HIGH
+            else -> null
+        }
     }
 
     /**

@@ -20,6 +20,28 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val modelDisplayName: String,
         val placement: ModelPlacement,
         val supportPaint: SupportPaintState = SupportPaintState(),
+        /**
+         * The object's identity on the plate, so a pair of halves can be named again after a
+         * relaunch. Null for entries written before identities were saved, and for the model of
+         * an import that has not been assigned one yet: those restore under a fresh id.
+         */
+        val id: String? = null,
+    )
+
+    /**
+     * The split pair a snap fit is offered on: the two halves, the assembly axis, and each
+     * half's own mating face along it.
+     *
+     * Only the ids travel; every other field of the pair is derived from the plate the restore
+     * builds. A pair naming an object the descriptor does not hold degrades to no snap rather
+     * than failing the load, so a damaged descriptor costs the tool and never the plate.
+     */
+    data class SnapState(
+        val lowHalfId: String,
+        val highHalfId: String,
+        val axis: ModelPlacement.Axis,
+        val lowFaceMm: Float,
+        val highFaceMm: Float,
     )
 
     /**
@@ -36,6 +58,8 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val configurationFingerprint: String,
         val supportPaint: SupportPaintState = SupportPaintState(),
         val models: List<Entry> = emptyList(),
+        /** The split pair the snap fit was offered on, or null when there was none. */
+        val snap: SnapState? = null,
     )
 
     private val stateDirectory = File(filesDirectory, "persistent-state").apply { mkdirs() }
@@ -170,6 +194,19 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         if (snapshot.models.isNotEmpty()) {
             root.put("models", JSONArray().apply { snapshot.models.forEach { put(encodeEntry(it)) } })
         }
+        // Same rule for the snap pair: nothing is written when there was none, so a descriptor
+        // from a build without the tool stays byte-shaped the way that build wrote it.
+        snapshot.snap?.let { snap ->
+            root.put(
+                "snap",
+                JSONObject()
+                    .put("lowHalfId", snap.lowHalfId)
+                    .put("highHalfId", snap.highHalfId)
+                    .put("axis", snap.axis.name)
+                    .put("lowFaceMm", snap.lowFaceMm.toDouble())
+                    .put("highFaceMm", snap.highFaceMm.toDouble()),
+            )
+        }
         return root
     }
 
@@ -187,6 +224,7 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             configurationFingerprint = root.getString("configurationFingerprint"),
             supportPaint = decodeSupportPaint(root.optJSONObject("supportPaint")),
             models = models,
+            snap = decodeSnap(root.optJSONObject("snap"), models),
         )
     }
 
@@ -195,13 +233,36 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         .put("modelDisplayName", entry.modelDisplayName)
         .put("placement", encodePlacement(entry.placement))
         .put("supportPaint", encodePaint(entry.supportPaint))
+        .apply { entry.id?.let { put("id", it) } }
 
     private fun decodeEntry(json: JSONObject): Entry = Entry(
         modelPath = json.getString("modelPath"),
         modelDisplayName = json.getString("modelDisplayName"),
         placement = decodePlacement(json.getJSONObject("placement")),
         supportPaint = decodeSupportPaint(json.optJSONObject("supportPaint")),
+        id = json.optString("id").takeIf { it.isNotBlank() },
     )
+
+    /**
+     * The saved snap pair, or null when the descriptor does not hold one - or does not hold it
+     * completely. Every field is read leniently on purpose: an older descriptor has no "snap"
+     * at all, and a damaged one may name halves that are not on the plate. Both mean the same
+     * thing to the caller - no pair to offer - and neither may cost the models the file is for.
+     */
+    private fun decodeSnap(json: JSONObject?, models: List<Entry>): SnapState? {
+        if (json == null) return null
+        return runCatching {
+            val low = json.optString("lowHalfId").takeIf { it.isNotBlank() } ?: return null
+            val high = json.optString("highHalfId").takeIf { it.isNotBlank() } ?: return null
+            if (low == high) return null
+            if (models.none { it.id == low } || models.none { it.id == high }) return null
+            val axis = runCatching { ModelPlacement.Axis.valueOf(json.optString("axis")) }
+                .getOrNull() ?: return null
+            val lowFace = json.optDouble("lowFaceMm").takeIf { it.isFinite() }?.toFloat() ?: return null
+            val highFace = json.optDouble("highFaceMm").takeIf { it.isFinite() }?.toFloat() ?: return null
+            SnapState(low, high, axis, lowFace, highFace)
+        }.getOrNull()
+    }
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()
         .put("linear", JSONArray(placement.linear))

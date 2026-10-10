@@ -178,29 +178,7 @@ class SnapStateTest {
     @Test
     fun aPreviewStandsOnlyWhileTheInputsThatMadeItAreCurrent() {
         val state = splitState().copy(snapActive = true).withJoint(Vec3(3f, 4f, 31f))
-        val preview = SnapPreview(
-            lowMesh = state.snapLowHalf!!.mesh,
-            highMesh = state.snapHighHalf!!.mesh,
-            joints = listOf(
-                SnapPlacedJoint(
-                    spec = state.snapJoints.first(),
-                    joint = jointFor(state),
-                    beamInChosenHalf = true,
-                    beamHalfName = "low",
-                    socketHalfName = "high",
-                ),
-            ),
-            specs = state.snapJoints,
-            scale = 1f,
-            socketRamp = false,
-            repairNote = null,
-            fullJoint = false,
-            hookLengthMm = null,
-            hookThicknessMm = null,
-            hookLipMm = null,
-            lowFaceMm = 20f,
-            highFaceMm = 20f,
-        )
+        val preview = previewOf(state)
 
         assertEquals("the previewed halves are what the plate shows", preview, state.copy(snapPreview = preview).snapShownMeshes)
         assertNull(
@@ -223,6 +201,99 @@ class SnapStateTest {
             state.copy(snapPreview = preview, snapFullJoint = true).snapShownMeshes,
         )
         assertNull("nothing previewed, nothing shown", state.snapShownMeshes)
+    }
+
+    /**
+     * The halves are the preview's geometry, so a placement change under a standing
+     * preview makes it describe a plate that no longer exists. Without the halves in the
+     * key, a long-press rotate left the preview current: the model view snapped back to
+     * the un-rotated half, and Apply committed the pre-rotation geometry.
+     */
+    @Test
+    fun aHalfThatMovedUnderThePreviewIsNotPreviewedWith() {
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(20f, 20f, 31f))
+        val standing = state.copy(snapPreview = previewOf(state))
+        assertNotNull("the preview stands while the halves do", standing.snapShownMeshes)
+
+        val rotated = standing.copy(
+            models = listOf(
+                standing.models[0].withPlacement(
+                    standing.models[0].placement.rotated(ModelPlacement.Axis.Y, 15.0),
+                ),
+                standing.models[1],
+            ),
+        )
+
+        assertNull("a half rotated under it is not what it describes", rotated.snapShownMeshes)
+    }
+
+    /**
+     * A pair that has left the plate cannot be joined, and the panel has to say the same
+     * thing with its button disabled as it says in words. The enabled state used to stay on
+     * - the preview was still non-null - while [MainUiState.snapBlockedReason] said stale, so
+     * a tap did nothing visible at all.
+     */
+    @Test
+    fun aPairThatLeftThePlateDisablesJoinForTheSameReasonThePanelGives() {
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(20f, 20f, 31f))
+        val standing = state.copy(snapPreview = previewOf(state))
+        assertNotNull(standing.snapShownMeshes)
+
+        val gone = standing.copy(models = listOf(standing.models[0]))
+
+        assertNull("no halves, nothing to apply", gone.snapShownMeshes)
+        assertEquals(
+            "and the disabled button and the sentence agree",
+            SNAP_PAIR_STALE_MESSAGE,
+            gone.snapBlockedReason,
+        )
+    }
+
+    /**
+     * A pair a descriptor saved - or a split just committed - is offered by
+     * [MainUiState.withSnapPair] on exactly the same terms as the split's own pair. This is
+     * the state half of item one: the store test pins the file, this pins what the restore
+     * does with it.
+     */
+    @Test
+    fun aPairTheDescriptorSavedIsOfferedAgainOnTheRestoredPlate() {
+        val plate = splitState().withSnapPair("low", "high", ModelPlacement.Axis.Z, 20f, 20f)
+
+        assertTrue("the restored pair offers the tool again", plate.snapAvailable)
+        assertTrue(plate.snapHalvesPresent)
+        assertEquals("with the plane the split carried", 20f, plate.snapLowFitHalf!!.faceMm, 1e-3f)
+        assertEquals(20f, plate.snapHighFitHalf!!.faceMm, 1e-3f)
+        assertNull("and nothing is blocked while a joint is placed", plate.snapBlockedReason)
+
+        val none = plate.withSnapPair(null, null, ModelPlacement.Axis.Z, null, null)
+        assertTrue(!none.snapAvailable)
+        assertEquals(
+            "Split a model first: the snap fit joins the two halves a split made.",
+            none.snapBlockedReason,
+        )
+    }
+
+    /**
+     * The state a split or a join commits: no preview, no joint list and no placement undo -
+     * every step the history holds belongs to the objects the operation just replaced.
+     */
+    @Test
+    fun aReplacedPlateDropsTheSessionAndThePlacementUndo() {
+        val state = splitState().copy(
+            snapActive = true,
+            snapPreview = null,
+            canUndoPlacement = true,
+            undoPlacementLabel = "Model rotated 15°",
+        )
+
+        val replaced = state.afterPlateReplaced().withSnapPair("low", "high", ModelPlacement.Axis.Z, 20f, 20f)
+
+        assertTrue(!replaced.snapActive)
+        assertNull(replaced.snapPreview)
+        assertTrue(replaced.snapJoints.isEmpty())
+        assertTrue("the old object's undo is gone", !replaced.canUndoPlacement)
+        assertNull(replaced.undoPlacementLabel)
+        assertTrue("and the new pair is still on offer", replaced.snapAvailable)
     }
 
     @Test
@@ -316,6 +387,38 @@ class SnapStateTest {
             0f,
         )
     }
+
+    /**
+     * The preview [state] would have produced, carrying the halves and placements it was
+     * built from the way the ViewModel's own construction does.
+     */
+    private fun previewOf(state: MainUiState): SnapPreview = SnapPreview(
+        lowMesh = state.snapLowHalf!!.mesh,
+        highMesh = state.snapHighHalf!!.mesh,
+        joints = listOf(
+            SnapPlacedJoint(
+                spec = state.snapJoints.first(),
+                joint = jointFor(state),
+                beamInChosenHalf = true,
+                beamHalfName = "low",
+                socketHalfName = "high",
+            ),
+        ),
+        specs = state.snapJoints,
+        lowHalfId = state.snapLowHalfId,
+        highHalfId = state.snapHighHalfId,
+        lowPlacement = state.snapLowHalf?.placement,
+        highPlacement = state.snapHighHalf?.placement,
+        scale = 1f,
+        socketRamp = false,
+        repairNote = null,
+        fullJoint = false,
+        hookLengthMm = null,
+        hookThicknessMm = null,
+        hookLipMm = null,
+        lowFaceMm = 20f,
+        highFaceMm = 20f,
+    )
 
     /** One joint on the seam, at [point], as a tap would place it. */
     private fun spec(point: Vec3, halfId: String? = "low"): SnapJointSpec = SnapJointSpec(

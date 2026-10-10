@@ -29,9 +29,12 @@ class SolidSplitDeviceTest {
     private val targetContext get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     /**
-     * The user's own model, cut on Y at its middle: the split that reported
+     * The user's own model, cut on Y at its middle: the split that once reported
      * "xyzCalibration_cube.stl front is not watertight and could not be closed:
      * closed 1 hole (5 edges), left 1 open: a boundary that revisits a vertex".
+     * The sliver weld has since closed that case, so the clipper's own half is
+     * checked here as what it is now - a closed solid the repair has nothing to do
+     * with - rather than as the open one that motivated the boolean path.
      */
     @Test
     fun theCalibrationCubeSplitsIntoTwoManifoldHalvesAtTheReportedPlane() {
@@ -47,15 +50,19 @@ class SolidSplitDeviceTest {
         val axis = ModelPlacement.Axis.Y
         val plane = (model.bounds.minY + model.bounds.maxY) * 0.5f
 
-        // The clipper's own capped half, for the record: it is not a closed
-        // solid, which is what the snap gate ran into.
+        // The clipper's own capped half, for the record. It used to come back open
+        // here - "closed 1 hole (5 edges), left 1 open" - which is what the snap gate
+        // ran into and what the boolean path was added for. The sliver weld has since
+        // closed it, so what the device has to show now is a closed half the repair
+        // finds nothing to do with; a device that disagrees is a real finding.
         val clipped = BedClipper.clipClosed(model, axis, plane, BedClipper.Half.LOW)
         val clippedReport = MeshRepair.repair(clipped).report
         println(
             "PROOF clipper-low tris=" + clipped.triangleCount + " manifold=" + MeshBoolean.isManifold(clipped) +
                 " repair=[" + clippedReport.summary + "]",
         )
-        assertFalse("the clipper's capped half is not a closed solid", MeshBoolean.isManifold(clipped))
+        assertTrue("the clipper's capped half is a closed solid", MeshBoolean.isManifold(clipped))
+        assertEquals("and the repair finds nothing to close", "closed already", clippedReport.summary)
 
         val started = System.nanoTime()
         val split = SolidSplitter.split(model, axis, plane)
