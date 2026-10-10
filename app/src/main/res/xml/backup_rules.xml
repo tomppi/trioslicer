@@ -23,18 +23,43 @@
     <!-- Everything else the app writes under files/ as well: the engine tree
          (blender/, ~480 MB, MCP token included), the imported and staged models
          (models/), the sliced G-code (slice-results/), the thermal FEA reports
-         (thermal-fea/), the imported Cura project bundle
-         (persistent-state/, up to 128 MiB), the staged engine bundles and
-         datadirs (orca/, prusa/), the engine logs (logs/), the saved
-         annotations (annotations/) and the last crash report (crash.log) are all
-         regenerated on the new device - blender-home/, the engine's own scratch
-         HOME, included - and they are far past the 25 MB an Auto Backup gets. -->
+         (thermal-fea/), the staged engine bundles and datadirs (orca/, prusa/),
+         the engine logs (logs/), the saved annotations (annotations/) and the
+         last crash report (crash.log) are all regenerated on the new device -
+         blender-home/, the engine's own scratch HOME, included - and they are
+         far past the 25 MB an Auto Backup gets. -->
     <exclude domain="file" path="blender/" />
     <exclude domain="file" path="blender-home/" />
     <exclude domain="file" path="models/" />
     <exclude domain="file" path="slice-results/" />
     <exclude domain="file" path="thermal-fea/" />
-    <exclude domain="file" path="persistent-state/" />
+    <!-- persistent-state/ is no longer excluded wholesale: it also holds the
+         saved preset library, and excluding the directory silently dropped
+         every user preset from a restore. user-presets.json and its rollback
+         copy user-presets.previous.json - which can be the only intact copy
+         after an interrupted write - are deliberately backed up now. Only the
+         exact files below stay behind. The workspace descriptor, with its
+         staged .next and rollback .previous copies, names absolute model paths
+         under files/models that do not exist on the receiving device, so a
+         restore would bring back a plate of dangling references. The imported
+         Cura project bundle is a copy of a configuration the user still has,
+         up to 128 MiB and past the 25 MB an Auto Backup gets, and an
+         over-quota backup fails whole - presets included - so the bundle, its
+         .bin predecessor, its .materialized payload and its .tmp/.next/
+         .previous staged and rollback writes all stay behind too. And
+         user-presets.next.json is the preset store's staging file, which no
+         load path reads and every save deletes before writing a new one. -->
+    <exclude domain="file" path="persistent-state/current-workspace.json" />
+    <exclude domain="file" path="persistent-state/current-workspace.next" />
+    <exclude domain="file" path="persistent-state/current-workspace.previous" />
+    <exclude domain="file" path="persistent-state/current-cura-import.bin" />
+    <exclude domain="file" path="persistent-state/current-cura-import.bundle" />
+    <exclude domain="file" path="persistent-state/current-cura-import.bundle.next" />
+    <exclude domain="file" path="persistent-state/current-cura-import.bundle.previous" />
+    <exclude domain="file" path="persistent-state/current-cura-import.materialized" />
+    <exclude domain="file" path="persistent-state/current-cura-import.materialized.next" />
+    <exclude domain="file" path="persistent-state/current-cura-import.tmp" />
+    <exclude domain="file" path="persistent-state/user-presets.next.json" />
     <exclude domain="file" path="orca/" />
     <exclude domain="file" path="prusa/" />
     <exclude domain="file" path="logs/" />

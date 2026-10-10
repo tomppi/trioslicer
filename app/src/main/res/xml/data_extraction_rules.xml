@@ -17,22 +17,47 @@
              too big for a backup that is capped at 25 MB in total. blender/ is
              the extracted engine tree (~480 MB, and it carries the MCP shared
              secret in scripts/startup/blender_mcp_token.txt), models/ holds the
-             imported and staged STLs, slice-results/ the sliced G-code,
-             thermal-fea/ the FEA reports and persistent-state/ the imported
-             Cura project bundle (up to 128 MiB). orca/ and prusa/ stage the
-             engine bundles and datadirs, logs/ holds the engine logs,
-             annotations/ the saved measurement annotations and crash.log the
-             last crash report. One of them alone puts the whole backup over
-             quota, and an over-quota Auto Backup is not a partial one: it
-             fails, settings included, which is exactly what this backup exists
-             for. All of it is regenerated on the new device, blender-home/
-             (the engine's own HOME: temp, cache and generated config) included. -->
+             imported and staged STLs, slice-results/ the sliced G-code and
+             thermal-fea/ the FEA reports. orca/ and prusa/ stage the engine
+             bundles and datadirs, logs/ holds the engine logs, annotations/
+             the saved measurement annotations and crash.log the last crash
+             report. One of them alone puts the whole backup over quota, and an
+             over-quota Auto Backup is not a partial one: it fails, settings
+             included, which is exactly what this backup exists for. All of it
+             is regenerated on the new device, blender-home/ (the engine's own
+             HOME: temp, cache and generated config) included. -->
         <exclude domain="file" path="blender/" />
         <exclude domain="file" path="blender-home/" />
         <exclude domain="file" path="models/" />
         <exclude domain="file" path="slice-results/" />
         <exclude domain="file" path="thermal-fea/" />
-        <exclude domain="file" path="persistent-state/" />
+        <!-- persistent-state/ used to be excluded whole, and that took the
+             saved preset library with it. The library is user-presets.json
+             beside its rollback copy user-presets.previous.json - which can be
+             the only intact copy after an interrupted write - and both are
+             deliberately restored now, the point of this backup beside the
+             settings. Only the exact files below stay behind. The workspace
+             descriptor (with its staged .next and rollback .previous copies)
+             names absolute model paths under files/models that do not exist on
+             the receiving device, so it would restore a plate of dangling
+             references. The imported Cura project bundle is a copy of a
+             configuration the user still has, up to 128 MiB and past the 25 MB
+             quota, so the bundle, its .bin predecessor, its .materialized
+             payload and its .tmp/.next/.previous staged and rollback writes
+             all stay behind with it. And user-presets.next.json is the preset
+             store's staging file, which no load path reads and every save
+             deletes before writing a new one. -->
+        <exclude domain="file" path="persistent-state/current-workspace.json" />
+        <exclude domain="file" path="persistent-state/current-workspace.next" />
+        <exclude domain="file" path="persistent-state/current-workspace.previous" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bin" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle.next" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle.previous" />
+        <exclude domain="file" path="persistent-state/current-cura-import.materialized" />
+        <exclude domain="file" path="persistent-state/current-cura-import.materialized.next" />
+        <exclude domain="file" path="persistent-state/current-cura-import.tmp" />
+        <exclude domain="file" path="persistent-state/user-presets.next.json" />
         <exclude domain="file" path="orca/" />
         <exclude domain="file" path="prusa/" />
         <exclude domain="file" path="logs/" />
@@ -80,7 +105,31 @@
         <exclude domain="file" path="models/" />
         <exclude domain="file" path="slice-results/" />
         <exclude domain="file" path="thermal-fea/" />
-        <exclude domain="file" path="persistent-state/" />
+        <!-- What travels from persistent-state/ now is the saved preset library:
+             user-presets.json with its rollback copy user-presets.previous.json
+             is the whole point of moving the library to a replacement device,
+             so the directory is no longer excluded. The workspace descriptor
+             and its staged .next and rollback .previous copies stay behind -
+             they name absolute model paths under files/models the replacement
+             device does not have, and would restore a plate of dangling
+             references. The imported Cura project bundle is a copy of a
+             configuration the user still has, up to 128 MiB; its .bin
+             predecessor, .materialized payload and .tmp/.next/.previous staged
+             and rollback writes are the same bytes and stay behind with it.
+             user-presets.next.json is the preset store's staging file, which
+             no load path reads and every save deletes before writing a new
+             one. -->
+        <exclude domain="file" path="persistent-state/current-workspace.json" />
+        <exclude domain="file" path="persistent-state/current-workspace.next" />
+        <exclude domain="file" path="persistent-state/current-workspace.previous" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bin" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle.next" />
+        <exclude domain="file" path="persistent-state/current-cura-import.bundle.previous" />
+        <exclude domain="file" path="persistent-state/current-cura-import.materialized" />
+        <exclude domain="file" path="persistent-state/current-cura-import.materialized.next" />
+        <exclude domain="file" path="persistent-state/current-cura-import.tmp" />
+        <exclude domain="file" path="persistent-state/user-presets.next.json" />
         <exclude domain="file" path="orca/" />
         <exclude domain="file" path="prusa/" />
         <exclude domain="file" path="logs/" />

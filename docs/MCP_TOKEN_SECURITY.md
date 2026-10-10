@@ -122,12 +122,61 @@ Two limits worth stating in the same breath:
 
 Neither token can ride off the device in an Auto Backup or a device-to-device transfer: both
 `files/blender/` and `files/cad/` are excluded from both backup lists
-(`app/src/main/res/xml/backup_rules.xml:32`, `:49`; `.../data_extraction_rules.xml:30`, `:55`,
-`:78`, `:94`). That is a backup-policy question rather than a read path an agent can use, and a
+(`app/src/main/res/xml/backup_rules.xml:31`, `:74`; `.../data_extraction_rules.xml:29`, `:80`,
+`:103`, `:143`). That is a backup-policy question rather than a read path an agent can use, and a
 restore leaves neither engine tokenless: both trees are extracted from the APK's assets on the new
 device, and the token beside each is written anew.
 
-## 6. How to check a token
+## 6. The biometric gate on the in-app copy
+
+Both *Copy MCP token* items authenticate the phone's owner first: from the Blender menu
+(`EnderSlicerApp.kt:1345-1366`, the call at `:1355`) and from the CAD menu (`:1420-1435`, the call
+at `:1425`). Each hands its work to `requestMcpTokenCopy` (`EnderSlicerApp.kt:2516-2587`), which
+raises `androidx.biometric`'s `BiometricPrompt` (`app/build.gradle.kts:1090-1091` -
+androidx.biometric **1.1.0** and androidx.fragment **1.9.1**; `USE_BIOMETRIC` is declared at
+`AndroidManifest.xml:12`; `MainActivity` extends `FragmentActivity`, `MainActivity.kt:41`, which the
+prompt needs as its host). The allowed authenticators are `BIOMETRIC_STRONG or BIOMETRIC_WEAK or
+DEVICE_CREDENTIAL` (`EnderSlicerApp.kt:2538-2540`) - any fingerprint or face, or the screen lock's
+PIN, pattern or password behind it - so a lock without an enrolled fingerprint is not refused: the
+prompt offers the credential instead.
+
+The prompt states the stakes before anything is read - *Copy MCP token*, with the subtitle "Anyone
+you give this to can run code in the app's Blender engine" (CAD's says the same;
+`EnderSlicerApp.kt:2578-2579`). The token file is not read until authentication succeeds: the
+caller's `tokenFile` lambda and the file read both happen on the success path
+(`EnderSlicerApp.kt:2565-2567`, `:2605-2606`), which for Blender means the token is not even
+generated on first use until then. A failure or a cancellation copies nothing and answers "MCP token
+not copied" (`:2569-2573`).
+
+Three states, three answers, none of them silent:
+
+- **No screen lock at all.** `canAuthenticate` fails and `KeyguardManager.isDeviceSecure` is false,
+  so the app refuses before building a prompt: "Set up a screen lock or fingerprint in Settings"
+  (`EnderSlicerApp.kt:2546-2558`), and nothing is read or copied.
+- **A lock without an enrolled fingerprint.** Not a refusal: with `DEVICE_CREDENTIAL` allowed, the
+  prompt asks for the PIN, pattern or password instead of a fingerprint.
+- **No token file yet.** The read happens only after authentication, so the existing "The MCP token
+  is not available yet" (`EnderSlicerApp.kt:2605-2610`) is now what a successful authentication
+  finds when the engine has not written its token.
+
+The platform forbids a custom negative button once `DEVICE_CREDENTIAL` is among the allowed
+authenticators (`EnderSlicerApp.kt:2580-2583`), so the Cancel shown is the system prompt's own; it
+is the intended way out and it copies nothing.
+
+**The boundary this does and does not move.** The gate protects the moment the secret leaves the app
+- the unlocked phone in someone else's hands, where the item was two taps from handing a bearer
+credential to whoever was holding the phone. It does not change the file's own protection, and it
+is not a second factor on the token: a copy that has already left is used by its holder with no
+prompt at all. With root or a root-capable adb the token is still read straight from the file
+(section 5), and nothing here stops that. Nothing in this section should be read as protecting the
+token from a rooted or adb-equipped attacker.
+
+**How this was verified.** On a phone **with** a screen lock the prompt appears and authenticating
+copies the token (confirmed by the device's owner); on a phone with **no** lock the refusal message
+appears and nothing is copied (verified on the development device). The API 29 credential fallback
+path is code-verified only, as both test devices run API 31 or later.
+
+## 7. How to check a token
 
 `^[0-9a-f]{32}$` is a paste sanity check and nothing more. The engine compares the strings
 (`command.get("token") == self.token`, `blender_mcp_slim.py:312`, `cad_mcp_slim.py:1320`).
@@ -156,7 +205,7 @@ A permission-denied read is the trap to name: a non-root `adb shell` fails the `
 request then answers `unauthorized`, which looks exactly like a rejected token
 (`docs/skills/blender-mcp-engine.md:54-56`).
 
-## 7. Rotation
+## 8. Rotation
 
 `ensureToken` creates when the file is missing or empty (`BlenderEngine.kt:247-258`,
 `CadEngine.kt:141-152`), so deleting the file and starting the engine again mints a new value.
@@ -175,7 +224,7 @@ A copy taken before a real rotation fails `unauthorized` afterwards. Until the e
 replaced it keeps working: the value lives in the engine's memory, not only in the file, so
 deleting the file revokes nothing by itself.
 
-## 8. Considered and declined
+## 9. Considered and declined
 
 - **A per-session token** would bound what a leaked copy is worth, but the app would have to hand
   the engine a new secret every session and the human would have to copy it again every session -
