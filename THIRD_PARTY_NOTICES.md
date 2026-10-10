@@ -120,6 +120,36 @@ conical-slicing strategy is derived from `CNCKitchen/ConicalSlicer` and the pape
 al., Applied Sciences, 2021). The original project source remains available from
 its upstream GitHub repository.
 
+## Manifold (mesh booleans)
+
+- Project: `elalish/manifold`
+- Pinned version: `v3.5.4` (commit `ce50d78021d64507f89e8c9fc2c2e51018117857`)
+- License: Apache License 2.0 (`Apache-2.0`)
+- Copyright: The Manifold Authors
+
+TrioSlicer cross-compiles Manifold for Android arm64-v8a and links it into the app's own
+JNI library, `app/src/main/jniLibs/arm64-v8a/libmanifold_jni.so`. The shim over it is
+`native/manifold-jni/manifold_jni.cpp` and the Kotlin that drives it is
+`app/src/main/java/com/tomppi/enderslicer/viewer/MeshBoolean.kt`; it is what unions a
+snap fit's beam and key onto one half of a split model and subtracts the matching socket
+from the other. Manifold is built with none of its optional dependencies
+(`MANIFOLD_CROSS_SECTION=OFF`, `MANIFOLD_PAR=OFF`, `MANIFOLD_TEST=OFF`,
+`MANIFOLD_DOWNLOADS=OFF`), so nothing is fetched at build time and the staged library
+needs only libc, libm and libdl.
+
+`scripts/build-manifold-android.sh` is the whole recipe: it clones the pinned commit
+into `.build/manifold-src`, checks its HEAD against the SHA above, builds Manifold for
+arm64-v8a at android-29 with the repository's pinned NDK, links the shim against a static
+copy of it and stages the result in `jniLibs/`. The Gradle build never runs it, exactly
+like the other engines; the staged `.so` is gitignored build output, so a fresh clone
+reproduces it by running that script before assembling.
+
+**On the licence text.** Manifold is Apache-2.0, and that licence asks for a copy of the
+licence to travel with the distributed object code. The upstream text is carried in this
+repository at [`native/manifold-jni/LICENSE`](native/manifold-jni/LICENSE); a
+distributor shipping the APK must ship that text with `libmanifold_jni.so`, which does
+not carry it inside the library itself.
+
 ## Klipper host (`libklipper_exec.so`) and the app's CPython
 
 **This is the app's Python interpreter.** The binary is a small executable linked against

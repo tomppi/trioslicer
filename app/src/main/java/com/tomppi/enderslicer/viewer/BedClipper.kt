@@ -259,32 +259,27 @@ object BedClipper {
         // vertex of a kept triangle, so the clipped bounds already cover it.
         val cap = if (crossings == null) EMPTY_FLOATS else crossSectionCap(crossings, axis, offsetMm, half)
         val capTriangles = cap.size / FLOATS_PER_TRIANGLE
-        val totalTriangles = keptTriangles + capTriangles
-        val vertices = if (cap.isEmpty()) {
-            if (keptTriangles >= OFF_HEAP_MIN_TRIANGLES) {
-                val direct = ByteBuffer.allocateDirect(written * Float.SIZE_BYTES)
-                    .order(ByteOrder.nativeOrder())
-                    .asFloatBuffer()
-                direct.put(floats, 0, written)
-                direct.position(0)
-                VertexData.fromDirect(direct)
-            } else {
-                VertexData.fromArray(if (written == floats.size) floats else floats.copyOf(written))
-            }
+        val complete = FloatArray(written + cap.size)
+        System.arraycopy(floats, 0, complete, 0, written)
+        System.arraycopy(cap, 0, complete, written, cap.size)
+        // The cap is built band by band, and a band boundary can run straight
+        // through corners the section's outline already has on it. The cap then
+        // carries one long edge where the surface beside it carries several, so
+        // each of those edges is used by exactly one triangle: the half measures
+        // the right volume and is refused as non-manifold by every boolean
+        // engine. Splitting the long triangles at the vertices already on the
+        // edge costs nothing geometrically and makes the half closed.
+        val welded = if (cap.isEmpty()) complete else weldCutSection(complete, keptTriangles + capTriangles, axis, offsetMm)
+        val totalTriangles = welded.size / FLOATS_PER_TRIANGLE
+        val vertices = if (totalTriangles >= OFF_HEAP_MIN_TRIANGLES) {
+            val direct = ByteBuffer.allocateDirect(welded.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+            direct.put(welded, 0, welded.size)
+            direct.position(0)
+            VertexData.fromDirect(direct)
         } else {
-            val complete = FloatArray(written + cap.size)
-            System.arraycopy(floats, 0, complete, 0, written)
-            System.arraycopy(cap, 0, complete, written, cap.size)
-            if (totalTriangles >= OFF_HEAP_MIN_TRIANGLES) {
-                val direct = ByteBuffer.allocateDirect(complete.size * Float.SIZE_BYTES)
-                    .order(ByteOrder.nativeOrder())
-                    .asFloatBuffer()
-                direct.put(complete, 0, complete.size)
-                direct.position(0)
-                VertexData.fromDirect(direct)
-            } else {
-                VertexData.fromArray(complete)
-            }
+            VertexData.fromArray(welded)
         }
         return StlMesh(
             displayName = mesh.displayName,
@@ -293,6 +288,246 @@ object BedClipper {
             bounds = if (totalTriangles == 0) EMPTY_BOUNDS else MeshBounds(minX, minY, minZ, maxX, maxY, maxZ),
         )
     }
+
+    /**
+     * Splits the triangles that meet along the cut plane so the cap and the
+     * surface it closes share every vertex the section already has there.
+     *
+     * A vertex that lies on an edge is a vertex the triangle owning that edge
+     * can be split at, which changes no geometry - the edge runs through the
+     * vertex either way - and pairs the two sides of the seam. The vertices are
+     * hashed into millimetre cells in the plane, so an edge only looks at the
+     * handful of points near it rather than at the whole section.
+     */
+    private fun weldCutSection(
+        triangles: FloatArray,
+        triangleCount: Int,
+        axis: ModelPlacement.Axis,
+        offsetMm: Float,
+    ): FloatArray {
+        val cornerCount = triangleCount * VERTICES_PER_TRIANGLE
+        val onPlane = BooleanArray(cornerCount)
+        val planeU = FloatArray(cornerCount)
+        val planeV = FloatArray(cornerCount)
+        val cells = HashMap<Long, MutableList<Int>>()
+        for (corner in 0 until cornerCount) {
+            val base = corner * FLOATS_PER_VERTEX
+            val x = triangles[base]
+            val y = triangles[base + 1]
+            val z = triangles[base + 2]
+            val along = when (axis) {
+                ModelPlacement.Axis.X -> x
+                ModelPlacement.Axis.Y -> y
+                ModelPlacement.Axis.Z -> z
+            }
+            if (Math.abs(along - offsetMm) > PLANE_EPSILON_MM) continue
+            onPlane[corner] = true
+            planeU[corner] = planeCoordinate(x, y, z, axis, first = true)
+            planeV[corner] = planeCoordinate(x, y, z, axis, first = false)
+            cells.getOrPut(cellKey(planeU[corner], planeV[corner])) { ArrayList(4) }.add(corner)
+        }
+
+        var welded = FloatArray(triangles.size)
+        var weldedFloats = 0
+        val pending = ArrayDeque<WeldTriangle>()
+        var guard = triangleCount * 8 + 64
+        for (triangle in 0 until triangleCount) {
+            val first = triangle * 3
+            val second = first + 1
+            val third = first + 2
+            // The common triangle touches neither the plane nor itself, and
+            // goes straight out: only the few at the seam pay for a work item.
+            if (!onPlane[first] && !onPlane[second] && !onPlane[third] &&
+                !cornerPositionsMatch(triangles, first, second, third)
+            ) {
+                if (weldedFloats + FLOATS_PER_TRIANGLE > welded.size) welded = welded.copyOf(welded.size * 2)
+                for (corner in first..third) {
+                    val base = corner * FLOATS_PER_VERTEX
+                    for (channel in 0 until FLOATS_PER_VERTEX) welded[weldedFloats++] = triangles[base + channel]
+                }
+                continue
+            }
+            val corners = intArrayOf(first, second, third)
+            pending.addLast(WeldTriangle(corners, normalsOf(triangles, corners)))
+            while (pending.isNotEmpty()) {
+                val current = pending.removeLast()
+                val split = if (guard-- > 0) {
+                    sectionSplit(current.corners, onPlane, planeU, planeV, cells)
+                } else {
+                    null
+                }
+                if (split == null) {
+                    // A corner the cut left folded onto another has no area and
+                    // no side: it would only double one of its edges. Dropping it
+                    // is what lets the edge pair with the triangle opposite.
+                    if (cornerPositionsMatch(triangles, current.corners[0], current.corners[1], current.corners[2])) continue
+                    if (weldedFloats + FLOATS_PER_TRIANGLE > welded.size) welded = welded.copyOf(welded.size * 2)
+                    for (corner in 0 until VERTICES_PER_TRIANGLE) {
+                        val base = current.corners[corner] * FLOATS_PER_VERTEX
+                        welded[weldedFloats++] = triangles[base]
+                        welded[weldedFloats++] = triangles[base + 1]
+                        welded[weldedFloats++] = triangles[base + 2]
+                        welded[weldedFloats++] = current.normals[corner * 3]
+                        welded[weldedFloats++] = current.normals[corner * 3 + 1]
+                        welded[weldedFloats++] = current.normals[corner * 3 + 2]
+                    }
+                    continue
+                }
+                val edge = split.first
+                val between = split.second
+                val first = current.corners[edge]
+                val second = current.corners[(edge + 1) % VERTICES_PER_TRIANGLE]
+                val opposite = current.corners[(edge + 2) % VERTICES_PER_TRIANGLE]
+                val secondAt = ((edge + 1) % VERTICES_PER_TRIANGLE) * 3
+                val oppositeAt = ((edge + 2) % VERTICES_PER_TRIANGLE) * 3
+                val firstNormal = floatArrayOf(current.normals[edge * 3], current.normals[edge * 3 + 1], current.normals[edge * 3 + 2])
+                val secondNormal = floatArrayOf(current.normals[secondAt], current.normals[secondAt + 1], current.normals[secondAt + 2])
+                val oppositeNormal = floatArrayOf(current.normals[oppositeAt], current.normals[oppositeAt + 1], current.normals[oppositeAt + 2])
+                var previous = first
+                var previousNormal = firstNormal
+                for ((fraction, vertex) in between) {
+                    // The split sits on the edge, so its normal is the edge's
+                    // own, interpolated the same way the cut interpolates one.
+                    val vertexNormal = floatArrayOf(
+                        firstNormal[0] + (secondNormal[0] - firstNormal[0]) * fraction,
+                        firstNormal[1] + (secondNormal[1] - firstNormal[1]) * fraction,
+                        firstNormal[2] + (secondNormal[2] - firstNormal[2]) * fraction,
+                    )
+                    pending.addLast(
+                        WeldTriangle(
+                            intArrayOf(previous, vertex, opposite),
+                            floatArrayOf(
+                                previousNormal[0], previousNormal[1], previousNormal[2],
+                                vertexNormal[0], vertexNormal[1], vertexNormal[2],
+                                oppositeNormal[0], oppositeNormal[1], oppositeNormal[2],
+                            ),
+                        ),
+                    )
+                    previous = vertex
+                    previousNormal = vertexNormal
+                }
+                pending.addLast(
+                    WeldTriangle(
+                        intArrayOf(previous, second, opposite),
+                        floatArrayOf(
+                            previousNormal[0], previousNormal[1], previousNormal[2],
+                            secondNormal[0], secondNormal[1], secondNormal[2],
+                            oppositeNormal[0], oppositeNormal[1], oppositeNormal[2],
+                        ),
+                    ),
+                )
+            }
+        }
+        return if (weldedFloats == welded.size) welded else welded.copyOf(weldedFloats)
+    }
+
+    /** The three corner normals of a triangle, in the interleaved layout. */
+    private fun normalsOf(triangles: FloatArray, corners: IntArray): FloatArray {
+        val normals = FloatArray(VERTICES_PER_TRIANGLE * 3)
+        for (corner in 0 until VERTICES_PER_TRIANGLE) {
+            val base = corners[corner] * FLOATS_PER_VERTEX + 3
+            normals[corner * 3] = triangles[base]
+            normals[corner * 3 + 1] = triangles[base + 1]
+            normals[corner * 3 + 2] = triangles[base + 2]
+        }
+        return normals
+    }
+
+    /** A triangle on its way through the weld: its corners and their normals. */
+    private class WeldTriangle(val corners: IntArray, val normals: FloatArray)
+
+    /** True when two of a triangle's corners sit at the same position. */
+    private fun cornerPositionsMatch(triangles: FloatArray, a: Int, b: Int, c: Int): Boolean {
+        val first = positionKeyOf(triangles, a)
+        val second = positionKeyOf(triangles, b)
+        if (first == second) return true
+        val third = positionKeyOf(triangles, c)
+        return third == first || third == second
+    }
+
+    private fun positionKeyOf(triangles: FloatArray, corner: Int): PositionKey {
+        val base = corner * FLOATS_PER_VERTEX
+        return PositionKey.of(triangles[base], triangles[base + 1], triangles[base + 2])
+    }
+
+    /**
+     * The edge of [triangle] that has one of the section's own vertices sitting
+     * inside it, and those vertices along that edge, or null when there is no
+     * such edge. An endpoint is never a split: it is already a corner.
+     */
+    private fun sectionSplit(
+        triangle: IntArray,
+        onPlane: BooleanArray,
+        planeU: FloatArray,
+        planeV: FloatArray,
+        cells: HashMap<Long, MutableList<Int>>,
+    ): Pair<Int, List<Pair<Float, Int>>>? {
+        for (edge in 0 until VERTICES_PER_TRIANGLE) {
+            val first = triangle[edge]
+            val second = triangle[(edge + 1) % VERTICES_PER_TRIANGLE]
+            val opposite = triangle[(edge + 2) % VERTICES_PER_TRIANGLE]
+            if (!onPlane[first] || !onPlane[second]) continue
+            val ax = planeU[first]
+            val ay = planeV[first]
+            val dx = planeU[second] - ax
+            val dy = planeV[second] - ay
+            val lengthSquared = dx * dx + dy * dy
+            if (lengthSquared <= SECTION_WELD_MIN_MM * SECTION_WELD_MIN_MM) continue
+            val found = ArrayList<Pair<Float, Int>>(4)
+            for (cell in cellsAlong(ax, ay, ax + dx, ay + dy)) {
+                cells[cell]?.forEach { candidate ->
+                    if (candidate == first || candidate == second) return@forEach
+                    val px = planeU[candidate] - ax
+                    val py = planeV[candidate] - ay
+                    val fraction = (px * dx + py * dy) / lengthSquared
+                    if (fraction <= SECTION_WELD_FRACTION || fraction >= 1f - SECTION_WELD_FRACTION) return@forEach
+                    val offX = px - fraction * dx
+                    val offY = py - fraction * dy
+                    if (offX * offX + offY * offY > SECTION_WELD_EPSILON_MM * SECTION_WELD_EPSILON_MM) return@forEach
+                    found.add(fraction to candidate)
+                }
+            }
+            if (found.isEmpty()) continue
+            // One splitting vertex per position: the same point can be a corner
+            // of several triangles, and fanning through it twice would only make
+            // slivers. A triangle whose own corners are collinear has no area to
+            // split either.
+            if (Math.abs((planeU[second] - ax) * (planeV[opposite] - ay) - (planeV[second] - ay) * (planeU[opposite] - ax)) <= SECTION_WELD_AREA_MM2) {
+                return null
+            }
+            found.sortBy { it.first }
+            val vertices = LinkedHashMap<PositionKey, Pair<Float, Int>>()
+            for (candidate in found) {
+                vertices.putIfAbsent(
+                    PositionKey.of(planeU[candidate.second], planeV[candidate.second], 0f),
+                    candidate,
+                )
+            }
+            vertices.remove(PositionKey.of(planeU[opposite], planeV[opposite], 0f))
+            if (vertices.isEmpty()) continue
+            return edge to vertices.values.toList()
+        }
+        return null
+    }
+
+    /** Every cell the segment ([ax], [ay]) to ([bx], [by]) passes near. */
+    private fun cellsAlong(ax: Float, ay: Float, bx: Float, by: Float): List<Long> {
+        val lowX = cellOf(minOf(ax, bx))
+        val highX = cellOf(maxOf(ax, bx))
+        val lowY = cellOf(minOf(ay, by))
+        val highY = cellOf(maxOf(ay, by))
+        val keys = ArrayList<Long>((highX - lowX + 1) * (highY - lowY + 1))
+        for (x in lowX..highX) {
+            for (y in lowY..highY) keys.add(cellKey(x, y))
+        }
+        return keys
+    }
+
+    private fun cellKey(u: Float, v: Float): Long = cellKey(cellOf(u), cellOf(v))
+
+    private fun cellKey(x: Int, y: Int): Long = (x.toLong() shl 32) or (y.toLong() and 0xffffffffL)
+
+    private fun cellOf(coordinate: Float): Int = Math.floor((coordinate / SECTION_WELD_CELL_MM).toDouble()).toInt()
 
     /** True when any corner of the triangle is on the removed side of the plane. */
     private fun crossesThePlane(
@@ -633,6 +868,7 @@ object BedClipper {
     }
 
     private const val VERTICES_PER_TRIANGLE = 3
+    private const val FLOATS_PER_VERTEX = 6
     private const val FLOATS_PER_TRIANGLE = 18
 
     /** The most triangles one clipped triangle can become: two crossings. */
@@ -641,6 +877,21 @@ object BedClipper {
 
     /** Position matching for the cross-section chain: a tenth of a micron. */
     private const val MATCH_PER_MM = 10_000f
+
+    /** The grid the cut plane's own vertices are hashed into for the weld. */
+    private const val SECTION_WELD_CELL_MM = 1f
+
+    /** How far off a straight edge a vertex may sit and still be on it. */
+    private const val SECTION_WELD_EPSILON_MM = 5e-4f
+
+    /** An edge shorter than this is a point, not an edge to split. */
+    private const val SECTION_WELD_MIN_MM = 1e-3f
+
+    /** Twice the area below which a triangle is a sliver, not a face to split. */
+    private const val SECTION_WELD_AREA_MM2 = 1e-6f
+
+    /** How far along an edge a split vertex must sit to not be an endpoint. */
+    private const val SECTION_WELD_FRACTION = 1e-3f
 
     /** Room for the first cap triangles; the list grows past it when it has to. */
     private const val LOOP_CAPACITY = 256

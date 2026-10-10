@@ -344,6 +344,25 @@ class BedClipperTest {
     }
 
     @Test
+    fun aCappedHalfIsEdgeManifoldWhereTheSectionRunsThroughItsOwnCorners() {
+        // A box whose faces are fanned from their centres, cut at the fan
+        // centres' height: the section is a rectangle carrying four of its own
+        // corners along straight runs, and the cap used to bridge them - one
+        // long edge where the surface beside it has three, each used by a single
+        // triangle, which every boolean engine refuses. The cap now splits the
+        // long edges at the corners that are already on them.
+        val mesh = MeshFixtures.fannedBox(0f, 0f, 0f, 20f, 10f, 10f)
+
+        val low = clipClosed(mesh, ModelPlacement.Axis.Z, 5f, Half.LOW)
+        val high = clipClosed(mesh, ModelPlacement.Axis.Z, 5f, Half.HIGH)
+
+        assertTrue("the half below the cut is edge-manifold", MeshFixtures.isClosed(low))
+        assertTrue("the half above it is edge-manifold too", MeshFixtures.isClosed(high))
+        assertEquals("and the two still measure the box", 1000.0, signedVolume(low), 1e-4)
+        assertEquals(1000.0, signedVolume(high), 1e-4)
+    }
+
+    @Test
     fun theCapFacesTheHalfThatWasRemoved() {
         val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
 
