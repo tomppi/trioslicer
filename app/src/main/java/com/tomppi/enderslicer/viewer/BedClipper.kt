@@ -3,6 +3,7 @@ package com.tomppi.enderslicer.viewer
 import com.tomppi.enderslicer.model.ModelPlacement
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.sqrt
 
 /**
  * Cuts a placed mesh at an axis-aligned plane and keeps one side of it.
@@ -69,7 +70,7 @@ object BedClipper {
         axis: ModelPlacement.Axis,
         offsetMm: Float,
         half: Half,
-    ): StlMesh = clipped(mesh, axis, offsetMm, half, closeCrossSection = false)
+    ): StlMesh = clipped(mesh, axis, offsetMm, half, closeCrossSection = false).mesh
 
     /**
      * The part of [mesh] on the [half] side of the plane, with the cut face
@@ -93,7 +94,31 @@ object BedClipper {
         axis: ModelPlacement.Axis,
         offsetMm: Float,
         half: Half,
-    ): StlMesh = clipped(mesh, axis, offsetMm, half, closeCrossSection = true)
+    ): StlMesh = clipped(mesh, axis, offsetMm, half, closeCrossSection = true).mesh
+
+    /**
+     * A clip and the record of where its triangles came from.
+     *
+     * [sourceTriangles] has one entry per triangle of [mesh]: entry i is the
+     * index of the input triangle output triangle i was cut from. It is null
+     * when nothing was cut and the input came back as the very same mesh, which
+     * means every index still addresses the triangle it always did.
+     */
+    data class Clipped(val mesh: StlMesh, val sourceTriangles: IntArray? = null)
+
+    /**
+     * [clipToBed] together with the record of where each of its triangles came
+     * from.
+     *
+     * This is what lets a per-triangle property of the DISPLAYED mesh - support
+     * paint is the one that matters - be read against the mesh the engine is
+     * actually handed. Clipping drops every triangle that was below the bed and
+     * turns a crossing one into two, so an index into the displayed mesh
+     * addresses a different triangle of the clipped one from the first cut
+     * upwards, and past the clipped count it addresses nothing at all.
+     */
+    fun clipToBedWithSources(mesh: StlMesh): Clipped =
+        clipped(mesh, ModelPlacement.Axis.Z, 0f, Half.HIGH, closeCrossSection = false, trackSources = true)
 
     private fun clipped(
         mesh: StlMesh,
@@ -101,7 +126,8 @@ object BedClipper {
         offsetMm: Float,
         half: Half,
         closeCrossSection: Boolean,
-    ): StlMesh {
+        trackSources: Boolean = false,
+    ): Clipped {
         require(offsetMm.isFinite()) { "A cut plane offset must be finite" }
         // Working in a signed distance from the plane is what lets one piece of
         // code keep either side: "below" always means the side being removed.
@@ -115,8 +141,8 @@ object BedClipper {
         // and the caller's own < 0 test is what decides to call this at all. The
         // same slack keeps a cut inside the bounds from shaving the surface it
         // only touches.
-        if (span.start >= offsetMm - PLANE_EPSILON_MM && half == Half.HIGH) return mesh
-        if (span.endInclusive <= offsetMm + PLANE_EPSILON_MM && half == Half.LOW) return mesh
+        if (span.start >= offsetMm - PLANE_EPSILON_MM && half == Half.HIGH) return Clipped(mesh)
+        if (span.endInclusive <= offsetMm + PLANE_EPSILON_MM && half == Half.LOW) return Clipped(mesh)
         require(mesh.triangleCount > 0 && mesh.interleavedVertices.size == mesh.triangleCount * FLOATS_PER_TRIANGLE) {
             "Bed clipping needs complete model geometry"
         }
@@ -127,13 +153,17 @@ object BedClipper {
         // that does not stays one. The buffer is sized from that ceiling, and
         // the count that comes out is what the emitted triangles add up to.
         var capacity = 0
-        forEachTriangle(mesh) { triangle ->
+        forEachTriangle(mesh) { _, triangle ->
             capacity += if (crossesThePlane(triangle, axis, offsetMm, sign)) MAX_TRIANGLES_PER_CUT else 1
         }
 
         val floats = FloatArray(Math.multiplyExact(capacity, FLOATS_PER_TRIANGLE))
         var written = 0
         var keptTriangles = 0
+        // Only the open clip records this: a capped one re-welds its triangles
+        // afterwards, and the record would no longer name them.
+        val sources = if (trackSources && !closeCrossSection) ArrayList<Int>() else null
+        var sourceTriangle = -1
         var minX = Float.POSITIVE_INFINITY
         var minY = Float.POSITIVE_INFINITY
         var minZ = Float.POSITIVE_INFINITY
@@ -170,6 +200,7 @@ object BedClipper {
             keep(second)
             keep(third)
             keptTriangles++
+            sources?.add(sourceTriangle)
         }
 
         /** Where the edge from [below] to [above] meets the plane. */
@@ -182,7 +213,8 @@ object BedClipper {
         // is what the cap is built from.
         val crossings = if (closeCrossSection) ArrayList<FloatArray>() else null
 
-        forEachTriangle(mesh) { triangle ->
+        forEachTriangle(mesh) { inputTriangle, triangle ->
+            sourceTriangle = inputTriangle
             val a = ClipVertex.from(triangle, 0)
             val b = ClipVertex.from(triangle, 1)
             val c = ClipVertex.from(triangle, 2)
@@ -281,11 +313,14 @@ object BedClipper {
         } else {
             VertexData.fromArray(welded)
         }
-        return StlMesh(
-            displayName = mesh.displayName,
-            interleavedVertices = vertices,
-            triangleCount = totalTriangles,
-            bounds = if (totalTriangles == 0) EMPTY_BOUNDS else MeshBounds(minX, minY, minZ, maxX, maxY, maxZ),
+        return Clipped(
+            mesh = StlMesh(
+                displayName = mesh.displayName,
+                interleavedVertices = vertices,
+                triangleCount = totalTriangles,
+                bounds = if (totalTriangles == 0) EMPTY_BOUNDS else MeshBounds(minX, minY, minZ, maxX, maxY, maxZ),
+            ),
+            sourceTriangles = sources?.toIntArray(),
         )
     }
 
@@ -352,7 +387,7 @@ object BedClipper {
             while (pending.isNotEmpty()) {
                 val current = pending.removeLast()
                 val split = if (guard-- > 0) {
-                    sectionSplit(current.corners, onPlane, planeU, planeV, cells)
+                    sectionSplit(triangles, current.corners, onPlane, planeU, planeV, cells)
                 } else {
                     null
                 }
@@ -456,6 +491,7 @@ object BedClipper {
      * such edge. An endpoint is never a split: it is already a corner.
      */
     private fun sectionSplit(
+        triangles: FloatArray,
         triangle: IntArray,
         onPlane: BooleanArray,
         planeU: FloatArray,
@@ -490,9 +526,15 @@ object BedClipper {
             if (found.isEmpty()) continue
             // One splitting vertex per position: the same point can be a corner
             // of several triangles, and fanning through it twice would only make
-            // slivers. A triangle whose own corners are collinear has no area to
-            // split either.
-            if (Math.abs((planeU[second] - ax) * (planeV[opposite] - ay) - (planeV[second] - ay) * (planeU[opposite] - ax)) <= SECTION_WELD_AREA_MM2) {
+            // slivers. A triangle whose own corners are collinear in three
+            // dimensions has no area to split either - but the test has to be
+            // the triangle's REAL area. Measured in the cut plane it is zero for
+            // every triangle standing perpendicular to that plane, and those are
+            // exactly the walls whose edges run along the seam: the guard used to
+            // refuse them, their cap vertices were never welded, and the half
+            // came out with a T-junction at each one and no boolean engine would
+            // take it.
+            if (twiceArea(triangles, first, second, opposite) <= SECTION_WELD_AREA_MM2) {
                 return null
             }
             found.sortBy { it.first }
@@ -508,6 +550,28 @@ object BedClipper {
             return edge to vertices.values.toList()
         }
         return null
+    }
+
+    /**
+     * Twice the triangle's real area in millimetres: the length of the cross
+     * product of two of its edges. Zero only for a triangle that really is a
+     * line, whatever angle it makes with the cut plane - which is the question
+     * the weld's sliver guard is asking.
+     */
+    private fun twiceArea(triangles: FloatArray, first: Int, second: Int, third: Int): Float {
+        val ax = triangles[first * FLOATS_PER_VERTEX]
+        val ay = triangles[first * FLOATS_PER_VERTEX + 1]
+        val az = triangles[first * FLOATS_PER_VERTEX + 2]
+        val ux = triangles[second * FLOATS_PER_VERTEX] - ax
+        val uy = triangles[second * FLOATS_PER_VERTEX + 1] - ay
+        val uz = triangles[second * FLOATS_PER_VERTEX + 2] - az
+        val vx = triangles[third * FLOATS_PER_VERTEX] - ax
+        val vy = triangles[third * FLOATS_PER_VERTEX + 1] - ay
+        val vz = triangles[third * FLOATS_PER_VERTEX + 2] - az
+        val nx = uy * vz - uz * vy
+        val ny = uz * vx - ux * vz
+        val nz = ux * vy - uy * vx
+        return sqrt(nx * nx + ny * ny + nz * nz)
     }
 
     /** Every cell the segment ([ax], [ay]) to ([bx], [by]) passes near. */
@@ -794,13 +858,13 @@ object BedClipper {
         }
     }
 
-    private inline fun forEachTriangle(mesh: StlMesh, block: (FloatArray) -> Unit) {
+    private inline fun forEachTriangle(mesh: StlMesh, block: (Int, FloatArray) -> Unit) {
         val vertices = mesh.interleavedVertices
         val triangle = FloatArray(FLOATS_PER_TRIANGLE)
         var offset = 0
-        repeat(mesh.triangleCount) {
-            for (index in 0 until FLOATS_PER_TRIANGLE) triangle[index] = vertices[offset + index]
-            block(triangle)
+        repeat(mesh.triangleCount) { triangleIndex ->
+            for (channel in 0 until FLOATS_PER_TRIANGLE) triangle[channel] = vertices[offset + channel]
+            block(triangleIndex, triangle)
             offset += FLOATS_PER_TRIANGLE
         }
     }

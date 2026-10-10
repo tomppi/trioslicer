@@ -76,12 +76,24 @@ object ThreeMfModelParser {
             }
             val vertices = model.vertices
             val point = DoubleArray(3)
+            // A mirrored placement - a negative scale, or a mirrored parent -
+            // reverses the winding, and a mesh whose facets all face inwards is
+            // still closed: the boolean engines take it and every volume it is
+            // split into comes out negative. The corners are emitted the other
+            // way round so the winding keeps facing outwards. The unit scale is
+            // positive, so only the accumulated placement can mirror.
+            val mirrored = determinant(parent) < 0.0
             for (triangle in model.triangles) {
                 require(positions.size / (POSITION_FLOATS * 3) < limit) {
                     "The 3MF has more than " + MeshTriangleLimits.formatCount(limit) + " triangles at the current mesh triangle limit"
                 }
                 val index = positions.size / (POSITION_FLOATS * 3)
-                for (corner in intArrayOf(triangle.v1, triangle.v2, triangle.v3)) {
+                val corners = if (mirrored) {
+                    intArrayOf(triangle.v1, triangle.v3, triangle.v2)
+                } else {
+                    intArrayOf(triangle.v1, triangle.v2, triangle.v3)
+                }
+                for (corner in corners) {
                     val base = corner * POSITION_FLOATS
                     apply(parent, vertices[base].toDouble(), vertices[base + 1].toDouble(), vertices[base + 2].toDouble(), scale, point)
                     val x = point[0].toFloat()
@@ -183,6 +195,15 @@ object ThreeMfModelParser {
         result[15] = 1.0
         return result
     }
+
+    /**
+     * The determinant of a 4x4 affine's linear part: negative when the transform
+     * mirrors, which is when a triangle's winding has to be reversed.
+     */
+    private fun determinant(matrix: DoubleArray): Double =
+        matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) -
+            matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8]) +
+            matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8])
 
     /** [first] is applied before [second]. */
     private fun multiply(first: DoubleArray, second: DoubleArray): DoubleArray {

@@ -47,6 +47,32 @@ data class SupportPaintState(
         )
     }
 
+    /**
+     * The same paint read against a mesh a cut produced: [sourceTriangles] has
+     * one entry per triangle of the cut mesh naming the input triangle it was
+     * cut from, so a painted input triangle paints every piece of itself that
+     * survived the cut and the pieces the cut dropped take their paint with
+     * them.
+     *
+     * A clip that folded or split a triangle renames every index after it, and a
+     * clipped mesh is shorter than the one it came from: without this the paint
+     * lands on whichever triangle happens to hold the old number, which on a
+     * partly submerged model is a different wall of the part entirely.
+     */
+    fun throughClip(sourceTriangles: IntArray): SupportPaintState {
+        if (isEmpty) return this
+        val enforcers = HashSet<Int>()
+        val blockers = HashSet<Int>()
+        for (triangle in sourceTriangles.indices) {
+            val source = sourceTriangles[triangle]
+            when {
+                source in enforcerTriangles -> enforcers += triangle
+                source in blockerTriangles -> blockers += triangle
+            }
+        }
+        return copy(enforcerTriangles = enforcers, blockerTriangles = blockers)
+    }
+
     fun withEnforcer(triangles: Set<Int>): SupportPaintState = copy(
         enforcerTriangles = enforcerTriangles + triangles,
         blockerTriangles = blockerTriangles - triangles,

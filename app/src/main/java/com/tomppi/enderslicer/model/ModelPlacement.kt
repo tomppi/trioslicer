@@ -81,17 +81,34 @@ data class ModelPlacement(
         var inputOffset = 0
         var outputOffset = 0
         val outputBounds = FloatBoundsAccumulator()
+        // A mirrored placement - a negative determinant, which an imported 3MF
+        // transform can carry - reverses the winding. The two corners are
+        // swapped before the normal is taken from them, so the placed copy still
+        // faces outwards and a closed mesh still measures a positive volume;
+        // without the swap every half a split cut from it came out negative.
+        val mirrored = determinant(linear) < 0.0
 
         repeat(mesh.triangleCount) {
             val x0 = transformX(linear, input[inputOffset].toDouble(), input[inputOffset + 1].toDouble(), input[inputOffset + 2].toDouble()) + dx
             val y0 = transformY(linear, input[inputOffset].toDouble(), input[inputOffset + 1].toDouble(), input[inputOffset + 2].toDouble()) + dy
             val z0 = transformZ(linear, input[inputOffset].toDouble(), input[inputOffset + 1].toDouble(), input[inputOffset + 2].toDouble()) + dz
-            val x1 = transformX(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dx
-            val y1 = transformY(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dy
-            val z1 = transformZ(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dz
-            val x2 = transformX(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dx
-            val y2 = transformY(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dy
-            val z2 = transformZ(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dz
+            var x1 = transformX(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dx
+            var y1 = transformY(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dy
+            var z1 = transformZ(linear, input[inputOffset + 6].toDouble(), input[inputOffset + 7].toDouble(), input[inputOffset + 8].toDouble()) + dz
+            var x2 = transformX(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dx
+            var y2 = transformY(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dy
+            var z2 = transformZ(linear, input[inputOffset + 12].toDouble(), input[inputOffset + 13].toDouble(), input[inputOffset + 14].toDouble()) + dz
+            if (mirrored) {
+                val swapX = x1
+                val swapY = y1
+                val swapZ = z1
+                x1 = x2
+                y1 = y2
+                z1 = z2
+                x2 = swapX
+                y2 = swapY
+                z2 = swapZ
+            }
 
             val ax = x1 - x0
             val ay = y1 - y0
@@ -329,6 +346,15 @@ data class ModelPlacement(
             ) { "Model bounds could not be calculated" }
             return BoundsDouble(minX, minY, minZ, maxX, maxY, maxZ)
         }
+
+        /**
+         * The determinant of the 3x3 linear part: negative when the transform
+         * mirrors, which is when the winding has to be reversed with it.
+         */
+        private fun determinant(matrix: List<Double>): Double =
+            matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7]) -
+                matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6]) +
+                matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6])
 
         private fun transformX(matrix: List<Double>, x: Double, y: Double, z: Double): Double =
             matrix[0] * x + matrix[1] * y + matrix[2] * z

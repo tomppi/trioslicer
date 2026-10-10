@@ -196,11 +196,30 @@ object SnapJoint {
         val wall = parameters.beamThicknessMm * scale
         val needed = parameters.beamLengthMm * scale + wall
         val beyond = if (chosenIsHigh) "below" else "above"
-        return "cannot carry a joint here: it has only " + millimetres(availableBehind) +
+        val measured = "cannot carry a joint here: it has only " + millimetres(availableBehind) +
             " mm of material behind its mating face and the mate has " + millimetres(mateAvailable ?: 0f) +
             " mm " + beyond + " it, and the beam needs " + millimetres(needed) +
             " mm (its reach plus a " + millimetres(wall) + " mm wall) at this scale. Move the " +
             "joint, lower the scale, or flip which half carries the beam."
+        // A seam thin enough that the tooth is not even proud of the clearance
+        // around it is a different failure with a different answer, and it used
+        // to be reported as nothing at all: the joint was built, closed, and
+        // held with a NEGATIVE engagement. Say which numbers did it.
+        val thinBeam = minOf(
+            parameters.beamThicknessMm * scale,
+            0.5f * availableBehind,
+            0.5f * (mateAvailable ?: 0f),
+        )
+        val thinLip = minOf(parameters.lipDepthMm * scale, thinBeam * 0.5f)
+        val clearance = parameters.lipClearanceMm * scale
+        val engagement = thinLip - clearance
+        if (thinBeam > 0f && engagement < SnapFit.MIN_ENGAGEMENT_MM) {
+            return measured + " There is also no tooth to catch here: the material only takes a " +
+                millimetres(thinBeam) + " mm beam, whose tooth would stand " + millimetres(thinLip) +
+                " mm proud against the " + millimetres(clearance) + " mm of clearance around it - " +
+                millimetres(engagement) + " mm of engagement. Thicken the part, or lower the clearance."
+        }
+        return measured
     }
 
     /** One decimal place, locale-independent: this text lands in a status line. */

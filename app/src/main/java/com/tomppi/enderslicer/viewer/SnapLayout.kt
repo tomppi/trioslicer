@@ -88,16 +88,23 @@ object SnapLayout {
         names: List<String> = emptyList(),
     ): List<String> {
         if (footprints.size < 2) return emptyList()
+        // Every rectangle is carried into the FIRST joint's own two axes before
+        // it is compared. The frames are one seam seen from either side of it,
+        // so they can be turned round from each other: a joint whose beam goes
+        // into the other half - which is where a joint the chosen half refused
+        // is built - walks the assembly direction the other way, and its side
+        // axis turns round with it. Comparing its own rectangle without carrying
+        // it over read the joint as mirrored, and the guard reported "no
+        // conflict" for a pair whose real pockets crossed by 4 mm.
+        val reference = footprints.first()
+        val rects = footprints.map { rectIn(it, reference) }
         val reasons = ArrayList<String>()
-        for (first in footprints.indices) {
-            for (second in first + 1 until footprints.size) {
-                val a = footprints[first]
-                val b = footprints[second]
-                val delta = b.anchor - a.anchor
-                val dx = delta.dot(a.side)
-                val dy = delta.dot(a.rise)
-                val gapX = gap(a.rect.minX, a.rect.maxX, b.rect.minX + dx, b.rect.maxX + dx)
-                val gapY = gap(a.rect.minY, a.rect.maxY, b.rect.minY + dy, b.rect.maxY + dy)
+        for (first in rects.indices) {
+            for (second in first + 1 until rects.size) {
+                val a = rects[first]
+                val b = rects[second]
+                val gapX = gap(a.minX, a.maxX, b.minX, b.maxX)
+                val gapY = gap(a.minY, a.maxY, b.minY, b.maxY)
                 // The rects cross when neither axis separates them; otherwise
                 // how far apart they really are, in both axes together.
                 val separation = hypot(maxOf(gapX, 0f).toDouble(), maxOf(gapY, 0f).toDouble()).toFloat()
@@ -115,6 +122,34 @@ object SnapLayout {
             }
         }
         return reasons
+    }
+
+    /**
+     * [footprint]'s rectangle read in [reference]'s own two axes: the four
+     * corners are carried into the reference's frame the way each joint's own
+     * geometry is, so two rectangles facing opposite ways are compared where
+     * they really are.
+     */
+    private fun rectIn(footprint: Footprint, reference: Footprint): SeamRect {
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        for (column in 0..1) {
+            for (row in 0..1) {
+                val x = if (column == 0) footprint.rect.minX else footprint.rect.maxX
+                val y = if (row == 0) footprint.rect.minY else footprint.rect.maxY
+                val point = footprint.anchor + footprint.side * x + footprint.rise * y
+                val delta = point - reference.anchor
+                val u = delta.dot(reference.side)
+                val v = delta.dot(reference.rise)
+                minX = minOf(minX, u)
+                maxX = maxOf(maxX, u)
+                minY = minOf(minY, v)
+                maxY = maxOf(maxY, v)
+            }
+        }
+        return SeamRect(minX, maxX, minY, maxY)
     }
 
     /** The clear distance between two spans on one axis: negative when they cross. */

@@ -73,7 +73,9 @@ class SnapJointTest {
         // A tall low half under a sub-millimetre lid: a beam asking to sit in
         // the lid has less than a millimetre of material to cross, and even the
         // lightest rung needs its ramp's run plus clearance beyond that, so the
-        // chosen half genuinely cannot take it.
+        // chosen half genuinely cannot take it. (The lid's own joint can carry
+        // no tooth either, and says so rather than claiming a click:
+        // SnapLadderReportingTest pins that down.)
         val lowMesh = MeshFixtures.box(0f, 0f, 0f, 40f, 40f, 40f)
         val highMesh = MeshFixtures.box(0f, 0f, 40f, 40f, 40f, 40.8f)
         val low = SnapFitHalf.inPlace(lowMesh, 40f)

@@ -177,13 +177,37 @@ object SnapSpread {
      */
     fun anchorRoomFor(joint: SnapFitJoint): AnchorRoom {
         val dimensions = joint.dimensions
-        val halfRise = maxOf(dimensions.beamThicknessMm, dimensions.keySizeMm) * 0.5f
+        val half = dimensions.beamThicknessMm * 0.5f
+        // The tooth's own reach, not half of whatever happens to be the widest
+        // parameter: the hook stands a whole lip proud of the beam on ONE side -
+        // the side it faces - and the material has to be there for it. A room
+        // centred on the beam let the spread anchor joints whose barb hung over
+        // the edge of the seam.
+        val reach = half + dimensions.lipDepthMm
+        val up = if (dimensions.facing == SnapFacing.SAME) reach else half
+        val down = if (dimensions.facing == SnapFacing.SAME) half else reach
         return AnchorRoom(
             minX = -dimensions.beamWidthMm * 0.5f,
             maxX = dimensions.keyOffsetMm + dimensions.keySizeMm * 0.5f,
-            minY = -halfRise,
-            maxY = halfRise,
+            minY = -down,
+            maxY = up,
         )
+    }
+
+    /**
+     * The same room read in the seam's own axes, which is the frame [rim]'s grid
+     * is in.
+     *
+     * A joint built for the half the chosen one refused walks the assembly
+     * direction the other way, and its own side axis turns round with it, so the
+     * room has to be mirrored across the anchor before it is laid over the grid:
+     * the spread was measuring where the key would land on the other side of the
+     * joint entirely.
+     */
+    fun anchorRoomIn(rim: SeamRim, joint: SnapFitJoint): AnchorRoom {
+        val room = anchorRoomFor(joint)
+        if (joint.frame.side.dot(rim.side) >= 0f) return room
+        return AnchorRoom(minX = -room.maxX, maxX = -room.minX, minY = room.minY, maxY = room.maxY)
     }
 
     /**
@@ -220,7 +244,7 @@ object SnapSpread {
             }
         }
         if (deepest <= 0f) return rim.rimPoints
-        val room = anchorRoomFor(joint)
+        val room = anchorRoomIn(rim, joint)
         // The room is rounded OUTWARD to whole cells: a cell that only part of
         // the joint stands on is a cell the joint needs, and rounding the other
         // way left the key's far corner in a cell nobody had checked.
@@ -285,7 +309,17 @@ object SnapSpread {
         // refuses: two anchors a joint's own diameter apart can still have
         // their pockets cross when they sit diagonally, and the user is left
         // holding a spread they cannot join.
-        val room = SnapLayout.footprintOf(joint).rect
+        // The packing runs on the guard's own rule, in the SEAM's own axes: the
+        // joint's real footprint - what the guard will compare - carried over
+        // from the joint's frame, which can be turned round from the rim's. A
+        // spread sampled on anything smaller proposes placements the guard then
+        // refuses, which is what a spread the user cannot join looks like.
+        val footprint = SnapLayout.footprintOf(joint).rect
+        val room = if (joint.frame.side.dot(rim.side) >= 0f) {
+            footprint
+        } else {
+            SnapLayout.SeamRect(-footprint.maxX, -footprint.minX, footprint.minY, footprint.maxY)
+        }
         val wall = joint.dimensions.beamThicknessMm
         // The rim's own middle: the first joint goes as near it as the rim
         // allows, which is a point that exists by construction - and as near it

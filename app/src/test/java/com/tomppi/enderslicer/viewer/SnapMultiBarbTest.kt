@@ -178,8 +178,11 @@ class SnapMultiBarbTest {
             socket.any { abs(it.z + ramped.dimensions.matingClearanceMm) < 1e-3f && abs(it.y - (roof + run)) < 1e-3f },
         )
         assertTrue(
-            "and closes back onto the slot at the chamfer's own run",
-            socket.any { abs(it.z - run) < 1e-3f && abs(it.y - roof) < 1e-3f },
+            "and closes onto the land the pawl's face is cut into",
+            socket.any {
+                abs(it.z - (ramped.dimensions.pawlMm - ramped.dimensions.pawlLandMm)) < 1e-3f &&
+                    abs(it.y - roof) < 1e-3f
+            },
         )
         assertTrue(
             "which is where the pawl's step begins",

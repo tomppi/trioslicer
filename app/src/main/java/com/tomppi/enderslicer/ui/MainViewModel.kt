@@ -3441,10 +3441,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             PlateThreeMfWriter.write(
                                 file = staging,
                                 entries = snapshot.models.map { model ->
+                                    val prepared = model.staged()
                                     PlateThreeMfWriter.Entry(
                                         name = model.name,
-                                        mesh = model.stagedMesh(),
-                                        paint = model.supportPaint,
+                                        mesh = prepared.mesh,
+                                        paint = prepared.paint,
                                     )
                                 },
                                 dialect = if (sliceEngine == SlicerEngine.PRUSA) {
@@ -3460,14 +3461,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 // PrusaSlicer and OrcaSlicer read paint from the model file
                                 // itself, so a painted object has to reach them as 3MF or the
                                 // paint is silently dropped.
-                                val file = if (slicerFork && !model.supportPaint.isEmpty) {
+                                val prepared = model.staged()
+                                val file = if (slicerFork && !prepared.paint.isEmpty) {
                                     File(stagingDirectory, "model-$index.3mf").also { staged ->
                                         // The dialect is the engine's, not a default: the two forks
                                         // read paint from differently named attributes, and the
                                         // Prusa one only through the loader its stamp selects.
                                         PaintedMeshWriter.write(
-                                            mesh = model.stagedMesh(),
-                                            paint = model.supportPaint,
+                                            mesh = prepared.mesh,
+                                            paint = prepared.paint,
                                             destination = staged,
                                             dialect = if (sliceEngine == SlicerEngine.PRUSA) {
                                                 PlateThreeMfWriter.Dialect.PRUSA_LEGACY
@@ -3478,10 +3480,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 } else {
                                     File(stagingDirectory, "model-$index.stl").also { staged ->
-                                        StlMeshWriter.writeBinary(model.stagedMesh(), staged)
+                                        StlMeshWriter.writeBinary(prepared.mesh, staged)
                                     }
                                 }
-                                SliceModel(file = file, name = model.name, supportPaint = model.supportPaint)
+                                SliceModel(file = file, name = model.name, supportPaint = prepared.paint)
                             }
                         }
                         val transformedFile = plate.first().file
@@ -4088,18 +4090,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * What is staged for the engine: the placed mesh with everything below the
-     * bed cut away at Z=0 (see [BedClipper]).
+     * bed cut away at Z=0 (see [BedClipper]), and the paint read against that
+     * mesh.
      *
      * The viewer keeps the unclipped mesh, so the user still sees the part they
      * are cutting and can drag the model back up. A model with nothing above the
      * bed has no geometry to stage - the callers refuse it before reaching here.
      */
-    private fun PlateObject.stagedMesh(): StlMesh {
-        if (mesh.bounds.minZ >= 0f) return mesh
-        val clipped = BedClipper.clipToBed(mesh)
-        check(clipped.triangleCount > 0) { name + " has no geometry above the bed to slice" }
-        return clipped
+    private fun PlateObject.staged(): StagedModel {
+        if (mesh.bounds.minZ >= 0f) return StagedModel(mesh, supportPaint)
+        val clipped = BedClipper.clipToBedWithSources(mesh)
+        check(clipped.mesh.triangleCount > 0) { name + " has no geometry above the bed to slice" }
+        // Paint is indices into the mesh the VIEWER draws; the engine is handed
+        // the clipped one, where every triangle above the cut has been renamed
+        // and the ones below it are gone. Read through the clip's own record,
+        // the paint lands on the triangles the user actually painted - and no
+        // painted index can fall outside the staged mesh.
+        val paint = clipped.sourceTriangles?.let(supportPaint::throughClip)
+            ?: supportPaint.clippedToMesh(clipped.mesh.triangleCount)
+        return StagedModel(clipped.mesh, paint)
     }
+
+    /** A placed model as the engine is handed it: the staged mesh and its paint. */
+    private class StagedModel(val mesh: StlMesh, val paint: SupportPaintState)
 
     /**
      * Puts the model back where it was before the last placement change.

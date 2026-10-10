@@ -214,6 +214,17 @@ object SnapFit {
             val askedLip = parameters.lipDepthOverrideMm
                 ?: minOf(parameters.lipDepthMm, parameters.beamThicknessMm * 0.5f) * scale
             val lipDepth = minOf(askedLip, lipCeiling)
+            // How far the pawl has to push the beam aside: the tooth's own
+            // height less the clearance it already has all round it.
+            val sink = maxOf(0f, lipDepth - lipClearance)
+            // A tooth the clearance is as deep as is not a tooth: the pawl meets
+            // nothing to hold. Below about a 3.3 mm seam the beam is thinner than
+            // the clearance around it and the engagement is zero or negative -
+            // the two halves close and hold nothing at all. The joint is still
+            // built, because the user is the one who decides what he prints, but
+            // it advertises NO click and says which numbers did it.
+            val engagement = lipDepth - lipClearance
+            val holds = engagement >= MIN_ENGAGEMENT_MM - CLAMP_EPSILON_MM
             // Leave a wall of at least a beam-thickness beyond the beam's tip,
             // and the same below its root.
             val wall = beamThickness
@@ -236,7 +247,13 @@ object SnapFit {
             if (beamLength <= leadRun + lipClearance) return null
 
             val half = beamThickness * 0.5f
-            val withKey = rung != SnapFitRung.MINIMAL
+            // A rung that carries a key only when the key really fits. The
+            // ladder already refuses the keyed rung when it does not, but a
+            // rung the USER pinned walks straight past that decision - and a key
+            // that cannot fit is not a key: it cut a through-hole in the mate
+            // (2.24 x 2.24 mm of it) and its socket hung in mid-air. The
+            // override still stands, and what it had to leave out is reported.
+            val withKey = rung != SnapFitRung.MINIMAL && keyFits
             val withPad = rung == SnapFitRung.FULL
             val stepRoot = minOf(beamRoot, STEP_ROOT_FRACTION * ownDepth)
             val rimmed = if (withPad) faceOverlap?.inset(stepRim) else null
@@ -246,6 +263,21 @@ object SnapFit {
             // slider that stops moving without saying why is worse than no
             // slider, so every clamp travels with the joint.
             val clamps = ArrayList<SnapFitClamp>()
+            // What a pinned rung had to leave out, in the user's own terms. The
+            // override is kept - the user is responsible for the result - but a
+            // key or a pad that could not fit is not built, and the panel is told
+            // rather than shown a joint that only looks complete.
+            val omitted = ArrayList<String>()
+            if (!withKey && rung != SnapFitRung.MINIMAL) {
+                omitted += keyWhy
+                clamps += SnapFitClamp(
+                    label = "key",
+                    askedMm = keySize,
+                    actualMm = 0f,
+                    reason = keyWhy + "; the key was left off and the joint is the cantilever alone",
+                )
+            }
+            if (withPad && !padFits) omitted += padWhy
 
             // ------------------------------------------------- one pawl, N teeth
             // The ratchet the notes settled on: SEVERAL TEETH on the beam and
@@ -309,6 +341,52 @@ object SnapFit {
                         millimetres(lipDepth) + " mm",
                 )
             }
+            // ------------------------------------------------- the pawl's own land
+            // ONE PAWL means the narrow part of the pocket is only as long as the
+            // pawl itself. The teeth BEHIND the caught one stand in the channel
+            // between the mouth and the pawl; with that channel narrow they can
+            // not stand there at all, the beam has to be held down by the whole
+            // sink to keep them under it, and a cantilever bends further the
+            // further out it is - so the tooth the pawl is actually holding drops
+            // below the pawl by at least as much and the click holds with NO
+            // engagement at all. The channel behind the pawl is therefore wide
+            // enough for a tooth to stand up in, and only the land the pawl's
+            // face is cut into is narrow. The land can be no longer than the room
+            // the next tooth's ramp leaves: at a click that tooth's low end
+            // stands a sink in front of the pawl and its ramp climbs back from
+            // there, so a land reaching more than lipClearance * leadRun /
+            // lipDepth past that point presses on the tooth behind it and the
+            // click stops holding again.
+            val landCeiling = sink + lipClearance * leadRun / lipDepth
+            val pawlLand = PAWL_LAND_SHARE * landCeiling
+            // The pocket's own mouth is where the land ends if the pawl sits
+            // nearer the face than the land is long.
+            val landStart = maxOf(pawl - pawlLand, -matingClearance)
+            val chamferAngle = parameters.mouthChamferDeg
+            val chamferWanted = half + lipDepth + lipClearance - (half + lipClearance)
+            val chamferRoom = landStart + matingClearance
+            val chamferDepth = if (parameters.socketRamp) {
+                minOf(chamferWanted, chamferRoom * tan(chamferAngle * DEGREES_TO_RADIANS))
+            } else {
+                0f
+            }
+            val chamferRun = if (chamferDepth > 0f) {
+                chamferDepth / tan(chamferAngle * DEGREES_TO_RADIANS)
+            } else {
+                0f
+            }
+            if (parameters.socketRamp && chamferDepth < chamferWanted - CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "socket ramp",
+                    askedMm = chamferWanted,
+                    actualMm = chamferDepth,
+                    reason = "the land behind the pawl is only " + millimetres(chamferRoom) +
+                        " mm in from the pocket's mouth, so the socket's lead-in is " +
+                        millimetres(chamferDepth) + " mm deep instead of " +
+                        millimetres(chamferWanted) + " mm",
+                )
+            }
+
             // ------------------------------------------------- the deflection room
             // The pawl rides the tooth's ramp and pushes the beam bodily aside
             // by the tooth's own height less the clearance it already has; the
@@ -319,7 +397,6 @@ object SnapFit {
             // the beam needs - and a ceiling that bites is a clamp with a
             // sentence, never a silent jam.
             val facingSign = parameters.facing.sign
-            val sink = maxOf(0f, lipDepth - lipClearance)
             val roomAsked = sink + lipClearance
             val mateRise = span(socketHalf, rise)
             val anchorRise = anchorMm.dot(rise)
@@ -342,32 +419,17 @@ object SnapFit {
             }
 
             // ------------------------------------------------- the socket's ramp
-            // The mouth chamfer: a funnel that opens at the mating face and
-            // closes onto the pawl, so the lead-in lives in the hole. Its wall
-            // makes [mouthChamferDeg] with the assembly axis - 45 degrees is the
-            // printable limit for an overhanging roof, and it is what lets a
-            // square-faced hook cam in and therefore a joint face either way.
-            val chamferAngle = parameters.mouthChamferDeg
-            val chamferDepth = if (parameters.socketRamp) {
-                minOf(lipDepth, pawl * tan(chamferAngle * DEGREES_TO_RADIANS))
-            } else {
-                0f
-            }
-            val chamferRun = if (chamferDepth > 0f) {
-                chamferDepth / tan(chamferAngle * DEGREES_TO_RADIANS)
-            } else {
-                0f
-            }
-            if (parameters.socketRamp && chamferDepth < lipDepth - CLAMP_EPSILON_MM) {
-                clamps += SnapFitClamp(
-                    label = "socket ramp",
-                    askedMm = lipDepth,
-                    actualMm = chamferDepth,
-                    reason = "the pawl is only " + millimetres(pawl) + " mm in from the mating face, so the " +
-                        "mouth chamfer is " + millimetres(chamferDepth) + " mm deep instead of " +
-                        millimetres(lipDepth) + " mm",
-                )
-            }
+            // The lead-in lives in the hole rather than on the hook: a funnel
+            // that reaches from the wide channel down onto the land the pawl's
+            // face is cut into, which is the one place a square-faced hook has to
+            // be pushed down. Its wall makes [mouthChamferDeg] with the assembly
+            // axis - 45 degrees is the printable limit for an overhanging roof -
+            // and it is what lets a square-faced hook cam in and therefore a
+            // joint face either way. It sits in FRONT of the land, not at the
+            // pocket's mouth: the channel the hook enters by is already wide
+            // enough for a tooth to stand in, so there is nothing there to cam
+            // against, and a funnel at the mouth would only let the hook spring
+            // back up before it reached the step.
 
             // The root strain a full deflection puts on the cantilever:
             // eps = 3 h d / (2 L^2) for a rectangular beam of thickness h
@@ -380,7 +442,19 @@ object SnapFit {
             // What the panel names: which click the joint is holding at, from
             // the first (the tooth nearest the tip, caught with the halves still
             // apart) to the seated one on the deepest catch.
-            val clicks = List(barbs) { index ->
+            if (!holds) {
+                clamps += SnapFitClamp(
+                    label = "tooth engagement",
+                    askedMm = MIN_ENGAGEMENT_MM,
+                    actualMm = engagement,
+                    reason = "the material only takes a " + millimetres(beamThickness) +
+                        " mm hook, whose tooth stands " + millimetres(lipDepth) +
+                        " mm proud against the " + millimetres(lipClearance) +
+                        " mm of clearance around it: " + millimetres(engagement) +
+                        " mm of engagement, so the pawl has nothing to catch. Thicken the part, or lower the clearance.",
+                )
+            }
+            val clicks = if (!holds) emptyList() else List(barbs) { index ->
                 val order = index + 1
                 SnapClick(
                     order = order,
@@ -421,6 +495,7 @@ object SnapFit {
                 toothPitchMm = pitch,
                 teethCatchMm = catches,
                 pawlMm = pawl,
+                pawlLandMm = pawlLand,
                 clickGapMm = clicks.map { it.gapMm },
                 deflectionMm = deflection,
                 deflectionRoomMm = room,
@@ -488,19 +563,27 @@ object SnapFit {
             pocket(floor, pocketEnd)
             pocket(wideRoof, pocketEnd)
             // The pawl: the one step the mate carries, at the deepest catch.
-            // Mouth-side of it the pocket is one clearance off the beam; beyond
-            // it the pocket is wide enough for a tooth to stand up in.
+            // Beyond it the pocket is wide enough for a tooth to stand up in, and
+            // the step itself is only the land its face is cut into - mouth-side
+            // of the land the channel is wide again, so a tooth BEHIND the one
+            // being caught stands there without the beam having to bend for it.
             pocket(wideRoof, pawl)
             pocket(narrowRoof, pawl)
+            pocket(narrowRoof, landStart)
             if (chamferDepth > 0f) {
-                // The mouth chamfer, opening at the mating face and closing onto
-                // the pawl at the parameter's angle.
-                pocket(narrowRoof, chamferRun)
-                pocket(narrowRoof + chamferDepth, 0f)
-                pocket(narrowRoof + chamferDepth, -matingClearance)
+                // The socket's lead-in, reaching from the wide channel down onto
+                // the land at the parameter's angle, so a square-faced hook is
+                // cammed down before it meets the step.
+                pocket(narrowRoof + chamferDepth, landStart - chamferRun)
             } else {
-                pocket(narrowRoof, -matingClearance)
+                // No lead-in in the hole: the land's mouth-side face is a square
+                // step, and the channel behind it is the wide one a tooth stands
+                // up in. Sloping this instead would roof the channel at the
+                // tooth's own height and the teeth behind the caught one would
+                // press on it again.
+                pocket(wideRoof, landStart)
             }
+            pocket(wideRoof, -matingClearance)
             addPrism(socket, socketFrame, socketProfile, Vec3(1f, 0f, 0f), beamWidth + 2f * lipClearance)
             if (withKey) {
                 // The key's socket, the key plus the key's own clearance.
@@ -544,7 +627,7 @@ object SnapFit {
                 socketHalf.placed(socketFrame),
                 dimensions,
                 rung,
-                null,
+                omitted.takeIf { it.isNotEmpty() }?.joinToString("; "),
                 clamps,
                 clicks,
             )
@@ -560,7 +643,9 @@ object SnapFit {
         }
         for (rung in rungs) {
             val joint = buildRung(rung) ?: continue
-            return joint.copy(rungReason = rungReason(rung, ladder))
+            // A pinned rung's own reason (what the material made it leave out)
+            // wins over the ladder's: there is no fuller rung to explain away.
+            return joint.copy(rungReason = joint.rungReason ?: rungReason(rung, ladder))
         }
         return null
     }
@@ -1108,6 +1193,13 @@ object SnapFit {
     /** Below this, a ceiling and the value it clamped are the same number. */
     private const val CLAMP_EPSILON_MM = 1e-3f
 
+    /**
+     * A tooth this proud of the clearance around it is a tooth: below it the
+     * pawl has nothing to catch, the two halves close, and the joint holds
+     * nothing at all - which is what a seam under about 3.3 mm thick does.
+     */
+    const val MIN_ENGAGEMENT_MM = 0.02f
+
     /** A lead-in this steep is square: the hook has no ramp of its own. */
     const val SQUARE_LEAD_IN_DEG = 90f
 
@@ -1120,8 +1212,18 @@ object SnapFit {
     /** What the panel calls the deepest catch: the engagement the joint is designed for. */
     const val SEATED_CLICK = "seated - tight"
 
+    /** What the panel says instead of a click when the tooth cannot hold at all. */
+    const val NO_ENGAGEMENT = "no click - the tooth is not proud of its clearance"
+
     /** The deepest catch has to sit this far inside the pocket to be a catch at all. */
     private const val MIN_DEEPEST_CATCH_MM = 0.4f
+
+    /**
+     * How much of the pawl's own window the narrow land takes. The window is
+     * bounded by the next tooth's ramp; leaving a share of it unused is what
+     * keeps the tooth behind the caught one clear of the step at every click.
+     */
+    private const val PAWL_LAND_SHARE = 0.6f
 
     /** The tightest clearance worth cutting: below this FDM cannot resolve the fit. */
     const val MIN_CLEARANCE_MM = 0.05f
@@ -1479,6 +1581,12 @@ data class SnapFitDimensions(
     val teethCatchMm: List<Float>,
     /** The mate's single step, along the axis from the mating plane. */
     val pawlMm: Float,
+    /**
+     * How long the narrow land the pawl's face is cut into is, along the axis.
+     * Mouth-side of it the pocket is wide enough for a tooth to stand in, which
+     * is what lets every click but the seated one hold.
+     */
+    val pawlLandMm: Float,
     /** The gap between the mating faces at each click, in the same order as [teethCatchMm]. */
     val clickGapMm: List<Float>,
     /**
@@ -1571,6 +1679,13 @@ data class SnapFitJoint(
     /** The click the joint is designed to be used at: the deepest catch. */
     val seatedClick: SnapClick? get() = clicks.lastOrNull()
 
+    /**
+     * Whether this joint holds at all: false when the tooth is not proud of the
+     * clearance around it, which is what a seam under about 3.3 mm gives. Such a
+     * joint carries no clicks, so nothing claims a hold it does not have.
+     */
+    val holds: Boolean get() = clicks.isNotEmpty()
+
     /** The one line the panel shows for where the joint is holding. */
     val clickSummary: String
         get() = seatedClick?.let { seated ->
@@ -1580,7 +1695,7 @@ data class SnapFitJoint(
                 } else {
                     ""
                 }
-        } ?: "one click"
+        } ?: SnapFit.NO_ENGAGEMENT
 
     private fun millimetres(value: Float): String =
         String.format(java.util.Locale.ROOT, "%.2f", value)

@@ -169,21 +169,23 @@ class SnapFitTest {
             mouth.maxOf { it.x } - mouth.minOf { it.x },
             1e-4f,
         )
-        // Through, the pocket is the beam plus its clearance on the barb's own
-        // side and the beam PLUS THE ROOM IT BENDS THROUGH on the other: the
-        // pawl pushes the tooth down by its own height less the clearance it
-        // already has, and the whole free length dips with it. Without that
-        // room the beam is pressed into the pocket's floor on the way in and
-        // the joint never closes.
+        // Through, the channel is wide enough for a tooth to stand in - which
+        // is what lets the teeth BEHIND the caught one hold their clicks - and
+        // the beam PLUS THE ROOM IT BENDS THROUGH below: the pawl pushes the
+        // tooth down by its own height less the clearance it already has, and
+        // the whole free length dips with it. Without that room the beam is
+        // pressed into the pocket's floor on the way in and the joint never
+        // closes.
         assertEquals(
-            "and through: clearance above, the deflection room below",
-            dimensions.beamThicknessMm + dimensions.lipClearanceMm + dimensions.deflectionRoomMm,
+            "the channel is as tall as a tooth plus its clearance, over the deflection room",
+            dimensions.beamThicknessMm + dimensions.lipDepthMm + dimensions.lipClearanceMm +
+                dimensions.deflectionRoomMm,
             mouth.maxOf { it.y } - mouth.minOf { it.y },
             1e-4f,
         )
         assertEquals(
-            "the roof is one clearance off the beam",
-            dimensions.beamThicknessMm * 0.5f + dimensions.lipClearanceMm,
+            "the channel's roof is the tooth's own height plus clearance",
+            dimensions.beamThicknessMm * 0.5f + dimensions.lipDepthMm + dimensions.lipClearanceMm,
             mouth.maxOf { it.y },
             1e-4f,
         )
@@ -192,6 +194,19 @@ class SnapFitTest {
             -(dimensions.beamThicknessMm * 0.5f + dimensions.deflectionRoomMm),
             mouth.minOf { it.y },
             1e-4f,
+        )
+        // The NARROW roof exists in one place only: the land the pawl's face is
+        // cut into. Everywhere else a tooth stands at its own height.
+        val socketVertices = localVertices(joint.subtractSolid, joint.frame).filter {
+            abs(it.x) <= dimensions.beamWidthMm * 0.5f + dimensions.lipClearanceMm + 1e-4f
+        }
+        val landStart = dimensions.pawlMm - dimensions.pawlLandMm
+        assertTrue(
+            "the land starts where the relief ends, one clearance off the beam",
+            socketVertices.any {
+                abs(it.z - landStart) < 1e-3f &&
+                    abs(it.y - (dimensions.beamThicknessMm * 0.5f + dimensions.lipClearanceMm)) < 1e-3f
+            },
         )
         assertTrue(
             "which is at least what the tooth has to sink: " + dimensions.deflectionRoomMm,
@@ -559,7 +574,16 @@ class SnapFitTest {
         assertEquals(SnapFitRung.FULL, joint!!.rung)
         assertTrue("with the whole-seam pad", joint.registrationSolid.triangleCount > 0)
         assertTrue("and its recess", joint.registrationRecess.triangleCount > 0)
-        assertNull("and nothing to explain away", joint.rungReason)
+        // What the material made it leave out is reported rather than built: a
+        // key whose socket would stand over the void is not a key.
+        assertNotNull("and it says what was left out: " + joint.rungReason, joint.rungReason)
+        assertTrue("in the user's terms: " + joint.rungReason, joint.rungReason!!.contains("key"))
+        assertEquals(
+            "so no key stands past the beam",
+            joint.dimensions.beamWidthMm * 0.5f,
+            localVertices(joint.unionSolid, joint.frame).maxOf { it.x },
+            1e-3f,
+        )
     }
 
     /**
