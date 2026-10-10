@@ -42,6 +42,8 @@ the token on the clipboard; paste it to the agent and nothing needs root at all.
 for it before reaching for `su`** - it is one tap, and it is the difference between a workflow
 that needs a rooted phone and one that works on any phone with wireless debugging.
 
+The boundary behind it - what holding a token grants, its limits, how to rotate it - is in [MCP_TOKEN_SECURITY.md](../MCP_TOKEN_SECURITY.md).
+
 The order that works:
 
 1. The user opens the CAD menu and taps **Copy MCP token**, then pastes it to you.

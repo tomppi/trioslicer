@@ -46,6 +46,13 @@
         <exclude domain="file" path="gcodes/" />
         <exclude domain="file" path="klipper-host/" />
         <exclude domain="file" path="printer-pty" />
+        <!-- And the CAD engine's tree: the engine's home, its Python packages and
+             its exports, ~570 MB across 13,000 files, with cad_mcp_token.txt - the
+             32-byte bearer secret for port 9877 - among them. Holding that token
+             means running arbitrary Python as this app, so it must not leave the
+             device; the replacement extracts the tree from the app's assets again
+             and writes a fresh token beside it. -->
+        <exclude domain="file" path="cad/" />
     </cloud-backup>
     <device-transfer>
         <!-- As in the cloud-backup rules above: the OctoPrint credential is
@@ -79,5 +86,11 @@
         <exclude domain="file" path="logs/" />
         <exclude domain="file" path="annotations/" />
         <exclude domain="file" path="crash.log" />
+        <!-- And the CAD engine's tree: the engine's home, its Python packages and
+             its exports, ~570 MB across 13,000 files, with cad_mcp_token.txt - the
+             32-byte bearer secret for port 9877 - among them. Holding that token
+             means running arbitrary Python as this app, so a replacement device
+             gets the tree from the app's assets again and mints its own. -->
+        <exclude domain="file" path="cad/" />
     </device-transfer>
 </data-extraction-rules>

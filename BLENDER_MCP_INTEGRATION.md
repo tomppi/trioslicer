@@ -164,7 +164,8 @@ Call sites, as built:
 - The socket needs the token the app writes next to the addon
   (`scripts/startup/blender_mcp_token.txt`). Without it any co-installed app could
   reach 127.0.0.1:9876 and run Python as this app's uid. An engine started by hand
-  with no token file stays open, which is the development path.
+  with no token file refuses to serve; the boundary is in
+  [docs/MCP_TOKEN_SECURITY.md](docs/MCP_TOKEN_SECURITY.md).
 
 Example:
 

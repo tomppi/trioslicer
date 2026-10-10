@@ -236,6 +236,7 @@ reviewer has to bring.
 - Non-planar slicing: [non-planar.md](non-planar.md)
 - Multi-object printing: [multi-object-printing.md](multi-object-printing.md)
 - OctoPrint: [octoprint-integration.md](octoprint-integration.md)
+- Engine MCP tokens - what one grants, how to check it and how it rotates: [MCP_TOKEN_SECURITY.md](MCP_TOKEN_SECURITY.md)
 - The assistant and its harness: [AI_ASSISTANT.md](../AI_ASSISTANT.md), [skills/](skills/)
 - UI conventions: [ui-style-guide.md](ui-style-guide.md)
 - Audit and quality records: [quality-pass-audit.md](quality-pass-audit.md), [bug-audit.md](bug-audit.md)

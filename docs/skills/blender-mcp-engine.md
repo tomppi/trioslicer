@@ -45,6 +45,8 @@ Plain TCP, one JSON object per request. Either a single write with no terminator
 adb -s <phone-tailscale-ip>:5555 shell cat /data/user/0/com.tomppi.enderslicercura/files/blender/scripts/startup/blender_mcp_token.txt
 ```
 
+What the token is worth - what holding it grants, its limits, how to rotate it - is in [MCP_TOKEN_SECURITY.md](../MCP_TOKEN_SECURITY.md).
+
 **On a phone without root** the token cannot be read from the device at all: tap **Blender → Copy MCP token** in the app, paste that value to the agent, and send it with every request. The app marks the clip sensitive so the system does not preview it.
 
 There is no `su` binary to call on this build. With rooted debugging enabled adbd already runs as

@@ -162,6 +162,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [keystore/README.md](keystore/README.md) - the release key and how to verify a downloaded APK
 - [Calibrating the input shaper with a phone](docs/INPUT_SHAPING.md)
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine
+- [docs/MCP_TOKEN_SECURITY.md](docs/MCP_TOKEN_SECURITY.md) - what an engine token grants, how to check one, and what was considered and declined
 - [docs/KLIPPER_UI.md](docs/KLIPPER_UI.md) - the printer's screens, KAMP among them, and what each reads from klippy
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
 - [webviewdp](https://github.com/tomppi/webviewdp) - a minimal Android WebView app that wraps a harness's own web UI for the same phone

@@ -40,4 +40,11 @@
     <exclude domain="file" path="logs/" />
     <exclude domain="file" path="annotations/" />
     <exclude domain="file" path="crash.log" />
+    <!-- And the CAD engine's tree: the engine's home, its Python packages and its
+         exports, ~570 MB across 13,000 files, with cad_mcp_token.txt - the 32-byte
+         bearer secret for port 9877 - among them. Holding that token means running
+         arbitrary Python as this app, so it must not ride into a backup. The tree
+         is not lost by excluding it: the new device extracts it from the app's
+         assets again, and the token beside it is written anew. -->
+    <exclude domain="file" path="cad/" />
 </full-backup-content>
