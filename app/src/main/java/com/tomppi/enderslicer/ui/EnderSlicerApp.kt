@@ -1342,7 +1342,18 @@ fun EnderSlicerApp(
                                             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
                                             onClick = {
                                                 blenderMenuExpanded = false
-                                                copyMcpToken(context)
+                                                // Blender's token is generated on first use, so
+                                                // this call site asks the engine for it; the CAD
+                                                // engine writes its own when it starts, so the CAD
+                                                // item below only reads.
+                                                BlenderEngine.ensureToken(File(context.filesDir, "blender"))
+                                                copyMcpToken(
+                                                    context = context,
+                                                    tokenFile = BlenderEngine.tokenFile(
+                                                        File(context.filesDir, "blender"),
+                                                    ),
+                                                    clipLabel = "Blender MCP token",
+                                                )
                                             },
                                             enabled = !state.isBusy,
                                         )
@@ -1392,6 +1403,25 @@ fun EnderSlicerApp(
                                             onClick = {
                                                 cadMenuExpanded = false
                                                 openCad()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        // The same handover as the Blender menu's item, for this
+                                        // engine's own token: the CAD engine can be driven from
+                                        // outside the app on a phone without root, and its token
+                                        // file is as unreadable from outside as Blender's is.
+                                        DropdownMenuItem(
+                                            text = { Text("Copy MCP token") },
+                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                copyMcpToken(
+                                                    context = context,
+                                                    tokenFile = CadEngine.tokenFile(
+                                                        File(context.filesDir, "cad"),
+                                                    ),
+                                                    clipLabel = "CAD MCP token",
+                                                )
                                             },
                                             enabled = !state.isBusy,
                                         )
@@ -2459,22 +2489,27 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
 
 /** More hub: grouped navigation to everything outside the plate. */
 /**
- * Puts the Blender engine's token on the clipboard so a modelling agent can be
- * given it directly.
+ * Puts an engine's MCP token on the clipboard so a modelling agent can be given
+ * it directly.
  *
  * The token file sits in app-private storage and the engine refuses every
  * command, ping included, without it. On a phone without root there is no way
  * to read that file from outside, which is exactly what the token is for, so the
  * app hands it over instead - marked sensitive so Android keeps it out of the
  * clipboard preview.
+ *
+ * Only the file named by the caller is read, and nothing is created here:
+ * BlenderEngine.ensureToken generates Blender's token on demand while CadEngine
+ * writes the CAD one when it starts, so an engine that never started has none,
+ * which is what "not available yet" reports.
  */
-private fun copyMcpToken(context: Context) {
-    val token = BlenderEngine.ensureToken(File(context.applicationContext.filesDir, "blender"))
+private fun copyMcpToken(context: Context, tokenFile: File, clipLabel: String) {
+    val token = runCatching { tokenFile.takeIf { it.isFile }?.readText()?.trim() }.getOrNull()
     if (token.isNullOrBlank()) {
         Toast.makeText(context, "The MCP token is not available yet", Toast.LENGTH_SHORT).show()
         return
     }
-    val clip = ClipData.newPlainText("Blender MCP token", token)
+    val clip = ClipData.newPlainText(clipLabel, token)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         clip.description.extras = PersistableBundle().apply {
             putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)

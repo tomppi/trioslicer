@@ -43,7 +43,7 @@ device; none of them misleads the user on its own.
 | R15 | dead wiring | `CadEngine.onRender` is declared and never assigned, `EnderSlicerApp.cadRender` is never read, and `CadViewport.loadPart/importPart` are uncalled |
 | R16 | `CadEngine.watchExports` | every `exports/*.png` is announced as "render ready", though only `viewport.png` is ever written there |
 | R17 | `CadEngine.kt:362-366` | the CAD engine cannot start until the Klipper payload has been extracted once; on a fresh install "Model with CAD" answers "the app's Python is not extracted yet" and only the printer screen or a USB attach fixes it |
-| R18 | `docs/skills/cad-engine.md` | says the token is copied from "Copy MCP token in the CAD menu" (no such item; the Blender menu's copy is the Blender token), calls the engine "inside the app process", lists SVG as importable, and calls the `execute_code` `scene` binding a dict |
+| R18 | `docs/skills/cad-engine.md` | calls the engine "inside the app process", lists SVG as importable, and calls the `execute_code` `scene` binding a dict. **Its first claim is resolved**: the CAD menu now has "Copy MCP token" (2026-10-10), so copying the CAD token no longer needs root, and it is the CAD token rather than Blender's |
 
 ## Not bugs, but worth knowing when reading the engine
 
