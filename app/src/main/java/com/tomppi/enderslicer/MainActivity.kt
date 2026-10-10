@@ -6,15 +6,21 @@ import android.content.pm.PackageManager
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -27,7 +33,10 @@ import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.IntegratedEnderSlicerApp
 import com.tomppi.enderslicer.ui.MainViewModel
+import com.tomppi.enderslicer.ui.OnboardingFlow
+import com.tomppi.enderslicer.ui.OnboardingScaleStep
 import com.tomppi.enderslicer.ui.OnboardingScreen
+import com.tomppi.enderslicer.ui.OnboardingStep
 import com.tomppi.enderslicer.ui.OnboardingStore
 import com.tomppi.enderslicer.ui.SlicerEngineStore
 import com.tomppi.enderslicer.ui.UiScale
@@ -79,45 +88,76 @@ class MainActivity : FragmentActivity() {
             var engine by remember { mutableStateOf(engineStore.load()) }
             EnderSlicerTheme(engine = engine) {
                 val state by slicerViewModel.uiState.collectAsStateWithLifecycle()
+                val onboardingStore = remember { OnboardingStore(applicationContext) }
                 // Read before the provider below: inside it LocalDensity is already scaled.
                 val deviceDensity = LocalDensity.current
                 var uiScalePercent by remember { mutableIntStateOf(UiScale.current()) }
+                // Applied on every change, persisted when the control commits: the
+                // first-run scale step resizes the plate as the thumb moves, the
+                // Settings sheet when the thumb is let go.
+                val onUiScaleChange: (Int, Boolean) -> Unit = { percent, commit ->
+                    uiScalePercent = UiScale.sanitize(percent)
+                    if (commit) UiScale.save(applicationContext, percent)
+                }
                 CompositionLocalProvider(
                     LocalDensity provides UiScale.scaled(deviceDensity, uiScalePercent),
                 ) {
-                    // First-run onboarding (skippable, one-shot): sets the machine
-                    // values that drive the engine and the build-plate viewer.
-                    var onboardingDone by remember {
-                        mutableStateOf(OnboardingStore(applicationContext).isComplete())
+                    // First-run setup: step 1 sets the machine, step 2 sets the
+                    // interface scale over the real plate, and only finishing step 2
+                    // writes the one-shot flag. An install that finished the old
+                    // skippable onboarding carries the same flag, so it starts at the
+                    // app and never sees the new step.
+                    var step by rememberSaveable {
+                        mutableStateOf(OnboardingFlow.initialStep(onboardingStore.isComplete()))
                     }
-                    if (!onboardingDone) {
-                        OnboardingScreen(
+                    when (step) {
+                        OnboardingStep.PRINT_SETUP -> OnboardingScreen(
                             state = state,
                             onSettings = slicerViewModel::updateSettings,
-                            onDone = {
-                                OnboardingStore(applicationContext).complete()
-                                onboardingDone = true
-                            },
+                            onContinue = { step = OnboardingFlow.advance(step) },
                         )
-                    } else {
-                        IntegratedEnderSlicerApp(
-                            slicerViewModel = slicerViewModel,
-                            octoPrintViewModel = octoPrintViewModel,
-                            klipperViewModel = klipperViewModel,
-                            engine = engine,
-                            onEngineChange = {
-                                engineStore.save(it)
-                                engine = it
-                                slicerViewModel.onEngineChanged()
-                            },
-                            uiScalePercent = uiScalePercent,
-                            onUiScaleChange = { percent, commit ->
-                                uiScalePercent = UiScale.sanitize(percent)
-                                // Persist on release only: a drag would otherwise
-                                // write a preference per frame.
-                                if (commit) UiScale.save(applicationContext, percent)
-                            },
-                        )
+                        else -> Box(modifier = Modifier.fillMaxSize()) {
+                            IntegratedEnderSlicerApp(
+                                slicerViewModel = slicerViewModel,
+                                octoPrintViewModel = octoPrintViewModel,
+                                klipperViewModel = klipperViewModel,
+                                engine = engine,
+                                onEngineChange = {
+                                    engineStore.save(it)
+                                    engine = it
+                                    slicerViewModel.onEngineChanged()
+                                },
+                                uiScalePercent = uiScalePercent,
+                                onUiScaleChange = onUiScaleChange,
+                            )
+                            if (step == OnboardingStep.SCALE) {
+                                OnboardingScaleStep(
+                                    currentPercent = uiScalePercent,
+                                    onScale = onUiScaleChange,
+                                    onDone = {
+                                        val next = OnboardingFlow.advance(step)
+                                        // Only the finished flow sets the flag.
+                                        if (OnboardingFlow.marksComplete(next)) {
+                                            onboardingStore.complete()
+                                        }
+                                        step = next
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    // Composed after the app, so while the first run is unfinished
+                    // this is the handler that answers Back.
+                    BackHandler(enabled = step != OnboardingStep.COMPLETE) {
+                        val back = OnboardingFlow.back(step)
+                        if (back == step) {
+                            Toast.makeText(
+                                applicationContext,
+                                "Finish the setup to start printing",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                        step = back
                     }
                 }
             }

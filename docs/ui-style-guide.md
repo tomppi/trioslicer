@@ -25,8 +25,11 @@ read that document before starting a new screen.
 - More > Printer is a full-screen destination with a back arrow (state
   `printerScreenOpen`); it opens the safety checklist + machine profile.
   Never turn it back into a modal sheet.
-- First-run onboarding is one-shot and skippable (OnboardingStore). It only
-  ever sets machine values that already live in SlicerSettings.
+- First-run onboarding is one-shot and cannot be skipped (OnboardingStore):
+  step 1 is the machine setup, step 2 is the interface scale set over the real
+  Plate. Back stays inside the flow, and only step 2 writes the `done` flag. It
+  only ever sets machine values that already live in SlicerSettings, plus the
+  UiScale preference.
 - Expanded layouts (maxWidth >= 600 dp, unfolded foldables) put the
   SessionRail - the four destinations, the session values and the
   Slice/Export/Model tools actions - beside the content, in place of the bottom
