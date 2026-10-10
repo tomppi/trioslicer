@@ -22,7 +22,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,7 +32,7 @@ import kotlinx.coroutines.delay
 private const val CORNER_ALERT_MILLIS = 30_000L
 
 /** Amber, because a safety warning is not a failure but must not read as one either. */
-private val WarningAmber = Color(0xFFFFB300)
+private val WarningAmber = WarnAmber
 
 /**
  * The corner of the model viewer, where a failure lands in red.

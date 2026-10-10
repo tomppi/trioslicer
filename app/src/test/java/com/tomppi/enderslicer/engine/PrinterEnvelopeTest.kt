@@ -1,5 +1,8 @@
 package com.tomppi.enderslicer.engine
 
+import com.tomppi.enderslicer.viewer.MeshBounds
+import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -152,6 +155,32 @@ class PrinterEnvelopeTest {
     }
 
     @Test
+    fun aPlacementMayHangBelowTheBedWhenTheCallerAllowsTheLossyCut() {
+        val dipping = mesh(floatArrayOf(0f, 0f, -5f, 10f, 0f, -5f, 0f, 10f, 10f))
+
+        // The default stays strict: the engine and the G-code still see nothing
+        // below the plate.
+        val refused = runCatching { rectangular(false).requireModelFits(dipping) }.exceptionOrNull()
+        assertTrue(refused is PrinterEnvelope.OutsideBuildVolumeException)
+
+        // A placement may, because the slice clips it at Z=0 and keeps the part
+        // above; the ceiling and the footprint are still enforced.
+        rectangular(false).requireModelFits(dipping, allowBelowBed = true)
+        val tooTall = mesh(floatArrayOf(0f, 0f, 0f, 10f, 0f, 0f, 0f, 10f, 251f))
+        assertTrue(
+            runCatching { rectangular(false).requireModelFits(tooTall, allowBelowBed = true) }
+                .exceptionOrNull() is PrinterEnvelope.OutsideBuildVolumeException,
+        )
+        val tooWide = mesh(floatArrayOf(-30f, 0f, -5f, 10f, 0f, -5f, 0f, 10f, 10f))
+        assertTrue(
+            runCatching { rectangular(false).requireModelFits(tooWide, allowBelowBed = true) }
+                .exceptionOrNull() is PrinterEnvelope.OutsideBuildVolumeException,
+        )
+        assertTrue("a dipping model is reported", rectangular(false).extendsBelowBed(dipping))
+        assertFalse("a model on the bed is not", rectangular(false).extendsBelowBed(noBedDipping()))
+    }
+
+    @Test
     fun printerEnvelopeRoundTripsThroughArtifactMetadata() {
         val file = File(kotlin.io.path.createTempDirectory("enderslicer-envelope-json").toFile(), "envelope.json")
         val expected = PrinterEnvelope(220.0, 180.0, 300.0, "circle", true)
@@ -165,6 +194,46 @@ class PrinterEnvelopeTest {
         assertEquals(expected.originAtCenter, actual.originAtCenter)
         assertEquals("elliptic", actual.buildPlateShape)
     }
+
+    /** One triangle in the interleaved position+normal layout the envelope walks. */
+    private fun mesh(vertices: FloatArray): StlMesh {
+        require(vertices.size == 9) { "one triangle is three vertices" }
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var minZ = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        var maxZ = Float.NEGATIVE_INFINITY
+        val interleaved = FloatArray(18)
+        var out = 0
+        var index = 0
+        while (index < vertices.size) {
+            val x = vertices[index]
+            val y = vertices[index + 1]
+            val z = vertices[index + 2]
+            minX = minOf(minX, x)
+            minY = minOf(minY, y)
+            minZ = minOf(minZ, z)
+            maxX = maxOf(maxX, x)
+            maxY = maxOf(maxY, y)
+            maxZ = maxOf(maxZ, z)
+            interleaved[out++] = x
+            interleaved[out++] = y
+            interleaved[out++] = z
+            interleaved[out++] = 0f
+            interleaved[out++] = 0f
+            interleaved[out++] = 0f
+            index += 3
+        }
+        return StlMesh(
+            displayName = "envelope-test",
+            interleavedVertices = VertexData.fromArray(interleaved),
+            triangleCount = 1,
+            bounds = MeshBounds(minX, minY, minZ, maxX, maxY, maxZ),
+        )
+    }
+
+    private fun noBedDipping(): StlMesh = mesh(floatArrayOf(0f, 0f, 0f, 10f, 0f, 0f, 0f, 10f, 10f))
 
     private fun rectangular(originAtCenter: Boolean): PrinterEnvelope = PrinterEnvelope(
         widthMm = 230.0,

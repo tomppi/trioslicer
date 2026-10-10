@@ -1119,9 +1119,11 @@ private class ModelRenderer(
     @Volatile private var panX = 0f
     @Volatile private var panY = 0f
 
-    // Plate-space preview offset while a finger drags the model: the placement
+    // Plate-space preview offset while a finger drags one object: the placement
     // itself is only changed once, when the finger lifts, because a real move
-    // re-transforms the whole mesh and writes the workspace snapshot.
+    // re-transforms the whole mesh and writes the workspace snapshot. It belongs
+    // to the object the tools act on, and only its vertices carry it - see
+    // placeObject.
     @Volatile private var dragOffsetX = 0f
     @Volatile private var dragOffsetY = 0f
     @Volatile private var dragOffsetZ = 0f
@@ -1505,7 +1507,12 @@ private class ModelRenderer(
         )
     }
 
-    /** Moves the drawn model without touching the placement; zeroed when a drag ends. */
+    /**
+     * Moves the drawn vertices of the object the tools act on without touching the
+     * placement; zeroed when a drag ends. Every other object stays exactly where
+     * it is for the whole gesture, because the commit that follows moves this one
+     * alone.
+     */
     fun setDragOffset(xMm: Float, yMm: Float) = setDragOffset(xMm, yMm, 0f)
 
     fun setDragOffset(xMm: Float, yMm: Float, zMm: Float) {
@@ -1737,11 +1744,14 @@ private class ModelRenderer(
         // In plate coordinates, so the offset turns with the model it moves.
         Matrix.translateM(scene, 0, -fit.centerX, -fit.centerY, -fit.centerZ)
 
-        // The drag preview belongs to the model alone. Putting it in the scene
-        // moved the grid, the bed and the axis triad along with the model, which
-        // reads as moving the camera and then having the model catch up when the
-        // finger lifts. Everything the model owns - mesh, gizmo, annotations -
-        // goes through this matrix; the plate does not.
+        // The preview belongs to one object: the one the tools act on, which is
+        // the one every commit transforms. Putting it in the scene moved the
+        // grid, the bed and the axis triad along with the model, which reads as
+        // moving the camera and then having the model catch up when the finger
+        // lifts; drawing it through the whole plate did the same to every
+        // neighbour, while the commit moved a single object. That object's
+        // vertices, its gizmo and its annotations go through this matrix - see
+        // placeObject for the per-object part - and the plate does not.
         Matrix.setIdentityM(modelLocal, 0)
         Matrix.translateM(modelLocal, 0, dragOffsetX, dragOffsetY, dragOffsetZ)
         Matrix.translateM(modelLocal, 0, previewPivotX, previewPivotY, previewPivotZ)
@@ -2198,16 +2208,31 @@ private class ModelRenderer(
         uploadedMesh = null
     }
 
+    /**
+     * Fills [modelMatrix], [modelView] and [mvp] for one object of the plate.
+     *
+     * The transform previewed under the finger belongs to the object the tools act
+     * on - the one every commit transforms - so it is that object's vertices alone
+     * that carry it. Drawing the preview for the whole plate slid every neighbour
+     * along with the finger while the commit that followed moved one object, which
+     * is a preview that lies about what is happening. An object's vertices arrive
+     * in bed coordinates, so the identity is what holds it exactly still.
+     */
+    private fun placeObject(index: Int) {
+        val local = if (index == selectedObject) modelLocal else identityMatrix
+        Matrix.multiplyMM(modelMatrix, 0, scene, 0, local, 0)
+        Matrix.multiplyMM(modelView, 0, view, 0, modelMatrix, 0)
+        Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
+    }
+
     private fun drawMesh() {
         if (mesh == null) return
         val buffer = meshBuffer ?: return
 
         // ModelPlacement has already written the mesh vertices into final
         // build-plate coordinates; modelLocal carries only the transform being
-        // previewed under the finger, so the plate stays where it is.
-        Matrix.multiplyMM(modelMatrix, 0, scene, 0, modelLocal, 0)
-        Matrix.multiplyMM(modelView, 0, view, 0, modelMatrix, 0)
-        Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
+        // previewed under the finger, and placeObject hands it to the one object
+        // being transformed rather than to the whole plate.
 
         GLES20.glUseProgram(meshProgram)
         val position = GLES20.glGetAttribLocation(meshProgram, "aPosition")
@@ -2300,12 +2325,16 @@ private class ModelRenderer(
             GLES20.glDisableVertexAttribArray(color)
         }
 
-        GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
-        GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
-        // One draw per object, each starting at its own first scene vertex. With
-        // no colour buffer at all every object still draws in its own constant -
-        // the selected one in the tint, the rest in the plain base colour.
+        // One draw per object, each starting at its own first scene vertex and
+        // through its own model matrix: only the object being transformed carries
+        // the preview, so a neighbour cannot even appear to move before the commit
+        // reaches it. With no colour buffer at all every object still draws in its
+        // own constant - the selected one in the tint, the rest in the plain base
+        // colour.
         for (index in objectMeshes.indices) {
+            placeObject(index)
+            GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvp, 0)
+            GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
             val firstVertex = objectFirstTriangle.getOrElse(index) { 0 } * VERTICES_PER_TRIANGLE
             val vertexCount = objectMeshes[index].triangleCount * VERTICES_PER_TRIANGLE
             if (colors == null) {
@@ -2318,6 +2347,11 @@ private class ModelRenderer(
         GLES20.glDisableVertexAttribArray(position)
         GLES20.glDisableVertexAttribArray(normal)
         GLES20.glDisableVertexAttribArray(color)
+
+        // The optimized volumes are the selected object's own meshes and draw
+        // through the matrix the loop left behind - the last object's, which is
+        // not necessarily that object's.
+        placeObject(selectedObject)
 
         // The optimized volumes are blended over the model: the part keeps its
         // shading, the density regions read as translucent volumes inside it, and

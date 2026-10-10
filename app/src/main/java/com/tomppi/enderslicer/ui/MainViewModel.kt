@@ -86,6 +86,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import java.util.Locale
 import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
+import com.tomppi.enderslicer.viewer.BedClipper
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
@@ -126,6 +127,10 @@ private const val MAX_CONFIG_SNAPSHOT_BYTES = 8L * 1024L * 1024L
 
 /** The engine's request log is text; the export stops here rather than reading a runaway log whole. */
 private const val MAX_DIAGNOSTIC_LOG_BYTES = 8L * 1024L * 1024L
+
+/** Said when a placement would leave the whole model under the bed. */
+private const val ENTIRELY_BELOW_BED_MESSAGE =
+    "The whole model is below the build plate; raise it so part of it is above Z=0 before slicing"
 
 /** Engine-agnostic slice result shared by the Cura and Prusa runners. */
 private data class EngineSliceOutcome(
@@ -1553,7 +1558,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Lifts or lowers the model, from a drag on the gizmo's vertical arrow. The
      * build-volume check refuses a lift that would leave the printer, exactly as
-     * a typed value does.
+     * a typed value does - except downwards, where the model may hang below the
+     * bed and be cut off there.
      */
     fun liftModel(deltaZmm: Double) {
         if (!deltaZmm.isFinite() || deltaZmm == 0.0) return
@@ -2139,6 +2145,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // One file per object, except that a Slic3r fork slicing several gets one
                         // 3MF: neither console takes more than one positional model (the last
                         // would silently win), so a multi-object plate has to arrive as one file.
+                        snapshot.models.forEach { model ->
+                            require(model.mesh.bounds.maxZ > 0f) {
+                                model.name + " is entirely below the bed at Z=0; raise it before slicing"
+                            }
+                        }
                         val slicerFork = sliceEngine != SlicerEngine.CURA
                         val plate: List<SliceModel> = if (slicerFork && snapshot.models.size > 1) {
                             val staging = File(stagingDirectory, "plate.3mf")
@@ -2147,7 +2158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 entries = snapshot.models.map { model ->
                                     PlateThreeMfWriter.Entry(
                                         name = model.name,
-                                        mesh = model.mesh,
+                                        mesh = model.stagedMesh(),
                                         paint = model.supportPaint,
                                     )
                                 },
@@ -2170,7 +2181,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         // read paint from differently named attributes, and the
                                         // Prusa one only through the loader its stamp selects.
                                         PaintedMeshWriter.write(
-                                            mesh = model.mesh,
+                                            mesh = model.stagedMesh(),
                                             paint = model.supportPaint,
                                             destination = staged,
                                             dialect = if (sliceEngine == SlicerEngine.PRUSA) {
@@ -2182,7 +2193,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 } else {
                                     File(stagingDirectory, "model-$index.stl").also { staged ->
-                                        StlMeshWriter.writeBinary(model.mesh, staged)
+                                        StlMeshWriter.writeBinary(model.stagedMesh(), staged)
                                     }
                                 }
                                 SliceModel(file = file, name = model.name, supportPaint = model.supportPaint)
@@ -2791,6 +2802,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val placementHistory = PlacementHistory()
 
     /**
+     * What is staged for the engine: the placed mesh with everything below the
+     * bed cut away at Z=0 (see [BedClipper]).
+     *
+     * The viewer keeps the unclipped mesh, so the user still sees the part they
+     * are cutting and can drag the model back up. A model with nothing above the
+     * bed has no geometry to stage - the callers refuse it before reaching here.
+     */
+    private fun PlateObject.stagedMesh(): StlMesh {
+        if (mesh.bounds.minZ >= 0f) return mesh
+        val clipped = BedClipper.clipToBed(mesh)
+        check(clipped.triangleCount > 0) { name + " has no geometry above the bed to slice" }
+        return clipped
+    }
+
+    /**
      * Puts the model back where it was before the last placement change.
      *
      * Covers everything that moves the model, because they all come through
@@ -2825,8 +2851,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val transformed = changed.transformed(original)
                     // Reject placements that leave the model hanging off the
                     // build volume or above the printer height so the user gets
-                    // immediate feedback instead of a slice-time failure.
-                    PrinterEnvelope.from(printer.withSettings(stateSnapshot.settings)).requireModelFits(transformed)
+                    // immediate feedback instead of a slice-time failure. Below
+                    // the bed is allowed - the slice clips it there - but a
+                    // model with nothing left above the bed has nothing to
+                    // print, and that is worth saying now rather than at the
+                    // end of a slice.
+                    PrinterEnvelope.from(printer.withSettings(stateSnapshot.settings))
+                        .requireModelFits(transformed, allowBelowBed = true)
+                    require(transformed.bounds.maxZ > 0f) { ENTIRELY_BELOW_BED_MESSAGE }
                     changed to transformed
                 }
                 // The save has to describe the plate as it will be, not as it was: the state
@@ -2838,8 +2870,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val nextSnapshot = workspaceSnapshot(stateSnapshot.copy(models = nextModels))
                 withContext(Dispatchers.IO) { nextSnapshot?.let(workspaceStore::save) }
                 prepared
-            }.onSuccess { (changed, _) ->
+            }.onSuccess { (changed, transformed) ->
                 if (recordHistory) placementHistory.record(message, current)
+                // What the plate's yellow notice says is read back off the placed
+                // mesh (MainUiState.belowBedCutMm), so there is nothing to store
+                // here: this line only keeps the status line honest about the cut.
+                val cutBelowBed = transformed.bounds.minZ < 0f
                 _uiState.update { state ->
                     state.withoutPublishedSlice()
                         .withModel(selectedId) { model -> model.withPlacement(changed) }
@@ -2847,7 +2883,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             canUndoPlacement = placementHistory.canUndo,
                             undoPlacementLabel = placementHistory.nextLabel,
                             isBusy = false,
-                            statusMessage = "$message; slice again to export G-code",
+                            statusMessage = if (cutBelowBed) {
+                                "$message; slice again to export G-code · the part below the bed is cut off"
+                            } else {
+                                "$message; slice again to export G-code"
+                            },
                         )
                 }
             }.onFailure(::showOperationFailure)

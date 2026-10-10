@@ -44,6 +44,9 @@ internal fun diagnosticReport(
             state.extraOrcaSettings.size + " OrcaSlicer",
     )
     appendLine("Model: " + (state.modelPath ?: "none"))
+    if (state.belowBedCutMm > 0.0) {
+        appendLine("Below the build plate (cut off, not printed): " + state.belowBedNotice)
+    }
     appendLine(
         "Slice: " + (state.sliceDurationMilliseconds?.let { it.toString() + " ms" } ?: "never ran") +
             (state.estimatedPrintSeconds?.let { ", estimated " + (it / 60) + " min" } ?: "") +

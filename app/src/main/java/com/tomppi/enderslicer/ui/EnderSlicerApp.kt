@@ -1769,6 +1769,12 @@ fun EnderSlicerApp(
                                     gizmoScalePercent = 100
                                     gizmoReadout = null
                                 },
+                                // The plate's own settings, from the menu the long press
+                                // opens. multiObjectOpen is the one piece of state behind
+                                // this and the engine card's button, so both open the one
+                                // sheet rather than two that can disagree.
+                                objectCount = state.models.size,
+                                onOpenMultiObject = { multiObjectOpen = true },
                                 // Above the model and to the right of it, where it
                                 // covers the plate rather than the part being moved.
                                 modifier = Modifier
@@ -3088,6 +3094,18 @@ private fun ViewerPanel(
                     HorizontalDivider()
                     SummaryRow("Estimated print", formatPrintTime(seconds))
                 }
+                if (state.belowBedCutMm > 0.0) {
+                    // A caution, not a refusal: the move is allowed and this is
+                    // what it costs. Amber rather than the red the compatibility
+                    // warnings below use, and it carries the amount so the user
+                    // knows how much of the model is going in the bin.
+                    Text(
+                        state.belowBedNotice,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WarnAmber,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
                 if (state.warnings.isNotEmpty()) {
                     Text(
                         "Cura compatibility warnings: ${state.warnings.size}",
@@ -3364,6 +3382,17 @@ internal fun SessionRail(
             }
             state.estimatedPrintSeconds?.takeIf { gcodeAvailable }?.let { seconds ->
                 SessionChip(formatPrintTime(seconds))
+            }
+            // The below-bed caution is its own line, amber and not a refusal: the
+            // warnings chip below counts the red compatibility warnings alone, so
+            // the cut is not counted twice under a colour that says "error".
+            if (state.belowBedCutMm > 0.0) {
+                Text(
+                    state.belowBedNotice,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarnAmber,
+                    modifier = Modifier.padding(horizontal = EnderSlicerDimens.Space8),
+                )
             }
             state.warnings.takeIf { it.isNotEmpty() }?.let { warnings ->
                 SessionChip(warnings.size.toString() + " warnings", MaterialTheme.colorScheme.error)

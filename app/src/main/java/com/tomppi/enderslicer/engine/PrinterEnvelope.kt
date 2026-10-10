@@ -31,7 +31,18 @@ data class PrinterEnvelope(
         }
     }
 
-    fun requireModelFits(mesh: StlMesh) {
+    /**
+     * Rejects a placed mesh that leaves the build volume.
+     *
+     * [allowBelowBed] relaxes the height floor only, and only for a placement
+     * the user made: a model may hang below Z=0 because the slice cuts it at the
+     * bed and keeps what is above (see [com.tomppi.enderslicer.viewer.BedClipper]),
+     * which is lossy and therefore warned about where the placement happens.
+     * Everything the engine and the G-code see stays strict - the clipped mesh
+     * sits on the bed - and the ceiling and the XY footprint are checked either
+     * way.
+     */
+    fun requireModelFits(mesh: StlMesh, allowBelowBed: Boolean = false) {
         require(mesh.triangleCount > 0 && mesh.interleavedVertices.size == mesh.triangleCount * 18) {
             "Model geometry is incomplete"
         }
@@ -43,10 +54,21 @@ data class PrinterEnvelope(
                 y = mesh.interleavedVertices[offset + 1].toDouble(),
                 z = mesh.interleavedVertices[offset + 2].toDouble(),
                 context = "Model vertex $vertex",
+                allowBelowBed = allowBelowBed,
             )
             offset += 6
             vertex++
         }
+    }
+
+    /** True when any vertex of [mesh] is below the build plate at Z=0. */
+    fun extendsBelowBed(mesh: StlMesh): Boolean {
+        var offset = 2
+        while (offset < mesh.interleavedVertices.size) {
+            if (mesh.interleavedVertices[offset] < 0f) return true
+            offset += 6
+        }
+        return false
     }
 
     /** Streams the transformed binary STL staged for CuraEngine without a second mesh allocation. */
@@ -131,9 +153,16 @@ data class PrinterEnvelope(
         requirePoint(endX, endY, endZ, "Extrusion end at $location")
     }
 
-    fun contains(x: Double, y: Double, z: Double, toleranceMm: Double = DEFAULT_TOLERANCE_MM): Boolean {
+    fun contains(
+        x: Double,
+        y: Double,
+        z: Double,
+        toleranceMm: Double = DEFAULT_TOLERANCE_MM,
+        allowBelowBed: Boolean = false,
+    ): Boolean {
         if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return false
-        if (z < -toleranceMm || z > heightMm + toleranceMm) return false
+        if (z < -toleranceMm && !allowBelowBed) return false
+        if (z > heightMm + toleranceMm) return false
 
         val centerX = if (originAtCenter) 0.0 else widthMm / 2.0
         val centerY = if (originAtCenter) 0.0 else depthMm / 2.0
@@ -180,8 +209,8 @@ data class PrinterEnvelope(
     private fun transformedZ(transform: StlSliceTransform?, x: Double, y: Double, z: Double): Double =
         transform?.let { it.linear[6] * x + it.linear[7] * y + it.linear[8] * z + it.translationZmm } ?: z
 
-    private fun requirePoint(x: Double, y: Double, z: Double, context: String) {
-        if (contains(x, y, z)) return
+    private fun requirePoint(x: Double, y: Double, z: Double, context: String, allowBelowBed: Boolean = false) {
+        if (contains(x, y, z, allowBelowBed = allowBelowBed)) return
         val origin = if (originAtCenter) "centered" else "front-left"
         throw OutsideBuildVolumeException(
             "$context is outside the ${format(widthMm)} x ${format(depthMm)} x ${format(heightMm)} mm " +

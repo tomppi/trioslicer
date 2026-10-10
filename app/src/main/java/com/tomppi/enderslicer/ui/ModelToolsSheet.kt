@@ -149,12 +149,14 @@ fun ModelToolsOverlay(
             onClose = onClose,
         )
         // Pressing and holding the model opens Move, Rotate and Scale as a gizmo
-        // over it, and nothing on the plate says so - the three groups above read
-        // as the only way in, so the gesture stays invisible until someone
+        // over it - and the plate's multi-object settings when it holds more than
+        // one object - and nothing on the plate says so: the three groups above
+        // read as the only way in, so the gesture stays invisible until someone
         // stumbles on it. The tip sits under the bar, where the eye already is
         // after opening Model tools.
         Text(
-            "Press and hold the model to open Move, Rotate and Scale over it.",
+            "Press and hold the model for Move, Rotate and Scale over it, and " +
+                "multi-object settings when the plate holds several objects.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier

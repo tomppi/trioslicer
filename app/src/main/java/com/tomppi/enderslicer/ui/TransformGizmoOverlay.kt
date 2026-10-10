@@ -44,6 +44,11 @@ private const val SCALE_DEFAULT_PERCENT = 100
  * the current drag is producing and a slider for the one transform that has no
  * natural gesture. It stays small and out of the way, because the thing being
  * transformed is underneath it.
+ *
+ * A plate holding more than one object also gets the plate's own settings here.
+ * Long-pressing a part is where the hand already is when objects need arranging,
+ * and the sheet behind it is the one the engine card opens rather than a second
+ * copy of it.
  */
 @Composable
 internal fun TransformGizmoOverlay(
@@ -58,6 +63,10 @@ internal fun TransformGizmoOverlay(
     onScalePercent: (Int) -> Unit,
     onScaleFinished: () -> Unit,
     onDone: () -> Unit,
+    /** How many objects the plate holds: the plate's settings need more than one. */
+    objectCount: Int,
+    /** Opens the plate's multi-object sheet, the same one the engine card opens. */
+    onOpenMultiObject: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // While a handle is held the menu steps aside and only the value being dialled
@@ -148,6 +157,15 @@ internal fun TransformGizmoOverlay(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            // The plate's own settings, on a plate that has objects to arrange. A line
+            // of its own rather than a fifth button in the row above: four already
+            // share that row, and a squeezed button breaks its label over two lines.
+            if (!compact && objectCount > 1) {
+                OutlinedButton(onClick = onOpenMultiObject, modifier = Modifier.fillMaxWidth()) {
+                    SingleLineLabel("Multi-object settings")
+                }
             }
         }
     }

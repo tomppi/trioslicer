@@ -16,6 +16,20 @@ import com.tomppi.enderslicer.model.SlicerEngine
  * docs/ux-redesign/DESIGN_PROPOSAL.md.
  */
 
+/**
+ * The caution colour: something the user should know about that is allowed to
+ * happen, as opposed to [androidx.compose.material3.ColorScheme.error], which is
+ * a refusal or a failure.
+ *
+ * It is the proposal's own legibility-safe `warn` swatch
+ * (docs/ux-redesign/DESIGN_PROPOSAL.md, "ok / danger / warn / info / violet" =
+ * #3ECF7A / #F0655D / #E8B44C / #6FB8FF / #B08CFF) and the same amber
+ * DiagnosticsOverlay has always drawn warnings with, so the two cannot drift
+ * apart. Deliberately not [androidx.compose.material3.ColorScheme.tertiary]:
+ * tertiary is the engine accent here, so it reads blue under Cura.
+ */
+val WarnAmber = Color(0xFFE8B44C)
+
 /** Cura blue accent. */
 private val CuraDark = darkColorScheme(
     primary = Color(0xFF4CA2FF),

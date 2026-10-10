@@ -148,6 +148,65 @@ data class MainUiState(
     /** The file the selected object was imported from. */
     val modelPath: String? get() = selectedModel?.sourcePath
 
+    /**
+     * The object that hangs deepest below the build plate at Z=0, or null when
+     * nothing on the plate does.
+     *
+     * The slice cuts every object at Z=0, not only the selected one, so the
+     * caution has to answer for the whole plate: a part that is not the one
+     * being edited still loses whatever is under the bed. Reading the placed
+     * meshes is also what makes it survive a restore, which selects the first
+     * object on the plate rather than the one that was being worked on.
+     */
+    val belowBedModel: PlateObject?
+        get() = models.filter { it.mesh.bounds.minZ < 0f }.minByOrNull { it.mesh.bounds.minZ }
+
+    /**
+     * How much of the plate hangs below the build plate at Z=0, in mm, or 0.0
+     * when none of it does.
+     *
+     * This is the lossy cut the plate warns about: the slice clips the model at
+     * Z=0 and prints what is above, so this much of [belowBedModel] will not be
+     * printed. It is read from the placed meshes rather than stored, because
+     * those meshes are what the viewer draws and what every placement writes -
+     * so a drag, a typed value, a lift, an undo, a re-arrange and a restored
+     * workspace all answer correctly, and it returns to zero the moment the
+     * model is raised again.
+     */
+    val belowBedCutMm: Double
+        get() {
+            val minZ = belowBedModel?.mesh?.bounds?.minZ ?: return 0.0
+            return if (minZ < 0f) -minZ.toDouble() else 0.0
+        }
+
+    /**
+     * The one line the plate shows when part of a model is under the bed.
+     *
+     * The number is the part that will not be printed and the sentence says so
+     * plainly: the move is allowed, and this is what it costs. The deepest
+     * object is named when it is not the selected one, because this line is
+     * drawn under the selected object's own summary as well: without the name
+     * the reader would look for the cut on the wrong part. An empty string when
+     * nothing hangs below the plate, so a caller can render it unconditionally.
+     */
+    val belowBedNotice: String
+        get() {
+            val cutMm = belowBedCutMm
+            if (cutMm <= 0.0) return ""
+            val deepest = belowBedModel
+            val subject = if (deepest == null || deepest.id == selectedModel?.id) {
+                "this model"
+            } else {
+                deepest.name
+            }
+            return String.format(
+                java.util.Locale.US,
+                "%.2f mm of %s is below the build plate; that part will not be printed.",
+                cutMm,
+                subject,
+            )
+        }
+
     /** Where the selected object sits on the bed. */
     val modelPlacement: ModelPlacement?
         get() = selectedModel?.placement ?: models.firstOrNull()?.placement
