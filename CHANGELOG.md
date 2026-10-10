@@ -4,6 +4,42 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] - 2026-10-10
+
+### Added
+
+- **Multi-object settings from the hold-down menu.** Long-pressing a model opens the transform
+  card; it now offers a **Multi-object settings** button on its own line (the Move/Rotate/Scale row
+  is already full), opening the same sheet the engine card opens.
+- **A model may be moved below the bed.** The geometry under the plate is discarded and the
+  cross-section becomes the new bottom - the slicers do not clip at Z=0, so the app clips the mesh
+  itself at the staging step, keeping the viewer's copy intact so you can see what you are cutting
+  and drag it back up. The cut is reported in the app's caution amber, not its refusal red:
+  *"2.00 mm of this model is below the build plate; that part will not be printed."*
+- **Copy MCP token in the CAD menu**, matching the Blender menu's, so the CAD engine can be driven
+  from outside the app on a phone without root. Both clip labels name their engine.
+
+### Fixed
+
+- **Dragging one object no longer previews the whole plate moving.** The renderer built one
+  scene-times-local matrix for all objects, so a drag (and a rotate, and a scale) animated every
+  part while the commit moved only the selected one. The matrix is per object now, so neighbours
+  are pixel-identical for the whole gesture.
+- **The below-bed warning was reported for the selected object only**, so a plate whose
+  below-bed part was not selected said nothing at all - a restored plate could hide a part hanging
+  under the bed. It now answers for the whole plate and names the deepest part when that is not the
+  one selected.
+
+### Documentation
+
+- Corrected the instructions against the code: OrcaSlicer reads `paint_supports` and has no
+  `slic3rpe:custom_supports` string at all; the PrusaSlicer 2.9.6 build script is superseded by the
+  3.0.0-alpha11 one the app ships; the README no longer says the plate holds a single model; the
+  renamed UI components, the engine counts, the broken skill links and the sequential-printing
+  refusal are all right again.
+- The scripts are executable in the tree now (they were committed `100644`, including two the
+  clean-checkout instructions run), so a fresh clone no longer needs a `chmod` step.
+
 ## [1.8.7] - 2026-10-09
 
 ### Added
