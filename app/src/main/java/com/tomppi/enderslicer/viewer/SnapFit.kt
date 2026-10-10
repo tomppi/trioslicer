@@ -210,10 +210,7 @@ object SnapFit {
                 else -> fullThickness
             }
             if (beamThickness <= 0f) return null
-            val lipCeiling = when (rung) {
-                SnapFitRung.MINIMAL -> beamThickness * 0.5f
-                else -> beamThickness * 0.5f
-            }
+            val lipCeiling = beamThickness * 0.5f
             val askedLip = parameters.lipDepthOverrideMm
                 ?: minOf(parameters.lipDepthMm, parameters.beamThicknessMm * 0.5f) * scale
             val lipDepth = minOf(askedLip, lipCeiling)
@@ -229,11 +226,16 @@ object SnapFit {
             val beamLength = minOf(askedLength, mateDepth - wall)
             val beamRoot = minOf(parameters.beamRootMm * scale, ROOT_FRACTION * ownDepth, ownDepth - wall)
             if (beamLength <= 0f || beamRoot <= 0f) return null
-            val lipRun = lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
-            if (beamLength <= lipRun + lipClearance) return null
+            // The hook's own lead-in: a ramp at the parameter's angle, or a
+            // square face when the user asks for one. A square lead-in is the
+            // same length along the axis as a 45-degree ramp - it is the shape
+            // that changes, not the room it takes - and it is what the socket
+            // mouth's own chamfer cams in on.
+            val squareLeadIn = rampAngle >= SQUARE_LEAD_IN_DEG
+            val leadRun = if (squareLeadIn) lipDepth else lipDepth / tan(rampAngle * DEGREES_TO_RADIANS)
+            if (beamLength <= leadRun + lipClearance) return null
 
             val half = beamThickness * 0.5f
-            val lipBack = beamLength - lipRun
             val withKey = rung != SnapFitRung.MINIMAL
             val withPad = rung == SnapFitRung.FULL
             val stepRoot = minOf(beamRoot, STEP_ROOT_FRACTION * ownDepth)
@@ -244,6 +246,42 @@ object SnapFit {
             // slider that stops moving without saying why is worse than no
             // slider, so every clamp travels with the joint.
             val clamps = ArrayList<SnapFitClamp>()
+
+            // ------------------------------------------------- one pawl, N teeth
+            // The ratchet the notes settled on: SEVERAL TEETH on the beam and
+            // ONE PAWL on the mate. The pitch is the lead-in's run plus a
+            // lip-depth flat, the tip-most tooth's ramp ends at the beam's tip,
+            // and each next catch sits a pitch further back, so the catch faces
+            // are at beamLength - leadRun - i * pitch and the DEEPEST of them is
+            // where the mate's single step sits. The pocket is narrow from its
+            // mouth back to that step and wide beyond it, so every tooth but the
+            // one being caught is inside the wide slot: as the parts close, the
+            // tooth nearest the tip reaches the pawl first and springs out, and
+            // each further tooth springs out a pitch later. The engagement
+            // depths are therefore 0, pitch, 2 * pitch ... behind the pawl,
+            // which is what [SnapClick] names in the panel.
+            val pitch = leadRun + lipDepth
+            val askedBarbs = parameters.barbCount.coerceAtLeast(1)
+            var barbs = minOf(askedBarbs, MAX_BARBS)
+            while (barbs > 1 && beamLength - leadRun - (barbs - 1) * pitch < MIN_DEEPEST_CATCH_MM) {
+                barbs--
+            }
+            if (barbs < askedBarbs) {
+                clamps += SnapFitClamp(
+                    label = "barbs",
+                    askedMm = askedBarbs.toFloat(),
+                    actualMm = barbs.toFloat(),
+                    reason = "a " + millimetres(beamLength) + " mm hook takes " + barbs +
+                        (if (barbs == 1) " tooth" else " teeth") + " at a " + millimetres(pitch) +
+                        " mm pitch; the rest would sit behind the mating face",
+                )
+            }
+            val catches = List(barbs) { index -> beamLength - leadRun - index * pitch }
+            val lipBack = catches.first()
+            // The pawl sits one clearance in front of the deepest catch, which is
+            // the clearance the joint seats with - exactly where the single-barb
+            // pocket's step has always been.
+            val pawl = catches.last() - lipClearance
             if (askedLength > beamLength + CLAMP_EPSILON_MM) {
                 clamps += SnapFitClamp(
                     label = "hook length",
@@ -271,10 +309,91 @@ object SnapFit {
                         millimetres(lipDepth) + " mm",
                 )
             }
+            // ------------------------------------------------- the deflection room
+            // The pawl rides the tooth's ramp and pushes the beam bodily aside
+            // by the tooth's own height less the clearance it already has; the
+            // whole free length dips with it. So the pocket's floor is dropped
+            // by that much plus a clearance, measured on the side the beam bends
+            // towards. The mate's own material below the anchor is the ceiling -
+            // a socket ramp helps the hook along, it does not replace the room
+            // the beam needs - and a ceiling that bites is a clamp with a
+            // sentence, never a silent jam.
+            val facingSign = parameters.facing.sign
+            val sink = maxOf(0f, lipDepth - lipClearance)
+            val roomAsked = sink + lipClearance
+            val mateRise = span(socketHalf, rise)
+            val anchorRise = anchorMm.dot(rise)
+            val belowAvailable = when {
+                mateRise == null -> roomAsked
+                facingSign > 0f -> anchorRise - mateRise.start
+                else -> mateRise.endInclusive - anchorRise
+            }
+            val room = minOf(roomAsked, maxOf(lipClearance, belowAvailable - half))
+            if (room < roomAsked - CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "deflection room",
+                    askedMm = roomAsked,
+                    actualMm = room,
+                    reason = "the mate has only " + millimetres(belowAvailable) +
+                        " mm of material below the hook and the hook needs " + millimetres(roomAsked) +
+                        " mm to bend through; the pocket floor was left with " + millimetres(room) +
+                        " mm and the joint may not close",
+                )
+            }
+
+            // ------------------------------------------------- the socket's ramp
+            // The mouth chamfer: a funnel that opens at the mating face and
+            // closes onto the pawl, so the lead-in lives in the hole. Its wall
+            // makes [mouthChamferDeg] with the assembly axis - 45 degrees is the
+            // printable limit for an overhanging roof, and it is what lets a
+            // square-faced hook cam in and therefore a joint face either way.
+            val chamferAngle = parameters.mouthChamferDeg
+            val chamferDepth = if (parameters.socketRamp) {
+                minOf(lipDepth, pawl * tan(chamferAngle * DEGREES_TO_RADIANS))
+            } else {
+                0f
+            }
+            val chamferRun = if (chamferDepth > 0f) {
+                chamferDepth / tan(chamferAngle * DEGREES_TO_RADIANS)
+            } else {
+                0f
+            }
+            if (parameters.socketRamp && chamferDepth < lipDepth - CLAMP_EPSILON_MM) {
+                clamps += SnapFitClamp(
+                    label = "socket ramp",
+                    askedMm = lipDepth,
+                    actualMm = chamferDepth,
+                    reason = "the pawl is only " + millimetres(pawl) + " mm in from the mating face, so the " +
+                        "mouth chamfer is " + millimetres(chamferDepth) + " mm deep instead of " +
+                        millimetres(lipDepth) + " mm",
+                )
+            }
+
             // The root strain a full deflection puts on the cantilever:
             // eps = 3 h d / (2 L^2) for a rectangular beam of thickness h
-            // deflected by d over its free length L. A readout, never a gate.
-            val rootStrainPercent = 1.5f * beamThickness * lipDepth / (beamLength * beamLength) * 100f
+            // deflected by d over its free length L. Deflection accumulates
+            // while the pawl rides each tooth's ramp, so the readout takes the
+            // worst case - every tooth's lip depth together. A readout, never a
+            // gate.
+            val deflection = lipDepth * barbs
+            val rootStrainPercent = 1.5f * beamThickness * deflection / (beamLength * beamLength) * 100f
+            // What the panel names: which click the joint is holding at, from
+            // the first (the tooth nearest the tip, caught with the halves still
+            // apart) to the seated one on the deepest catch.
+            val clicks = List(barbs) { index ->
+                val order = index + 1
+                SnapClick(
+                    order = order,
+                    gapMm = (barbs - 1 - index) * pitch + lipClearance,
+                    label = when {
+                        barbs == 1 -> SEATED_CLICK
+                        order == 1 -> "first click - loose"
+                        order == barbs -> SEATED_CLICK
+                        order == 2 -> "second click"
+                        else -> "third click"
+                    },
+                )
+            }
 
             val dimensions = SnapFitDimensions(
                 scale = scale,
@@ -287,7 +406,7 @@ object SnapFit {
                 beamThicknessMm = beamThickness,
                 beamRootMm = beamRoot,
                 lipDepthMm = lipDepth,
-                lipRunMm = lipRun,
+                lipRunMm = leadRun,
                 lipClearanceMm = lipClearance,
                 matingClearanceMm = matingClearance,
                 rampAngleDeg = rampAngle,
@@ -298,28 +417,42 @@ object SnapFit {
                 stepRimMm = stepRim,
                 stepClearanceMm = stepClearance,
                 rootStrainPercent = rootStrainPercent,
+                barbCount = barbs,
+                toothPitchMm = pitch,
+                teethCatchMm = catches,
+                pawlMm = pawl,
+                clickGapMm = clicks.map { it.gapMm },
+                deflectionMm = deflection,
+                deflectionRoomMm = room,
+                mouthChamferMm = chamferDepth,
+                mouthChamferAngleDeg = if (chamferDepth > 0f) chamferAngle else 0f,
+                facing = parameters.facing,
             )
 
             // ------------------------------------------------------------- union
             val union = MeshSolidBuilder(UNION_NAME)
-            // The beam and its barb are one prism: a cross-section in the (rise,
-            // axis) plane, extruded across the beam's width. Building them as one
-            // closed shell keeps the boolean from having to reconcile two shells
-            // that share a face.
-            addPrism(
-                union,
-                beamFrame,
-                listOf(
-                    Vec3(-beamWidth * 0.5f, -half, -beamRoot),
-                    Vec3(-beamWidth * 0.5f, -half, beamLength),
-                    Vec3(-beamWidth * 0.5f, half, beamLength),
-                    Vec3(-beamWidth * 0.5f, half + lipDepth, lipBack),
-                    Vec3(-beamWidth * 0.5f, half, lipBack),
-                    Vec3(-beamWidth * 0.5f, half, -beamRoot),
-                ),
-                Vec3(1f, 0f, 0f),
-                beamWidth,
-            )
+            // The beam and its teeth are one prism: a cross-section in the
+            // (rise, axis) plane, extruded across the beam's width. Building
+            // them as one closed shell keeps the boolean from having to
+            // reconcile two shells that share a face. The profile runs from the
+            // root, along the beam's underside to its tip, then back along the
+            // top: each tooth's lead-in (a ramp, or a square face), its square
+            // catch, and the flat at the beam's own surface between teeth.
+            val profile = ArrayList<Vec3>(5 + barbs * 3)
+            fun tooth(y: Float, z: Float) {
+                profile += Vec3(-beamWidth * 0.5f, facingSign * y, z)
+            }
+            tooth(-half, -beamRoot)
+            tooth(-half, beamLength)
+            for (catch in catches) {
+                val lead = catch + leadRun
+                tooth(half, lead)
+                if (squareLeadIn) tooth(half + lipDepth, lead)
+                tooth(half + lipDepth, catch)
+                tooth(half, catch)
+            }
+            tooth(half, -beamRoot)
+            addPrism(union, beamFrame, profile, Vec3(1f, 0f, 0f), beamWidth)
             // The square key, disjoint from the beam by the key gap.
             if (withKey) {
                 addPrism(
@@ -343,20 +476,32 @@ object SnapFit {
             // mating face and that face is relieved around the joint instead of
             // bottoming out on the other half.
             val pocketSide = beamWidth * 0.5f + lipClearance
-            addPrism(
-                socket,
-                socketFrame,
-                listOf(
-                    Vec3(-pocketSide, -half - lipClearance, -matingClearance),
-                    Vec3(-pocketSide, -half - lipClearance, beamLength + lipClearance),
-                    Vec3(-pocketSide, half + lipDepth + lipClearance, beamLength + lipClearance),
-                    Vec3(-pocketSide, half + lipDepth + lipClearance, lipBack - lipClearance),
-                    Vec3(-pocketSide, half + lipClearance, lipBack - lipClearance),
-                    Vec3(-pocketSide, half + lipClearance, -matingClearance),
-                ),
-                Vec3(1f, 0f, 0f),
-                beamWidth + 2f * lipClearance,
-            )
+            val pocketEnd = beamLength + lipClearance
+            val narrowRoof = half + lipClearance
+            val wideRoof = half + lipDepth + lipClearance
+            val floor = -(half + room)
+            val socketProfile = ArrayList<Vec3>(8)
+            fun pocket(y: Float, z: Float) {
+                socketProfile += Vec3(-pocketSide, facingSign * y, z)
+            }
+            pocket(floor, -matingClearance)
+            pocket(floor, pocketEnd)
+            pocket(wideRoof, pocketEnd)
+            // The pawl: the one step the mate carries, at the deepest catch.
+            // Mouth-side of it the pocket is one clearance off the beam; beyond
+            // it the pocket is wide enough for a tooth to stand up in.
+            pocket(wideRoof, pawl)
+            pocket(narrowRoof, pawl)
+            if (chamferDepth > 0f) {
+                // The mouth chamfer, opening at the mating face and closing onto
+                // the pawl at the parameter's angle.
+                pocket(narrowRoof, chamferRun)
+                pocket(narrowRoof + chamferDepth, 0f)
+                pocket(narrowRoof + chamferDepth, -matingClearance)
+            } else {
+                pocket(narrowRoof, -matingClearance)
+            }
+            addPrism(socket, socketFrame, socketProfile, Vec3(1f, 0f, 0f), beamWidth + 2f * lipClearance)
             if (withKey) {
                 // The key's socket, the key plus the key's own clearance.
                 val keySide = keySize * 0.5f + keyClearance
@@ -401,6 +546,7 @@ object SnapFit {
                 rung,
                 null,
                 clamps,
+                clicks,
             )
         }
 
@@ -559,6 +705,11 @@ object SnapFit {
         private val cy: Float,
     ) {
         private val area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+        val minX: Float get() = minOf(ax, bx, cx)
+        val maxX: Float get() = maxOf(ax, bx, cx)
+        val minY: Float get() = minOf(ay, by, cy)
+        val maxY: Float get() = maxOf(ay, by, cy)
 
         fun contains(x: Float, y: Float): Boolean {
             if (abs(area) < CAP_AREA_EPSILON) return false
@@ -758,6 +909,104 @@ object SnapFit {
     fun halvesMeet(lowHalf: SnapFitHalf, highHalf: SnapFitHalf): Boolean =
         lowHalf.faceMm <= highHalf.faceMm + PLANE_TOLERANCE_MM
 
+    /**
+     * The material the two halves share at their own mating faces, sampled on a
+     * grid in the seam's own plane and reduced to the rim of that shared
+     * cross-section.
+     *
+     * This is the contour the pad work already computes, read the other way
+     * round: the pad is the cross-section inset, and the rim is its outline. A
+     * joint placed on a rim point stands on material in BOTH halves - the beam
+     * has something to root in and the mate has something to cut - which is why
+     * the automatic spread uses it and not the face's bounding box: a boat
+     * hull's cross-section is a thin band around a void, and the middle of that
+     * box is air.
+     */
+    fun seamRim(
+        beamHalf: SnapFitHalf,
+        socketHalf: SnapFitHalf,
+        direction: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        originMm: Vec3,
+    ): SeamRim? {
+        val beamCap = capTriangles(beamHalf, direction, side, rise, beamHalf.faceMm, originMm)
+        val socketCap = capTriangles(socketHalf, direction, side, rise, socketHalf.faceMm, originMm)
+        if (beamCap.isEmpty() || socketCap.isEmpty()) return null
+        // Where the two cross-sections overlap at all: read off the cap
+        // triangles themselves, never off the halves' bounding boxes - a side
+        // cut's two halves do not share a bounding box at all, and yet their
+        // mating faces are the same cross-section.
+        val rect = LocalRect(
+            maxOf(beamCap.minOf { it.minX }, socketCap.minOf { it.minX }),
+            minOf(beamCap.maxOf { it.maxX }, socketCap.maxOf { it.maxX }),
+            maxOf(beamCap.minOf { it.minY }, socketCap.minOf { it.minY }),
+            minOf(beamCap.maxOf { it.maxY }, socketCap.maxOf { it.maxY }),
+        )
+        if (rect.width <= 0f || rect.height <= 0f) return null
+        val count = kotlin.math.ceil(maxOf(rect.width, rect.height) / RIM_CELL_MM).toInt()
+            .coerceIn(MIN_RIM_SAMPLES, MAX_RIM_SAMPLES)
+        val beamCells = rasterize(beamCap, rect, count)
+        val socketCells = rasterize(socketCap, rect, count)
+        val shared = BooleanArray(count * count) { beamCells[it] && socketCells[it] }
+        val cells = ArrayList<SeamPoint>()
+        for (row in 0 until count) {
+            for (column in 0 until count) {
+                if (!shared[row * count + column]) continue
+                val edge = row == 0 || column == 0 || row == count - 1 || column == count - 1 ||
+                    !shared[(row - 1) * count + column] || !shared[(row + 1) * count + column] ||
+                    !shared[row * count + column - 1] || !shared[row * count + column + 1]
+                if (edge) {
+                    cells += SeamPoint(
+                        x = rect.minX + rect.width * (column + 0.5f) / count,
+                        y = rect.minY + rect.height * (row + 0.5f) / count,
+                    )
+                }
+            }
+        }
+        if (cells.isEmpty()) return null
+        return SeamRim(originMm, side, rise, rect.width, rect.height, cells)
+    }
+
+    /**
+     * The cap triangles of one half, as a grid of cells that any of them covers.
+     * Rasterised rather than sampled: a real seam's face carries thousands of
+     * triangles and a per-cell scan of all of them is what would make an
+     * automatic spread feel slow.
+     */
+    private fun rasterize(cap: List<CapTriangle>, rect: LocalRect, samples: Int): BooleanArray {
+        val cells = BooleanArray(samples * samples)
+        if (cap.isEmpty()) return cells
+        val stepX = rect.width / samples
+        val stepY = rect.height / samples
+        for (triangle in cap) {
+            val lowColumn = ((triangle.minX - rect.minX) / stepX).toInt().coerceIn(0, samples - 1)
+            val highColumn = ((triangle.maxX - rect.minX) / stepX).toInt().coerceIn(0, samples - 1)
+            val lowRow = ((triangle.minY - rect.minY) / stepY).toInt().coerceIn(0, samples - 1)
+            val highRow = ((triangle.maxY - rect.minY) / stepY).toInt().coerceIn(0, samples - 1)
+            for (row in lowRow..highRow) {
+                val y = rect.minY + stepY * (row + 0.5f)
+                for (column in lowColumn..highColumn) {
+                    val x = rect.minX + stepX * (column + 0.5f)
+                    if (triangle.contains(x, y)) cells[row * samples + column] = true
+                }
+            }
+        }
+        return cells
+    }
+
+    /**
+     * A right-handed frame across the seam: the unit assembly direction, and the
+     * two unit axes across it. The same frame every joint on the seam is built
+     * in, so a point placed on one joint's plane means the same place for the
+     * next - which is what the automatic spread and the spacing guard need.
+     */
+    fun frameAxes(direction: Vec3): Triple<Vec3, Vec3, Vec3>? {
+        val axis = direction.normalized() ?: return null
+        val side = perpendicularTo(axis)
+        return Triple(axis, side, axis.cross(side))
+    }
+
     /** The unit direction of a plate axis: the assembly direction of a cut run on it. */
     fun axisDirection(axis: ModelPlacement.Axis): Vec3 = when (axis) {
         ModelPlacement.Axis.X -> Vec3(1f, 0f, 0f)
@@ -848,6 +1097,24 @@ object SnapFit {
     /** Below this, a ceiling and the value it clamped are the same number. */
     private const val CLAMP_EPSILON_MM = 1e-3f
 
+    /** A lead-in this steep is square: the hook has no ramp of its own. */
+    const val SQUARE_LEAD_IN_DEG = 90f
+
+    /** The socket mouth's chamfer: 45 degrees to the axis, the FDM overhang limit. */
+    const val MOUTH_CHAMFER_DEG = 45f
+
+    /** One pawl, up to this many teeth: more than three and the beam is a saw. */
+    const val MAX_BARBS = 3
+
+    /** What the panel calls the deepest catch: the engagement the joint is designed for. */
+    const val SEATED_CLICK = "seated - tight"
+
+    /** The deepest catch has to sit this far inside the pocket to be a catch at all. */
+    private const val MIN_DEEPEST_CATCH_MM = 0.4f
+
+    /** The tightest clearance worth cutting: below this FDM cannot resolve the fit. */
+    const val MIN_CLEARANCE_MM = 0.05f
+
     /** One decimal place, locale-independent: these sentences land in the panel. */
     private fun millimetres(value: Float): String =
         String.format(java.util.Locale.ROOT, "%.1f", value)
@@ -859,6 +1126,12 @@ object SnapFit {
     private const val PAD_COVERAGE = 0.6f
     private const val KEY_COVERAGE = 0.5f
     private const val COVERAGE_SAMPLES = 5
+
+    // The rim's sampling: about a millimetre a cell, and never so fine that a
+    // big seam's grid costs more than the booleans it exists to place.
+    private const val RIM_CELL_MM = 1f
+    private const val MIN_RIM_SAMPLES = 12
+    private const val MAX_RIM_SAMPLES = 64
 
     /** How close to its own face a triangle has to be to count as cap. */
     private const val CAP_PLANE_TOLERANCE_MM = 0.01f
@@ -906,6 +1179,61 @@ enum class SnapFitRung(val label: String) {
     /** The bare ramped cantilever, shrunk to whatever material there is. */
     MINIMAL("Minimal joint"),
 }
+
+/**
+ * Which side of the beam the barb stands on.
+ *
+ * [SAME] is today's joint and the default for every joint on a seam: the barb
+ * is on the frame's positive rise side. [OPPOSITE] mirrors the beam and its
+ * pocket about the beam's own centreline - the hook points the other way - and
+ * a pair that mixes the two is locked against sliding along the seam in both
+ * directions, one hook blocking each way, while every joint still assembles
+ * along the same axis. Mirroring is the only thing this changes: the pull-apart
+ * catch stays square and faces the same way, so an opposite joint holds exactly
+ * as a same one does.
+ */
+enum class SnapFacing(val label: String, val sign: Float) {
+    SAME("Same way", 1f),
+    OPPOSITE("Other way", -1f);
+
+    fun flipped(): SnapFacing = if (this == SAME) OPPOSITE else SAME
+}
+
+/**
+ * The Loose/Tight pair: two steps that differ by a clearance FDM can still
+ * resolve, so a seam can carry one joint that goes together easily and one that
+ * goes together tight - which is what makes a two-joint seam hold without a
+ * hammer. [stepMm] is how much TIGHTER than the parameters' own clearances this
+ * step is; [LOOSE] is the parameters as they are.
+ */
+enum class SnapTightness(val label: String, val stepMm: Float) {
+    LOOSE("Loose", 0f),
+    TIGHT("Tight", TIGHTNESS_STEP_MM),
+}
+
+/**
+ * The whole difference between the two tightness steps, in millimetres of
+ * clearance. 0.06 mm is about a third of a 0.4 mm nozzle's own width and near
+ * the limit FDM resolves, which is the point: any more and the tight joint
+ * stops going together at all.
+ */
+private const val TIGHTNESS_STEP_MM = 0.06f
+
+/**
+ * One engagement depth of a multi-tooth beam, as the panel names it.
+ *
+ * [gapMm] is how far apart the two mating faces are held when this tooth is the
+ * one the pawl has caught: the tooth nearest the tip catches first, at the
+ * largest gap, and the deepest catch seats the halves. [label] is what the
+ * panel says, because a joint that holds at three depths with no indication of
+ * which one it is holding at is the failure this design has to avoid.
+ */
+data class SnapClick(
+    /** 1 is the first tooth the pawl meets, counting in from the beam's tip. */
+    val order: Int,
+    val gapMm: Float,
+    val label: String,
+)
 
 /**
  * One half of a split, as the joint builder needs it: the half as it sits on
@@ -1129,6 +1457,32 @@ data class SnapFitDimensions(
      * never a gate.
      */
     val rootStrainPercent: Float,
+    /** How many teeth the beam actually carries, after the beam's length had its say. */
+    val barbCount: Int,
+    /** The teeth's pitch along the axis: the lead-in's run plus a lip-depth flat. */
+    val toothPitchMm: Float,
+    /**
+     * Each tooth's square catch face, along the axis from the mating plane,
+     * tip-most first. The last is the [pawlMm] the mate's step sits in front of.
+     */
+    val teethCatchMm: List<Float>,
+    /** The mate's single step, along the axis from the mating plane. */
+    val pawlMm: Float,
+    /** The gap between the mating faces at each click, in the same order as [teethCatchMm]. */
+    val clickGapMm: List<Float>,
+    /**
+     * The bending the pawl puts on the beam at the worst case - every tooth's
+     * lip depth together - which is what the strain readout is computed from.
+     */
+    val deflectionMm: Float,
+    /** How far below the beam the pocket's floor was dropped so the beam can bend. */
+    val deflectionRoomMm: Float,
+    /** The socket mouth's chamfer, on the axis: 0 when there is none. */
+    val mouthChamferMm: Float,
+    /** The chamfer's angle to the axis, or 0 when there is no chamfer. */
+    val mouthChamferAngleDeg: Float,
+    /** Which side of the beam the barb stands on. */
+    val facing: SnapFacing,
 )
 
 /** One dimension the material clamped short of what the user asked for. */
@@ -1196,7 +1550,30 @@ data class SnapFitJoint(
     val rungReason: String?,
     /** Every dimension the material clamped, with the sentence that says why. */
     val clamps: List<SnapFitClamp>,
-)
+    /**
+     * Every engagement depth this beam offers, in the order the pawl meets
+     * them, with the panel's own name for each. One entry for a one-tooth
+     * beam, whose only click is the seated one.
+     */
+    val clicks: List<SnapClick> = emptyList(),
+) {
+    /** The click the joint is designed to be used at: the deepest catch. */
+    val seatedClick: SnapClick? get() = clicks.lastOrNull()
+
+    /** The one line the panel shows for where the joint is holding. */
+    val clickSummary: String
+        get() = seatedClick?.let { seated ->
+            seated.label + " (" + millimetres(seated.gapMm) + " mm)" +
+                if (clicks.size > 1) {
+                    "; clicks at " + clicks.joinToString(", ") { millimetres(it.gapMm) + " mm" }
+                } else {
+                    ""
+                }
+        } ?: "one click"
+
+    private fun millimetres(value: Float): String =
+        String.format(java.util.Locale.ROOT, "%.2f", value)
+}
 
 /**
  * The joint's starting dimensions, before the scale. Every one of them is
@@ -1227,8 +1604,29 @@ data class SnapFitParameters(
     val matingClearanceMm: Float = 0.2f,
     /** The material left between the beam and the key. */
     val keyGapMm: Float = 1f,
-    /** The barb's lead-in angle; 45 degrees is the printable default. */
+    /**
+     * The barb's lead-in angle; 45 degrees is the printable default. A value of
+     * exactly 90 is a SQUARE lead-in: the hook has no ramp of its own, and what
+     * cams it in is the socket mouth's own chamfer ([socketRamp]).
+     */
     val rampAngleDeg: Float = 45f,
+    /**
+     * How many teeth the beam carries: 1 to 3, one pawl on the mate. The pitch
+     * is the lead-in's run plus a lip-depth flat, and the deepest catch is the
+     * pawl, so the joint holds at [SnapFitJoint.clicks]. One is the default and
+     * is exactly the joint that was built before this parameter existed.
+     */
+    val barbCount: Int = 1,
+    /** Which side of the beam the barb stands on; the default is today's joint. */
+    val facing: SnapFacing = SnapFacing.SAME,
+    /**
+     * The socket-mouth chamfer: a lead-in ramp in the hole instead of on the
+     * hook, at [mouthChamferDeg] to the assembly axis, so a square-faced hook
+     * cams in and a joint can face either way. Off by default.
+     */
+    val socketRamp: Boolean = false,
+    /** The mouth chamfer's angle to the axis: 45 degrees is the printable limit. */
+    val mouthChamferDeg: Float = SnapFit.MOUTH_CHAMFER_DEG,
     /**
      * How far the whole-seam registration step stands proud of the mating
      * face, as a ceiling: the step is sized from the part like every other
@@ -1248,6 +1646,21 @@ data class SnapFitParameters(
     /** The lip depth the user typed, in millimetres, or null. */
     val lipDepthOverrideMm: Float? = null,
 ) {
+    /**
+     * The same joint with every fit clearance tightened by [stepMm] millimetres,
+     * floored at what FDM can resolve. This is the whole of the Loose/Tight
+     * stepping: the hook's length, thickness, lip, pitch and every angle stay
+     * exactly as they were, so a tight joint is the loose one with less room in
+     * its sockets and no other difference at all.
+     */
+    fun tightenedBy(stepMm: Float): SnapFitParameters {
+        if (!stepMm.isFinite() || stepMm <= 0f) return this
+        return copy(
+            lipClearanceMm = (lipClearanceMm - stepMm).coerceAtLeast(SnapFit.MIN_CLEARANCE_MM),
+            keyClearanceMm = (keyClearanceMm - stepMm).coerceAtLeast(SnapFit.MIN_CLEARANCE_MM),
+        )
+    }
+
     internal fun isUsable(): Boolean {
         val lengths = listOf(
             keySizeMm, keyHeightMm, keyClearanceMm, beamLengthMm, beamWidthMm, beamThicknessMm,
@@ -1257,7 +1670,8 @@ data class SnapFitParameters(
         val overrides = listOfNotNull(beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm)
         return lengths.all { it.isFinite() && it > 0f } &&
             overrides.all { it.isFinite() && it > 0f } &&
-            rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg < 89f
+            rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg <= SnapFit.SQUARE_LEAD_IN_DEG &&
+            barbCount >= 1 && mouthChamferDeg.isFinite() && mouthChamferDeg in 1f..SnapFit.MOUTH_CHAMFER_DEG
     }
 }
 

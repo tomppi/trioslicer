@@ -169,11 +169,33 @@ class SnapFitTest {
             mouth.maxOf { it.x } - mouth.minOf { it.x },
             1e-4f,
         )
+        // Through, the pocket is the beam plus its clearance on the barb's own
+        // side and the beam PLUS THE ROOM IT BENDS THROUGH on the other: the
+        // pawl pushes the tooth down by its own height less the clearance it
+        // already has, and the whole free length dips with it. Without that
+        // room the beam is pressed into the pocket's floor on the way in and
+        // the joint never closes.
         assertEquals(
-            "and through",
-            dimensions.beamThicknessMm + 2f * dimensions.lipClearanceMm,
+            "and through: clearance above, the deflection room below",
+            dimensions.beamThicknessMm + dimensions.lipClearanceMm + dimensions.deflectionRoomMm,
             mouth.maxOf { it.y } - mouth.minOf { it.y },
             1e-4f,
+        )
+        assertEquals(
+            "the roof is one clearance off the beam",
+            dimensions.beamThicknessMm * 0.5f + dimensions.lipClearanceMm,
+            mouth.maxOf { it.y },
+            1e-4f,
+        )
+        assertEquals(
+            "and the floor is the room the hook needs to bend through below it",
+            -(dimensions.beamThicknessMm * 0.5f + dimensions.deflectionRoomMm),
+            mouth.minOf { it.y },
+            1e-4f,
+        )
+        assertTrue(
+            "which is at least what the tooth has to sink: " + dimensions.deflectionRoomMm,
+            dimensions.deflectionRoomMm >= dimensions.lipDepthMm - dimensions.lipClearanceMm + dimensions.lipClearanceMm - 1e-4f,
         )
         assertEquals(
             "the pocket opens below the mating face by the mating clearance",

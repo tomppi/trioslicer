@@ -20,6 +20,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
 import com.tomppi.enderslicer.viewer.GizmoOverlay
+import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitHalf
 import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapFitRung
@@ -158,17 +159,35 @@ data class MainUiState(
      */
     val snapLowFaceMm: Float? = null,
     val snapHighFaceMm: Float? = null,
-    /** The tapped point on the model, or null before the first tap. */
-    val snapAnchorPoint: Vec3? = null,
     /**
-     * Which half the tap landed on, so the point can be read in that half's own
-     * coordinates - the plate moved the two halves apart, and the same plate
-     * point is a different spot in each half's frame.
+     * Every joint placed on the pair, in the order they were tapped.
+     *
+     * A tap ADDS one of these rather than moving a single joint, because a
+     * complicated seam needs several and each one is its own decision: the
+     * material varies along a seam, so each joint gets its own rung, its own
+     * teeth, its own facing and its own clearance step. The list is the truth;
+     * the panel's controls act on [snapSelectedJoint].
      */
-    val snapAnchorHalfId: String? = null,
+    val snapJoints: List<SnapJointSpec> = emptyList(),
+    /** Which joint the panel acts on, or -1 when there is none. */
+    val snapSelectedJoint: Int = -1,
+    /** True while the selected joint is waiting for a tap to move it to. */
+    val snapMovingJoint: Boolean = false,
+    /**
+     * True when the joints are allowed to face different ways. Off by default:
+     * every joint on a seam faces the same way unless the user says otherwise,
+     * and flipping is then a pair-level decision that moves them all together.
+     */
+    val snapMixedFacing: Boolean = false,
+    /** The way a new joint faces, and the way the pair-level flip leaves every joint. */
+    val snapFacing: SnapFacing = SnapFacing.SAME,
+    /** How many teeth a new joint gets; the stepper also sets the selected joint's. */
+    val snapBarbs: Int = 1,
+    /** True when every joint's socket mouth is chamfered: the lead-in in the hole. */
+    val snapSocketRamp: Boolean = false,
     /** One control for the whole joint: every dimension and clearance scales with it. */
     val snapScale: Float = 1f,
-    /** Which half the user asked to carry the beam. */
+    /** Which half a newly placed joint asks to carry the beam. */
     val snapBeamHalf: SnapJoint.JointHalf = SnapJoint.JointHalf.LOW,
     /**
      * True when the user asked for the full joint whatever the seam's own
@@ -498,6 +517,43 @@ data class MainUiState(
         half.toLocal(tapped)
     }
 
+    /** The joint the panel's controls act on, or null when none is selected. */
+    val snapSelectedSpec: SnapJointSpec?
+        get() = snapJoints.getOrNull(snapSelectedJoint)
+
+    /**
+     * The selected joint's tapped point on the plate, or null when there is no
+     * joint yet. Kept as a property rather than a field: the joint list is the
+     * one source of truth about where the joints are.
+     */
+    val snapAnchorPoint: Vec3?
+        get() = snapSelectedSpec?.anchorPointMm
+
+    /** Which half the selected joint's tap landed on, or null. */
+    val snapAnchorHalfId: String?
+        get() = snapSelectedSpec?.anchorHalfId
+
+    /** The half a spec's tap is read through, or null when that half has left the plate. */
+    fun snapAnchorHalfFor(spec: SnapJointSpec): SnapFitHalf? = when (spec.anchorHalfId) {
+        snapLowHalfId -> snapLowFitHalf
+        snapHighHalfId -> snapHighFitHalf
+        else -> null
+    }
+
+    /**
+     * The parameters one joint is built with: the hook controls the user has
+     * typed, that joint's own clearance step, teeth and facing, and the pair's
+     * socket-ramp decision. Nothing else differs between joints on a seam.
+     */
+    fun snapParametersFor(spec: SnapJointSpec): SnapFitParameters = SnapFitParameters(
+        beamLengthOverrideMm = snapHookLengthMm,
+        beamThicknessOverrideMm = snapHookThicknessMm,
+        lipDepthOverrideMm = snapHookLipMm,
+        barbCount = spec.barbs,
+        facing = spec.facing,
+        socketRamp = snapSocketRamp,
+    ).tightenedBy(spec.tightness.stepMm)
+
     /**
      * The preview while the settings that produced it are still the current
      * ones, null otherwise.
@@ -509,8 +565,8 @@ data class MainUiState(
     val snapShownMeshes: SnapPreview? by lazy {
         val preview = snapPreview ?: return@lazy null
         preview.takeIf {
-            it.anchorPoint == snapAnchorPoint && it.scale == snapScale && it.beamHalf == snapBeamHalf &&
-                it.fullJoint == snapFullJoint && it.hookLengthMm == snapHookLengthMm &&
+            it.specs == snapJoints && it.scale == snapScale && it.fullJoint == snapFullJoint &&
+                it.socketRamp == snapSocketRamp && it.hookLengthMm == snapHookLengthMm &&
                 it.hookThicknessMm == snapHookThicknessMm && it.hookLipMm == snapHookLipMm
         }
     }
@@ -525,30 +581,29 @@ data class MainUiState(
      */
     val snapGhost: GizmoOverlay? by lazy {
         if (!snapActive || snapShownMeshes != null) return@lazy null
-        val anchor = snapAnchorLocalMm ?: return@lazy null
         val low = snapLowFitHalf ?: return@lazy null
         val high = snapHighFitHalf ?: return@lazy null
-        val joint = when (
-            val built = SnapJoint.build(
-                axis = snapAxis,
-                anchorMm = anchor,
-                scale = snapScale,
-                lowHalf = low,
-                highHalf = high,
-                beamHalf = snapBeamHalf,
-                parameters = SnapFitParameters(
-                    beamLengthOverrideMm = snapHookLengthMm,
-                    beamThicknessOverrideMm = snapHookThicknessMm,
-                    lipDepthOverrideMm = snapHookLipMm,
-                ),
-                requested = if (snapFullJoint) SnapFitRung.FULL else null,
-            )
-        ) {
-            is SnapJoint.Either.Placed -> built.placement.joint
-            is SnapJoint.Either.Flipped -> built.placement.joint
-            is SnapJoint.Either.Failed -> return@lazy null
+        val joints = snapJoints.mapNotNull { spec ->
+            val anchor = snapAnchorHalfFor(spec)?.toLocal(spec.anchorPointMm) ?: return@mapNotNull null
+            when (
+                val built = SnapJoint.build(
+                    axis = snapAxis,
+                    anchorMm = anchor,
+                    scale = snapScale,
+                    lowHalf = low,
+                    highHalf = high,
+                    beamHalf = spec.beamHalf,
+                    parameters = snapParametersFor(spec),
+                    requested = if (snapFullJoint) SnapFitRung.FULL else null,
+                )
+            ) {
+                is SnapJoint.Either.Placed -> built.placement.joint
+                is SnapJoint.Either.Flipped -> built.placement.joint
+                is SnapJoint.Either.Failed -> null
+            }
         }
-        SnapGhost.overlay(joint)
+        if (joints.isEmpty()) return@lazy null
+        SnapGhost.overlay(joints)
     }
 
     /**
@@ -566,7 +621,7 @@ data class MainUiState(
             !snapHalvesPresent -> SNAP_PAIR_STALE_MESSAGE
             snapLowFaceMm == null || snapHighFaceMm == null ->
                 "The plane this pair was split on is not known; split the model again."
-            snapAnchorPoint == null -> "Tap the model to place the joint on the seam."
+            snapJoints.isEmpty() -> "Tap the model to place a joint on the seam."
             else -> null
         }
 
@@ -581,11 +636,37 @@ data class MainUiState(
      */
     fun withoutSnap(): MainUiState = copy(
         snapActive = false,
-        snapAnchorPoint = null,
-        snapAnchorHalfId = null,
+        snapJoints = emptyList(),
+        snapSelectedJoint = -1,
+        snapMovingJoint = false,
         snapPreview = null,
         snapFailure = null,
     )
+
+    /**
+     * The same session with one joint taken off the seam.
+     *
+     * The selection follows the list: the joint that takes the removed one's
+     * place is selected when the selected one goes, and the rest of the list is
+     * untouched - one joint's removal is not the others' business.
+     */
+    fun withoutSnapJoint(index: Int): MainUiState {
+        if (index !in snapJoints.indices) return this
+        val joints = snapJoints.toMutableList().also { it.removeAt(index) }
+        val selected = when {
+            joints.isEmpty() -> -1
+            snapSelectedJoint == index -> index.coerceAtMost(joints.size - 1)
+            snapSelectedJoint > index -> snapSelectedJoint - 1
+            else -> snapSelectedJoint
+        }
+        return copy(
+            snapJoints = joints,
+            snapSelectedJoint = selected,
+            snapMovingJoint = false,
+            snapPreview = null,
+            snapFailure = null,
+        )
+    }
 
     /** The stored result is exportable; completeness is the cached value from when it was stored. */
     fun hasCurrentGcode(): Boolean = sliceResultId != null && gcodePath != null && gcodeComplete

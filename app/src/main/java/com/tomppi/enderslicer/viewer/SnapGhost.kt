@@ -1,14 +1,14 @@
 package com.tomppi.enderslicer.viewer
 
 /**
- * The joint, drawn where it will go.
+ * The joints, drawn where they will go.
  *
  * A ghost rather than the real thing: while the preview is being computed - and
  * whenever it is stale - the plate still shows the two halves as they were, and
- * this is the outline of the solid that is about to be unioned onto one of
- * them. It is the wireframe of the joint's own mesh with the duplicate edges
- * dropped, so what is drawn is exactly what the boolean will put in, sitting
- * exactly where the anchor put it.
+ * this is the outline of every solid that is about to be unioned onto one of
+ * them. It is the wireframe of each joint's own mesh with the duplicate edges
+ * dropped, so what is drawn is exactly what the booleans will put in, sitting
+ * exactly where the anchors put it.
  *
  * Pure: no GL, no state - just the line geometry the gizmo overlay already
  * knows how to draw in plate coordinates.
@@ -17,17 +17,20 @@ object SnapGhost {
     /** A green that reads as "this is being added" against the model's greys. */
     private val JOINT_COLOR = floatArrayOf(0.35f, 0.95f, 0.55f)
 
-    /** The joint's wireframe, ready for the viewer's gizmo overlay. */
-    fun overlay(joint: SnapFitJoint): GizmoOverlay = GizmoOverlay(
-        groups = listOf(
+    /** Every joint's wireframe, ready for the viewer's gizmo overlay. */
+    fun overlay(joints: List<SnapFitJoint>): GizmoOverlay = GizmoOverlay(
+        groups = joints.map { joint ->
             GizmoGroup(
                 color = JOINT_COLOR,
                 // The beam and key, and the whole-seam registration boss with
                 // them: the boss is the part of the joint the eye reads first.
                 vertices = edges(joint.unionSolid) + edges(joint.registrationSolid),
-            ),
-        ),
+            )
+        },
     )
+
+    /** [joint]'s wireframe, for the one-joint callers. */
+    fun overlay(joint: SnapFitJoint): GizmoOverlay = overlay(listOf(joint))
 
     /** Every edge of [mesh] once, as xyz pairs ready for [GizmoRibbon]. */
     fun edges(mesh: StlMesh): FloatArray {

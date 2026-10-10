@@ -5,8 +5,10 @@ import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.viewer.MeshFixtures
 import com.tomppi.enderslicer.viewer.MeshSolidBuilder
+import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
 import org.junit.Assert.assertEquals
@@ -51,19 +53,14 @@ class SnapStateTest {
     fun theTapIsReadInTheHalfItLandedOn() {
         val state = splitState()
 
-        val onLow = state.copy(
-            snapActive = true,
-            snapAnchorPoint = Vec3(3f, 4f, 31f),
-            snapAnchorHalfId = "low",
-        )
+        val onLow = state.copy(snapActive = true).withJoint(Vec3(3f, 4f, 31f))
         assertEquals("the low half's own frame is the plate's", Vec3(3f, 4f, 31f), onLow.snapAnchorLocalMm)
 
         // The same physical tap after the plate moved that half up 10 mm: the
         // plate point moves with it, the half's own coordinates do not.
         val moved = onLow.copy(
             models = listOf(onLow.models[0].movedBy(0f, 0f, 10f), onLow.models[1]),
-            snapAnchorPoint = Vec3(3f, 4f, 41f),
-        )
+        ).withAnchor(Vec3(3f, 4f, 41f))
         assertEquals("and the tap follows the half, not the plate", Vec3(3f, 4f, 31f), moved.snapAnchorLocalMm)
 
         // A tap on the high half reads in the high half's frame, which the
@@ -73,9 +70,7 @@ class SnapStateTest {
         val separated = state.copy(
             models = listOf(state.models[0], state.models[1].movedBy(0f, 0f, 7f)),
             snapActive = true,
-            snapAnchorPoint = Vec3(3f, 4f, 38f),
-            snapAnchorHalfId = "high",
-        )
+        ).withJoint(Vec3(3f, 4f, 38f), "high")
         assertEquals("a tap on the high half reads in its own frame", Vec3(3f, 4f, 31f), separated.snapAnchorLocalMm)
     }
 
@@ -85,11 +80,7 @@ class SnapStateTest {
         // the gap between the two halves as placed, so the packer's separation
         // put the features in mid-air. The beam stays with the half it roots in
         // and the pocket travels with the half it is cut from.
-        val touching = splitState().copy(
-            snapActive = true,
-            snapAnchorPoint = Vec3(20f, 20f, 31f),
-            snapAnchorHalfId = "low",
-        )
+        val touching = splitState().copy(snapActive = true).withJoint(Vec3(20f, 20f, 31f))
         val apart = touching.copy(models = listOf(touching.models[0], touching.models[1].movedBy(0f, 0f, 7f)))
 
         val touchingJoint = jointFor(touching)
@@ -116,13 +107,10 @@ class SnapStateTest {
 
     @Test
     fun thereIsNoAnchorWithoutBothHalvesAndNoAnchorBeforeATap() {
-        val state = splitState().copy(snapActive = true, snapAnchorPoint = null, snapAnchorHalfId = "low")
+        val state = splitState().copy(snapActive = true, snapJoints = emptyList(), snapSelectedJoint = -1)
         assertNull("nothing is read before the first tap", state.snapAnchorLocalMm)
 
-        val missing = state.copy(
-            models = state.models.dropLast(1),
-            snapAnchorPoint = Vec3(1f, 2f, 3f),
-        )
+        val missing = state.copy(models = state.models.dropLast(1)).withJoint(Vec3(1f, 2f, 3f))
         assertNull("and no ghost once a half has left the plate", missing.snapGhost)
         assertTrue("which is what the panel reads to say so", !missing.snapAvailable)
     }
@@ -189,15 +177,22 @@ class SnapStateTest {
 
     @Test
     fun aPreviewStandsOnlyWhileTheInputsThatMadeItAreCurrent() {
-        val state = splitState().copy(snapActive = true, snapAnchorPoint = Vec3(3f, 4f, 31f), snapAnchorHalfId = "low")
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(3f, 4f, 31f))
         val preview = SnapPreview(
             lowMesh = state.snapLowHalf!!.mesh,
             highMesh = state.snapHighHalf!!.mesh,
-            joint = jointFor(state),
-            anchorPoint = state.snapAnchorPoint!!,
+            joints = listOf(
+                SnapPlacedJoint(
+                    spec = state.snapJoints.first(),
+                    joint = jointFor(state),
+                    beamInChosenHalf = true,
+                    beamHalfName = "low",
+                    socketHalfName = "high",
+                ),
+            ),
+            specs = state.snapJoints,
             scale = 1f,
-            beamHalf = SnapJoint.JointHalf.LOW,
-            beamInChosenHalf = true,
+            socketRamp = false,
             repairNote = null,
             fullJoint = false,
             hookLengthMm = null,
@@ -214,11 +209,14 @@ class SnapStateTest {
         )
         assertNull(
             "nor a tap that has moved on",
-            state.copy(snapPreview = preview, snapAnchorPoint = Vec3(9f, 4f, 31f)).snapShownMeshes,
+            state.copy(snapPreview = preview).withAnchor(Vec3(9f, 4f, 31f)).snapShownMeshes,
         )
         assertNull(
-            "nor a skeleton flipped to the other half",
-            state.copy(snapPreview = preview, snapBeamHalf = SnapJoint.JointHalf.HIGH).snapShownMeshes,
+            "nor a joint flipped to the other half",
+            state.copy(
+                snapPreview = preview,
+                snapJoints = listOf(state.snapJoints.first().copy(beamHalf = SnapJoint.JointHalf.HIGH)),
+            ).snapShownMeshes,
         )
         assertNull(
             "nor a ladder switched to the full joint",
@@ -229,22 +227,18 @@ class SnapStateTest {
 
     @Test
     fun theGhostIsTheJointDrawnAndGoesOnceThePlateShowsIt() {
-        val state = splitState().copy(
-            snapActive = true,
-            snapAnchorPoint = Vec3(20f, 20f, 31f),
-            snapAnchorHalfId = "low",
-        )
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(20f, 20f, 31f))
 
         val ghost = state.snapGhost
         assertNotNull("where the joint will go, there is a ghost", ghost)
         assertTrue("and it is geometry", ghost!!.totalVertexCount > 0)
-        assertNull("and no ghost before a tap", state.copy(snapAnchorPoint = null).snapGhost)
+        assertNull("and no ghost before a tap", state.copy(snapJoints = emptyList(), snapSelectedJoint = -1).snapGhost)
         assertNull("and none while the tool is closed", state.copy(snapActive = false).snapGhost)
     }
 
     @Test
     fun closingTheSessionDropsThePreviewButKeepsThePair() {
-        val state = splitState().copy(snapActive = true, snapAnchorPoint = Vec3(1f, 2f, 3f), snapAnchorHalfId = "low")
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(1f, 2f, 3f))
 
         val closed = state.withoutSnap()
 
@@ -258,13 +252,88 @@ class SnapStateTest {
 
     @Test
     fun theAnchorIsBlockedWithAReasonUntilTheUserTaps() {
-        val state = splitState().copy(snapActive = true, snapAnchorPoint = null)
+        val state = splitState().copy(snapActive = true, snapJoints = emptyList(), snapSelectedJoint = -1)
 
         assertEquals(
-            "Tap the model to place the joint on the seam.",
+            "Tap the model to place a joint on the seam.",
             state.snapBlockedReason,
         )
     }
+
+    @Test
+    fun removingOneJointLeavesTheOtherExactlyAsItWas() {
+        val first = spec(Vec3(10f, 20f, 31f))
+        val second = spec(Vec3(30f, 20f, 31f)).copy(tightness = SnapTightness.TIGHT, barbs = 2)
+        val state = splitState().copy(
+            snapActive = true,
+            snapJoints = listOf(first, second),
+            snapSelectedJoint = 0,
+        )
+
+        val afterFirst = state.withoutSnapJoint(0)
+
+        assertEquals("one joint went", 1, afterFirst.snapJoints.size)
+        assertEquals("and it is the other one, untouched", second, afterFirst.snapJoints.single())
+        assertEquals("which is what the panel now acts on", 0, afterFirst.snapSelectedJoint)
+        assertNull("and nothing stale is left previewed", afterFirst.snapPreview)
+
+        val empty = afterFirst.withoutSnapJoint(0)
+        assertTrue("the last one can go too", empty.snapJoints.isEmpty())
+        assertEquals("with nothing selected", -1, empty.snapSelectedJoint)
+        assertEquals("and the tool asks for a tap again", "Tap the model to place a joint on the seam.", empty.snapBlockedReason)
+    }
+
+    @Test
+    fun theTwoStepsAreTheSameJointWithLessClearance() {
+        // The stepping is clearance and nothing else: a tight joint has the same
+        // beam at the same place, with 0.06 mm less room in its sockets.
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(20f, 20f, 31f))
+        val loose = state.snapParametersFor(state.snapJoints.first())
+        val tight = state.snapParametersFor(state.snapJoints.first().copy(tightness = SnapTightness.TIGHT))
+
+        assertEquals(
+            "exactly one step less around the beam",
+            loose.lipClearanceMm - SnapTightness.TIGHT.stepMm,
+            tight.lipClearanceMm,
+            1e-6f,
+        )
+        assertEquals(
+            "and around the key",
+            loose.keyClearanceMm - SnapTightness.TIGHT.stepMm,
+            tight.keyClearanceMm,
+            1e-6f,
+        )
+        assertEquals("the hook's length is untouched", loose.beamLengthMm, tight.beamLengthMm, 0f)
+        assertEquals("so is its thickness", loose.beamThicknessMm, tight.beamThicknessMm, 0f)
+        assertEquals("and its lip", loose.lipDepthMm, tight.lipDepthMm, 0f)
+        assertEquals("and the ramp's angle", loose.rampAngleDeg, tight.rampAngleDeg, 0f)
+        assertEquals("and the teeth", loose.barbCount, tight.barbCount)
+        assertEquals("and the way it faces", loose.facing, tight.facing)
+        assertEquals(
+            "the mating face keeps its own clearance: it is not a fit dimension",
+            loose.matingClearanceMm,
+            tight.matingClearanceMm,
+            0f,
+        )
+    }
+
+    /** One joint on the seam, at [point], as a tap would place it. */
+    private fun spec(point: Vec3, halfId: String? = "low"): SnapJointSpec = SnapJointSpec(
+        anchorPointMm = point,
+        anchorHalfId = halfId,
+        beamHalf = SnapJoint.JointHalf.LOW,
+        tightness = SnapTightness.LOOSE,
+        barbs = 1,
+        facing = SnapFacing.SAME,
+    )
+
+    /** The same session with a joint placed, selected, as a tap would leave it. */
+    private fun MainUiState.withJoint(point: Vec3, halfId: String? = "low"): MainUiState =
+        copy(snapJoints = listOf(spec(point, halfId)), snapSelectedJoint = 0)
+
+    /** The same session's selected joint moved to [point]. */
+    private fun MainUiState.withAnchor(point: Vec3): MainUiState =
+        copy(snapJoints = snapJoints.mapIndexed { index, one -> if (index == snapSelectedJoint) one.copy(anchorPointMm = point) else one })
 
     /** The plate as a split leaves it: two 40 mm boxes meeting at Z = 20. */
     private fun splitState(): MainUiState {
@@ -283,9 +352,7 @@ class SnapStateTest {
             snapAxis = ModelPlacement.Axis.Z,
             snapLowFaceMm = 20f,
             snapHighFaceMm = 20f,
-            snapAnchorPoint = Vec3(20f, 20f, 31f),
-            snapAnchorHalfId = "low",
-        )
+        ).withJoint(Vec3(20f, 20f, 31f))
     }
 
     private fun jointFor(state: MainUiState): SnapFitJoint =

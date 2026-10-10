@@ -146,6 +146,78 @@ This joins the multi-joint work (several joints on one seam, Loose/Tight
 clearance stepping, socket-mouth chamfer, per-joint facing) - also asked for
 and not yet built.
 
+## Built: several joints, stepping, the socket's ramp and the multi-barb beam
+
+All four landed together, and each one changed something the others depend on.
+
+- SEVERAL JOINTS. A tap adds a joint to the pair rather than moving the one
+  joint; the panel lists them, selects one, moves it, removes it or clears the
+  lot. Every joint is BUILT on the pair's own faces - so its rung is the
+  material's answer about that place on the seam, not about how many joints
+  came before it - and the BOOLEANS then run one joint after another over the
+  running halves, which is what the printed parts are. Nothing is ever dropped
+  quietly: a joint the material will not take, a pair whose pockets cross or
+  leave less than a beam-thickness of wall between them, and a pocket that
+  removes no material because a neighbour already took it are three different
+  sentences, and each one stops the preview and names the joint.
+- AUTO SPREAD. Two to four joints, evenly along the rim of the cross-section
+  the two halves share at the seam - the same contoured material the pad is cut
+  from, read as an outline rather than a tongue. Rasterised rather than sampled
+  (a real seam's face carries thousands of triangles), then walked by
+  farthest-point sampling so a long thin band gets joints along its length
+  instead of clustered where the walk started. Spacing is the joint's own
+  footprint across the seam (beam, teeth and key - the pad is deliberately
+  left out, because a whole-seam pad is the seam's own cross-section and two
+  full joints share one) plus one beam-thickness of wall. The app proposes and
+  the user decides: every proposed point is checked by building the joint it
+  would carry, and a point the material refuses is reported and left out.
+- LOOSE/TIGHT STEPPING. Two steps, 0.06 mm of clearance apart - about a third
+  of a 0.4 mm nozzle's width, near the limit FDM resolves - assigned by
+  placement order (first loose, next a step tighter) and changeable per joint.
+  CLEARANCE ONLY: the hook's length, thickness, lip, pitch, angles, teeth and
+  facing are identical in both steps. The mating face's own relief is not part
+  of it: that is how the two faces sit, not how the joint fits.
+- SOCKET-MOUTH CHAMFER. A 45-degree funnel on the pocket's mouth - the FDM
+  overhang limit, so the roof prints - opening at the mating face and closing
+  onto the pawl. It is the lead-in in the hole rather than on the hook, which
+  is what lets a square-faced hook cam in, and therefore what makes facing a
+  choice. It is NOT a substitute for the room the beam needs to bend.
+- FACING. Every joint on a seam faces the same way by default and flips as a
+  pair; mixing is an explicit switch, and only then can one joint turn. An
+  opposite joint is the beam mirrored about its own centreline, pocket and
+  deflection room included: the catch still faces back along the same assembly
+  direction, so a mixed pair assembles the same way and locks the slide along
+  the seam both ways.
+- MULTI-BARB, as the ratchet conclusion said: ONE PAWL on the mate, 1 to 3
+  TEETH on the beam, default 1 so the one-tooth beam is byte for byte the beam
+  that was built before. Pitch = the lead-in's run plus a lip-depth flat, the
+  tip-most tooth's lead-in ends at the beam's tip, and the pawl sits one
+  clearance in front of the DEEPEST catch, exactly where the single-barb
+  pocket's step has always been. The pocket is narrow from its mouth to the
+  pawl and wide beyond it, so every tooth but the one being caught is inside
+  the wide slot. Clicks are therefore (N - 1 - i) x pitch + lipClearance apart,
+  the tooth nearest the tip catching first and the deepest catch seating the
+  halves; the panel names the seated click and lists the rest.
+
+## The deflection gap was missing, and the single-barb joint could not close
+
+Found while adding the socket's ramp, kept because it is the sort of thing the
+next change will trip over again.
+
+The pawl rides the tooth's ramp and pushes the beam bodily aside by the tooth's
+own height less the clearance it already has - lipDepth - lipClearance, order
+half a millimetre. The committed pocket's floor sat one clearance below the
+beam on BOTH sides, so the beam had 0.2 mm of room to bend half a millimetre:
+the tip would have been pressed into the pocket's floor for the whole of its
+travel and the halves would never have closed. Nothing in the geometry said so;
+the pocket was closed, the beam was closed, and every check passed.
+
+The fix is the room itself: the pocket's floor is dropped by the sink plus a
+clearance, on the side the beam bends towards, and mirrored with the facing. The
+mate's own material below the anchor is the ceiling, and a ceiling that bites is
+reported as a clamp with the numbers rather than left to jam. The socket's ramp
+helps the hook along; it does not replace this.
+
 ## Still to settle
 
 - The small hook at the upper right of the sketch: the beam's anchor, or a second catch?
