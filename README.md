@@ -158,7 +158,9 @@ resolved settings before a critical print.
   download and a large install
 - The AI assistant is a client to a DeepSeek harness you run yourself, and photo-to-3D additionally needs a GPU box; neither is bundled, and replies are read from a polling projection rather than streamed
 - Snap-fit joints are verified in the app and in the geometry, not yet in plastic: no printed pair has
-  been clicked together, so treat the clearances as something to tune rather than a finished fit
+  been clicked together, so treat the clearances as something to tune rather than a finished fit. That
+  covers both styles - the cantilever placed at a tap, and the wall lip's ring around the seam, whose
+  **Engage** and **Tooth** sizes are the first numbers to move
 
 ## Safety
 

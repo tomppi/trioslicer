@@ -4,6 +4,55 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-10-11
+
+### Added
+
+- **The wall lip: a second kind of snap joint, and the whole seam is the hook.** The snap panel's
+  Setup column now carries **Style: Cantilever | Wall lip**. The cantilever is the joint as it is
+  today - a beam placed at a tap, with its rungs, teeth, facing and socket. The wall lip is the
+  seam itself: one **tooth ring** swept around the lip half's own edge and one **ledge ring**
+  around its mate's, each one closed ring mitred at every corner, so the hold runs the whole way
+  round instead of standing at a single point. Only the wall flexes; the mate is solid where the
+  ledge sits. Nothing is placed by hand - choosing the style builds the ring from the seam's own
+  contour - and the tap controls (Add joint, Move, Auto spread, Clear) belong to the cantilever
+  and are hidden for the lip.
+- **Two sizes, and they are the hold.** **Engage** (0.80 mm) is how far the tooth and the ledge
+  overlap; **Tooth** (1.20 mm) is how tall the tooth is built, on the existing 45-degree ramp
+  parameter (90 degrees makes both lead-in faces square). The step the two halves give the ring is
+  sized from those numbers rather than from the cantilever's pad: pad = tooth + ramp's run +
+  2 x clearance, which is 2.80 mm on the defaults, and the recess a clearance deeper again. The
+  panel reads the step it grew to and why.
+- **The wall is read, not assumed.** The lip stands on the ring's wall, so the app measures the
+  material's own band at every sample around the ring and how far it runs back from the seam
+  before it joins anything, then reports the shortest free length, the worst strain and where
+  along the ring it is - "wall 2.0 mm thick, 28.0 mm free", "worst wall strain 0.4% at 20 mm along
+  the ring", against PLA's own 2% figure. A ring that crosses a place where the wall cannot bend
+  (a corner, a boss) or a mate that is hollow just inboard of the wall is **built as asked and
+  warned about**, with the number and the place on the ring; only a seam with no wall at all, a
+  folding inset, or a mate hollow the whole way round is refused.
+- The joint keeps its style and both sizes in the record, so a lip joint survives a relaunch and
+  can be re-tuned after a print. Cantilever records keep their old shape, and a style the build
+  does not know reads as the cantilever.
+
+### Fixed
+
+- The wall lip's step line printed its format string instead of its numbers
+  ("pad %.2f mm: a %.2f mm tooth and its ramp"). The sentence is built with the joint now, where a
+  test reads it, and the panel prints that.
+
+### Notes
+
+- **The wall lip has not been printed.** It is verified in the app, in the geometry it builds and
+  in the meshes it produces - the ring closed at every corner, the tooth's holding face and the
+  ledge's bearing face measured in the applied pair, the engagement read off the phone - but no
+  printed pair has been clicked together. Its fit, its click and the wall's behaviour in plastic
+  are unproven, and the first print is the test. **Engage** is the number to move if it is too
+  tight or too loose, and a drooping undercut prints deeper than drawn, so a printed joint tends
+  to come out tighter than the drawing.
+- The cantilever snap fit is unchanged and is likewise not yet verified in a printed part; see the
+  note under 1.9.0.
+
 ## [1.9.0] - 2026-10-11
 
 ### Added
