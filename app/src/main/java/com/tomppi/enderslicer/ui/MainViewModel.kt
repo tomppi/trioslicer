@@ -101,6 +101,7 @@ import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapFitHalf
 import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapLayout
 import com.tomppi.enderslicer.viewer.SnapPad
 import com.tomppi.enderslicer.viewer.SnapSpread
@@ -1982,6 +1983,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 tightness = spec.tightness,
                 barbs = spec.barbs,
                 facing = spec.facing,
+                style = spec.style,
+                lipEngagementMm = spec.lipEngagementMm,
+                lipToothHeightMm = spec.lipToothHeightMm,
             )
         },
     )
@@ -2045,6 +2049,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 snapMixedFacing = false,
                 snapFacing = SnapFacing.SAME,
                 snapBarbs = 1,
+                // The style and the lip's sizes come back as the panel's defaults too,
+                // so the control the pair was built with is the one the panel shows.
+                snapStyle = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }?.style
+                    ?: SnapJointStyle.CANTILEVER,
+                snapLipEngagementMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
+                    ?.lipEngagementMm,
+                snapLipToothHeightMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
+                    ?.lipToothHeightMm,
                 snapSocketRamp = record?.socketRamp ?: false,
                 snapScale = record?.scale ?: 1f,
                 snapFullJoint = record?.fullJoint ?: false,
@@ -2103,6 +2115,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     tightness = if (index % 2 == 0) SnapTightness.LOOSE else SnapTightness.TIGHT,
                     barbs = state.snapBarbs,
                     facing = state.snapFacing,
+                    style = state.snapStyle,
+                    lipEngagementMm = state.snapLipEngagementMm,
+                    lipToothHeightMm = state.snapLipToothHeightMm,
                 )
                 _uiState.update {
                     it.copy(
@@ -2230,6 +2245,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * Which joint the selected one is, and what the next one will be: the
+     * cantilever or the wall lip.
+     *
+     * Rebuilding is what changes the geometry here rather than a re-tune, so the
+     * preview follows: a lip joint is a different shape on the halves, not the
+     * same joint with another number in it.
+     */
+    fun setSnapStyle(style: SnapJointStyle) {
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(style = style)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapStyle = style, snapFailure = null) }
+        previewSnapJoint()
+    }
+
+    /**
+     * The wall lip's engagement in millimetres: how far the tooth and its ledge
+     * overlap, which is the whole hold. Null hands the dimension back to the
+     * scale.
+     */
+    fun setSnapLipEngagement(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipEngagementMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipEngagementMm = millimetres, snapFailure = null) }
+    }
+
+    /** The wall lip's tooth height in millimetres; null hands it back to the scale. */
+    fun setSnapLipToothHeight(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipToothHeightMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipToothHeightMm = millimetres, snapFailure = null) }
+    }
+
+    /**
      * Lets the joints face different ways, or puts them all back the same way.
      * Turning mixing OFF is the pair-level decision: every joint takes the
      * pair's own way again, so a mixed set is always something the user asked
@@ -2316,6 +2384,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             tightness = SnapTightness.LOOSE,
             barbs = state.snapBarbs,
             facing = state.snapFacing,
+            style = state.snapStyle,
+            lipEngagementMm = state.snapLipEngagementMm,
+            lipToothHeightMm = state.snapLipToothHeightMm,
         )
         val parameters = state.snapParametersFor(probeSpec)
         // A probe joint, built at the rim's own reference point, is what the
@@ -2329,6 +2400,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             beamHalf = state.snapBeamHalf,
             parameters = parameters,
             requested = requested,
+            style = state.snapStyle,
         )
         val probeJoint = when (probe) {
             is SnapJoint.Either.Placed -> probe.placement.joint
@@ -2362,6 +2434,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 beamHalf = state.snapBeamHalf,
                 parameters = parameters,
                 requested = requested,
+                style = state.snapStyle,
             )
             when (one) {
                 is SnapJoint.Either.Failed -> refused += "point " + (index + 1) + ": " + one.failure.summary
@@ -2376,6 +2449,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         tightness = if (place % 2 == 0) SnapTightness.LOOSE else SnapTightness.TIGHT,
                         barbs = state.snapBarbs,
                         facing = state.snapFacing,
+                        style = state.snapStyle,
+                        lipEngagementMm = state.snapLipEngagementMm,
+                        lipToothHeightMm = state.snapLipToothHeightMm,
                     )
                 }
             }
@@ -2690,6 +2766,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             barbCount = spec.barbs,
             facing = spec.facing,
             socketRamp = state.snapSocketRamp,
+            lipEngagementOverrideMm = spec.lipEngagementMm,
+            lipToothHeightOverrideMm = spec.lipToothHeightMm,
         ).tightenedBy(spec.tightness.stepMm)
 
         // The joint's own place in the list travels with it: a joint that failed is named by
@@ -2727,6 +2805,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     beamHalf = spec.beamHalf,
                     parameters = parameters,
                     requested = if (fullJoint) SnapFitRung.FULL else null,
+                    style = spec.style,
                 )
             ) {
                 is SnapJoint.Either.Placed -> result.placement
@@ -2753,93 +2832,191 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     continue
                 }
             val joint = contoured.joint
-            val withStep = joint.rung == SnapFitRung.FULL
-            val union = engine.union(contoured.beamMesh, joint.unionSolid)
-            if (union !is MeshBoolean.Result.Success) {
-                failed += SnapJointFailure(
-                    index,
-                    "could not be joined on: " + (union as MeshBoolean.Result.Failure).reason,
-                )
-                continue
-            }
-            // The whole-seam registration step, when this rung carries one. Its
-            // solids are separate meshes because one mesh holding two
-            // overlapping shells is not manifold, so the engine is what fuses
-            // the boss on and cuts the matching recess out.
-            val registered = if (withStep) {
-                val stepped = engine.union(union.mesh, joint.registrationSolid)
-                if (stepped !is MeshBoolean.Result.Success) {
-                    failed += SnapJointFailure(
-                        index,
-                        "could not have its registration step joined on: " +
-                            (stepped as MeshBoolean.Result.Failure).reason,
-                    )
-                    continue
-                }
-                stepped
-            } else {
-                union
-            }
-            val socket = engine.subtract(contoured.socketMesh, joint.subtractSolid)
-            if (socket !is MeshBoolean.Result.Success) {
-                failed += SnapJointFailure(
-                    index,
-                    "could not have its pocket cut: " + (socket as MeshBoolean.Result.Failure).reason,
-                )
-                continue
-            }
-            val recessed = if (withStep) {
-                val hollowed = engine.subtract(socket.mesh, joint.registrationRecess)
+            // The two styles' booleans are not the same shape: the cantilever
+            // unions its beam and pad into ONE half and cuts its pocket and recess
+            // from the other, while the wall lip cuts its recess from the half its
+            // TOOTH goes into and unions its LEDGE into the mate - two unions on two
+            // different halves. Each style keeps its own path below, so the
+            // cantilever's four calls stay exactly what they were.
+            if (joint.style == SnapJointStyle.WALL_LIP) {
+                var beamGain = 0.0
+                var failure: String? = null
+                // The recess first, then the tooth inside it: the recess is what
+                // frees the wall the tooth stands on, so a tooth unioned before it
+                // would be cut away with everything else in its way.
+                val hollowed = engine.subtract(contoured.beamMesh, joint.subtractSolid)
                 if (hollowed !is MeshBoolean.Result.Success) {
                     failed += SnapJointFailure(
                         index,
-                        "could not have its matching recess cut: " +
-                            (hollowed as MeshBoolean.Result.Failure).reason,
+                        "could not have its recess cut: " + (hollowed as MeshBoolean.Result.Failure).reason,
                     )
                     continue
                 }
-                hollowed
-            } else {
-                socket
-            }
-            // A joint that shares no volume with the half it is rooted in is a
-            // floating block, and a pocket that removes nothing is half a joint:
-            // both pass a closedness check, so both are measured here instead.
-            // With several joints, a pocket that removes nothing is also what a
-            // neighbour's pocket having taken the material already looks like.
-            val beamGain = union.volumeMm3 - MeshVolume.of(contoured.beamMesh)
-            val pocketLoss = MeshVolume.of(contoured.socketMesh) - socket.volumeMm3
-            val padGain = registered.volumeMm3 - union.volumeMm3
-            val recessLoss = socket.volumeMm3 - recessed.volumeMm3
-            val failure = when {
-                beamGain < MIN_FEATURE_MM3 ->
-                    "has no material where it was placed for its beam to root in; " +
-                        "tap another spot on the seam, or move it."
-                pocketLoss < MIN_FEATURE_MM3 ->
-                    "the matching pocket would cut nothing out of the other half; " +
-                        "tap another spot, or move the joints apart."
-                withStep && recessLoss < MIN_FEATURE_MM3 ->
-                    "the matching recess would cut nothing out of the other half."
-                withStep && padGain < MIN_FEATURE_MM3 ->
-                    "the whole-seam pad has nothing to hold on to here."
-                else -> null
-            }
-            if (failure != null) {
-                failed += SnapJointFailure(index, failure)
+                val toothed = engine.union(hollowed.mesh, joint.unionSolid)
+                if (toothed !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its tooth joined on: " +
+                            (toothed as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                val ledged = engine.union(contoured.socketMesh, joint.registrationSolid)
+                if (ledged !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its ledge joined on: " +
+                            (ledged as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                beamGain = toothed.volumeMm3 - hollowed.volumeMm3
+                // How much of the mate the ledge really holds on to, and how much of
+                // it stands out in the open: a ledge unioned into thin air is a
+                // floating block, and one that shares nothing with the mate is worse.
+                val ledgeGain = ledged.volumeMm3 - MeshVolume.of(contoured.socketMesh)
+                val ledgeSeat = seatVolume(contoured.socketMesh, joint.registrationSolid)
+                failure = when {
+                    beamGain < MIN_FEATURE_MM3 ->
+                        "has no wall where it was placed for its tooth to root in; " +
+                            "tap another spot on the seam, or move it."
+                    ledgeGain < MIN_FEATURE_MM3 ->
+                        "the wall lip's ledge would stand in the open: the other half has no " +
+                            "material inboard of the wall there."
+                    ledgeSeat < MIN_FEATURE_MM3 ->
+                        "the wall lip's ledge has nothing of the other half to hold on to; " +
+                            "move the joint where the mate is solid."
+                    else -> null
+                }
+                if (Diagnostics.isEnabled()) {
+                    Diagnostics.info(
+                        "snap fit",
+                        "joint " + (index + 1) + "/" + specs.size + " wall lip" +
+                            ", " + specs[index].tightness.label.lowercase() + " clearance" +
+                            ": tooth +" + millimetres(beamGain) +
+                            " mm3, ledge +" + millimetres(ledgeGain) +
+                            " mm3 (seat " + millimetres(ledgeSeat) +
+                            " mm3), wall " + millimetres(joint.dimensions.wallThicknessMm.toDouble()) +
+                            " mm free " + millimetres(joint.dimensions.wallFreeLengthMm.toDouble()) +
+                            " mm, engagement " + millimetres(joint.dimensions.lipEngagementMm.toDouble()) +
+                            " mm, strain " +
+                            millimetres(joint.dimensions.lipStrainPercent.toDouble()) + "%",
+                    )
+                }
+                if (failure != null) {
+                    failed += SnapJointFailure(index, failure)
+                    continue
+                }
+                // Which half carries the tooth decides which running mesh takes what.
+                // The tooth's half is the one the lip was built into; the mate takes
+                // the ledge, and both carry the joints before them forward.
+                val toothIsLow = contoured.beamMesh === lowRunning.mesh
+                built += index to contoured
+                if (toothIsLow) {
+                    lowMesh = toothed.mesh
+                    highMesh = ledged.mesh
+                } else {
+                    lowMesh = ledged.mesh
+                    highMesh = toothed.mesh
+                }
+                placed += SnapPlacedJoint(
+                    spec = spec,
+                    joint = joint,
+                    beamInChosenHalf = placement.chosenHalfCarriesBeam,
+                    beamHalfName = if (toothIsLow) lowName else highName,
+                    socketHalfName = if (toothIsLow) highName else lowName,
+                )
                 continue
             }
+            // The cantilever, unchanged: one union into the beam's half, the pad
+            // fused on after it, and the pocket and recess cut from the mate.
+            val withStep = joint.rung == SnapFitRung.FULL
+                val union = engine.union(contoured.beamMesh, joint.unionSolid)
+                if (union !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not be joined on: " + (union as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                // The whole-seam registration step, when this rung carries one. Its
+                // solids are separate meshes because one mesh holding two
+                // overlapping shells is not manifold, so the engine is what fuses
+                // the boss on and cuts the matching recess out.
+                val registered = if (withStep) {
+                    val stepped = engine.union(union.mesh, joint.registrationSolid)
+                    if (stepped !is MeshBoolean.Result.Success) {
+                        failed += SnapJointFailure(
+                            index,
+                            "could not have its registration step joined on: " +
+                                (stepped as MeshBoolean.Result.Failure).reason,
+                        )
+                        continue
+                    }
+                    stepped
+                } else {
+                    union
+                }
+                val socket = engine.subtract(contoured.socketMesh, joint.subtractSolid)
+                if (socket !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its pocket cut: " + (socket as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                val recessed = if (withStep) {
+                    val hollowed = engine.subtract(socket.mesh, joint.registrationRecess)
+                    if (hollowed !is MeshBoolean.Result.Success) {
+                        failed += SnapJointFailure(
+                            index,
+                            "could not have its matching recess cut: " +
+                                (hollowed as MeshBoolean.Result.Failure).reason,
+                        )
+                        continue
+                    }
+                    hollowed
+                } else {
+                    socket
+                }
+                // A joint that shares no volume with the half it is rooted in is a
+                // floating block, and a pocket that removes nothing is half a joint:
+                // both pass a closedness check, so both are measured here instead.
+                // With several joints, a pocket that removes nothing is also what a
+                // neighbour's pocket having taken the material already looks like.
+                val beamGain = union.volumeMm3 - MeshVolume.of(contoured.beamMesh)
+                val pocketLoss = MeshVolume.of(contoured.socketMesh) - socket.volumeMm3
+                val padGain = registered.volumeMm3 - union.volumeMm3
+                val recessLoss = socket.volumeMm3 - recessed.volumeMm3
+                val failure = when {
+                    beamGain < MIN_FEATURE_MM3 ->
+                        "has no material where it was placed for its beam to root in; " +
+                            "tap another spot on the seam, or move it."
+                    pocketLoss < MIN_FEATURE_MM3 ->
+                        "the matching pocket would cut nothing out of the other half; " +
+                            "tap another spot, or move the joints apart."
+                    withStep && recessLoss < MIN_FEATURE_MM3 ->
+                        "the matching recess would cut nothing out of the other half."
+                    withStep && padGain < MIN_FEATURE_MM3 ->
+                        "the whole-seam pad has nothing to hold on to here."
+                    else -> null
+                }
+                if (failure != null) {
+                    failed += SnapJointFailure(index, failure)
+                    continue
+                }
 
-            // Which half carries the beam decides which running mesh takes what,
-            // and where each half's mating face now is on the plate.
-            val beamIsLow = contoured.beamMesh === lowRunning.mesh
-            built += index to contoured
-            if (beamIsLow) {
-                lowMesh = registered.mesh
-                highMesh = recessed.mesh
-            } else {
-                lowMesh = recessed.mesh
-                highMesh = registered.mesh
-            }
+                // Which half carries the beam decides which running mesh takes what,
+                // and where each half's mating face now is on the plate.
+                val beamIsLow = contoured.beamMesh === lowRunning.mesh
+                built += index to contoured
+                if (beamIsLow) {
+                    lowMesh = registered.mesh
+                    highMesh = recessed.mesh
+                } else {
+                    lowMesh = recessed.mesh
+                    highMesh = registered.mesh
+                }
             placed += SnapPlacedJoint(
                 spec = spec,
                 joint = joint,
@@ -4888,6 +5065,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         tightness = joint.tightness,
                         barbs = joint.barbs,
                         facing = joint.facing,
+                        style = joint.style,
+                        lipEngagementMm = joint.lipEngagementMm,
+                        lipToothHeightMm = joint.lipToothHeightMm,
                     )
                 },
             )
@@ -4989,6 +5169,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     tightness = joint.tightness,
                     barbs = joint.barbs,
                     facing = joint.facing,
+                    style = joint.style,
+                    lipEngagementMm = joint.lipEngagementMm,
+                    lipToothHeightMm = joint.lipToothHeightMm,
                 )
             }.orEmpty(),
         )

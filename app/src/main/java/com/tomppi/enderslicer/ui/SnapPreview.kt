@@ -4,6 +4,7 @@ import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
@@ -33,6 +34,12 @@ data class SnapJointSpec(
     val barbs: Int,
     /** Which way this joint's hook faces. */
     val facing: SnapFacing,
+    /** Which joint this is: the cantilever's beam, or the wall lip's tooth and ledge. */
+    val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    /** The lip's engagement in millimetres, or null for the scale's own. */
+    val lipEngagementMm: Float? = null,
+    /** The lip's tooth height in millimetres, or null for the scale's own. */
+    val lipToothHeightMm: Float? = null,
 )
 
 /**
@@ -53,6 +60,15 @@ data class SnapJointRecord(
     val tightness: SnapTightness,
     val barbs: Int,
     val facing: SnapFacing,
+    /**
+     * The joint's style and, for a lip, the two sizes the user set. They are kept
+     * per joint for the same reason the teeth and the facing are: a lip printed
+     * once can be re-tuned afterwards rather than re-placed, and a seam can carry
+     * a cantilever and a lip side by side.
+     */
+    val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    val lipEngagementMm: Float? = null,
+    val lipToothHeightMm: Float? = null,
 )
 
 /**

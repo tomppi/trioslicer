@@ -78,6 +78,12 @@ object SnapJoint {
         parameters: SnapFitParameters = SnapFitParameters(),
         /** The rung the user pinned, or null to let the material decide. */
         requested: SnapFitRung? = null,
+        /**
+         * Which joint to build. The cantilever walks the rung ladder; the wall
+         * lip has one shape and answers with its own requirements when the
+         * material fails one of them, rather than dropping to another style.
+         */
+        style: SnapJointStyle = SnapJointStyle.CANTILEVER,
     ): Either {
         val axisDirection = SnapFit.axisDirection(axis)
         // The two halves meet when their own mating faces agree: each carries
@@ -93,13 +99,13 @@ object SnapJoint {
                 ),
             )
         }
-        val chosenJoint = join(axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested)
-        if (chosenJoint != null) {
-            return Either.Placed(placementOf(chosenJoint, lowHalf, highHalf, beamHalf, true))
+        val chosen = join(axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style)
+        if (chosen is Attempt.Built) {
+            return Either.Placed(placementOf(chosen.joint, lowHalf, highHalf, beamHalf, true))
         }
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
-        val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested)
-        if (flipped != null) {
+        val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style)
+        if (flipped is Attempt.Built) {
             // Which half the sentence names. The chosen round roots the beam in the chosen
             // half and reaches into the mate, so the material can refuse it in two places:
             // the chosen half's own depth behind its face (the beam's root) or the mate's
@@ -117,13 +123,28 @@ object SnapJoint {
                     "was built into it instead"
             }
             return Either.Flipped(
-                placementOf(flipped, lowHalf, highHalf, otherHalf, false),
+                placementOf(flipped.joint, lowHalf, highHalf, otherHalf, false),
                 Failure(short ?: beamHalf, reason),
             )
         }
+        // The lip measures its own requirements and says which one failed; the
+        // cantilever's sentence is the material's, measured the same way it always
+        // was, and only when the generator produced nothing at all.
+        val refused = (chosen as? Attempt.Refused)?.reason.orEmpty()
         return Either.Failed(
-            Failure(beamHalf, reasonFor(axis, scale, lowHalf, highHalf, beamHalf, parameters)),
+            Failure(
+                beamHalf,
+                refused.ifBlank { reasonFor(axis, scale, lowHalf, highHalf, beamHalf, parameters) },
+            ),
         )
+    }
+
+    /** One try at the joint: the geometry, or the reason this style's own rules refused it. */
+    private sealed interface Attempt {
+        data class Built(val joint: SnapFitJoint) : Attempt
+
+        /** Blank for the cantilever, whose refusal is measured by [reasonFor]. */
+        data class Refused(val reason: String) : Attempt
     }
 
     /**
@@ -145,20 +166,41 @@ object SnapJoint {
         highHalf: SnapFitHalf,
         parameters: SnapFitParameters,
         requested: SnapFitRung?,
-    ): SnapFitJoint? {
+        style: SnapJointStyle,
+    ): Attempt {
         val forward = beamHalf == JointHalf.LOW
         val sign = if (forward) 1f else -1f
         val beam = if (forward) lowHalf else highHalf
         val socket = if (forward) highHalf else lowHalf
-        return SnapFit.generate(
-            axis = if (forward) axisDirection else axisDirection * -1f,
-            anchorMm = anchorMm,
-            scale = scale,
-            beamHalf = beam.copy(faceMm = beam.faceMm * sign),
-            socketHalf = socket.copy(faceMm = socket.faceMm * sign),
-            parameters = parameters,
-            requested = requested,
-        )
+        val directedAxis = if (forward) axisDirection else axisDirection * -1f
+        val beamFit = beam.copy(faceMm = beam.faceMm * sign)
+        val socketFit = socket.copy(faceMm = socket.faceMm * sign)
+        return when (style) {
+            SnapJointStyle.CANTILEVER -> SnapFit.generate(
+                axis = directedAxis,
+                anchorMm = anchorMm,
+                scale = scale,
+                beamHalf = beamFit,
+                socketHalf = socketFit,
+                parameters = parameters,
+                requested = requested,
+            )?.let { Attempt.Built(it) } ?: Attempt.Refused("")
+
+            SnapJointStyle.WALL_LIP -> when (
+                val lip = SnapLip.build(
+                    axis = directedAxis,
+                    anchorMm = anchorMm,
+                    scale = scale,
+                    lipHalf = beamFit,
+                    mateHalf = socketFit,
+                    parameters = parameters,
+                    requested = requested,
+                )
+            ) {
+                is SnapLip.Outcome.Built -> Attempt.Built(lip.joint)
+                is SnapLip.Outcome.Refused -> Attempt.Refused(lip.reason)
+            }
+        }
     }
 
     /** Which half the beam went into, given the round the joint was built in. */

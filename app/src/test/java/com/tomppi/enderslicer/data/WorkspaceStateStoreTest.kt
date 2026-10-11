@@ -4,6 +4,7 @@ import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapTightness
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -415,6 +416,71 @@ class WorkspaceStateStoreTest {
         assertFalse("but its record cannot be trusted", pair.hasRecord)
         assertTrue(pair.joints.isEmpty())
         assertEquals("and the plate is untouched", 2, restored.models.size)
+    }
+
+    /**
+     * The wall lip's own choices travel with its joint: the style, and the two
+     * sizes the user set. A joint that came back as a cantilever would be rebuilt
+     * as a different joint - a beam unioned where a tooth was.
+     *
+     * The cantilever's own records keep the byte shape they always had, and a
+     * style this build does not know reads as the cantilever rather than costing
+     * the joint.
+     */
+    @Test
+    fun aWallLipJointKeepsItsStyleAndItsTwoSizes() {
+        val files = createTempDirectory("enderslicer-workspace-lip").toFile()
+        val store = WorkspaceStateStore(files)
+        val low = model(files, "models/low.stl")
+        val high = model(files, "models/high.stl")
+        val base = snapshot(low)
+        store.save(
+            base.copy(
+                models = listOf(
+                    WorkspaceStateStore.Entry(low.absolutePath, "part lower", base.placement, id = "low-id"),
+                    WorkspaceStateStore.Entry(high.absolutePath, "part upper", base.placement, id = "high-id"),
+                ),
+                snap = WorkspaceStateStore.SnapState(
+                    lowHalfId = "low-id",
+                    highHalfId = "high-id",
+                    axis = ModelPlacement.Axis.Z,
+                    lowFaceMm = 20f,
+                    highFaceMm = 20f,
+                    lowSourcePath = "pair-low.stl",
+                    highSourcePath = "pair-high.stl",
+                    joints = listOf(
+                        jointAt(1f, 2f, 3f),
+                        jointAt(4f, 5f, 6f).copy(
+                            style = SnapJointStyle.WALL_LIP,
+                            lipEngagementMm = 1.1f,
+                            lipToothHeightMm = 2.2f,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val root = JSONObject(workspaceFile(files).readText())
+        val joints = root.getJSONObject("snap").getJSONArray("joints")
+        assertFalse("a cantilever joint writes no style key", joints.getJSONObject(0).has("style"))
+        assertTrue("a lip joint does", joints.getJSONObject(1).has("style"))
+
+        val restored = requireNotNull(store.load())
+        val pair = requireNotNull(restored.snap)
+        assertEquals("the cantilever came back as itself", SnapJointStyle.CANTILEVER, pair.joints[0].style)
+        assertEquals(SnapJointStyle.WALL_LIP, pair.joints[1].style)
+        assertEquals(1.1f, pair.joints[1].lipEngagementMm!!, 1e-4f)
+        assertEquals(2.2f, pair.joints[1].lipToothHeightMm!!, 1e-4f)
+
+        // A build that wrote a style this one does not know must not cost the joint.
+        joints.getJSONObject(1).put("style", "SOMETHING_ELSE")
+        workspaceFile(files).writeText(root.toString())
+        val unknown = requireNotNull(store.load())
+        assertEquals(
+            "an unreadable style is the cantilever, which is what it was before the lip existed",
+            SnapJointStyle.CANTILEVER,
+            requireNotNull(unknown.snap).joints[1].style,
+        )
     }
 
     /** One recorded joint, in the shape the descriptor writes. */

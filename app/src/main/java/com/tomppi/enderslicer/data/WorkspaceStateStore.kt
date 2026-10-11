@@ -6,6 +6,7 @@ import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapTightness
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,6 +87,14 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             val tightness: SnapTightness,
             val barbs: Int,
             val facing: SnapFacing,
+            /**
+             * Which joint this is, and for a wall lip the two sizes the user set. All
+             * three are optional on the way in: a record written before the lip
+             * existed carries none of them and decodes as the cantilever it was.
+             */
+            val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+            val lipEngagementMm: Float? = null,
+            val lipToothHeightMm: Float? = null,
         )
     }
 
@@ -276,7 +285,15 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                             .put("beamHalf", joint.beamHalf.name)
                                             .put("tightness", joint.tightness.name)
                                             .put("barbs", joint.barbs)
-                                            .put("facing", joint.facing.name),
+                                            .put("facing", joint.facing.name)
+                                            // Written only for a lip, so a cantilever
+                                            // joint keeps the byte shape older builds wrote.
+                                            .apply {
+                                                if (joint.style == SnapJointStyle.CANTILEVER) return@apply
+                                                put("style", joint.style.name)
+                                                joint.lipEngagementMm?.let { put("lipEngagementMm", it.toDouble()) }
+                                                joint.lipToothHeightMm?.let { put("lipToothHeightMm", it.toDouble()) }
+                                            },
                                     )
                                 }
                             },
@@ -410,6 +427,13 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         tightness = SnapTightness.valueOf(json.getString("tightness")),
         barbs = json.getInt("barbs"),
         facing = SnapFacing.valueOf(json.getString("facing")),
+        // The style is read leniently on purpose: a joint recorded before the wall
+        // lip existed has no "style" key at all, and an unreadable one costs the
+        // style rather than the joint - the cantilever is what it must have been.
+        style = runCatching { SnapJointStyle.valueOf(json.optString("style")) }
+            .getOrDefault(SnapJointStyle.CANTILEVER),
+        lipEngagementMm = json.optDouble("lipEngagementMm").takeIf { it.isFinite() }?.toFloat(),
+        lipToothHeightMm = json.optDouble("lipToothHeightMm").takeIf { it.isFinite() }?.toFloat(),
     )
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()

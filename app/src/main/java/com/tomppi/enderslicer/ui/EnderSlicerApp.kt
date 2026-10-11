@@ -130,6 +130,8 @@ import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLip
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlMeshWriter
@@ -1924,6 +1926,9 @@ fun EnderSlicerApp(
                                 onHookThickness = viewModel::setSnapHookThickness,
                                 onHookLip = viewModel::setSnapHookLip,
                                 onBarbs = viewModel::setSnapBarbs,
+                                onStyle = viewModel::setSnapStyle,
+                                onLipEngagement = viewModel::setSnapLipEngagement,
+                                onLipToothHeight = viewModel::setSnapLipToothHeight,
                                 onTightness = viewModel::setSnapJointTightness,
                                 onFlipAll = viewModel::flipSnapFacing,
                                 onMixedFacing = viewModel::setSnapMixedFacing,
@@ -4186,6 +4191,15 @@ private val HOOK_LENGTH_RANGE = 1f..60f
 private val HOOK_THICKNESS_RANGE = 0.4f..6f
 private val HOOK_LIP_RANGE = 0.2f..4f
 
+// The wall lip's own two controls, in millimetres. The engagement is the hold -
+// how far the tooth and its ledge overlap - and it is also the print's
+// compensation, because the tooth's holding face is the joint's one overhang and
+// it comes out deeper than drawn. The top ends are generous on purpose: the real
+// limits are the tooth's own height and the material's strain, and both refuse
+// with a sentence rather than a slider that stops moving.
+private val LIP_ENGAGEMENT_RANGE = 0.2f..3f
+private val LIP_TOOTH_RANGE = 0.6f..6f
+
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f
 
@@ -4200,6 +4214,11 @@ private class SnapActions(
     val onHookLip: (Float) -> Unit,
     /** How many teeth the selected joint's beam carries, one to three. */
     val onBarbs: (Int) -> Unit,
+    /** Which joint the selected one is, and what the next one will be. */
+    val onStyle: (SnapJointStyle) -> Unit,
+    /** The wall lip's engagement and tooth height, in millimetres, or null for the scale's own. */
+    val onLipEngagement: (Float?) -> Unit,
+    val onLipToothHeight: (Float?) -> Unit,
     /** Loose or tight for one joint: clearance, and nothing else. */
     val onTightness: (Int, SnapTightness) -> Unit,
     /** The pair-level flip: every joint on the seam turns together. */
@@ -4286,6 +4305,17 @@ private fun SnapToolbar(
         ?: shown?.joint?.dimensions?.lipDepthMm
         ?: (defaults.lipDepthMm * state.snapScale)
     val beamHalf = state.snapSelectedSpec?.beamHalf ?: state.snapBeamHalf
+    // The style the controls act on: the selected joint's, or the one the next
+    // joint will be placed with. The rung ladder, the teeth, the facing and the
+    // socket ramp belong to the cantilever, and the wall lip's own two sizes -
+    // and the wall they are measured against - belong to the lip.
+    val style = state.snapSelectedSpec?.style ?: state.snapStyle
+    val lipEngagement = state.snapSelectedSpec?.lipEngagementMm
+        ?: state.snapLipEngagementMm
+        ?: (defaults.lipEngagementMm * state.snapScale)
+    val lipToothHeight = state.snapSelectedSpec?.lipToothHeightMm
+        ?: state.snapLipToothHeightMm
+        ?: (defaults.lipToothHeightMm * state.snapScale)
     // One call per group, so the three-column panel and the single-column one
     // cannot drift apart: both are these three, in this order.
     val setup: @Composable () -> Unit = {
@@ -4296,15 +4326,19 @@ private fun SnapToolbar(
             shown = shown,
             selected = selected,
             stacked = expandedLayout,
+            style = style,
         )
     }
     val hook: @Composable () -> Unit = {
         SnapHookGroup(
             actions = actions,
             shown = shown,
+            style = style,
             hookLength = hookLength,
             hookThickness = hookThickness,
             hookLip = hookLip,
+            lipEngagement = lipEngagement,
+            lipToothHeight = lipToothHeight,
         )
     }
     val fits: @Composable () -> Unit = {
@@ -4316,6 +4350,7 @@ private fun SnapToolbar(
             placed = shown?.joints?.getOrNull(selected),
             beamHalf = beamHalf,
             stacked = expandedLayout,
+            style = style,
         )
     }
     BoxWithConstraints(modifier = modifier) {
@@ -4535,9 +4570,11 @@ private fun SnapSetupGroup(
     shown: SnapPreview?,
     selected: Int,
     stacked: Boolean,
+    style: SnapJointStyle,
 ) {
     // Every joint, and which one the controls act on. Its own scroll: a seam
-    // can carry four, and each one carries its own rung and its own reasons.
+    // can carry four, and each one carries its own style, its own sizes and its
+    // own reasons.
     if (specs.isNotEmpty()) {
         Column(
             modifier = Modifier
@@ -4607,28 +4644,59 @@ private fun SnapSetupGroup(
             ) { Text("Clear") }
         }
     }
-    // The ladder's switch. Auto fits each joint to the seam; Full asks for the
-    // whole thing anyway. Either way each joint says which rung it is and why,
-    // so a downgrade is a decision the user can see.
+    // The style. The cantilever is the joint the tool has always built - a beam
+    // across the seam with a barb on it, fitted by the ladder. The wall lip is
+    // the other design: the tooth stands on the half's own wall, the mate is
+    // solid opposite it, and nothing hangs in the air. One control places it and
+    // re-tunes the selected joint, the way the teeth stepper does.
     SnapChoiceRow(
-        label = "Joint:",
-        caption = if (state.snapFullJoint) {
-            "the full joint, as asked for"
-        } else {
-            "the fullest joint each place on the seam takes"
+        label = "Style:",
+        caption = when {
+            stacked -> "cantilever, or a tooth on the wall"
+            style == SnapJointStyle.WALL_LIP ->
+                "one tooth on the half's own wall; the mate gives the ledge"
+            else -> "a beam across the seam with a barb on it"
         },
         stacked = stacked,
     ) {
-        if (state.snapFullJoint) {
-            Button(
-                onClick = { actions.onFullJoint(false) },
-                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-            ) { Text("Full") }
-        } else {
-            OutlinedButton(
-                onClick = { actions.onFullJoint(true) },
-                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-            ) { Text("Auto") }
+        SnapJointStyle.entries.forEach { wanted ->
+            val on = style == wanted
+            if (on) {
+                Button(
+                    onClick = { actions.onStyle(wanted) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(wanted.label) }
+            } else {
+                OutlinedButton(
+                    onClick = { actions.onStyle(wanted) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text(wanted.label) }
+            }
+        }
+    }
+    // The ladder's switch, and the ladder belongs to the cantilever: the lip has
+    // one shape, and its own requirements are what it answers with.
+    if (style == SnapJointStyle.CANTILEVER) {
+        SnapChoiceRow(
+            label = "Joint:",
+            caption = if (state.snapFullJoint) {
+                "the full joint, as asked for"
+            } else {
+                "the fullest joint each place on the seam takes"
+            },
+            stacked = stacked,
+        ) {
+            if (state.snapFullJoint) {
+                Button(
+                    onClick = { actions.onFullJoint(false) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Full") }
+            } else {
+                OutlinedButton(
+                    onClick = { actions.onFullJoint(true) },
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Auto") }
+            }
         }
     }
     CompactSliderRow(
@@ -4689,25 +4757,42 @@ private fun SnapJointRow(
         // The joint's own rung and reason: the material here, not on the seam
         // as a whole. And the click it holds at, because a beam with several
         // teeth holds at several depths and the panel has to say which.
-        Text(
-            "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +
-                one.joint.dimensions.barbCount +
-                (if (one.joint.dimensions.barbCount == 1) " tooth" else " teeth") +
-                " · " + (if (spec.facing == SnapFacing.SAME) "same way" else "other way") +
-                (if (one.joint.dimensions.mouthChamferMm > 0f) {
-                    " · mouth chamfer %.0f°".format(one.joint.dimensions.mouthChamferAngleDeg)
-                } else {
-                    ""
-                }),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            "   in " + one.beamHalfName + ": " + one.joint.fitSummary +
-                (one.joint.rungReason?.let { " · " + it } ?: ""),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (one.joint.style == SnapJointStyle.WALL_LIP) {
+            // The lip's own numbers: the hold the two size controls set, and the
+            // wall they are measured against.
+            Text(
+                "   " + SnapJointStyle.WALL_LIP.label + " · " + one.joint.lipSummary +
+                    " · " + one.joint.lipFitSummary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "   tooth in " + one.beamHalfName + ", ledge in " + one.socketHalfName +
+                    " · wall strain %.1f%%".format(one.joint.dimensions.lipStrainPercent),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +
+                    one.joint.dimensions.barbCount +
+                    (if (one.joint.dimensions.barbCount == 1) " tooth" else " teeth") +
+                    " · " + (if (spec.facing == SnapFacing.SAME) "same way" else "other way") +
+                    (if (one.joint.dimensions.mouthChamferMm > 0f) {
+                        " · mouth chamfer %.0f°".format(one.joint.dimensions.mouthChamferAngleDeg)
+                    } else {
+                        ""
+                    }),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "   in " + one.beamHalfName + ": " + one.joint.fitSummary +
+                    (one.joint.rungReason?.let { " · " + it } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         one.joint.clamps.forEach { clamp ->
             Text(
                 "   " + clamp.reason,
@@ -4726,18 +4811,83 @@ private fun SnapJointRow(
 }
 
 /**
- * Hook: the three dimensions that override their share of the scale, and what
- * the beam does when it is bent - the strain it reaches and the room the pocket
- * leaves it.
+ * The selected joint's own dimensions: the cantilever's hook, or the wall lip's
+ * tooth - and what the geometry does when it is bent, with the numbers measured
+ * from the halves themselves.
  */
 @Composable
 private fun SnapHookGroup(
     actions: SnapActions,
     shown: SnapPreview?,
+    style: SnapJointStyle,
     hookLength: Float,
     hookThickness: Float,
     hookLip: Float,
+    lipEngagement: Float,
+    lipToothHeight: Float,
 ) {
+    if (style == SnapJointStyle.WALL_LIP) {
+        // The engagement is the hold: how far the tooth and the ledge overlap.
+        CompactSliderRow(
+            label = "Engage",
+            value = lipEngagement,
+            range = LIP_ENGAGEMENT_RANGE,
+            onValueChange = { actions.onLipEngagement(it) },
+            valueText = "%.2f mm".format(lipEngagement),
+            onValueChangeFinished = actions.onCommit,
+        )
+        // The tooth's height: how far it stands off the wall's face, which is
+        // also the ceiling on the hold.
+        CompactSliderRow(
+            label = "Tooth",
+            value = lipToothHeight,
+            range = LIP_TOOTH_RANGE,
+            onValueChange = { actions.onLipToothHeight(it) },
+            valueText = "%.2f mm".format(lipToothHeight),
+            onValueChangeFinished = actions.onCommit,
+        )
+        shown?.takeIf { it.joint.style == SnapJointStyle.WALL_LIP }?.let { preview ->
+            val lip = preview.joint.dimensions
+            Text(
+                "Wall strain %.1f%% at %.2f mm of travel - the tooth's height less the clearance".format(
+                    lip.lipStrainPercent,
+                    lip.lipDeflectionMm,
+                ) + "; PLA's own figure is %.0f%% and a setting past it is refused".format(
+                    SnapLip.MATERIAL_STRAIN_PERCENT,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (lip.lipStrainPercent > SnapLip.MATERIAL_STRAIN_PERCENT) {
+                    WarnAmber
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                "The wall is the spring: %.1f mm thick, %.1f mm free behind the seam".format(
+                    lip.wallThicknessMm,
+                    lip.wallFreeLengthMm,
+                ) + "; it bends outward as the ledge rides past and springs back behind it",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Printed with the joint faces up the ledge is a top layer on solid material and " +
+                    "comes out solid, and the lip prints as a wall. The tooth's holding face is the " +
+                    "one face that hangs, so it prints deeper than drawn - the engagement is the " +
+                    "compensation for that.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            preview.repairNote?.let { note ->
+                Text(
+                    "Repaired before joining: " + note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarnAmber,
+                )
+            }
+        }
+        return
+    }
     // Each slider previews when the thumb is let go, not on every frame.
     CompactSliderRow(
         label = "Hook",
@@ -4763,7 +4913,7 @@ private fun SnapHookGroup(
         valueText = "%.2f mm".format(hookLip),
         onValueChangeFinished = actions.onCommit,
     )
-    shown?.let { preview ->
+    shown?.takeIf { it.joint.style == SnapJointStyle.CANTILEVER }?.let { preview ->
         val strain = preview.joint.dimensions.rootStrainPercent
         Text(
             "Root strain %.1f%% at full deflection".format(strain) +
@@ -4806,6 +4956,7 @@ private fun SnapFitsGroup(
     placed: SnapPlacedJoint?,
     beamHalf: SnapJoint.JointHalf,
     stacked: Boolean,
+    style: SnapJointStyle,
 ) {
     val hasSelected = selected in specs.indices
     // The click the selected joint is holding at rides on the fit row in a
@@ -4840,8 +4991,10 @@ private fun SnapFitsGroup(
         }
     }
     // The beam: one tooth by default, up to three with one pawl on the mate.
-    // The teeth are the clicks; the pawl is the step.
-    SnapChoiceRow(
+    // The teeth are the clicks; the pawl is the step. All of this belongs to the
+    // cantilever: the lip's tooth is one tooth on the wall, and its hold is the
+    // engagement the style's own control sets.
+    if (style == SnapJointStyle.CANTILEVER) SnapChoiceRow(
         label = "Teeth:",
         caption = if (stacked) {
             "one pawl on the mate"
@@ -4882,8 +5035,10 @@ private fun SnapFitsGroup(
         )
     }
     // Facing: every joint the same way by default, flipped as a pair. Mixing is
-    // an explicit decision, and only then can one joint turn.
-    SnapChoiceRow(
+    // an explicit decision, and only then can one joint turn. The lip has no
+    // facing: the wall's inboard side is where the tooth goes, and that is
+    // measured rather than chosen.
+    if (style == SnapJointStyle.CANTILEVER) SnapChoiceRow(
         label = "Facing:",
         caption = when {
             stacked -> null
@@ -4917,8 +5072,9 @@ private fun SnapFitsGroup(
     }
     // The socket mouth chamfer: the lead-in in the hole at 45 degrees, so a
     // square-faced hook cams in and either facing assembles. It does not replace
-    // the room the beam needs to bend.
-    SnapChoiceRow(
+    // the room the beam needs to bend - and it is the cantilever's: the lip's
+    // lead-in is the tooth's own ramp.
+    if (style == SnapJointStyle.CANTILEVER) SnapChoiceRow(
         label = "Socket:",
         caption = when {
             stacked -> null
@@ -4943,7 +5099,12 @@ private fun SnapFitsGroup(
     if (!stacked) {
         placed?.let { one ->
             Text(
-                "Click: " + one.joint.clickSummary,
+                (if (one.joint.style == SnapJointStyle.WALL_LIP) "Hold: " else "Click: ") +
+                    if (one.joint.style == SnapJointStyle.WALL_LIP) {
+                        one.joint.lipSummary + " · " + one.joint.lipFitSummary
+                    } else {
+                        one.joint.clickSummary
+                    },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,

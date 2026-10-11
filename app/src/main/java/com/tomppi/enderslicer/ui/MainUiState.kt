@@ -26,6 +26,7 @@ import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapGhost
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.spanAlong
@@ -206,6 +207,18 @@ data class MainUiState(
     val snapFacing: SnapFacing = SnapFacing.SAME,
     /** How many teeth a new joint gets; the stepper also sets the selected joint's. */
     val snapBarbs: Int = 1,
+    /**
+     * Which joint a new one is: the cantilever or the wall lip. The stepper also
+     * sets the selected joint's, so one control places and re-tunes.
+     */
+    val snapStyle: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    /**
+     * The wall lip's two sizes for a new joint, in millimetres, or null for the
+     * scale's own share. The sliders also set the selected lip joint's, the way
+     * the hook sliders work for the cantilever.
+     */
+    val snapLipEngagementMm: Float? = null,
+    val snapLipToothHeightMm: Float? = null,
     /** True when every joint's socket mouth is chamfered: the lead-in in the hole. */
     val snapSocketRamp: Boolean = false,
     /** One control for the whole joint: every dimension and clearance scales with it. */
@@ -621,6 +634,9 @@ data class MainUiState(
                 tightness = joint.tightness,
                 barbs = joint.barbs,
                 facing = joint.facing,
+                style = joint.style,
+                lipEngagementMm = joint.lipEngagementMm,
+                lipToothHeightMm = joint.lipToothHeightMm,
             )
         }
     }
@@ -637,6 +653,8 @@ data class MainUiState(
         barbCount = spec.barbs,
         facing = spec.facing,
         socketRamp = snapSocketRamp,
+        lipEngagementOverrideMm = spec.lipEngagementMm,
+        lipToothHeightOverrideMm = spec.lipToothHeightMm,
     ).tightenedBy(spec.tightness.stepMm)
 
     /**

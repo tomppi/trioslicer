@@ -627,6 +627,7 @@ object SnapFit {
                 beamHalf.placed(beamFrame),
                 socketHalf.placed(socketFrame),
                 dimensions,
+                SnapJointStyle.CANTILEVER,
                 rung,
                 omitted.takeIf { it.isNotEmpty() }?.joinToString("; "),
                 clamps,
@@ -674,7 +675,7 @@ object SnapFit {
     }
 
     /** How far a half reaches along [direction], in that half's own coordinates. */
-    private fun span(half: SnapFitHalf, direction: Vec3): ClosedFloatingPointRange<Float>? {
+    internal fun span(half: SnapFitHalf, direction: Vec3): ClosedFloatingPointRange<Float>? {
         val along = half.probe(direction) ?: return null
         val vertices = half.mesh.interleavedVertices
         val count = half.mesh.triangleCount * 3
@@ -697,7 +698,7 @@ object SnapFit {
      * coordinates run over the whole bed, and a rectangle left in them would
      * put the pad wherever the model happened to sit.
      */
-    private fun outline(half: SnapFitHalf, side: Vec3, rise: Vec3, origin: Vec3): LocalRect? {
+    internal fun outline(half: SnapFitHalf, side: Vec3, rise: Vec3, origin: Vec3): LocalRect? {
         val across = half.probe(side) ?: return null
         val through = half.probe(rise) ?: return null
         if (half.mesh.triangleCount <= 0) return null
@@ -729,7 +730,7 @@ object SnapFit {
      * with air where the middle is, which is how the ladder tells a pad that
      * would print as a floating block from one that lands on the seam.
      */
-    private fun capTriangles(
+    internal fun capTriangles(
         half: SnapFitHalf,
         direction: Vec3,
         side: Vec3,
@@ -768,7 +769,7 @@ object SnapFit {
     }
 
     /** How much of [face] has cap material under it, on a fixed sample grid. */
-    private fun covers(cap: List<CapTriangle>, face: LocalRect, required: Float): Boolean {
+    internal fun covers(cap: List<CapTriangle>, face: LocalRect, required: Float): Boolean {
         if (cap.isEmpty()) return false
         var inside = 0
         for (row in 0 until COVERAGE_SAMPLES) {
@@ -782,7 +783,7 @@ object SnapFit {
     }
 
     /** One cap triangle, in the halves' (side, rise) plane. */
-    private class CapTriangle(
+    internal class CapTriangle(
         private val ax: Float,
         private val ay: Float,
         private val bx: Float,
@@ -838,6 +839,18 @@ object SnapFit {
         return builder.build()
     }
 
+    /**
+     * [mesh], built in [half]'s own coordinates, as that half sits on the plate:
+     * the one step between a feature's own frame and the booleans. Exposed for the
+     * wall lip's builder, which lays its tooth and its ledge out in two halves'
+     * frames exactly as the cantilever does.
+     */
+    internal fun placeOnPlate(mesh: StlMesh, half: SnapFitHalf, name: String): StlMesh =
+        mesh.placedBy(half, name)
+
+    /** [frame], laid out in [half]'s own coordinates, as that half sits on the plate. */
+    internal fun placeFrame(half: SnapFitHalf, frame: SnapFitFrame): SnapFitFrame = half.placed(frame)
+
     /** [frame], laid out in [half]'s own coordinates, as that half sits on the plate. */
     private fun SnapFitHalf.placed(frame: SnapFitFrame): SnapFitFrame {
         val origin = toPlate(frame.originMm)
@@ -857,7 +870,7 @@ object SnapFit {
     }
 
     /** An axis-aligned box in frame-local millimetres, wound outwards. */
-    private fun boxLocal(builder: MeshSolidBuilder, frame: SnapFitFrame, face: LocalRect, low: Float, high: Float) {
+    internal fun boxLocal(builder: MeshSolidBuilder, frame: SnapFitFrame, face: LocalRect, low: Float, high: Float) {
         val corners = arrayOf(
             Vec3(face.minX, face.minY, low), Vec3(face.maxX, face.minY, low),
             Vec3(face.maxX, face.maxY, low), Vec3(face.minX, face.maxY, low),
@@ -877,7 +890,7 @@ object SnapFit {
     }
 
     /** A rectangle in the frame's plane, in local millimetres. */
-    private data class LocalRect(val minX: Float, val maxX: Float, val minY: Float, val maxY: Float) {
+    internal data class LocalRect(val minX: Float, val maxX: Float, val minY: Float, val maxY: Float) {
         val width: Float get() = maxX - minX
         val height: Float get() = maxY - minY
 
@@ -903,7 +916,7 @@ object SnapFit {
      * was handed over the wrong way round, so callers only have to list their
      * corners in order.
      */
-    private fun addPrism(
+    internal fun addPrism(
         builder: MeshSolidBuilder,
         frame: SnapFitFrame,
         points: List<Vec3>,
@@ -949,7 +962,7 @@ object SnapFit {
     }
 
     /** One triangle of a feature, from three model-space corners. */
-    private fun MeshSolidBuilder.addFace(a: Vec3, b: Vec3, c: Vec3) {
+    internal fun MeshSolidBuilder.addFace(a: Vec3, b: Vec3, c: Vec3) {
         addTriangle(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z)
     }
 
@@ -1540,6 +1553,8 @@ data class SnapFitHalf(
  * the lip's run was derived from the ramp angle.
  */
 data class SnapFitDimensions(
+    /** Which joint these numbers describe: the cantilever's or the wall lip's. */
+    val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
     val scale: Float,
     val keySizeMm: Float,
     val keyHeightMm: Float,
@@ -1608,6 +1623,42 @@ data class SnapFitDimensions(
     val mouthChamferAngleDeg: Float,
     /** Which side of the beam the barb stands on. */
     val facing: SnapFacing,
+    /**
+     * The wall the lip's tooth stands on, in millimetres: the material's own
+     * lateral band through the tap, measured from the lip half's mesh at the
+     * mating face. Zero for every cantilever joint.
+     */
+    val wallThicknessMm: Float = 0f,
+    /**
+     * How far that wall runs along the assembly axis behind the face before it
+     * joins other material: the free length the lip's strain is computed over.
+     * Zero for every cantilever joint.
+     */
+    val wallFreeLengthMm: Float = 0f,
+    /** How far the lip's tooth and its ledge overlap: the whole hold. */
+    val lipEngagementMm: Float = 0f,
+    /** How tall the lip's tooth stands from the wall's face. */
+    val lipToothHeightMm: Float = 0f,
+    /**
+     * The lip's wall travel at a full deflection: the tooth's tip travel, its
+     * height less the clearance the ledge keeps off the wall's face.
+     */
+    val lipDeflectionMm: Float = 0f,
+    /**
+     * The bending strain at the lip's wall root at that deflection, in per cent:
+     * the same closed form as [rootStrainPercent], with the wall's thickness and
+     * free length. A refusal above the material's figure, not a readout.
+     */
+    val lipStrainPercent: Float = 0f,
+    /** The lip's tooth width along the seam. */
+    val lipWidthMm: Float = 0f,
+    /** The lip's flat hold face, along the axis from the mating plane. */
+    val lipHoldAtMm: Float = 0f,
+    /** The top of the ledge's bearing face, up the rise axis from the wall's face. */
+    val lipHoldTopMm: Float = 0f,
+    /** How deep the lip's recess was cut along the axis, and how far inboard. */
+    val lipRecessMm: Float = 0f,
+    val lipRecessInnerMm: Float = 0f,
 )
 
 /** One dimension the material clamped short of what the user asked for. */
@@ -1665,6 +1716,12 @@ data class SnapFitJoint(
     val frame: SnapFitFrame,
     val socketFrame: SnapFitFrame,
     val dimensions: SnapFitDimensions,
+    /**
+     * Which joint this is: the cantilever with its rungs and pad, or the wall
+     * lip, whose two features stand on the halves' own material and whose
+     * booleans go into different halves than the cantilever's do.
+     */
+    val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
     /** Which rung of the ladder this joint is: what it actually carries. */
     val rung: SnapFitRung,
     /**
@@ -1714,6 +1771,33 @@ data class SnapFitJoint(
                     ""
                 }
         } ?: SnapFit.NO_ENGAGEMENT
+
+    /**
+     * The wall lip's own line: how far the tooth and its ledge really overlap -
+     * the whole hold - and how tall the tooth was built. Both are built
+     * dimensions, so the two size controls are the numbers the user reads.
+     */
+    val lipSummary: String
+        get() = String.format(
+            java.util.Locale.ROOT,
+            "%.2f mm engaged, %.2f mm tooth",
+            dimensions.lipEngagementMm,
+            dimensions.lipToothHeightMm,
+        )
+
+    /**
+     * The wall the lip stands on, as measured from the half's own mesh: the
+     * thickness of the material band through the tap, and how far it runs back
+     * from the seam before it joins anything. These are the numbers the strain is
+     * computed over, and the two numbers a refusal names.
+     */
+    val lipFitSummary: String
+        get() = String.format(
+            java.util.Locale.ROOT,
+            "wall %.1f mm thick, %.1f mm free",
+            dimensions.wallThicknessMm,
+            dimensions.wallFreeLengthMm,
+        )
 
     /**
      * The fit line the panel shows: the beam's own reach and the clearance the
@@ -1803,6 +1887,23 @@ data class SnapFitParameters(
     val beamThicknessOverrideMm: Float? = null,
     /** The lip depth the user typed, in millimetres, or null. */
     val lipDepthOverrideMm: Float? = null,
+    /**
+     * The wall lip: how far the tooth and its ledge overlap, in millimetres
+     * before the scale. This is the whole hold - the two flat faces bear over
+     * exactly this much - and it is also the compensation for the print: the
+     * tooth's holding face hangs, so it comes out deeper than drawn.
+     */
+    val lipEngagementMm: Float = 0.8f,
+    /**
+     * The wall lip: how tall the tooth stands from the wall's face, in
+     * millimetres before the scale. The tip has to clear the ledge's inner face,
+     * so this is the ceiling on the engagement as well as the wall's travel.
+     */
+    val lipToothHeightMm: Float = 1.2f,
+    /** The engagement the user typed, in millimetres, or null for the scaled parameter. */
+    val lipEngagementOverrideMm: Float? = null,
+    /** The tooth height the user typed, in millimetres, or null for the scaled parameter. */
+    val lipToothHeightOverrideMm: Float? = null,
 ) {
     /**
      * The same joint with every fit clearance tightened by [stepMm] millimetres,
@@ -1823,9 +1924,12 @@ data class SnapFitParameters(
         val lengths = listOf(
             keySizeMm, keyHeightMm, keyClearanceMm, beamLengthMm, beamWidthMm, beamThicknessMm,
             beamRootMm, lipDepthMm, lipClearanceMm, matingClearanceMm, keyGapMm,
-            stepDepthMm, stepRimMm,
+            stepDepthMm, stepRimMm, lipEngagementMm, lipToothHeightMm,
         )
-        val overrides = listOfNotNull(beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm)
+        val overrides = listOfNotNull(
+            beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm,
+            lipEngagementOverrideMm, lipToothHeightOverrideMm,
+        )
         return lengths.all { it.isFinite() && it > 0f } &&
             overrides.all { it.isFinite() && it > 0f } &&
             rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg <= SnapFit.SQUARE_LEAD_IN_DEG &&
