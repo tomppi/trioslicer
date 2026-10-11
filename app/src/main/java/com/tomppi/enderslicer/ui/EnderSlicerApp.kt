@@ -1915,6 +1915,8 @@ fun EnderSlicerApp(
                                 onClose = { viewModel.setCutActive(false) },
                             ),
                             snapActions = SnapActions(
+                                onAdd = viewModel::addSnapJoint,
+                                onCancelPlacement = viewModel::cancelSnapPlacement,
                                 onScale = viewModel::setSnapScale,
                                 onBeamHalf = viewModel::setSnapBeamHalf,
                                 onFullJoint = viewModel::setSnapFullJoint,
@@ -4208,6 +4210,10 @@ private class SnapActions(
     /** The socket mouth chamfer, for every joint at once. */
     val onSocketRamp: (Boolean) -> Unit,
     val onSelect: (Int) -> Unit,
+    /** Arms the next tap on the model to PLACE a joint. */
+    val onAdd: () -> Unit,
+    /** Takes back an armed Add or Move. */
+    val onCancelPlacement: () -> Unit,
     val onMove: (Int) -> Unit,
     val onRemove: (Int) -> Unit,
     val onClear: () -> Unit,
@@ -4352,12 +4358,16 @@ private fun SnapToolbar(
                 Text(
                     when {
                         state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
+                        state.snapAddingJoint -> "Tap the model to place it."
                         // Every joint removed from a pair that remembers its own halves: the
                         // plate still carries the joints, and Apply is what takes them off.
                         state.snapPlainHalvesInstead ->
                             "No joints left on the list; Apply puts the pair's plain halves back."
-                        specs.isEmpty() -> "Tap the model where a joint should sit; every tap adds one."
-                        else -> "Tap again to add another joint, or use Auto to spread them along the seam."
+                        specs.isEmpty() ->
+                            "Add joint, then tap the model where a joint should sit."
+                        else ->
+                            "Tap a joint to select it, or Add joint to place another; Auto " +
+                                "spreads them along the seam."
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4401,8 +4411,11 @@ private fun SnapToolbar(
                     // A pair whose joints have all been removed has no preview - there is
                     // nothing to build - but Apply still means something there: it puts the
                     // plain halves back from the pair's own source.
+                    // A preview standing with a joint the material refused is not a pair to
+                    // write: the button is off and the line under it names the joint, so the
+                    // joined file is never the list minus one.
                     enabled = (state.snapShownMeshes != null || state.snapPlainHalvesInstead) &&
-                        !state.isBusy,
+                        !state.isBusy && state.snapFailedJoints.isEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
@@ -4538,11 +4551,38 @@ private fun SnapSetupGroup(
                     index = index,
                     spec = spec,
                     placed = shown?.joints?.getOrNull(index),
+                    // A joint the material refused says so on its own row, by name, while
+                    // the others stand: it is that joint's answer, not the set's.
+                    failed = shown?.failed?.firstOrNull { it.index == index },
                     selected = index == selected,
                     compact = stacked,
                     actions = actions,
                 )
             }
+        }
+    }
+    // Placing is deliberate: this arms the next tap, and the line under the title says so
+    // while it is armed. A tap with nothing armed selects the joint nearest the finger
+    // instead of adding one, which is what a model being turned used to do.
+    SnapChoiceRow(
+        label = null,
+        caption = when {
+            state.snapAddingJoint -> "tap the model to place it"
+            state.snapMovingJoint -> "moving joint " + (selected + 1) + ": tap where it should go"
+            else -> "place a joint, or tap one to select it"
+        },
+        stacked = stacked,
+    ) {
+        if (state.snapAddingJoint || state.snapMovingJoint) {
+            Button(
+                onClick = actions.onCancelPlacement,
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Cancel") }
+        } else {
+            Button(
+                onClick = actions.onAdd,
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Add joint") }
         }
     }
     SnapChoiceRow(
@@ -4611,6 +4651,8 @@ private fun SnapJointRow(
     index: Int,
     spec: SnapJointSpec,
     placed: SnapPlacedJoint?,
+    /** What refused this joint, when the material did - it has no placement then. */
+    failed: SnapJointFailure?,
     selected: Boolean,
     compact: Boolean,
     actions: SnapActions,
@@ -4673,6 +4715,13 @@ private fun SnapJointRow(
                 color = WarnAmber,
             )
         }
+    }
+    failed?.let { refusal ->
+        Text(
+            "   Could not be built: " + refusal.reason,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
 }
 

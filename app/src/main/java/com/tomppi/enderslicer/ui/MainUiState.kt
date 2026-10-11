@@ -188,6 +188,15 @@ data class MainUiState(
     /** True while the selected joint is waiting for a tap to move it to. */
     val snapMovingJoint: Boolean = false,
     /**
+     * True while the next tap on the model PLACES a joint, rather than selecting one.
+     *
+     * Placing is deliberate: the Add joint control arms this, and a tap with it armed adds
+     * exactly one joint and disarms it. Without it a tap selects the joint nearest where the
+     * finger landed, because moving and rotating the model used to leave a joint behind on
+     * every touch that happened to cross a half.
+     */
+    val snapAddingJoint: Boolean = false,
+    /**
      * True when the joints are allowed to face different ways. Off by default:
      * every joint on a seam faces the same way unless the user says otherwise,
      * and flipping is then a pair-level decision that moves them all together.
@@ -660,6 +669,40 @@ data class MainUiState(
     }
 
     /**
+     * The joint nearest a tap, or -1 when there is none to select.
+     *
+     * Measured where the joints actually stand: an anchor is stored as the plate point the
+     * user tapped, and the packer may have moved the halves since, so each anchor is read into
+     * its own half's frame and back out through the transform that half has now. A tap that
+     * lands nowhere near a joint still selects the closest one, because a tap that does
+     * nothing at all reads as a broken screen - and this is what a tap does when neither Add
+     * nor Move is armed.
+     */
+    fun nearestSnapJoint(point: Vec3): Int {
+        var best = -1
+        var bestDistance = Float.MAX_VALUE
+        for ((index, spec) in snapJoints.withIndex()) {
+            val half = snapAnchorHalfFor(spec) ?: continue
+            val local = half.toLocal(spec.anchorPointMm) ?: continue
+            val distance = (half.toPlate(local) - point).length()
+            if (distance < bestDistance) {
+                bestDistance = distance
+                best = index
+            }
+        }
+        return best
+    }
+
+    /**
+     * The joints in the standing preview that could not be built, if any.
+     *
+     * Apply refuses while this is not empty: the pair would otherwise be joined with fewer
+     * joints than the list names, which is a joined file that is not the one previewed - the
+     * same silent loss as showing one hook while the list read as if all of them were there.
+     */
+    val snapFailedJoints: List<SnapJointFailure> by lazy { snapShownMeshes?.failed.orEmpty() }
+
+    /**
      * The joint drawn where it will go, or null when the plate already shows it.
      *
      * While the preview stands there is nothing to ghost - the previewed halves
@@ -713,7 +756,12 @@ data class MainUiState(
             // in which case an empty list is the user having removed every joint,
             // and Apply is the way back to the plain halves.
             snapJoints.isEmpty() && liveSnapRecord == null ->
-                "Tap the model to place a joint on the seam."
+                "Place a joint on the seam: Add joint, then tap the model."
+            // A joint the material will not take, said per joint: the others are on the
+            // plate, and joining now would write a pair without this one on it.
+            snapFailedJoints.isNotEmpty() -> snapFailedJoints.joinToString("; ") {
+                "Joint " + (it.index + 1) + " " + it.reason
+            } + " Move it or remove it before joining."
             else -> null
         }
 
@@ -768,6 +816,7 @@ data class MainUiState(
         snapJoints = emptyList(),
         snapSelectedJoint = -1,
         snapMovingJoint = false,
+        snapAddingJoint = false,
         snapPreview = null,
         snapFailure = null,
     )
@@ -792,6 +841,7 @@ data class MainUiState(
             snapJoints = joints,
             snapSelectedJoint = selected,
             snapMovingJoint = false,
+            snapAddingJoint = false,
             snapPreview = null,
             snapFailure = null,
         )

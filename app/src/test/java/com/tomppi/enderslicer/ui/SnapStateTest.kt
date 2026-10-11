@@ -274,6 +274,98 @@ class SnapStateTest {
         )
     }
 
+
+    /**
+     * What a tap does when neither Add nor Move is armed: it selects, and only selects.
+     *
+     * The bug this pins is the one the user hit while turning the model: every tap that landed
+     * on a half placed a joint, so moving and rotating a pair left a trail of hooks behind it.
+     * A tap now belongs to the model, and the joint nearest the finger is what it may select.
+     */
+    @Test
+    fun aTapWithNothingArmedSelectsTheJointNearestIt() {
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(6f, 20f, 20f))
+            .let { it.copy(snapJoints = it.snapJoints + spec(Vec3(34f, 20f, 20f), "low")) }
+
+        assertEquals("two joints on the seam", 2, state.snapJoints.size)
+        assertEquals("a tap by the first selects it", 0, state.nearestSnapJoint(Vec3(7f, 20f, 21f)))
+        assertEquals("a tap by the second selects that one", 1, state.nearestSnapJoint(Vec3(33f, 20f, 21f)))
+        assertEquals(
+            "and a tap nowhere near either still selects the closest, not nothing",
+            0,
+            state.nearestSnapJoint(Vec3(0f, 20f, 20f)),
+        )
+        assertEquals(
+            "nothing to select, nothing selected",
+            -1,
+            state.copy(snapJoints = emptyList()).nearestSnapJoint(Vec3(6f, 20f, 20f)),
+        )
+    }
+
+    @Test
+    fun placingIsArmedAndDisarmedByTheState() {
+        val session = splitState().copy(snapActive = true)
+        val withJoint = session.withJoint(Vec3(6f, 20f, 20f)).copy(snapAddingJoint = true)
+
+        assertFalse("nothing is armed by opening the tool", session.snapAddingJoint)
+        assertTrue("Add arms the next tap", session.copy(snapAddingJoint = true).snapAddingJoint)
+        assertFalse("closing the tool arms nothing", withJoint.withoutSnap().snapAddingJoint)
+        assertFalse(
+            "and neither does taking a joint off the list",
+            withJoint.withoutSnapJoint(0).snapAddingJoint,
+        )
+    }
+
+    /**
+     * A joint the material refused is named, and the others still stand.
+     *
+     * Dropping the whole preview for one joint's refusal threw away geometry the user had
+     * already placed; showing the list as if every joint were on the plate is the same loss
+     * with the alarm switched off. Apply refuses while a refusal stands, because the pair that
+     * would be written is the list minus one.
+     */
+    @Test
+    fun aJointThatCouldNotBeBuiltIsNamedWhileTheOthersStand() {
+        val state = splitState().copy(snapActive = true).withJoint(Vec3(6f, 20f, 20f))
+            .let { it.copy(snapJoints = it.snapJoints + spec(Vec3(34f, 20f, 20f), "low")) }
+        val preview = SnapPreview(
+            lowMesh = state.models[0].mesh,
+            highMesh = state.models[1].mesh,
+            joints = emptyList(),
+            specs = state.snapJoints,
+            lowHalfId = state.snapLowHalfId,
+            highHalfId = state.snapHighHalfId,
+            lowPlacement = state.snapLowHalf?.placement,
+            highPlacement = state.snapHighHalf?.placement,
+            scale = state.snapScale,
+            fullJoint = state.snapFullJoint,
+            socketRamp = state.snapSocketRamp,
+            hookLengthMm = state.snapHookLengthMm,
+            hookThicknessMm = state.snapHookThicknessMm,
+            hookLipMm = state.snapHookLipMm,
+            repairNote = null,
+            failed = listOf(
+                SnapJointFailure(1, "has no material where it was placed for its beam to root in"),
+            ),
+        )
+        val standing = state.copy(snapPreview = preview)
+
+        assertEquals("the preview is the state's own", preview, standing.snapShownMeshes)
+        assertEquals("the joint that refused is named", 1, standing.snapFailedJoints.single().index)
+        assertTrue(
+            "and the reason is the one that came back",
+            standing.snapFailedJoints.single().reason.contains("no material"),
+        )
+        assertTrue(
+            "Apply says why it will not run",
+            standing.snapBlockedReason.orEmpty().contains("Joint 2"),
+        )
+        assertTrue(
+            "and the sentence says what to do about it",
+            standing.snapBlockedReason.orEmpty().contains("Move it or remove it"),
+        )
+    }
+
     /**
      * The state a split or a join commits: no preview, no joint list and no placement undo -
      * every step the history holds belongs to the objects the operation just replaced.
@@ -327,7 +419,7 @@ class SnapStateTest {
         val state = splitState().copy(snapActive = true, snapJoints = emptyList(), snapSelectedJoint = -1)
 
         assertEquals(
-            "Tap the model to place a joint on the seam.",
+            "Place a joint on the seam: Add joint, then tap the model.",
             state.snapBlockedReason,
         )
     }
@@ -352,7 +444,7 @@ class SnapStateTest {
         val empty = afterFirst.withoutSnapJoint(0)
         assertTrue("the last one can go too", empty.snapJoints.isEmpty())
         assertEquals("with nothing selected", -1, empty.snapSelectedJoint)
-        assertEquals("and the tool asks for a tap again", "Tap the model to place a joint on the seam.", empty.snapBlockedReason)
+        assertEquals("and the tool asks for a tap again", "Place a joint on the seam: Add joint, then tap the model.", empty.snapBlockedReason)
     }
 
     @Test
@@ -468,7 +560,7 @@ class SnapStateTest {
         )
         assertEquals(
             "it asks for a tap, exactly as it always did",
-            "Tap the model to place a joint on the seam.",
+            "Place a joint on the seam: Add joint, then tap the model.",
             noRecord.copy(snapJoints = emptyList()).snapBlockedReason,
         )
     }

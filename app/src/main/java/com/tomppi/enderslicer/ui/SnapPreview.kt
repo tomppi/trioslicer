@@ -103,6 +103,20 @@ data class SnapPlacedJoint(
 )
 
 /**
+ * A joint in the list that could not be built, and what the material said about it.
+ *
+ * One joint refusing is that joint's business: the others are placed and the panel says which
+ * one is not, because dropping the whole preview - or showing the joints that were built as if
+ * the list were all of them - is the same silent loss in two different shapes.
+ */
+data class SnapJointFailure(
+    /** Which joint in the list, from zero. */
+    val index: Int,
+    /** What refused it, without the joint's own name, which the panel adds. */
+    val reason: String,
+)
+
+/**
  * One in-process result of the snap fit: the two halves as the booleans left
  * them, and every joint they now carry.
  *
@@ -145,6 +159,14 @@ data class SnapPreview(
     val hookLipMm: Float?,
     /** What a repaired half had to have done to it, or null when neither needed it. */
     val repairNote: String?,
+    /**
+     * The joints in [specs] that could not be built, by their place in the list.
+     *
+     * Empty for every preview whose joints all stand, which is the ordinary case. When it is
+     * not empty the geometry carries [joints] and none of these: Apply refuses while it does,
+     * because a pair joined with fewer joints than the list shows is the bug this reports.
+     */
+    val failed: List<SnapJointFailure> = emptyList(),
 ) {
     /** The first joint's own geometry: what a one-joint panel reads. */
     val joint: SnapFitJoint get() = joints.first().joint

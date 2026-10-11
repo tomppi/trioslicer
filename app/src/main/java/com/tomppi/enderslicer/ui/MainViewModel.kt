@@ -2064,8 +2064,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * A tap on the model: it ADDS a joint to the pair, or moves the selected one
-     * when the panel is waiting for a tap to move it to.
+     * A tap on the model: it PLACES a joint when the panel is armed for one, MOVES the
+     * selected joint when it is armed for that, and otherwise SELECTS the joint nearest the
+     * tap. Nothing is added by a tap alone.
      *
      * The tap is a point on whatever surface the picker hit, which is almost
      * never exactly on the mating plane, so it is stored as tapped and read in
@@ -2083,32 +2084,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         if (!state.snapActive) return
         val moving = state.snapMovingJoint && state.snapSelectedSpec != null
-        if (moving) {
-            val index = state.snapSelectedJoint
-            val moved = state.snapJoints[index].copy(anchorPointMm = point, anchorHalfId = tappedHalfId)
-            val joints = state.snapJoints.toMutableList().also { it[index] = moved }
-            _uiState.update {
-                it.copy(snapJoints = joints, snapMovingJoint = false, snapFailure = null)
+        when {
+            moving -> {
+                val index = state.snapSelectedJoint
+                val moved = state.snapJoints[index].copy(anchorPointMm = point, anchorHalfId = tappedHalfId)
+                val joints = state.snapJoints.toMutableList().also { it[index] = moved }
+                _uiState.update {
+                    it.copy(snapJoints = joints, snapMovingJoint = false, snapFailure = null)
+                }
+                previewSnapJoint()
             }
-        } else {
-            val index = state.snapJoints.size
-            val spec = SnapJointSpec(
-                anchorPointMm = point,
-                anchorHalfId = tappedHalfId,
-                beamHalf = state.snapBeamHalf,
-                tightness = if (index % 2 == 0) SnapTightness.LOOSE else SnapTightness.TIGHT,
-                barbs = state.snapBarbs,
-                facing = state.snapFacing,
-            )
-            _uiState.update {
-                it.copy(
-                    snapJoints = it.snapJoints + spec,
-                    snapSelectedJoint = index,
-                    snapFailure = null,
+            state.snapAddingJoint -> {
+                val index = state.snapJoints.size
+                val spec = SnapJointSpec(
+                    anchorPointMm = point,
+                    anchorHalfId = tappedHalfId,
+                    beamHalf = state.snapBeamHalf,
+                    tightness = if (index % 2 == 0) SnapTightness.LOOSE else SnapTightness.TIGHT,
+                    barbs = state.snapBarbs,
+                    facing = state.snapFacing,
                 )
+                _uiState.update {
+                    it.copy(
+                        snapJoints = it.snapJoints + spec,
+                        snapSelectedJoint = index,
+                        // One tap, one joint: the control has to be pressed again for the
+                        // next one, which is what makes a stray tap harmless.
+                        snapAddingJoint = false,
+                        snapFailure = null,
+                    )
+                }
+                previewSnapJoint()
+            }
+            else -> {
+                // Nothing armed: a tap belongs to the model - it turns and moves it - so the
+                // only thing it may do to the joints is select the one it landed nearest.
+                val nearest = state.nearestSnapJoint(point)
+                if (nearest >= 0) {
+                    _uiState.update { it.copy(snapSelectedJoint = nearest, snapFailure = null) }
+                }
             }
         }
-        previewSnapJoint()
+    }
+
+    /**
+     * Arms the next tap to place a joint, and disarms the move it is mutually exclusive with.
+     *
+     * One tap in the viewer does one thing: the panel decides which, and the two arms are
+     * never both up. Add is a deliberate press because a tap alone used to place a joint
+     * wherever it landed - including the taps that were meant to turn the model.
+     */
+    fun addSnapJoint() {
+        val state = _uiState.value
+        if (!state.snapActive) return
+        _uiState.update {
+            it.copy(snapAddingJoint = true, snapMovingJoint = false, snapFailure = null)
+        }
+    }
+
+    /** Takes back an armed Add or Move without touching the joints. */
+    fun cancelSnapPlacement() {
+        _uiState.update { it.copy(snapAddingJoint = false, snapMovingJoint = false) }
     }
 
     /** Which joint the panel's controls act on. */
@@ -2120,7 +2156,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Asks for the next tap to move the selected joint rather than add one. */
     fun moveSnapJoint(index: Int) {
         if (index !in _uiState.value.snapJoints.indices) return
-        _uiState.update { it.copy(snapSelectedJoint = index, snapMovingJoint = true, snapFailure = null) }
+        _uiState.update {
+            it.copy(
+                snapSelectedJoint = index,
+                snapMovingJoint = true,
+                // Add and Move are one control between them: a tap cannot both place a
+                // joint and move one, so arming either takes the other down.
+                snapAddingJoint = false,
+                snapFailure = null,
+            )
+        }
     }
 
     /** Takes one joint off the pair; the others stay exactly as they are. */
@@ -2138,6 +2183,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 snapJoints = emptyList(),
                 snapSelectedJoint = -1,
                 snapMovingJoint = false,
+                snapAddingJoint = false,
                 snapPreview = null,
                 snapFailure = null,
             )
@@ -2646,18 +2692,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             socketRamp = state.snapSocketRamp,
         ).tightenedBy(spec.tightness.stepMm)
 
-        val built = ArrayList<SnapJoint.Placement>(specs.size)
+        // The joint's own place in the list travels with it: a joint that failed is named by
+        // the number the panel shows, and the ones that stand keep their own numbers.
+        val built = ArrayList<Pair<Int, SnapJoint.Placement>>(specs.size)
+        val placed = ArrayList<SnapPlacedJoint>(specs.size)
         val notices = ArrayList<String>()
+        // What each joint that could not be built said, by the joint it was. One joint the
+        // material will not take is that joint's business: the others are placed, the panel
+        // names the one that is not, and Apply refuses until it is moved or removed - the
+        // alternative, which this did, is dropping the whole preview while the list still
+        // showed every joint as if they were all there.
+        val failed = ArrayList<SnapJointFailure>()
+        var lowMesh = ready.lowHalf.mesh
+        var highMesh = ready.highHalf.mesh
         for (index in specs.indices) {
             val spec = specs[index]
             val parameters = parametersFor(spec)
+            // Every joint is built on the halves AS THEY NOW STAND: the joints before it are
+            // part of the material this one roots in, cuts through and shares a face with.
+            //
+            // Built on the pair's own untouched halves instead - which is what this did - each
+            // joint came out right on its own and each result REPLACED the last, because a
+            // placement carries the mesh it was built from. The panel listed every joint and
+            // the geometry carried only the last one: two hooks became one, silently.
+            val lowRunning = ready.lowHalf.copy(mesh = lowMesh)
+            val highRunning = ready.highHalf.copy(mesh = highMesh)
             val placement = when (
                 val result = SnapJoint.build(
                     axis = axis,
                     anchorMm = anchors[index],
                     scale = scale,
-                    lowHalf = ready.lowHalf,
-                    highHalf = ready.highHalf,
+                    lowHalf = lowRunning,
+                    highHalf = highRunning,
                     beamHalf = spec.beamHalf,
                     parameters = parameters,
                     requested = if (fullJoint) SnapFitRung.FULL else null,
@@ -2668,46 +2734,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     notices += "Joint " + (index + 1) + ": " + result.why.summary
                     result.placement
                 }
-                is SnapJoint.Either.Failed ->
-                    return SnapPlacement.Refused("Joint " + (index + 1) + ": " + result.failure.summary)
+                is SnapJoint.Either.Failed -> {
+                    failed += SnapJointFailure(index, result.failure.summary)
+                    continue
+                }
             }
             // The full joint's pad is contoured to the material it stands on,
             // and when the wall is too thin for a rim the ladder's lesser rung is
             // used and says so: a pad that collapses to nothing is not a pad.
-            val contoured = contouredOrLesser(placement, ready, anchors[index], axis, scale, spec.beamHalf, parameters)
-                ?: return SnapPlacement.Refused(
-                    "Joint " + (index + 1) + ": " + SnapPad.TOO_THIN_REASON +
-                        ", and the lesser joints do not fit either",
-                )
-            built += contoured
-        }
-
-        // The guard, before a boolean moves anything: two joints whose pockets
-        // cross, or leave no printable wall between them, would silently cut
-        // each other away - and a joint that has been cut away still passes
-        // every closedness check there is.
-        val wall = built.maxOf { it.joint.dimensions.beamThicknessMm }
-        val conflicts = SnapLayout.conflicts(built.map { SnapLayout.footprintOf(it.joint) }, wall)
-        if (conflicts.isNotEmpty()) {
-            return SnapPlacement.Refused(
-                conflicts.joinToString("; ") +
-                    ". Move a joint, remove one, or clear them and spread them again.",
+            val contoured = contouredOrLesser(
+                placement, lowRunning, highRunning, anchors[index], axis, scale, spec.beamHalf, parameters,
             )
-        }
-
-        var lowMesh = ready.lowHalf.mesh
-        var highMesh = ready.highHalf.mesh
-        val placed = ArrayList<SnapPlacedJoint>(specs.size)
-        for (index in specs.indices) {
-            val placement = built[index]
-            val joint = placement.joint
+                ?: run {
+                    failed += SnapJointFailure(
+                        index,
+                        SnapPad.TOO_THIN_REASON + ", and the lesser joints do not fit either",
+                    )
+                    continue
+                }
+            val joint = contoured.joint
             val withStep = joint.rung == SnapFitRung.FULL
-            val union = engine.union(placement.beamMesh, joint.unionSolid)
+            val union = engine.union(contoured.beamMesh, joint.unionSolid)
             if (union !is MeshBoolean.Result.Success) {
-                return SnapPlacement.Refused(
-                    "Joint " + (index + 1) + " could not be joined on: " +
-                        (union as MeshBoolean.Result.Failure).reason,
+                failed += SnapJointFailure(
+                    index,
+                    "could not be joined on: " + (union as MeshBoolean.Result.Failure).reason,
                 )
+                continue
             }
             // The whole-seam registration step, when this rung carries one. Its
             // solids are separate meshes because one mesh holding two
@@ -2716,29 +2769,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val registered = if (withStep) {
                 val stepped = engine.union(union.mesh, joint.registrationSolid)
                 if (stepped !is MeshBoolean.Result.Success) {
-                    return SnapPlacement.Refused(
-                        "Joint " + (index + 1) + " could not have its registration step joined on: " +
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its registration step joined on: " +
                             (stepped as MeshBoolean.Result.Failure).reason,
                     )
+                    continue
                 }
                 stepped
             } else {
                 union
             }
-            val socket = engine.subtract(placement.socketMesh, joint.subtractSolid)
+            val socket = engine.subtract(contoured.socketMesh, joint.subtractSolid)
             if (socket !is MeshBoolean.Result.Success) {
-                return SnapPlacement.Refused(
-                    "Joint " + (index + 1) + " could not have its pocket cut: " +
-                        (socket as MeshBoolean.Result.Failure).reason,
+                failed += SnapJointFailure(
+                    index,
+                    "could not have its pocket cut: " + (socket as MeshBoolean.Result.Failure).reason,
                 )
+                continue
             }
             val recessed = if (withStep) {
                 val hollowed = engine.subtract(socket.mesh, joint.registrationRecess)
                 if (hollowed !is MeshBoolean.Result.Success) {
-                    return SnapPlacement.Refused(
-                        "Joint " + (index + 1) + " could not have its matching recess cut: " +
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its matching recess cut: " +
                             (hollowed as MeshBoolean.Result.Failure).reason,
                     )
+                    continue
                 }
                 hollowed
             } else {
@@ -2749,28 +2807,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // both pass a closedness check, so both are measured here instead.
             // With several joints, a pocket that removes nothing is also what a
             // neighbour's pocket having taken the material already looks like.
-            val beamGain = union.volumeMm3 - MeshVolume.of(placement.beamMesh)
-            val pocketLoss = MeshVolume.of(placement.socketMesh) - socket.volumeMm3
+            val beamGain = union.volumeMm3 - MeshVolume.of(contoured.beamMesh)
+            val pocketLoss = MeshVolume.of(contoured.socketMesh) - socket.volumeMm3
             val padGain = registered.volumeMm3 - union.volumeMm3
             val recessLoss = socket.volumeMm3 - recessed.volumeMm3
             val failure = when {
                 beamGain < MIN_FEATURE_MM3 ->
-                    "Joint " + (index + 1) + " has no material where it was placed for its beam to root in; " +
-                        "tap another spot on the seam."
+                    "has no material where it was placed for its beam to root in; " +
+                        "tap another spot on the seam, or move it."
                 pocketLoss < MIN_FEATURE_MM3 ->
-                    "Joint " + (index + 1) + ": the matching pocket would cut nothing out of the other half; " +
+                    "the matching pocket would cut nothing out of the other half; " +
                         "tap another spot, or move the joints apart."
                 withStep && recessLoss < MIN_FEATURE_MM3 ->
-                    "Joint " + (index + 1) + ": the matching recess would cut nothing out of the other half."
+                    "the matching recess would cut nothing out of the other half."
                 withStep && padGain < MIN_FEATURE_MM3 ->
-                    "Joint " + (index + 1) + ": the whole-seam pad has nothing to hold on to here."
+                    "the whole-seam pad has nothing to hold on to here."
                 else -> null
             }
-            if (failure != null) return SnapPlacement.Refused(failure)
+            if (failure != null) {
+                failed += SnapJointFailure(index, failure)
+                continue
+            }
 
             // Which half carries the beam decides which running mesh takes what,
             // and where each half's mating face now is on the plate.
-            val beamIsLow = placement.beamMesh === ready.lowHalf.mesh
+            val beamIsLow = contoured.beamMesh === lowRunning.mesh
+            built += index to contoured
             if (beamIsLow) {
                 lowMesh = registered.mesh
                 highMesh = recessed.mesh
@@ -2779,7 +2841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 highMesh = registered.mesh
             }
             placed += SnapPlacedJoint(
-                spec = specs[index],
+                spec = spec,
                 joint = joint,
                 beamInChosenHalf = placement.chosenHalfCarriesBeam,
                 beamHalfName = if (beamIsLow) lowName else highName,
@@ -2802,7 +2864,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ", " + specs[index].tightness.label.lowercase() + " clearance" +
                         (if (joint.dimensions.mouthChamferMm > 0f) ", socket ramp" else "") +
                         ": beam root +" + millimetres(beamGain) +
-                        " mm3 (seat " + millimetres(seatVolume(placement.beamMesh, joint.unionSolid)) +
+                        " mm3 (seat " + millimetres(seatVolume(contoured.beamMesh, joint.unionSolid)) +
                         " mm3), pocket -" + millimetres(pocketLoss) +
                         " mm3, pad +" + millimetres(padGain) +
                         " mm3, recess -" + millimetres(recessLoss) +
@@ -2810,6 +2872,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         " mm",
                 )
             }
+        }
+
+        // The guard, once every joint that could be built has been: two joints whose pockets
+        // cross, or leave no printable wall between them, would silently cut each other away -
+        // and a joint that has been cut away still passes every closedness check there is.
+        // This is the set's answer rather than one joint's, so it still stops the preview
+        // whole; a joint that could not be built at all is that joint's own sentence.
+        if (built.size > 1) {
+            val wall = built.maxOf { it.second.joint.dimensions.beamThicknessMm }
+            val conflicts = SnapLayout.conflicts(
+                built.map { SnapLayout.footprintOf(it.second.joint) },
+                wall,
+            )
+            if (conflicts.isNotEmpty()) {
+                return SnapPlacement.Refused(
+                    conflicts.joinToString("; ") +
+                        ". Move a joint, remove one, or clear them and spread them again.",
+                )
+            }
+        }
+        // Nothing at all could be built: the panel gets the sentence it always got, naming the
+        // first joint that refused, rather than an empty preview with no joints in it.
+        if (placed.isEmpty()) {
+            val first = failed.first()
+            return SnapPlacement.Refused(
+                "Joint " + (first.index + 1) + " " + first.reason,
+            )
         }
 
         val lowPreview = lowMesh.copy(displayName = lowName)
@@ -2830,7 +2919,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             hookThicknessMm = state.snapHookThicknessMm,
             hookLipMm = state.snapHookLipMm,
             repairNote = ready.note,
+            failed = failed,
         )
+        // A joint that could not be built is said out loud, naming it, while the ones that
+        // could are the geometry on the plate. Apply refuses while any of this stands.
+        notices += failed.map { "Joint " + (it.index + 1) + " " + it.reason }
         return SnapPlacement.Done(preview, notices.takeIf { it.isNotEmpty() }?.joinToString("; "))
     }
 
@@ -2846,7 +2939,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun contouredOrLesser(
         base: SnapJoint.Placement,
-        ready: SnapPreviewResult.Prepared,
+        /** The two halves as this joint's own booleans will leave them - see placeEveryJoint. */
+        lowHalf: SnapFitHalf,
+        highHalf: SnapFitHalf,
         /** The joint's own tap, in the halves' own coordinates. */
         anchorMm: Vec3,
         axis: ModelPlacement.Axis,
@@ -2855,8 +2950,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         parameters: SnapFitParameters,
     ): SnapJoint.Placement? {
         if (base.joint.rung != SnapFitRung.FULL) return base
-        val beamFit = if (base.beamMesh === ready.lowHalf.mesh) ready.lowHalf else ready.highHalf
-        val socketFit = if (base.beamMesh === ready.lowHalf.mesh) ready.highHalf else ready.lowHalf
+        val beamFit = if (base.beamMesh === lowHalf.mesh) lowHalf else highHalf
+        val socketFit = if (base.beamMesh === lowHalf.mesh) highHalf else lowHalf
         val contoured = SnapPad.contour(base.joint, beamFit, socketFit)
         if (contoured != null) return base.copy(joint = contoured)
         for (rung in listOf(SnapFitRung.SIMPLE, SnapFitRung.MINIMAL)) {
@@ -2864,8 +2959,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 axis = axis,
                 anchorMm = anchorMm,
                 scale = scale,
-                lowHalf = ready.lowHalf,
-                highHalf = ready.highHalf,
+                lowHalf = lowHalf,
+                highHalf = highHalf,
                 beamHalf = beamHalf,
                 parameters = parameters,
                 requested = rung,
@@ -2932,6 +3027,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val reason = state.snapBlockedReason
                 ?: "The joint preview is still being built; try again in a moment"
             showSnapFailure(IllegalStateException(reason))
+            return
+        }
+        // A preview standing with a joint the material refused is not a pair to write: the
+        // geometry carries the joints that were built and the record would carry the list.
+        // The panel disables the button for this; the command says no as well, because a
+        // button is not the only way in.
+        if (state.snapFailedJoints.isNotEmpty()) {
+            showSnapFailure(IllegalStateException(state.snapBlockedReason.orEmpty()))
             return
         }
         // The pair the split recorded, as the plate has it now. A half that has

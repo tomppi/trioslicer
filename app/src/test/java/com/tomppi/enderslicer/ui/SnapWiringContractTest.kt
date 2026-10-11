@@ -310,6 +310,131 @@ class SnapWiringContractTest {
         )
     }
 
+    /**
+     * N joints at N anchors put N hooks in the geometry, which one line of this function decided
+     * against: every joint was built on the pair's OWN untouched halves, and each result then
+     * REPLACED the running mesh, because a placement carries the mesh it was built from. Two
+     * joints came out as one hook on the plate - the last one - while the panel listed both, and
+     * Apply wrote a pair carrying only that one.
+     */
+    @Test
+    fun everyJointIsBuiltOnTheHalvesTheJointsBeforeItLeft() {
+        val placement = body("private fun placeEveryJoint(", "private fun contouredOrLesser(")
+        assertTrue(
+            "the running halves are what each joint is built on",
+            placement.contains("val lowRunning = ready.lowHalf.copy(mesh = lowMesh)") &&
+                placement.contains("val highRunning = ready.highHalf.copy(mesh = highMesh)"),
+        )
+        assertTrue(
+            "and they are what SnapJoint.build is given",
+            placement.contains("lowHalf = lowRunning,") && placement.contains("highHalf = highRunning,"),
+        )
+        assertFalse(
+            "never the pair's untouched halves",
+            placement.contains("lowHalf = ready.lowHalf,"),
+        )
+        assertTrue(
+            "and every boolean runs on the running meshes, so the joints accumulate",
+            placement.contains("engine.union(contoured.beamMesh, joint.unionSolid)") &&
+                placement.contains("engine.subtract(contoured.socketMesh, joint.subtractSolid)") &&
+                placement.contains("lowMesh = registered.mesh") &&
+                placement.contains("highMesh = recessed.mesh"),
+        )
+        assertTrue(
+            "with the beam's own half read off the running mesh, not the basis",
+            placement.contains("val beamIsLow = contoured.beamMesh === lowRunning.mesh"),
+        )
+    }
+
+    /**
+     * A joint the material will not take is that joint's sentence, naming it, while the joints
+     * that were built stay on the plate - and Apply refuses until it is moved or removed,
+     * because a pair joined with fewer joints than the list names is not the pair previewed.
+     */
+    @Test
+    fun oneJointsRefusalDoesNotTakeTheOthersWithIt() {
+        val placement = body("private fun placeEveryJoint(", "private fun contouredOrLesser(")
+        assertTrue(
+            "every failure is recorded against its own joint",
+            Regex("failed \\+= SnapJointFailure\\(").findAll(placement).count() >= 6,
+        )
+        assertTrue(
+            "and the loop carries on with the rest",
+            placement.contains("failed += SnapJointFailure(") && placement.contains("continue"),
+        )
+        assertTrue(
+            "the preview carries the refusals",
+            placement.contains("failed = failed,"),
+        )
+        assertTrue(
+            "nothing at all built still refuses the preview with the first joint's own sentence",
+            placement.contains("if (placed.isEmpty())") &&
+                placement.contains("\"Joint \" + (first.index + 1) + \" \" + first.reason"),
+        )
+
+        val state = source("ui/MainUiState.kt")
+        assertTrue(
+            "the state reads them off the standing preview",
+            state.contains("val snapFailedJoints: List<SnapJointFailure>") &&
+                state.contains("snapShownMeshes?.failed.orEmpty()"),
+        )
+        assertTrue(
+            "Apply refuses while one stands, naming it",
+            state.contains("snapFailedJoints.isNotEmpty() ->") &&
+                state.contains("Move it or remove it before joining."),
+        )
+        val apply = body("fun applySnapJoint(", "private fun middleOf(")
+        assertTrue(
+            "and the command says no as well, because a button is not the only way in",
+            apply.contains("if (state.snapFailedJoints.isNotEmpty())"),
+        )
+
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue("the row says it in the joint's own place", app.contains("Could not be built: "))
+        assertTrue(
+            "and the button is off while any joint is refused",
+            app.contains("state.snapFailedJoints.isEmpty()"),
+        )
+    }
+
+    /**
+     * Placing is deliberate: Add arms one tap, a tap with nothing armed selects, and Add and
+     * Move cannot both be armed - a tap cannot both place a joint and move one.
+     */
+    @Test
+    fun aTapOnlyPlacesAJointWhenAddWasPressedFirst() {
+        val placement = body("fun placeSnapJoint(", "fun addSnapJoint()")
+        assertTrue(
+            "an armed Add places exactly one joint and disarms itself",
+            placement.contains("state.snapAddingJoint ->") &&
+                placement.contains("snapAddingJoint = false,"),
+        )
+        assertTrue(
+            "and an unarmed tap selects the nearest joint instead",
+            placement.contains("state.nearestSnapJoint(point)"),
+        )
+        assertTrue(
+            "there is a control that arms it",
+            viewModel.contains("fun addSnapJoint()") &&
+                viewModel.contains("snapAddingJoint = true, snapMovingJoint = false,"),
+        )
+        assertTrue(
+            "Move takes the Add arming down",
+            body("fun moveSnapJoint(", "/** Takes one joint off").contains("snapAddingJoint = false,"),
+        )
+
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue("the button says what it does", app.contains("Text(\"Add joint\")"))
+        assertTrue(
+            "the line under the title says the tap will place it",
+            app.contains("state.snapAddingJoint -> \"Tap the model to place it.\""),
+        )
+        assertFalse(
+            "and nothing promises that a tap adds a joint any more",
+            app.contains("Tap again to add another joint"),
+        )
+    }
+
     /** The text between [from] and the next [to], with both anchors checked. */
     private fun body(from: String, to: String): String {
         val start = viewModel.indexOf(from)

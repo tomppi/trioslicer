@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Placing a joint is a deliberate press again.** The snap panel's **Add joint** arms the next
+  tap and the line under the title says so ("Tap the model to place it"); with nothing armed a tap
+  on the model selects the joint nearest where the finger landed, so turning or moving a pair no
+  longer leaves a hook behind on every touch that crossed a half. Move arms a tap to move the
+  selected joint, and the two are mutually exclusive: one tap cannot both place a joint and move
+  one. Auto spread and the joints a pair remembers are unchanged.
 - **Adopt PC Klipper's configuration, whole.** The Machine tab, on the Phone Klipper route, reads
   the computer's printer.cfg over Moonraker and brings the entire file here - pins, steps,
   kinematics, the probe, the macros and the files it includes, walked to the end of the include
@@ -61,6 +67,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Every joint on a seam is in the geometry, and a joint that cannot be built says so on its own
+  row.** Each joint was built on the pair's own untouched halves and its result then REPLACED the
+  running mesh, because a placement carries the mesh it was built from - so two taps at two places
+  on the seam listed two joints, showed one hook, and an apply wrote a pair carrying only the last
+  joint, silently. Every joint is now built on the halves the joints before it left, so N joints
+  put N hooks in the halves that are applied. And a joint the material refuses no longer takes the
+  whole preview down with it: it is named on its own row with the reason, the joints that were
+  built stay on the plate, and Join refuses - naming it - until it is moved or removed, because a
+  pair joined with fewer joints than the list shows is not the pair that was previewed.
 - **The comparison between the two configurations says what it compared.** "Nothing was copied:
   the two agree already" was read - correctly - as the app claiming the two files match, when all
   it meant was that the settings one button moves do. The card now says how many lines the two
