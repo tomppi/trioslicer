@@ -141,7 +141,16 @@ private val datadir = File(context.filesDir, "prusa/datadir")
         (presetCatalogResult as? ReadResult.Loaded)?.repository?.let(::PrusaPresetCatalog)
     }
 
-    fun prepareResources(): Boolean {
+    /** True when the presets are already unpacked for this version. */
+    fun isPrepared(): Boolean {
+        val marker = File(datadir, ".resources-version")
+        return marker.isFile && marker.readText().trim() == RESOURCES_VERSION &&
+            File(datadir, "presets").isDirectory
+    }
+
+    fun prepareResources(
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): Boolean {
         // 3.x console layout: --datadir <dir> reads <dir>/presets (plus cache).
         val marker = File(datadir, ".resources-version")
         if (marker.isFile && marker.readText().trim() == RESOURCES_VERSION) {
@@ -150,7 +159,7 @@ private val datadir = File(context.filesDir, "prusa/datadir")
         val presets = File(datadir, "presets")
         if (presets.exists()) presets.deleteRecursively()
         presets.mkdirs()
-        copyAssetDir(context.assets, "prusa/resources/presets", presets)
+        copyAssetDir(context.assets, "prusa/resources/presets", presets, onProgress)
         File(datadir, "cache").mkdirs()
         marker.writeText(RESOURCES_VERSION)
         return File(datadir, "presets/prusa-research-fff").isDirectory
@@ -427,8 +436,15 @@ private val datadir = File(context.filesDir, "prusa/datadir")
         if (Thread.currentThread().isInterrupted) throw InterruptedException("PrusaSlicer slicing was cancelled")
     }
 
-    private fun copyAssetDir(assets: AssetManager, from: String, destination: File) {
-        AssetTreeExtractor.copyTree(assets, from, destination)
+    private fun copyAssetDir(
+        assets: AssetManager,
+        from: String,
+        destination: File,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ) {
+        AssetTreeExtractor.copyTree(
+            assets, from, destination, onProgress?.let { AssetTreeExtractor.Progress() }, onProgress,
+        )
     }
 
     companion object {

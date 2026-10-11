@@ -30,23 +30,31 @@ class OnboardingFlowTest {
     }
 
     @Test
-    fun setupLeadsToTheScaleAndTheScaleIsTheOnlyWayOut() {
+    fun setupLeadsThroughTheScaleAndTheEnginesToTheApp() {
         val scale = OnboardingFlow.advance(OnboardingStep.PRINT_SETUP)
         assertEquals(OnboardingStep.SCALE, scale)
         // The scale step is not finished by reaching it: nothing is written yet.
         assertFalse(OnboardingFlow.marksComplete(scale))
 
-        val finished = OnboardingFlow.advance(scale)
+        val engines = OnboardingFlow.advance(scale)
+        assertEquals(OnboardingStep.ENGINES, engines)
+        // Nor is the engine step: it is left by preparing or by skipping, and only leaving
+        // it writes the flag.
+        assertFalse(OnboardingFlow.marksComplete(engines))
+
+        val finished = OnboardingFlow.advance(engines)
         assertEquals(OnboardingStep.COMPLETE, finished)
         assertTrue(OnboardingFlow.marksComplete(finished))
     }
 
     @Test
-    fun backNeverLeavesTheFlowBeforeTheScaleIsFinished() {
+    fun backNeverLeavesTheFlowBeforeTheEnginesAreFinished() {
         // The first step is immovable, so Back cannot fall out to the launcher.
         assertEquals(OnboardingStep.PRINT_SETUP, OnboardingFlow.back(OnboardingStep.PRINT_SETUP))
         // The scale step goes back to the setup it follows, still inside the flow.
         assertEquals(OnboardingStep.PRINT_SETUP, OnboardingFlow.back(OnboardingStep.SCALE))
+        // And the engine step goes back to the scale that precedes it.
+        assertEquals(OnboardingStep.SCALE, OnboardingFlow.back(OnboardingStep.ENGINES))
     }
 
     /**

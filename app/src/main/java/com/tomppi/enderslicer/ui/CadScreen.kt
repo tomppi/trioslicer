@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +69,13 @@ fun CadScreen(
     agentConnected: Boolean,
     /** What the engine itself is doing - starting, ready, or why it is not. */
     engineStatus: String,
+    /**
+     * True while the engine is being unpacked or started, so the empty view can spin.
+     *
+     * A spinner is only honest while something is happening: a failure keeps the same
+     * empty view, without it, and the sentence under it says what went wrong.
+     */
+    engineBusy: Boolean = false,
     /** Where finished STEP and STL land, shown so the user knows where to look. */
     exportsPath: String,
     /**
@@ -95,6 +104,14 @@ fun CadScreen(
     pick: CadPick?,
     /** True while the engine is rendering a frame, so the view can show it is working. */
     framePending: Boolean,
+    /**
+     * True when the engine is up and its scene is genuinely empty.
+     *
+     * The engine seeds a default part on start, so this is the fallback for a scene that
+     * was cleared: the view says so, honestly, and offers the part back in one tap rather
+     * than showing a grid that looks like a loaded-but-invisible model.
+     */
+    sceneEmpty: Boolean = false,
     onOrbit: (Float, Float) -> Unit,
     onPan: (Float, Float) -> Unit,
     onZoom: (Float) -> Unit,
@@ -111,6 +128,8 @@ fun CadScreen(
      * solids would otherwise reach the slicer as one fused mesh.
      */
     onExportAll: () -> Unit,
+    /** Puts the engine's default 20 mm cube back in an empty scene. */
+    onAddDefaultCube: () -> Unit = {},
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -205,33 +224,76 @@ fun CadScreen(
                                 )
                             },
                     )
-                } else Box(contentAlignment = Alignment.Center) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(24.dp),
+                } else if (!sceneEmpty) {
+                    // No frame and something in the scene: the engine is starting, or it has
+                    // said why it is not. An empty scene is the panel below instead.
+                    Box(contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(24.dp),
+                        ) {
+                            if (engineBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.width(36.dp).height(36.dp),
+                                )
+                            }
+                            Text(
+                                text = engineStatus,
+                                style = MaterialTheme.typography.titleSmall,
+                                textAlign = TextAlign.Center,
+                            )
+                            Text(
+                                text = if (agentConnected) {
+                                    "An agent is connected. Ask for a part and it is built here."
+                                } else {
+                                    "No agent is connected yet."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                            Text(
+                                text = "Exports land in\n$exportsPath",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+
+                // The engine is up and its scene holds nothing: say so and put the default
+                // part one tap away. There is deliberately no frame behind this - the engine
+                // refuses to draw an empty scene ("scene is empty; add a shape before
+                // exporting"), so gating the panel on a picture meant it could never appear
+                // in the one state it exists for.
+                if (sceneEmpty) {
+                    Surface(
+                        tonalElevation = 3.dp,
+                        modifier = Modifier.align(Alignment.Center),
                     ) {
-                        Text(
-                            text = engineStatus,
-                            style = MaterialTheme.typography.titleSmall,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = if (agentConnected) {
-                                "An agent is connected. Ask for a part and it is built here."
-                            } else {
-                                "No agent is connected yet."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
-                        Text(
-                            text = "Exports land in\n$exportsPath",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(20.dp),
+                        ) {
+                            Text(
+                                text = "Engine ready — nothing in the scene yet",
+                                style = MaterialTheme.typography.titleSmall,
+                                textAlign = TextAlign.Center,
+                            )
+                            Text(
+                                text = "Ask the agent to model something, or start from " +
+                                    "the default part.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                            Button(onClick = onAddDefaultCube) {
+                                Text("Add a 20 mm cube")
+                            }
+                        }
                     }
                 }
 
@@ -239,7 +301,7 @@ fun CadScreen(
                 // that appears and disappears resizes the view, and the view's size is what
                 // the frame loop renders at - so a frame in flight changed the size that
                 // asked for the next one, and the screen never stopped rendering.
-                if (showStatus && (pick != null || framePending)) {
+                if (showStatus && !sceneEmpty && (pick != null || framePending)) {
                     Surface(
                         tonalElevation = 2.dp,
                         modifier = Modifier.align(Alignment.TopStart),

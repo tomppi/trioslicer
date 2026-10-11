@@ -288,21 +288,64 @@ object BlenderEngine {
         }
     }
 
-    /** First-run extraction with a version marker (around 480 MB, once). */
-    private suspend fun prepareResources(context: Context, configDir: File) {
+    /**
+     * Extracts the Blender payload without starting the engine.
+     *
+     * Null on success, otherwise why it failed. [ensureStarted] does the same work on its
+     * way up; exposing it is what lets the first-init screen pay for the 140 MB once, on
+     * purpose, instead of every user meeting it the first time they open Modelling.
+     */
+    suspend fun extractPayload(
+        context: Context,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): String? = withContext(Dispatchers.IO) {
+        val app = context.applicationContext
+        try {
+            prepareResources(app, File(app.filesDir, "blender"), onProgress)
+            null
+        } catch (error: Throwable) {
+            Log.e(TAG, "Blender payload extraction failed", error)
+            error.message ?: error::class.java.simpleName
+        }
+    }
+
+    /** True once this process has claimed a start; the payload is there or being written. */
+    fun isStarted(): Boolean = started
+
+    /** True when the payload is already unpacked for this version. */
+    fun isPayloadExtracted(context: Context): Boolean =
+        payloadPresent(File(context.filesDir, "blender"))
+
+    private fun payloadPresent(configDir: File): Boolean {
+        val marker = File(configDir, ".resources-version")
+        return marker.isFile && marker.readText() == RESOURCES_VERSION &&
+            File(configDir, "python/lib/python3.11").isDirectory &&
+            File(configDir, "scripts/startup/start_blender_mcp.py").isFile
+    }
+
+    /** First-run extraction with a version marker (around 140 MB of Python and scripts, once). */
+    private suspend fun prepareResources(
+        context: Context,
+        configDir: File,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ) {
         withContext(Dispatchers.IO) {
             val marker = File(configDir, ".resources-version")
-            if (marker.isFile && marker.readText() == RESOURCES_VERSION &&
-                File(configDir, "python/lib/python3.11").isDirectory &&
-                File(configDir, "scripts/startup/start_blender_mcp.py").isFile
-            ) {
+            if (payloadPresent(configDir)) {
                 return@withContext
             }
             try {
                 configDir.deleteRecursively()
                 configDir.mkdirs()
-                AssetTreeExtractor.copyTree(context.assets, "blender/python", File(configDir, "python"))
-                AssetTreeExtractor.copyTree(context.assets, "blender/scripts", File(configDir, "scripts"))
+                // One progress object across both trees: the caller shows one number, and
+                // two zero-based counters would make it fall back to zero half way through.
+                val progress = AssetTreeExtractor.Progress()
+                AssetTreeExtractor.copyTree(
+                    context.assets, "blender/python", File(configDir, "python"), progress, onProgress,
+                )
+                AssetTreeExtractor.copyTree(
+                    context.assets, "blender/scripts", File(configDir, "scripts"), progress, onProgress,
+                )
                 marker.writeText(RESOURCES_VERSION)
                 Log.i(TAG, "blender resources materialized to " + configDir.absolutePath)
             } catch (error: Throwable) {

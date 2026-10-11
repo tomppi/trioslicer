@@ -4,10 +4,36 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.9] - 2026-10-10
+## [1.9.0] - 2026-10-11
 
 ### Added
 
+- **Prepare the engines, once, on purpose.** Every payload used to unpack lazily on first use -
+  the CAD tree 533 MB, Blender's Python 140 MB, Orca's profiles 80 MB, the Klipper Python 27 MB -
+  so a fresh install met them one surprise at a time with no way to tell working from stuck. The
+  new step 3 of the first-run setup, and the same screen from Settings, prepares the engines you
+  tick, **one at a time** so the peak is the largest single tree rather than the sum, and shows
+  what the selection needs against what is free before anything starts. Every row ends ready or
+  failed with the reason. It is skippable: preparing can be hundreds of megabytes, and each
+  engine's own screen now says what it is waiting for and where to prepare it.
+- **The CAD scene says what it has.** The engine seeds a 20 mm cube on the bed when it starts; a
+  scene that is empty anyway now shows "Engine ready - nothing in the scene yet" with a button
+  that puts the cube back, instead of a bare grid the user has to interpret.
+
+### Fixed
+
+- **The CAD engine now starts on a fresh install.** It borrows the Klipper payload's CPython as
+  its interpreter, but only a printer attach ever extracted that payload - so opening CAD on a
+  wiped install extracted 533 MB of OCCT, refused to start with "the app's Python is not
+  extracted yet", and left the screen on that sentence for good. The extraction is now shared
+  with the Klipper service through one stamp, and the CAD path performs it itself when it is
+  missing.
+- **The CAD status advances.** While a tree is being written the screen shows files, megabytes
+  and elapsed seconds, ticking once a second; a failure names the reason; and the viewport stops
+  re-asking an engine that has said why it cannot come up rather than leaving "Rendering..." over
+  a dead port.
+
+## [1.8.9] - 2026-10-10
 - **First-run setup is now two steps and neither can be skipped.** Printing setup offers Continue
   and nothing else - no Skip, and Back says the setup has to be finished instead of quietly
   leaving. The second step shows the plate as it will actually look, with the interface-scale

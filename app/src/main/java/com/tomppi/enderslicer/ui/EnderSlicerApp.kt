@@ -154,6 +154,7 @@ import com.tomppi.enderslicer.modelling.CadPick
 import com.tomppi.enderslicer.modelling.CadPreviewClient
 import com.tomppi.enderslicer.modelling.CadViewerPreference
 import com.tomppi.enderslicer.modelling.CadViewerSettings
+import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
 import androidx.compose.foundation.layout.offset
@@ -343,6 +344,16 @@ fun EnderSlicerApp(
     var cadBusy by remember { mutableStateOf(false) }
     var cadChatReady by remember { mutableStateOf(false) }
     var cadEngineStatus by remember { mutableStateOf("CAD engine not started") }
+    // True while the engine is unpacking or starting, so the empty view spins only when
+    // something is actually happening; a failure keeps the same view without it.
+    var cadEngineBusy by remember { mutableStateOf(false) }
+    // True when the engine is up and its scene is genuinely empty: the panel that offers
+    // the default part back.
+    var cadSceneEmpty by remember { mutableStateOf(false) }
+    // The first-init screen, reachable from Settings after onboarding: an engine added later,
+    // or a failure to retry, is prepared from here.
+    var engineSetupOpen by rememberSaveable { mutableStateOf(false) }
+    var enginePrepSelection by rememberSaveable { mutableStateOf("") }
     // The engine's latest render. It has a GL viewer and no window, so its picture of the
     // model arrives as a file - the same handoff that carries STEP and STL.
     var cadRender by remember { mutableStateOf<java.io.File?>(null) }
@@ -821,6 +832,9 @@ fun EnderSlicerApp(
                 // showing the model as it was before, and the only way to see the new one was to
                 // poke the view - which in an empty scene was not even composed to be poked.
                 cadViewport?.refresh()
+                // And ask what is in the scene now: an agent that cleared it must leave the
+                // screen offering the default part rather than a grid with nothing on it.
+                cadViewport?.refreshSceneState()
             }
         }
     }
@@ -982,6 +996,11 @@ fun EnderSlicerApp(
             // The engine extracts 566 MB before it binds, so the screen waits on it
             // rather than on a retry count.
             engineReady = { runCatching { CadEngine.isReady(context) }.getOrDefault(false) },
+            // What the engine has said about why it is not up, if anything. The viewport
+            // stops asking on a named problem instead of spinning "Rendering..." over an
+            // engine that will never answer - a frozen strip is how the missing Python
+            // stayed invisible.
+            engineProblem = { runCatching { CadEngine.problem(context) }.getOrNull() },
             // Read live: a setting saved in the sheet has to reach the next frame, not the
             // next launch.
             settings = { cadViewerSettings },
@@ -994,6 +1013,7 @@ fun EnderSlicerApp(
         val frameJob = launch { viewport.frame.collect { cadFrame = it } }
         val pickJob = launch { viewport.pick.collect { cadPick = it } }
         val busyJob = launch { viewport.busy.collect { cadFramePending = it } }
+        val sceneJob = launch { viewport.sceneEmpty.collect { cadSceneEmpty = it == true } }
         // The engine extracts 566 MB and binds its port after this effect starts, so the
         // settings sent above arrive before there is anything to receive them - which is why a
         // saved setting looked forgotten the next time the app was opened. They are sent again
@@ -1004,9 +1024,13 @@ fun EnderSlicerApp(
             while (true) {
                 val status = CadEngine.status(context)
                 cadEngineStatus = status
+                cadEngineBusy = CadEngine.isWorking()
                 if (!viewerSettingsSent && CadEngine.isReady(context)) {
                     viewerSettingsSent = true
                     viewport.applyViewerSettings(cadViewerSettings)
+                    // The engine seeds a 20 mm cube when it starts, so ask what its scene
+                    // really holds: an empty one is said, not shown as a bare grid.
+                    viewport.refreshSceneState()
                 }
                 delay(1_000)
             }
@@ -1014,6 +1038,7 @@ fun EnderSlicerApp(
             frameJob.cancel()
             pickJob.cancel()
             busyJob.cancel()
+            sceneJob.cancel()
             viewport.close()
             cadViewport = null
         }
@@ -1031,6 +1056,7 @@ fun EnderSlicerApp(
     // The menu-unfold handler is composed FIRST so it has the LOWEST priority (the
     // last registered enabled BackHandler wins in Compose), letting any open sheet
     // or dialog consume the back event before the menu is expanded again.
+    BackHandler(enabled = engineSetupOpen) { engineSetupOpen = false }
     BackHandler(enabled = allSettingsOpen) { allSettingsOpen = false }
     BackHandler(enabled = printerScreenOpen) { printerScreenOpen = false }
     BackHandler(enabled = modelToolsOpen) { modelToolsOpen = false }
@@ -1506,7 +1532,47 @@ fun EnderSlicerApp(
             ) { padding ->
                 // Outside the tab switch on purpose: the Plate menu is what opens this,
                 // so tying it to the More tab meant the tap set a flag and nothing drew.
-                if (modellingOpen) {
+                if (engineSetupOpen) {
+                    // Collected here rather than at the top of the app: a row changes at
+                    // 10 Hz while a tree is written, and only this screen draws them.
+                    val enginePrepRows by EnginePreparation.rows.collectAsStateWithLifecycle()
+                    EngineSetupScreen(
+                        rows = enginePrepRows,
+                        selected = decodeEngineSelection(enginePrepSelection),
+                        busy = enginePrepRows.any { it.phase == EnginePreparation.Phase.RUNNING },
+                        freeBytes = EnginePreparation.freeBytes(context),
+                        onPrepare = {
+                            // Its own scope, so leaving this screen does not cancel a tree
+                            // half way through being written.
+                            EnginePreparation.start(
+                                context,
+                                decodeEngineSelection(enginePrepSelection),
+                            )
+                        },
+                        onToggle = { toggled ->
+                            val next = decodeEngineSelection(enginePrepSelection).toMutableSet()
+                            if (!next.remove(toggled)) {
+                                next.add(toggled)
+                                // CAD cannot run without the Python the Klipper payload brings,
+                                // so a CAD tick ticks it too rather than extracting 533 MB
+                                // behind an unticked row.
+                                if (toggled == EnginePreparation.Engine.CAD) {
+                                    next.add(EnginePreparation.Engine.KLIPPER)
+                                }
+                            }
+                            enginePrepSelection = encodeEngineSelection(next)
+                        },
+                        onSelectAll = {
+                            enginePrepSelection =
+                                encodeEngineSelection(EnginePreparation.Engine.entries.toSet())
+                        },
+                        onSkip = null,
+                        onBack = { engineSetupOpen = false },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                    )
+                } else if (modellingOpen) {
                     ModellingScreen(
                         state = state,
                         messages = modellingMessages,
@@ -1535,6 +1601,8 @@ fun EnderSlicerApp(
                         status = cadStatus,
                         agentConnected = cadChatReady,
                         engineStatus = cadEngineStatus,
+                        engineBusy = cadEngineBusy,
+                        sceneEmpty = cadSceneEmpty,
                         exportsPath = CadEngine.exportsDirectory(context).absolutePath,
                         showStatus = cadViewerSettings.showStatus,
                         frame = cadFrame,
@@ -1549,6 +1617,17 @@ fun EnderSlicerApp(
                         onOrientation = { cadViewport?.setOrientation(it) },
                         onPickUsed = { cadViewport?.clearPick() },
                         onSend = ::askCadAgent,
+                        onAddDefaultCube = {
+                            cadViewport?.addDefaultCube { added ->
+                                if (!added) {
+                                    Toast.makeText(
+                                        context,
+                                        "The CAD engine did not add the cube",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        },
                         onExportAll = {
                             val viewport = cadViewport
                             if (viewport == null) {
@@ -2021,6 +2100,26 @@ fun EnderSlicerApp(
                             onEngineChange = onEngineChange,
                             onOpenMultiObject = { multiObjectOpen = true },
                             objectCount = state.models.size,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        // The way back to the first init, for an engine added later or a
+                        // failure to retry - and the place the CAD screen's own status sends
+                        // a user whose Python has never been unpacked.
+                        val enginePrepRows by EnginePreparation.rows.collectAsStateWithLifecycle()
+                        // What is already prepared is part of the summary, and this is the
+                        // first place a user looks after a previous run.
+                        LaunchedEffect(Unit) { EnginePreparation.refresh(context) }
+                        EnginePreparationCard(
+                            rows = enginePrepRows,
+                            onOpen = {
+                                if (enginePrepSelection.isEmpty()) {
+                                    enginePrepSelection = encodeEngineSelection(
+                                        EnginePreparation.defaultSelection(engine.name.lowercase()),
+                                    )
+                                }
+                                EnginePreparation.refresh(context)
+                                engineSetupOpen = true
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         )
                         if (engine == SlicerEngine.PRUSA) {
@@ -3005,6 +3104,46 @@ private fun AppBottomSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         content()
+    }
+}
+
+/**
+ * The Settings entry to the first-init screen.
+ *
+ * One sentence of state - how many engines are ready, or that one failed - so the answer is
+ * visible without opening anything, and a button to open the screen that does the work.
+ */
+@Composable
+private fun EnginePreparationCard(
+    rows: List<EnginePreparation.Row>,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val ready = rows.count { it.phase == EnginePreparation.Phase.READY }
+    val failed = rows.count { it.phase == EnginePreparation.Phase.FAILED }
+    val running = rows.any { it.phase == EnginePreparation.Phase.RUNNING }
+    Card(modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+        ) {
+            Text("Engine files", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = when {
+                    running -> "Preparing engines…"
+                    failed > 0 -> "$ready ready, $failed failed - open to see why and retry"
+                    ready == rows.size -> "All ${rows.size} engines are prepared"
+                    else -> "$ready of ${rows.size} engines prepared"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = onOpen) {
+                Text("Prepare the engines")
+            }
+        }
     }
 }
 

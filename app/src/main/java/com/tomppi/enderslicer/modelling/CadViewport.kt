@@ -135,6 +135,15 @@ class CadViewport(
     /** Whether the engine has finished starting. The app knows; a frame count does not. */
     private val engineReady: () -> Boolean,
     /**
+     * Why the engine cannot be up, when that is known.
+     *
+     * Separate from [engineReady] because the two answers need different behaviour: an
+     * engine that is not ready yet is waited for, and one that has said why it failed is
+     * not. Retrying the second forever is a spinner over a dead engine - the shape of the
+     * frozen CAD screen this screen came from.
+     */
+    private val engineProblem: () -> String? = { null },
+    /**
      * The viewer settings, read on every request rather than captured once.
      *
      * Live-reading is what makes a saved setting take effect on the next frame instead of the
@@ -153,6 +162,16 @@ class CadViewport(
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    /**
+     * True when the engine answers that its scene is empty, null before anyone asked.
+     *
+     * The engine seeds a default cube when it starts, so "empty" is not the normal first
+     * state - it is a scene that was cleared, and the screen offers the cube back rather
+     * than showing a grid and letting the user guess whether anything is meant to be there.
+     */
+    private val _sceneEmpty = MutableStateFlow<Boolean?>(null)
+    val sceneEmpty: StateFlow<Boolean?> = _sceneEmpty.asStateFlow()
 
     /** Conflated: a second request while one renders replaces it, never queues behind it. */
     private val pending = Channel<ViewRequest>(Channel.CONFLATED)
@@ -234,6 +253,14 @@ class CadViewport(
                             failedAttempts = 0
                             break
                         } catch (error: Throwable) {
+                            // A named problem is not a wait. The engine has already said why it
+                            // cannot come up, so retrying it forever would leave the strip on
+                            // "Rendering..." with the reason nowhere - which is exactly what a
+                            // missing Python looked like. Throw, so the loop stops and the
+                            // engine's own sentence is left on the screen.
+                            runCatching { engineProblem() }.getOrNull()?.let { reason ->
+                                throw IllegalStateException(reason, error)
+                            }
                             // While the engine is starting, keep waiting - there is nothing
                             // wrong, the screen is just early. Once it reports ready, a failure
                             // is real and is reported after a couple of tries.
@@ -535,6 +562,41 @@ class CadViewport(
     /** Consumed once it has been attached to something the user said. */
     fun clearPick() {
         _pick.value = null
+    }
+
+    /**
+     * Asks the engine what its scene holds, and remembers the answer.
+     *
+     * One command, asked when the engine comes up and after the agent has run, so the
+     * panel that offers the default cube appears only when there really is nothing there.
+     * A refusal leaves the answer as it was rather than turning an unanswered question
+     * into "empty".
+     */
+    fun refreshSceneState() {
+        scope.launch(Dispatchers.IO) {
+            val count = runCatching { client.sceneShapeCount() }.getOrNull() ?: return@launch
+            _sceneEmpty.value = count == 0
+        }
+    }
+
+    /**
+     * Asks the engine to put its default 20 mm cube in the scene, then redraws.
+     *
+     * The engine seeds the same cube when it starts; this is the way back from a scene
+     * that has since been cleared, and the action behind the "nothing in the scene yet"
+     * panel.
+     */
+    fun addDefaultCube(onResult: (Boolean) -> Unit = {}) {
+        scope.launch {
+            val added = runCatching {
+                withContext(Dispatchers.IO) { client.seedDefaultCube() }
+            }.getOrDefault(false)
+            if (added) {
+                _sceneEmpty.value = false
+                reset()
+            }
+            onResult(added)
+        }
     }
 
     /**

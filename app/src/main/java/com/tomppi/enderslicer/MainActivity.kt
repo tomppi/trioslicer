@@ -14,6 +14,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
@@ -31,6 +33,7 @@ import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
+import com.tomppi.enderslicer.ui.EngineSetupScreen
 import com.tomppi.enderslicer.ui.IntegratedEnderSlicerApp
 import com.tomppi.enderslicer.ui.MainViewModel
 import com.tomppi.enderslicer.ui.OnboardingFlow
@@ -40,6 +43,8 @@ import com.tomppi.enderslicer.ui.OnboardingStep
 import com.tomppi.enderslicer.ui.OnboardingStore
 import com.tomppi.enderslicer.ui.SlicerEngineStore
 import com.tomppi.enderslicer.ui.UiScale
+import com.tomppi.enderslicer.ui.decodeEngineSelection
+import com.tomppi.enderslicer.ui.encodeEngineSelection
 
 /**
  * A FragmentActivity rather than a bare ComponentActivity: androidx.biometric hosts its
@@ -116,6 +121,63 @@ class MainActivity : FragmentActivity() {
                             onSettings = slicerViewModel::updateSettings,
                             onContinue = { step = OnboardingFlow.advance(step) },
                         )
+                        // The first init, last because it is the only step that can spend
+                        // minutes and hundreds of megabytes. It is skippable on purpose: the
+                        // app works without it, and every engine's own screen now says what
+                        // it is waiting for and where to prepare it.
+                        OnboardingStep.ENGINES -> {
+                            val prepRows by EnginePreparation.rows.collectAsStateWithLifecycle()
+                            var selection by rememberSaveable {
+                                mutableStateOf(
+                                    encodeEngineSelection(
+                                        EnginePreparation.defaultSelection(engine.name.lowercase()),
+                                    ),
+                                )
+                            }
+                            // A screen opened after a previous run says ready rather than
+                            // offering work that is already done.
+                            LaunchedEffect(Unit) {
+                                EnginePreparation.refresh(applicationContext)
+                            }
+                            EngineSetupScreen(
+                                rows = prepRows,
+                                selected = decodeEngineSelection(selection),
+                                // Read from the rows rather than a flag: the rows are observable,
+                                // and "busy" is exactly "something is still being written".
+                                busy = prepRows.any { it.phase == EnginePreparation.Phase.RUNNING },
+                                freeBytes = EnginePreparation.freeBytes(applicationContext),
+                                onPrepare = {
+                                    // The run owns its own scope: skipping this step must not
+                                    // kill an extraction half way and leave a tree without a stamp.
+                                    EnginePreparation.start(
+                                        applicationContext,
+                                        decodeEngineSelection(selection),
+                                    )
+                                },
+                                onToggle = { toggled ->
+                                    val next = decodeEngineSelection(selection).toMutableSet()
+                                    if (!next.remove(toggled)) {
+                                        next.add(toggled)
+                                        // CAD cannot run without the Python the Klipper payload
+                                        // brings, so a CAD tick ticks it too rather than
+                                        // extracting 533 MB behind an unticked row.
+                                        if (toggled == EnginePreparation.Engine.CAD) {
+                                            next.add(EnginePreparation.Engine.KLIPPER)
+                                        }
+                                    }
+                                    selection = encodeEngineSelection(next)
+                                },
+                                onSelectAll = {
+                                    selection = encodeEngineSelection(EnginePreparation.Engine.entries.toSet())
+                                },
+                                onSkip = {
+                                    onboardingStore.complete()
+                                    step = OnboardingFlow.advance(step)
+                                },
+                                onBack = { step = OnboardingFlow.back(step) },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                         else -> Box(modifier = Modifier.fillMaxSize()) {
                             IntegratedEnderSlicerApp(
                                 slicerViewModel = slicerViewModel,

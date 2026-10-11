@@ -3,6 +3,21 @@
 Notes for anyone - human or agent - changing this app. Keep it short and only add rules that a
 change has already broken once.
 
+## A borrowed payload must be extracted by the borrower
+
+The CAD engine has no interpreter of its own: it runs on the CPython inside the Klipper payload
+(`files/klipper`), which for a long time only the Klipper host ever extracted. A user who opened
+CAD first watched 533 MB of OCCT unpack and then got "the app's Python is not extracted yet" -
+a sentence nothing on that path could ever change, because the tree it named was never written.
+
+- `KlipperPayload` is the one extractor and the one stamp for `files/klipper`; the host and the
+  CAD engine both go through it.
+- Anything that borrows another engine's payload calls that owner's extraction path and must not
+  assume it has run. A screen that depends on it says what it is waiting for, with numbers that
+  move, and ends in ready or a named failure.
+- The first-run **Prepare the engines** screen prepares each payload through these same paths, in
+  dependency order (the Python before the CAD tree), one engine at a time.
+
 ## The nozzle-path preview must draw every move
 
 `GcodeNozzlePathParser` (and `PrusaNozzlePathParser`) feed the start-to-finish path view. Their

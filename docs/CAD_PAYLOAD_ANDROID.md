@@ -21,6 +21,20 @@ published - the parts that are not in the repository because the build trees are
 OCP's own `DT_NEEDED` list is only `libpython3.11.so.1.0`, `libEGL.so`, `libGLESv2.so` and
 the libc family: OCCT is linked into the extension, so there is no `libTKV3d.so` to ship.
 
+## Running it on the phone
+
+Two trees are unpacked from the APK before the engine can start: this payload (`files/cad`) and
+the interpreter it borrows (`files/klipper`, the Klipper payload - the app's only CPython). Both
+are stamped against the package's `lastUpdateTime`, so each is written once per install and a
+later lazy start finds it.
+
+**The borrower extracts what it borrows.** `KlipperPayload` is the one extractor and the one
+stamp for `files/klipper`; `CadEngine.ensureExtracted` prepares that Python first and then the
+CAD tree, and the Klipper host uses the same call. Until 1.9.0 only the host ever wrote it, so
+opening CAD on a wiped install extracted 533 MB and then refused to start, with the screen left
+on "the app's Python is not extracted yet". The first-run **Prepare the engines** screen drives
+the same two entry points, so a new install can pay for them deliberately instead.
+
 ## The build tree (off-repo)
 
     /root/occt-port/OCP          the OCP/pywrap checkout (CadQuery's ocp-build-system)

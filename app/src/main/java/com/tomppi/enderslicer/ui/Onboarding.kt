@@ -36,10 +36,10 @@ import com.tomppi.enderslicer.model.SlicerSettings
 /**
  * One-shot flag that decides whether the first-run onboarding has run.
  *
- * It is only written when the last step - the interface scale - is finished;
- * neither step can be skipped and back does not leave the flow. The preference
- * name and key are the ones the old skippable setup wrote, so an install that
- * already finished that one is past this flow and never sees the scale step.
+ * It is written when the engine step is left - prepared or skipped, because skipping is a
+ * choice the screen offers rather than an accident. The preference name and key are the
+ * ones the old skippable setup wrote, so an install that already finished that one is past
+ * this flow and never sees the scale or engine steps.
  */
 class OnboardingStore(context: Context) {
     private val preferences =
@@ -57,8 +57,13 @@ class OnboardingStore(context: Context) {
     }
 }
 
-/** Where the first-run flow is. Only the last step lets the app be used. */
-internal enum class OnboardingStep { PRINT_SETUP, SCALE, COMPLETE }
+/**
+ * Where the first-run flow is. Only the last step lets the app be used.
+ *
+ * ENGINES is the first init - preparing the engine payloads on purpose - and it is last
+ * because it is the only step that can spend minutes and hundreds of megabytes.
+ */
+internal enum class OnboardingStep { PRINT_SETUP, SCALE, ENGINES, COMPLETE }
 
 /**
  * The first-run flow as a state machine, so what the gate does is testable
@@ -70,7 +75,8 @@ internal object OnboardingFlow {
 
     fun advance(step: OnboardingStep): OnboardingStep = when (step) {
         OnboardingStep.PRINT_SETUP -> OnboardingStep.SCALE
-        OnboardingStep.SCALE -> OnboardingStep.COMPLETE
+        OnboardingStep.SCALE -> OnboardingStep.ENGINES
+        OnboardingStep.ENGINES -> OnboardingStep.COMPLETE
         OnboardingStep.COMPLETE -> OnboardingStep.COMPLETE
     }
 
@@ -80,6 +86,9 @@ internal object OnboardingFlow {
      */
     fun back(step: OnboardingStep): OnboardingStep = when (step) {
         OnboardingStep.SCALE -> OnboardingStep.PRINT_SETUP
+        // The engine step may be left unfinished, but Back is not Skip: it goes to the step
+        // before, and the flow is only completed by the screen's own button.
+        OnboardingStep.ENGINES -> OnboardingStep.SCALE
         else -> step
     }
 
@@ -88,7 +97,7 @@ internal object OnboardingFlow {
 }
 
 /**
- * First-run setup, step 1 of 2: the machine. It cannot be skipped - there is no
+ * First-run setup, step 1 of 3: the machine. It cannot be skipped - there is no
  * Skip control and back stays on this screen - because these values drive the
  * engine and the build plate from the very first slice. Machine values are
  * edited directly in the app state, so everything is consistent with the Print
@@ -174,7 +183,7 @@ internal fun OnboardingScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "Step 1 of 2 · printer setup",
+                "Step 1 of 3 · printer setup",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -195,7 +204,7 @@ internal fun OnboardingScreen(
 }
 
 /**
- * First-run setup, step 2 of 2: the interface scale, chosen against the real
+ * First-run setup, step 2 of 3: the interface scale, chosen against the real
  * Plate. The app is drawn behind this panel exactly as it looks after setup,
  * and it resizes as the slider moves - so the size is picked on the screen the
  * user will actually land on. The panel is pinned to the device's own density
@@ -252,7 +261,7 @@ internal fun OnboardingScaleStep(
                     verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
                 ) {
                     Text(
-                        "Step 2 of 2 · interface scale",
+                        "Step 2 of 3 · interface scale",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -623,76 +623,14 @@ class KlipperEngineService : Service() {
     /**
      * Copy assets/klipper into filesDir, once per app version.
      *
-     * The stamp lives beside the payload rather than inside it: the tree is walked
-     * from assets, so anything of our own in there is at best confusing and at
-     * worst collides with a path the walk wants to create.
-     *
-     * It is written only once the copy has been checked, and a stamp left by an
-     * earlier run is only trusted while that check still passes. Writing it
-     * unconditionally once turned a failed extraction into a later, unrelated
-     * looking error somewhere else entirely.
+     * The walk, the stamp and the completeness check live in [KlipperPayload] because
+     * this payload is not only the host's: it is the app's only CPython, and
+     * [CadEngine] runs the CAD engine on it. Shared, a tree written by one caller is
+     * trusted by the other, and the CAD screen no longer waits for a printer to be
+     * plugged in before it can start.
      */
     private fun extractPayload(root: File) {
-        val stamp = File(filesDir, "klipper.extracted")
-        val marker = "${packageManager.getPackageInfo(packageName, 0).lastUpdateTime}"
-        if (stamp.exists() && stamp.readText() == marker && payloadIsComplete(root)) {
-            Log.i(TAG, "payload already extracted for this version")
-            return
-        }
-        Log.i(TAG, "extracting klipper payload to ${root.absolutePath}")
-        // Failing here rather than carrying on is deliberate: a tree that cannot
-        // be cleared cannot be written into either, and every file would fail on
-        // its own with a much less obvious error.
-        if (root.exists() && !root.deleteRecursively()) {
-            throw IOException("could not clear ${root.absolutePath}")
-        }
-        if (!root.mkdirs() && !root.isDirectory) {
-            throw IOException("could not create ${root.absolutePath}")
-        }
-        copyAssetTree("klipper", root)
-        if (!payloadIsComplete(root)) {
-            throw IOException("payload incomplete after extraction")
-        }
-        stamp.writeText(marker)
-        Log.i(TAG, "payload extracted: ${root.walkTopDown().count { it.isFile }} files")
-    }
-
-    /** Files whose absence means the extraction did not really finish. */
-    private fun payloadIsComplete(root: File) =
-        // The module app.cfg loads at every start: without it klippy refuses the
-        // configuration outright, so a payload missing it is not a degraded host, it is no
-        // host at all.
-        PAYLOAD_SENTINELS.all { File(root, it).isFile } && countFiles(root) >= MINIMUM_PAYLOAD_FILES
-
-    /**
-     * Copy one asset entry, recursing into directories.
-     *
-     * Whether a path is a file or a directory is decided by trying to open it:
-     * AssetManager.list() returns null for a file rather than an empty array, so
-     * inferring from it misreads leaves and ends up opening a directory.
-     *
-     * The open is the only step allowed to fail quietly. Once it has succeeded
-     * the copy must not, or a real write error - a directory the app cannot write
-     * into - looks like "this path is a directory", the walk carries on, and the
-     * extraction reports success having copied nothing at all.
-     */
-    private fun copyAssetTree(assetPath: String, target: File) {
-        val input = try {
-            assets.open(assetPath)
-        } catch (e: IOException) {
-            null
-        }
-        if (input != null) {
-            input.use { source ->
-                target.parentFile?.mkdirs()
-                target.outputStream().use { source.copyTo(it) }
-            }
-            return
-        }
-        target.mkdirs()
-        for (child in assets.list(assetPath).orEmpty()) {
-            copyAssetTree("$assetPath/$child", File(target, child))
-        }
+        KlipperPayload.ensure(this, into = root)
     }
 
     /**
@@ -841,35 +779,6 @@ class KlipperEngineService : Service() {
 
         /** How long to leave a restarted host alone before deciding it is wedged again. */
         private const val RESTART_COOLDOWN_MS = 180_000L
-
-        /**
-         * Files whose absence means the payload is not usable: the host itself,
-         * the compiled C helper it loads through cffi, and one file from the
-         * standard library. A copy that fails part way through - or a tree left
-         * behind by an interrupted one - has to be caught here, not by whatever
-         * reaches for a missing file much later.
-         */
-        private val PAYLOAD_SENTINELS = listOf(
-            "klippy/klippy.py",
-            "klippy/chelper/c_helper.so",
-            "klippy/extras/resonance_playback.py",
-            "lib/python3.11/encodings/__init__.py",
-        )
-
-        /**
-         * A tree this size, or the extraction did not finish.
-         *
-         * The sentinels above catch a payload that is wrong; this catches one that is
-         * incomplete, which is the shape a copy that half failed leaves behind - and the
-         * stamp that says "already extracted" would otherwise freeze it for the life of the
-         * installed version.
-         */
-        private const val MINIMUM_PAYLOAD_FILES = 800
-
-        private fun countFiles(root: File): Int {
-            val entries = root.listFiles() ?: return 0
-            return entries.sumOf { if (it.isDirectory) countFiles(it) else 1 }
-        }
 
         fun start(context: Context) {
             val intent = Intent(context, KlipperEngineService::class.java)

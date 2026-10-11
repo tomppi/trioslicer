@@ -333,6 +333,35 @@ class CadPreviewClient(
     }
 
     /**
+     * How many named shapes the engine's scene holds, or null when it did not answer.
+     *
+     * The one question the pixels cannot answer. The engine seeds a 20 mm cube when it
+     * starts, so an empty scene means the seeding failed - and "nothing in the scene" is
+     * something the screen has to be able to say rather than showing the grid and hoping.
+     */
+    fun sceneShapeCount(): Int? {
+        val reply = runCatching { command("get_scene_info", JSONObject(), READ_TIMEOUT_MS) }.getOrNull()
+            ?: return null
+        if (reply.optString("status") != "success") return null
+        val count = reply.optJSONObject("result")?.optInt("shape_count", -1) ?: -1
+        return count.takeIf { it >= 0 }
+    }
+
+    /**
+     * Puts the default part back: a 20 mm cube sitting on the bed.
+     *
+     * The engine seeds this itself when it starts, so this is the screen's own way back
+     * from a scene that was cleared - by an agent, or by an import that replaced it. It
+     * is the same part the engine's seeding makes, deliberately: one default, not two.
+     */
+    fun seedDefaultCube(): Boolean {
+        val reply = runCatching {
+            command("execute_code", JSONObject().put("code", SEED_DEFAULT_CUBE_SCRIPT), IMPORT_TIMEOUT_MS)
+        }.getOrNull() ?: return false
+        return reply.optString("status") == "success"
+    }
+
+    /**
      * Loads a model into the engine, waiting for the engine to come up.
      *
      * The engine extracts 566 MB and binds its port over tens of seconds, so a single attempt is a
@@ -435,6 +464,18 @@ for name in shapes():
     os.replace(temp, final)
     published += 1
 print(published)
+"""
+
+        /**
+         * The engine's own default scene, asked for from the app.
+         *
+         * The same expression cad_mcp_slim.py's _seed_default_scene() uses: a 20 mm cube
+         * resting on the bed, so it reads against the grid and the axes.
+         */
+        private val SEED_DEFAULT_CUBE_SCRIPT = """
+scene.clear()
+add("cube", Pos(0, 0, 10) * Box(20, 20, 20))
+print(len(shapes()))
 """
 
         private const val CONNECT_TIMEOUT_MS = 5_000

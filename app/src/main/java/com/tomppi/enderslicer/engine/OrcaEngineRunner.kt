@@ -82,14 +82,23 @@ class OrcaEngineRunner(private val context: Context) {
      * itself links <datadir>/system to <datadir>/profiles, because it reads the installed
      * vendor bundles from the former and they live in the latter.
      */
-    fun prepareResources(): Boolean {
+    /** True when the profiles are already unpacked for this version. */
+    fun isPrepared(): Boolean {
+        val marker = File(datadir, ".resources-version")
+        return marker.isFile && marker.readText().trim() == RESOURCES_VERSION &&
+            File(datadir, "profiles").isDirectory
+    }
+
+    fun prepareResources(
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): Boolean {
         val marker = File(datadir, ".resources-version")
         if (marker.isFile && marker.readText().trim() == RESOURCES_VERSION) {
             return File(datadir, "profiles").isDirectory
         }
         if (datadir.exists()) datadir.deleteRecursively()
         datadir.mkdirs()
-        copyAssetDir(context.assets, "orca/resources", datadir)
+        copyAssetDir(context.assets, "orca/resources", datadir, onProgress)
         marker.writeText(RESOURCES_VERSION)
         return File(datadir, "profiles").isDirectory
     }
@@ -370,8 +379,15 @@ class OrcaEngineRunner(private val context: Context) {
         if (Thread.currentThread().isInterrupted) throw InterruptedException("OrcaSlicer slicing was cancelled")
     }
 
-    private fun copyAssetDir(assets: AssetManager, from: String, destination: File) {
-        AssetTreeExtractor.copyTree(assets, from, destination)
+    private fun copyAssetDir(
+        assets: AssetManager,
+        from: String,
+        destination: File,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ) {
+        AssetTreeExtractor.copyTree(
+            assets, from, destination, onProgress?.let { AssetTreeExtractor.Progress() }, onProgress,
+        )
     }
 
     companion object {

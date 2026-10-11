@@ -3,6 +3,7 @@ package com.tomppi.enderslicer.nativebridge
 import android.content.Context
 import android.system.Os
 import android.util.Log
+import com.tomppi.enderslicer.engine.AssetTreeExtractor
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -105,8 +106,72 @@ object CadEngine {
     @Volatile private var root: File? = null
     @Volatile private var running = false
     @Volatile private var starting = false
+
+    /** When the current start attempt began, so "starting…" can count the seconds. */
+    @Volatile private var startingAt: Long = 0L
     @Volatile private var watching = false
     @Volatile private var watcher: Thread? = null
+
+    /**
+     * The extraction in flight, or null.
+     *
+     * The screen polls [status] once a second, so this is what turns a first use from
+     * a still sentence into a number that moves: files, megabytes and the seconds it
+     * has been going. Read and written from different threads, hence the volatiles.
+     */
+    @Volatile private var extraction: Extraction? = null
+
+    /**
+     * Why the engine is not up, when the reason is known.
+     *
+     * Set by a failed start or a failed extraction and cleared by the next attempt.
+     * Without it the screen falls back to a dead-end sentence with no exit - which is
+     * exactly how a missing Python read as a frozen "extracting" for minutes.
+     */
+    @Volatile private var failure: String? = null
+
+    /**
+     * Serialises everything that writes under files/cad or files/klipper.
+     *
+     * The CAD menu, a restored screen and the first-init screen can all ask in the same
+     * minute, and two copies of the tree would clear each other's directories.
+     */
+    private val extractLock = Any()
+
+    /**
+     * One extraction, with the numbers [status] reports while it runs.
+     *
+     * [report] is the first-init screen's callback, when the run was started from there;
+     * the same counter feeds both, so the row and the caption can never disagree.
+     */
+    private class Extraction(
+        val what: String,
+        private val report: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ) {
+        private val progress = AssetTreeExtractor.Progress()
+        private val startedAt: Long = System.currentTimeMillis()
+
+        val files: Int get() = progress.files
+        val bytes: Long get() = progress.bytes
+
+        fun counted(written: Long) {
+            progress.counted(written)
+            report?.invoke(progress)
+        }
+
+        /** For a copier that reports running totals rather than per-file deltas. */
+        fun synced(totalFiles: Int, totalBytes: Long) {
+            progress.synced(totalFiles, totalBytes)
+            report?.invoke(progress)
+        }
+
+        fun sentence(): String {
+            val seconds = (System.currentTimeMillis() - startedAt) / 1000
+            val megabytes = progress.bytes / (1024.0 * 1024.0)
+            return "Extracting " + what + ": " + "%,d".format(progress.files) + " files, " +
+                "%.0f".format(megabytes) + " MB so far, " + seconds + "s"
+        }
+    }
 
     /** Signatures (path|size|mtime) already handed to the app. */
     private val delivered = mutableSetOf<String>()
@@ -161,24 +226,76 @@ object CadEngine {
      */
     fun isReady(context: Context): Boolean =
         engineExecutable(context).isFile &&
-            File(context.filesDir, "klipper/lib/python3.11").isDirectory &&
+            KlipperPayload.pythonDirectory(context).isDirectory &&
             sitePackages(context).isDirectory &&
             root?.let { File(it, ENGINE_FILE).isFile } == true &&
             running
 
-    fun status(context: Context): String = when {
-        !engineExecutable(context).isFile -> "the CAD engine binary is not packaged in this APK"
-        !File(context.filesDir, "klipper/lib/python3.11").isDirectory ->
-            "the app's Python is not extracted yet"
-        !sitePackages(context).isDirectory ->
-            "the CAD engine's Python packages are not installed (expected at " +
-                "${sitePackages(context).absolutePath})"
-        root?.let { File(it, ENGINE_FILE).isFile } != true -> "the CAD engine is not extracted yet"
-        // Ahead of "stopped": the engine imports build123d on the way up, which is tens of
-        // seconds on a phone, and calling that stopped is both wrong and alarming.
-        starting -> "CAD engine starting…"
-        running -> "CAD engine ready on port $DEFAULT_PORT"
-        else -> "CAD engine stopped"
+    fun status(context: Context): String {
+        // The extraction first, whatever else is true: it is the one state with a number
+        // that moves, and it is what a first use is actually doing. A sentence that does
+        // not advance while 533 MB is being written is what this screen got wrong.
+        extraction?.let { return it.sentence() }
+        failure?.let { return it }
+        return when {
+            // Ahead of "stopped": the engine imports build123d on the way up, which is tens of
+            // seconds on a phone, and calling that stopped is both wrong and alarming. The
+            // elapsed seconds are there because that import is the one long silence left, and
+            // a number that moves is the difference between waiting and looking dead.
+            starting -> "CAD engine starting… " +
+                ((System.currentTimeMillis() - startingAt) / 1000) + "s"
+            running -> "CAD engine ready on port $DEFAULT_PORT"
+            // Named as the dependency it is: CAD has no interpreter of its own, so the
+            // Klipper payload is not an unrelated engine the user has to discover - opening
+            // this screen prepares it, with the extraction progress shown right here.
+            !KlipperPayload.pythonDirectory(context).isDirectory ->
+                "the CAD engine needs the Klipper payload (the app's only Python); " +
+                    "opening CAD extracts it"
+            !sitePackages(context).isDirectory ->
+                "the CAD engine's Python packages are not installed (expected at " +
+                    "${sitePackages(context).absolutePath})"
+            root?.let { File(it, ENGINE_FILE).isFile } != true -> "the CAD engine is not extracted yet"
+            else -> "CAD engine stopped"
+        }
+    }
+
+    /**
+     * Why the engine will never be up, or null when it is coming up, up, or merely stopped.
+     *
+     * Only terminal answers belong here. A missing tree is not one of them - the CAD path
+     * extracts it - and neither is a missing Python, which the path extracts too; the only
+     * failures are one that has already happened (in [failure]) and a binary that is not
+     * packaged at all. The viewport uses this to decide between waiting and giving up, so a
+     * "not yet" leaking into it would stop the first frame of a healthy first run.
+     */
+    fun problem(context: Context): String? {
+        if (!engineExecutable(context).isFile) {
+            return "the CAD engine binary is not packaged in this APK"
+        }
+        // Work in flight is not a problem; it is the answer.
+        if (extraction != null || starting) return null
+        return failure
+    }
+
+    /** True while something is being unpacked or started, for a spinner that is honest. */
+    fun isWorking(): Boolean = extraction != null || starting
+
+    /**
+     * Whether the engine's own tree is unpacked for this install.
+     *
+     * The borrowed Python is deliberately not part of this answer: the first-init screen
+     * has a row for it, and folding two trees into one yes/no would hide which of them is
+     * missing.
+     */
+    fun isExtracted(context: Context): Boolean {
+        val home = File(context.filesDir, "cad")
+        val marker = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
+        }.getOrNull() ?: return false
+        val stamp = File(home, EXTRACT_STAMP)
+        return stamp.isFile && stamp.readText() == marker &&
+            File(home, "lib/python3.11/site-packages").isDirectory &&
+            File(home, "libexec").isDirectory && File(home, ENGINE_FILE).isFile
     }
 
     /** Where OCP, build123d and their dependencies live, outside the Klipper payload. */
@@ -189,17 +306,67 @@ object CadEngine {
         File(context.applicationInfo.nativeLibraryDir, "libklipper_exec.so")
 
     /**
-     * Materialize the engine script and its token under `files/cad`.
+     * Everything the engine needs on disk, without starting it.
      *
-     * Assets cannot be executed in place, so the script is copied out first. The token is
-     * written *before* the process starts, in the same call, because the engine reads it once
-     * at startup and refuses to serve if it is missing.
+     * Null on success, otherwise why it failed. This is the one entry point that both the
+     * CAD screen and the first-init screen call, so a tree prepared by one is found by the
+     * other through the same stamps.
+     *
+     * The borrowed Python comes first: it is the smaller tree, the one a failure is most
+     * likely to be about, and there is nothing to gain by unpacking 533 MB of OCCT for an
+     * interpreter that is not there.
      */
+    fun ensureExtracted(
+        context: Context,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): String? = synchronized(extractLock) {
+        val dir = File(context.filesDir, "cad").apply { mkdirs() }
+        val python = ensurePython(context, onProgress)
+        if (python != null) {
+            failure = python
+            return@synchronized python
+        }
+        val tree = ensureTree(context, dir, onProgress)
+        if (tree != null) {
+            failure = tree
+            return@synchronized tree
+        }
+        // Resolved here rather than only when the process starts: a prepared-but-not-started
+        // engine is still "extracted", and the screen reads this to say so.
+        root = dir
+        failure = null
+        null
+    }
+
+    /**
+     * The interpreter's own tree: CPython's standard library and klippy's modules,
+     * extracted from assets/klipper.
+     *
+     * It lives outside `files/cad` because it is not the CAD engine's alone - the Klipper
+     * host runs on it too - so it keeps Klipper's own stamp and completeness check, and a
+     * tree either engine wrote is trusted by the other.
+     */
+    private fun ensurePython(
+        context: Context,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): String? {
+        if (KlipperPayload.isExtracted(context)) return null
+        val progress = Extraction("the CAD engine's Python (the interpreter it borrows)", onProgress)
+        extraction = progress
+        Log.i(TAG, "the app's Python is not extracted; extracting the Klipper payload the CAD engine borrows")
+        return try {
+            KlipperPayload.ensureExtracted(context) { progress.synced(it.files, it.bytes) }
+        } finally {
+            extraction = null
+        }
+    }
+
     private fun prepare(context: Context): File? {
         val dir = File(context.filesDir, "cad").apply { mkdirs() }
-        if (!extractTree(context, dir)) return null
+        if (ensureExtracted(context) != null) return null
         if (ensureToken(dir).isNullOrEmpty()) {
             Log.e(TAG, "could not write the engine token; it will refuse to serve")
+            failure = "the CAD engine's token could not be written"
             return null
         }
         File(dir, PORT_FILE).writeText(DEFAULT_PORT.toString())
@@ -210,48 +377,65 @@ object CadEngine {
      * Copy the engine, its Python packages and its libraries out of the APK.
      *
      * Assets cannot be executed or imported in place, so the whole tree is materialised under
-     * `files/cad`. It is ~570 MB across 13,000 files and takes tens of seconds, which is why it
-     * is stamped and skipped rather than repeated on every start.
+     * `files/cad`. It is 533 MB across 10,716 files and takes seconds to tens of seconds, which
+     * is why it is stamped and skipped rather than repeated on every start.
      *
      * Kept separate from the Klipper payload deliberately: that tree is deleted and
      * re-extracted on every update, and this one is large enough that paying for it each
      * install would be worse than paying for it once.
+     *
+     * @return null when the tree is in place, otherwise why it is not.
      */
-    private fun extractTree(context: Context, home: File): Boolean {
+    private fun ensureTree(
+        context: Context,
+        home: File,
+        onProgress: ((AssetTreeExtractor.Progress) -> Unit)? = null,
+    ): String? {
         val stamp = File(home, EXTRACT_STAMP)
         val marker = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
-        }.getOrNull() ?: return false
+        }.getOrNull() ?: return "the app's package information could not be read"
 
-        val present = stamp.isFile && stamp.readText() == marker &&
-            File(home, "lib/python3.11/site-packages").isDirectory &&
-            File(home, "libexec").isDirectory && File(home, ENGINE_FILE).isFile
+        val present = stamp.isFile && stamp.readText() == marker && isExtracted(context)
         if (present) {
             Log.i(TAG, "CAD tree already extracted for this install")
-            return true
+            return null
         }
 
         val started = System.currentTimeMillis()
         Log.i(TAG, "extracting the CAD tree to ${home.absolutePath}; this takes a while")
-        val ok = runCatching {
-            // Only the parts that come from assets are cleared. The token and the status file
-            // are this app's, not the APK's, and losing the token on an update would mean
-            // regenerating a secret for no reason.
-            for (name in listOf("lib", "libexec")) {
-                val target = File(home, name)
-                if (target.exists() && !target.deleteRecursively()) {
-                    throw IOException("could not clear ${target.absolutePath}")
+        val progress = Extraction("the CAD engine's files (OCCT and build123d)", onProgress)
+        extraction = progress
+        try {
+            val written = runCatching {
+                // Only the parts that come from assets are cleared. The token and the status file
+                // are this app's, not the APK's, and losing the token on an update would mean
+                // regenerating a secret for no reason.
+                for (name in listOf("lib", "libexec")) {
+                    val target = File(home, name)
+                    if (target.exists() && !target.deleteRecursively()) {
+                        throw IOException("could not clear ${target.absolutePath}")
+                    }
                 }
+                copyAssetTree(context, "cad/lib", File(home, "lib"), progress = progress)
+                copyAssetTree(context, "cad/libexec", File(home, "libexec"), progress = progress)
+                copyAssetTree(context, "cad", home, filesOnly = listOf(ENGINE_FILE), progress = progress)
+                stamp.writeText(marker)
             }
-            copyAssetTree(context, "cad/lib", File(home, "lib"))
-            copyAssetTree(context, "cad/libexec", File(home, "libexec"))
-            copyAssetTree(context, "cad", home, filesOnly = listOf(ENGINE_FILE))
-            stamp.writeText(marker)
-        }.onFailure {
-            Log.e(TAG, "could not extract the CAD tree", it)
-        }.isSuccess
-        Log.i(TAG, "CAD tree extracted=$ok in ${(System.currentTimeMillis() - started) / 1000}s")
-        return ok
+            Log.i(
+                TAG,
+                "CAD tree extracted=" + written.isSuccess + " in " +
+                    "${(System.currentTimeMillis() - started) / 1000}s",
+            )
+            written.exceptionOrNull()?.let {
+                Log.e(TAG, "could not extract the CAD tree", it)
+                return "the CAD engine's files could not be extracted: " +
+                    (it.message ?: it::class.java.simpleName)
+            }
+            return null
+        } finally {
+            extraction = null
+        }
     }
 
     /**
@@ -269,24 +453,28 @@ object CadEngine {
         assetPath: String,
         target: File,
         filesOnly: List<String>? = null,
+        progress: Extraction? = null,
     ) {
         val input = runCatching { context.assets.open(assetPath) }.getOrNull()
         if (input != null) {
             input.use { stream ->
                 target.parentFile?.mkdirs()
-                target.outputStream().use { stream.copyTo(it) }
+                val written = target.outputStream().use { stream.copyTo(it) }
+                progress?.counted(written)
             }
             return
         }
         target.mkdirs()
         if (filesOnly != null) {
             // The engine directory: take the named files and leave the subdirectories to their
-            // own calls, so a 13,000-file walk is not repeated to find one script.
-            for (name in filesOnly) copyAssetTree(context, "$assetPath/$name", File(target, name))
+            // own calls, so a 10,000-file walk is not repeated to find one script.
+            for (name in filesOnly) {
+                copyAssetTree(context, "$assetPath/$name", File(target, name), progress = progress)
+            }
             return
         }
         for (child in context.assets.list(assetPath).orEmpty()) {
-            copyAssetTree(context, "$assetPath/$child", File(target, child))
+            copyAssetTree(context, "$assetPath/$child", File(target, child), progress = progress)
         }
     }
 
@@ -344,6 +532,10 @@ object CadEngine {
     fun start(context: Context): Boolean {
         if (running) return true
         starting = true
+        startingAt = System.currentTimeMillis()
+        // The previous attempt's reason is history the moment a new one begins: while this
+        // one runs, the screen must read the extraction and the start, not the last failure.
+        failure = null
         try {
             return startEngine(context)
         } finally {
@@ -366,6 +558,7 @@ object CadEngine {
         val exe = engineExecutable(context)
         if (!exe.isFile) {
             Log.e(TAG, "interpreter missing at ${exe.absolutePath}")
+            failure = "the CAD engine binary is not packaged in this APK"
             return false
         }
 
@@ -378,9 +571,10 @@ object CadEngine {
         // so anything put inside it is lost on the next install. OCP and build123d are
         // hundreds of megabytes that took a cross-compile each to produce; they live under
         // files/cad/, which nothing else manages, and reach the interpreter as PYTHONPATH.
-        val payload = File(context.filesDir, "klipper")
-        if (!File(payload, "lib/python3.11").isDirectory) {
+        val payload = KlipperPayload.root(context)
+        if (!KlipperPayload.pythonDirectory(context).isDirectory) {
             Log.e(TAG, "the Klipper payload is not extracted yet; the CAD engine has no Python")
+            failure = "the CAD engine's Python is not extracted and could not be extracted"
             return false
         }
         val home = File(context.filesDir, "cad")
@@ -389,6 +583,7 @@ object CadEngine {
         linkPythonLibrary(libexec, File(context.applicationInfo.nativeLibraryDir))
         if (!sitePackages.isDirectory) {
             Log.e(TAG, "the CAD dependencies are not installed at ${sitePackages.absolutePath}")
+            failure = "the CAD engine's Python packages are not installed"
             return false
         }
 
@@ -414,14 +609,20 @@ object CadEngine {
             val ready = awaitListening(File(dir, STATUS_FILE), 60_000)
             running = ready
             if (ready) {
+                failure = null
                 watchExports(context)
             } else {
                 Log.e(TAG, "the CAD engine did not report a listening port")
+                if (failure == null) {
+                    failure = "the CAD engine did not report a listening port within 60s"
+                }
                 stop()
             }
             ready
         }.onFailure {
             Log.e(TAG, "could not start the CAD engine", it)
+            failure = "the CAD engine could not be started: " +
+                (it.message ?: it::class.java.simpleName)
         }.getOrDefault(false)
     }
 
@@ -538,17 +739,24 @@ object CadEngine {
     private fun awaitListening(statusFile: File, timeoutMillis: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
-            if (process?.isAlive != true) return false
+            if (process?.isAlive != true) {
+                failure = "the CAD engine exited before it started serving"
+                return false
+            }
             val text = runCatching { statusFile.readText() }.getOrNull()
             if (text != null && text.contains("\"running\": true")) return true
             if (text != null && text.contains("\"running\": false")) {
                 // The engine started and gave up - a missing token, or the port taken. It says
-                // why in the same file, and the reason is worth having in the log.
+                // why in the same file, and the reason is worth having in the log and on screen.
                 Log.e(TAG, "the CAD engine refused to serve: $text")
+                failure = "the CAD engine refused to serve: " +
+                    text.replace('\n', ' ').trim().take(160)
                 return false
             }
             Thread.sleep(200)
         }
+        failure = "the CAD engine did not report a listening port within " +
+            "${timeoutMillis / 1000}s"
         return false
     }
 
