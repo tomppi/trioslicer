@@ -1942,6 +1942,23 @@ data class SnapFitJoint(
         )
 
     /**
+     * The step the lip's own size forced, and why: the tooth plus its ramp plus
+     * the clearance, and the recess that much deeper again. The panel used to
+     * print this sentence's format string rather than its numbers, because the
+     * concatenation took the `.format` on its last fragment alone; building the
+     * sentence here is what makes it testable.
+     */
+    val lipStepSummary: String
+        get() = String.format(
+            java.util.Locale.ROOT,
+            "pad %.2f mm: a %.2f mm tooth and its ramp, and the recess %.2f mm with clearance " +
+                "on every face",
+            dimensions.lipStepMm,
+            dimensions.lipToothHeightMm,
+            dimensions.lipRecessMm,
+        )
+
+    /**
      * The fit line the panel shows: the beam's own reach and the clearance the
      * socket was really cut with. Both are built dimensions, so the
      * Loose/Tight step is the number the user reads, and it is the same number

@@ -4793,12 +4793,7 @@ private fun SnapJointRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "   pad %.2f mm: a %.2f mm tooth and its ramp, and the recess %.2f mm with clearance " +
-                    "on every face".format(
-                        one.joint.dimensions.lipStepMm,
-                        one.joint.dimensions.lipToothHeightMm,
-                        one.joint.dimensions.lipRecessMm,
-                    ),
+                "   " + one.joint.lipStepSummary,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

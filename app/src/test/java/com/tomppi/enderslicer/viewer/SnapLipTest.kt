@@ -163,7 +163,17 @@ class SnapLipTest {
             "the step is %.2f mm, and the ring needs %.2f mm".format(dimensions.lipStepMm, expected)
         }
         check(dimensions.lipRecessMm > dimensions.lipStepMm) { "the recess has no clearance behind the step" }
+        // The line the panel shows, read as the user reads it: the numbers, not
+        // the format string. It shipped once as "pad %.2f mm: a %.2f mm tooth".
+        val sentence = joint.lipStepSummary
+        check(!sentence.contains("%")) { "the step line is unformatted: " + sentence }
+        check(sentence.startsWith("pad " + millimetresOf(dimensions.lipStepMm))) { sentence }
+        check(sentence.contains(millimetresOf(dimensions.lipToothHeightMm) + " mm tooth")) { sentence }
+        check(sentence.contains("the recess " + millimetresOf(dimensions.lipRecessMm) + " mm")) { sentence }
     }
+
+    /** Two decimals, the way the line's own format does it. */
+    private fun millimetresOf(value: Float): String = "%.2f".format(value)
 
     @Test
     fun aSolidHalfIsGivenAWallAndWarnedAbout() {

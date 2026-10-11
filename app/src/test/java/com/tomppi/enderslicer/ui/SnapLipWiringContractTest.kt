@@ -66,7 +66,8 @@ class SnapLipWiringContractTest {
         )
         assertTrue(
             "the step the ring needed is read out with its reason",
-            app.contains("pad %.2f mm: a %.2f mm tooth and its ramp"),
+            app.contains("one.joint.lipStepSummary") &&
+                !app.contains("pad %.2f mm: a %.2f mm tooth"),
         )
         assertTrue(
             "and what the material could not give is shown rather than swallowed",
