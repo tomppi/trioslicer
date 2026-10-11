@@ -19,12 +19,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which finishes the step - a finished run is accepted, never offered a "skip". It is skippable
   while there is work left, because preparing can be hundreds of megabytes, and each engine's own
   screen says what it is waiting for and where to prepare it.
-- **The CAD scene says what it has.** The engine seeds a 20 mm cube on the bed when it starts; a
-  scene that is empty anyway now shows "Engine ready - nothing in the scene yet" with a button
-  that puts the cube back, instead of a bare grid the user has to interpret.
+- **The CAD engine no longer seeds a cube, and the scene keeps what you leave it.** It used to
+  put a 20 mm cube in the scene at startup - and clear the scene before doing it - so a scene
+  emptied on purpose could never stay empty, and a start after a model was loaded could replace
+  the user's work with a default part. The engine now starts on exactly what the user left it
+  with, which on a fresh install is nothing: the empty scene says "Engine ready - nothing in the
+  scene yet", and **Add a 20 mm cube** is the way to a starting primitive, at any time and as
+  often as it is asked for. A default that has to decide when it is welcome is a default that
+  will eventually overwrite someone.
+- **The long press on a model removes it, or splits it.** The hold-down card that carries
+  Rotate, Move and Scale gains the two whole-model actions: **Split at a plane**, which opens
+  the same cut tool Model tools > Actions opens and closes the joint maker, and a red X that
+  takes the object off the plate (labelled "Remove model", and confirmed - it deletes the
+  file). Committing a split lands in the **Snap fit joint** panel with the pair the split just
+  made already chosen, because the split is what defines the assembly axis: hold, split,
+  place the joint, join. A split that is refused or fails opens nothing.
 
 ### Fixed
 
+- **Loading a file back into the CAD or Blender engine no longer kills the app.** Both file screens
+  ran the load on a background coroutine and reported the result with a Toast from that same
+  thread, and a Toast from a thread with no Looper throws before the message is ever shown - so the
+  one tap that loads a file crashed on the way to saying whether it had worked. The result is shown
+  on the main thread now.
 - **The CAD engine now starts on a fresh install.** It borrows the Klipper payload's CPython as
   its interpreter, but only a printer attach ever extracted that payload - so opening CAD on a
   wiped install extracted 533 MB of OCCT, refused to start with "the app's Python is not

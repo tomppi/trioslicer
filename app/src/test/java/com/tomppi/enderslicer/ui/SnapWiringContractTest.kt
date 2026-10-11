@@ -123,6 +123,56 @@ class SnapWiringContractTest {
         )
     }
 
+    /**
+     * Committing a split opens the joint maker, and does it from the success path only.
+     *
+     * The split is what defines the assembly axis, so the flow continues in the tool that
+     * builds on it - but a split that was refused (busy, plane outside the model), that lost
+     * its plate while it ran, or that failed must not land the user in a joint builder with
+     * no pair. Watching the UI state for a new pair would fire on all four; the line after
+     * the commit is reached by exactly one of them.
+     */
+    @Test
+    fun aCommittedSplitOpensTheJointMakerOnItsOwnPath() {
+        val split = body("fun splitModel(", "private fun cutPathNote")
+        val commit = split.lastIndexOf("_uiState.update { commit(it) }")
+        val open = split.indexOf("setSnapActive(true)")
+        assertTrue("the committed split opens the joint maker", open >= 0)
+        assertTrue("after the plate it made is committed", open > commit)
+        assertTrue(
+            "and inside the run, before the failure handler",
+            open < split.indexOf(".onFailure {"),
+        )
+    }
+
+    /**
+     * The long-press card's two whole-model actions: the red X that removes the object
+     * (labelled for the accessibility tree, since the tests and the uiautomator walks find
+     * it by that name) and Split, which goes through the one entry point the model tools
+     * use rather than a second copy of it.
+     */
+    @Test
+    fun theLongPressCardRemovesAndSplitsThroughTheOneEntryPoint() {
+        val card = source("ui/TransformGizmoOverlay.kt")
+        assertTrue(
+            "the card's X names what it deletes",
+            card.contains("contentDescription = \"Remove model\""),
+        )
+        assertTrue("and is the danger colour", card.contains("MaterialTheme.colorScheme.error"))
+        assertTrue("with a confirmation before it deletes", card.contains("AlertDialog("))
+
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue(
+            "the model tools and the card open the same Split tool",
+            app.contains("onOpenCutUi = openCutUi"),
+        )
+        assertTrue("and the card goes through it", app.contains("openCutUi()"))
+        assertTrue(
+            "the card's removal is the view model's own removal path",
+            app.contains("id?.let(viewModel::removeModel)"),
+        )
+    }
+
     /** The descriptor writes the pair, and the restore puts it back on the plate. */
     @Test
     fun aRestoredDescriptorPutsItsPairBackOnThePlate() {

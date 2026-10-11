@@ -335,9 +335,9 @@ class CadPreviewClient(
     /**
      * How many named shapes the engine's scene holds, or null when it did not answer.
      *
-     * The one question the pixels cannot answer. The engine seeds a 20 mm cube when it
-     * starts, so an empty scene means the seeding failed - and "nothing in the scene" is
-     * something the screen has to be able to say rather than showing the grid and hoping.
+     * The one question the pixels cannot answer. The engine seeds nothing, so an empty scene
+     * is what an untouched engine has - and "nothing in the scene" is something the screen has
+     * to be able to say rather than showing the grid and hoping.
      */
     fun sceneShapeCount(): Int? {
         val reply = runCatching { command("get_scene_info", JSONObject(), READ_TIMEOUT_MS) }.getOrNull()
@@ -348,11 +348,11 @@ class CadPreviewClient(
     }
 
     /**
-     * Puts the default part back: a 20 mm cube sitting on the bed.
+     * Puts a 20 mm cube on the bed, for a user who asked for one.
      *
-     * The engine seeds this itself when it starts, so this is the screen's own way back
-     * from a scene that was cleared - by an agent, or by an import that replaced it. It
-     * is the same part the engine's seeding makes, deliberately: one default, not two.
+     * The engine seeds nothing, so this is the only way to a starting primitive - the action
+     * behind the "nothing in the scene yet" panel - and it works however many times it is
+     * asked for. The cube is the screen's own, made here; nothing else makes one.
      */
     fun seedDefaultCube(): Boolean {
         val reply = runCatching {
@@ -467,10 +467,11 @@ print(published)
 """
 
         /**
-         * The engine's own default scene, asked for from the app.
+         * The screen's own default part, asked for when the user asks for it.
          *
-         * The same expression cad_mcp_slim.py's _seed_default_scene() uses: a 20 mm cube
-         * resting on the bed, so it reads against the grid and the axes.
+         * A 20 mm cube resting on the bed, so it reads against the grid and the axes. It is
+         * gated on nothing: the button is only offered over an empty scene, and the user
+         * asking for the part is the request.
          */
         private val SEED_DEFAULT_CUBE_SCRIPT = """
 scene.clear()

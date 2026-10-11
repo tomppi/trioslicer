@@ -1028,8 +1028,8 @@ fun EnderSlicerApp(
                 if (!viewerSettingsSent && CadEngine.isReady(context)) {
                     viewerSettingsSent = true
                     viewport.applyViewerSettings(cadViewerSettings)
-                    // The engine seeds a 20 mm cube when it starts, so ask what its scene
-                    // really holds: an empty one is said, not shown as a bare grid.
+                    // The engine seeds nothing, so ask what its scene really holds: an
+                    // empty one is said, not shown as a bare grid.
                     viewport.refreshSceneState()
                 }
                 delay(1_000)
@@ -1676,12 +1676,16 @@ fun EnderSlicerApp(
                                     tokenFile = BlenderEngine.tokenFile(blenderDir))
                                 try {
                                     val ok = client.importModelWhenReady(file)
-                                    Toast.makeText(
-                                        context,
-                                        if (ok) "Loaded " + file.name + " into Blender"
-                                        else "Blender did not accept " + file.name,
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
+                                    // Main thread, like the CAD handler's: a Toast from this
+                                    // Dispatchers.IO coroutine throws before it is ever shown.
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            if (ok) "Loaded " + file.name + " into Blender"
+                                            else "Blender did not accept " + file.name,
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
                                 } catch (error: Throwable) {
                                     Log.w("EnderSlicerApp", "blender load failed: " + error.message)
                                 } finally {
@@ -1730,24 +1734,33 @@ fun EnderSlicerApp(
                                         name = file.nameWithoutExtension,
                                         replace = true,
                                     )
-                                    Toast.makeText(
-                                        context,
-                                        if (loaded) "Loaded " + file.name + " into CAD"
-                                        // The engine comes back with its own reason when it
-                                        // refuses - an unsupported format, a missing file, a bad
-                                        // token - and blaming a slow start for that is a lie the
-                                        // log cannot correct for the user reading the toast.
-                                        else "Could not load " + file.name +
-                                            " - the engine refused it or never came up; " +
-                                            "logcat has the reason",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
+                                    // On the main thread: this coroutine is on Dispatchers.IO,
+                                    // where Toast.makeText throws "Can't toast on a thread that
+                                    // has not called Looper.prepare()" - which killed the process
+                                    // on the one tap this message exists to report.
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            if (loaded) "Loaded " + file.name + " into CAD"
+                                            // The engine comes back with its own reason when it
+                                            // refuses - an unsupported format, a missing file, a
+                                            // bad token - and blaming a slow start for that is a
+                                            // lie the log cannot correct for the user reading the
+                                            // toast.
+                                            else "Could not load " + file.name +
+                                                " - the engine refused it or never came up; " +
+                                                "logcat has the reason",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
                                 } catch (error: Throwable) {
-                                    Toast.makeText(
-                                        context,
-                                        "Could not load " + file.name + ": " + error.message,
-                                        Toast.LENGTH_LONG,
-                                    ).show()
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(
+                                            context,
+                                            "Could not load " + file.name + ": " + error.message,
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
                                     Log.w("EnderSlicerApp", "cad load failed: " + error.message)
                                 } finally {
                                     client.close()
@@ -1772,6 +1785,31 @@ fun EnderSlicerApp(
                         // layout scope marker, so the box's own maxHeight would not be
                         // reachable from inside it.
                         val plateHeightDp = maxHeight
+                        // One close for the long-press card: Done, Split and Remove all
+                        // take it down the same way, so no readout is left standing over
+                        // whatever the plate shows next.
+                        val closeGizmo: () -> Unit = {
+                            gizmoMode = TransformGizmoMode.NONE
+                            gizmoScalePercent = 100
+                            gizmoReadout = null
+                        }
+                        // The one way into the Split tool, whether it is opened from
+                        // Model tools or from the long-press card: one tool owns the
+                        // bottom of the model view, and the cut and the joint are
+                        // mutually exclusive by design, so opening one closes the other.
+                        val openCutUi: () -> Unit = {
+                            modelToolsOpen = false
+                            // One tool owns the bottom of the model view: the
+                            // split slider lands where the brush and the
+                            // annotation toolbar would be.
+                            supportPaintUiOpen = false
+                            annotationUiOpen = false
+                            viewModel.setPaintMode(SupportPaintMode.NONE)
+                            viewModel.setAnnotationActive(false)
+                            viewModel.setCutActive(false)
+                            viewModel.setSnapActive(false)
+                            viewModel.setCutActive(true)
+                        }
                         // One call for both window sizes: the expanded and phone plates
                         // differ only in the chrome around the viewer, and that is
                         // decided from the window width above. Branching again here on
@@ -1915,7 +1953,15 @@ fun EnderSlicerApp(
                         // the camera keeps orbiting, panning and zooming. The stack
                         // itself carries no pointer input either, so the cells only
                         // consume input inside a card's own bounds.
-                        if (gizmoMode != TransformGizmoMode.NONE) {
+                        // The card is about the selected object, and that object can leave
+                        // the plate while the card is up - removed from the model tools,
+                        // or replaced by a join. A card over nothing would offer transforms
+                        // of an object that is not there, so it closes with the object.
+                        val gizmoModelId = state.selectedModel?.id
+                        LaunchedEffect(gizmoModelId) {
+                            if (gizmoModelId == null) closeGizmo()
+                        }
+                        if (gizmoMode != TransformGizmoMode.NONE && gizmoModelId != null) {
                             TransformGizmoOverlay(
                                 mode = gizmoMode,
                                 readout = gizmoReadout,
@@ -1937,17 +1983,30 @@ fun EnderSlicerApp(
                                     gizmoScalePercent = 100
                                     gizmoReadout = null
                                 },
-                                onDone = {
-                                    gizmoMode = TransformGizmoMode.NONE
-                                    gizmoScalePercent = 100
-                                    gizmoReadout = null
-                                },
+                                onDone = closeGizmo,
                                 // The plate's own settings, from the menu the long press
                                 // opens. multiObjectOpen is the one piece of state behind
                                 // this and the engine card's button, so both open the one
                                 // sheet rather than two that can disagree.
                                 objectCount = state.models.size,
                                 onOpenMultiObject = { multiObjectOpen = true },
+                                // Split goes through the one entry point the model tools
+                                // use, and the card closes first: the cut toolbar takes
+                                // over the bottom of the model view from there.
+                                modelName = state.selectedModel?.name,
+                                actionsEnabled = !state.isBusy,
+                                onSplit = {
+                                    closeGizmo()
+                                    openCutUi()
+                                },
+                                // The card goes with the object it belongs to, before the
+                                // removal is asked for: a card left standing would point at
+                                // whatever the plate selects next.
+                                onRemove = {
+                                    val id = state.selectedModel?.id
+                                    closeGizmo()
+                                    id?.let(viewModel::removeModel)
+                                },
                                 // Above the model and to the right of it, where it
                                 // covers the plate rather than the part being moved.
                                 modifier = Modifier
@@ -1977,19 +2036,8 @@ fun EnderSlicerApp(
                                     onLayFlat = viewModel::layModelFlat,
                                     onReset = viewModel::resetModelTransform,
                                     onApplyImportedTransform = viewModel::applyImportedSceneTransform,
-                                    onOpenCutUi = {
-                                        modelToolsOpen = false
-                                        // One tool owns the bottom of the model view: the
-                                        // split slider lands where the brush and the
-                                        // annotation toolbar would be.
-                                        supportPaintUiOpen = false
-                                        annotationUiOpen = false
-                                        viewModel.setPaintMode(SupportPaintMode.NONE)
-                                        viewModel.setAnnotationActive(false)
-                                        viewModel.setCutActive(false)
-                                        viewModel.setSnapActive(false)
-                                        viewModel.setCutActive(true)
-                                    },
+                                    // The same entry the long-press card's Split uses.
+                                    onOpenCutUi = openCutUi,
                                     onOpenSnapUi = {
                                         // The joint and the cut preview are two
                                         // screens of one workflow, and only one

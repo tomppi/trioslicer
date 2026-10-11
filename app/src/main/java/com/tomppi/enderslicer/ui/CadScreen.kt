@@ -107,9 +107,9 @@ fun CadScreen(
     /**
      * True when the engine is up and its scene is genuinely empty.
      *
-     * The engine seeds a default part on start, so this is the fallback for a scene that
-     * was cleared: the view says so, honestly, and offers the part back in one tap rather
-     * than showing a grid that looks like a loaded-but-invisible model.
+     * The engine seeds nothing, so this is the state of a scene with nothing in it yet: the
+     * view says so, honestly, and offers a part in one tap rather than showing a grid that
+     * looks like a loaded-but-invisible model.
      */
     sceneEmpty: Boolean = false,
     onOrbit: (Float, Float) -> Unit,
@@ -128,7 +128,7 @@ fun CadScreen(
      * solids would otherwise reach the slicer as one fused mesh.
      */
     onExportAll: () -> Unit,
-    /** Puts the engine's default 20 mm cube back in an empty scene. */
+    /** Puts the app's 20 mm cube in an empty scene; the engine seeds nothing by itself. */
     onAddDefaultCube: () -> Unit = {},
     onExit: () -> Unit,
     modifier: Modifier = Modifier,

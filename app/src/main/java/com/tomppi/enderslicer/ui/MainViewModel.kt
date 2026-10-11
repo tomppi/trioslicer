@@ -1791,6 +1791,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // button; this is what makes the forgotten step unreachable.
                 placementHistory.clear()
                 _uiState.update { commit(it) }
+                // The split is what defines the assembly axis, so the flow lands in
+                // the joint maker with the pair the split just made - on this line
+                // only, where the plate really did change. A split that was refused
+                // (busy, plate empty, plane outside the model) or that failed never
+                // reaches here, and the stale-plate return above steps over it.
+                // setSnapActive is the tool's own way in, so the engine check, the
+                // session reset and the refusal line are the same ones its button
+                // goes through rather than a second copy that could disagree.
+                setSnapActive(true)
             }.onFailure { error ->
                 runCatching { staged.forEach { it.delete() } }
                 // Apply runs from the snap panel, so its failure belongs on the line the

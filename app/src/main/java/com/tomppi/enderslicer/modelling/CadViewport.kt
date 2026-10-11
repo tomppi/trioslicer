@@ -166,9 +166,9 @@ class CadViewport(
     /**
      * True when the engine answers that its scene is empty, null before anyone asked.
      *
-     * The engine seeds a default cube when it starts, so "empty" is not the normal first
-     * state - it is a scene that was cleared, and the screen offers the cube back rather
-     * than showing a grid and letting the user guess whether anything is meant to be there.
+     * The engine seeds nothing: its scene is whatever the user left in it, so an empty answer
+     * is the normal state of an untouched engine - and the screen offers the cube rather than
+     * showing a grid and letting the user guess whether anything is meant to be there.
      */
     private val _sceneEmpty = MutableStateFlow<Boolean?>(null)
     val sceneEmpty: StateFlow<Boolean?> = _sceneEmpty.asStateFlow()
@@ -580,11 +580,11 @@ class CadViewport(
     }
 
     /**
-     * Asks the engine to put its default 20 mm cube in the scene, then redraws.
+     * Asks the engine to put the app's 20 mm cube in the scene, then redraws.
      *
-     * The engine seeds the same cube when it starts; this is the way back from a scene
-     * that has since been cleared, and the action behind the "nothing in the scene yet"
-     * panel.
+     * The engine seeds nothing, so this is the only way to a starting primitive - and it
+     * works however many times it is asked for. It is the action behind the "nothing in the
+     * scene yet" panel.
      */
     fun addDefaultCube(onResult: (Boolean) -> Unit = {}) {
         scope.launch {

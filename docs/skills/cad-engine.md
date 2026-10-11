@@ -319,7 +319,7 @@ Three things were measured on the device rather than assumed, and each changed t
   handed back with `SetCamera`. Tessellation is honoured by meshing the shape *before* AIS sees it:
   the drawer's deviation coefficient, like `SetDrawEdges`, changes nothing on this GLES path.
 
-A frame with the cube the engine seeds on startup, at 640x640:
+A frame with a 20 mm cube added to the scene, at 640x640:
 
 | setting | pixels changed |
 |---|---|

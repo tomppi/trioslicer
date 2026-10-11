@@ -8,8 +8,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,6 +51,12 @@ private const val SCALE_DEFAULT_PERCENT = 100
  * natural gesture. It stays small and out of the way, because the thing being
  * transformed is underneath it.
  *
+ * The same card carries the two whole-model actions, because the long press is
+ * where the hand already is when one of them is wanted: Split, which is the way
+ * into the cut tool the model tools also open, and the red X that takes the
+ * object off the plate. The X is red and reads "Remove model" rather than a bare
+ * close - it deletes the model, not the card - and it asks before it does.
+ *
  * A plate holding more than one object also gets the plate's own settings here.
  * Long-pressing a part is where the hand already is when objects need arranging,
  * and the sheet behind it is the one the engine card opens rather than a second
@@ -67,12 +79,22 @@ internal fun TransformGizmoOverlay(
     objectCount: Int,
     /** Opens the plate's multi-object sheet, the same one the engine card opens. */
     onOpenMultiObject: () -> Unit,
+    /** The object the card acts on, named in the removal confirmation; null once it is gone. */
+    modelName: String?,
+    /** False while an operation runs: splitting and removing both wait for it. */
+    actionsEnabled: Boolean,
+    /** Opens the Split tool on the object the card belongs to. */
+    onSplit: () -> Unit,
+    /** Takes the object the card belongs to off the plate, once confirmed. */
+    onRemove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // While a handle is held the menu steps aside and only the value being dialled
     // in stays: a ring or an arrow needs aiming at, and the menu is in the way of
     // the thing it belongs to.
     if (compact && readout == null) return
+
+    var confirmingRemove by rememberSaveable { mutableStateOf(false) }
 
     Card(modifier = modifier.widthIn(max = 340.dp)) {
         Column(
@@ -167,7 +189,70 @@ internal fun TransformGizmoOverlay(
                     SingleLineLabel("Multi-object settings")
                 }
             }
+
+            // The whole-model actions, along the bottom edge: Split, the way into
+            // the cut tool the model tools also open, and the red X that removes
+            // the object. A row of their own rather than two more buttons beside
+            // Done, where the X would read as "close this card".
+            if (!compact) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onSplit,
+                        enabled = actionsEnabled,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        SingleLineLabel("Split at a plane")
+                    }
+                    IconButton(
+                        onClick = { confirmingRemove = true },
+                        enabled = actionsEnabled,
+                        // Red, the way the app's other delete is (EngineFilesScreen's
+                        // X); the disabled state fades it through Material's own
+                        // disabled content colour rather than staying full red.
+                        colors = IconButtonDefaults.iconButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                            disabledContentColor = MaterialTheme.colorScheme.error
+                                .copy(alpha = 0.38f),
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Remove model",
+                        )
+                    }
+                }
+            }
         }
+    }
+
+    // It deletes the object, not the card, and nothing takes it back: the app
+    // confirms a destructive delete, and this X sits one tap from where a
+    // "close" would be.
+    if (confirmingRemove && modelName != null) {
+        AlertDialog(
+            onDismissRequest = { confirmingRemove = false },
+            title = { Text("Remove this model?") },
+            text = {
+                Text(
+                    modelName + " will be taken off the plate and its staged file deleted. " +
+                        "This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmingRemove = false
+                        onRemove()
+                    },
+                ) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingRemove = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
