@@ -27,12 +27,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/app/src/main/java/com/tomppi/enderslicer"
 
-# Where the two routes are chosen, and where the host is started. Each one has to import the
-# Klipper side to do its job.
+# Where the two routes are chosen, where the host is started, and where every engine is named
+# at all. Each one has to import the Klipper side to do its job.
 ALLOWED=(
   "MainActivity.kt"                 # starts the host when a printer is attached by USB
   "ui/IntegratedEnderSlicerApp.kt"  # creates the Klipper view model for the Print destination
   "ui/PrinterTabContent.kt"         # offers "This device" or "OctoPrint"
+  # The first-run "Prepare the engines" model. It is a list of every payload this app unpacks,
+  # and the Klipper host's is one of the six - there is no version of that list that does not
+  # name it. What it calls is the shared extractor (KlipperPayload), which is the point of that
+  # class: the borrower extracts what it borrows rather than a second copy of the tree.
+  "engine/EnginePreparation.kt"
 )
 
 is_allowed() {
