@@ -76,6 +76,12 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
 </p>
 
 <p align="center">
+  <img src="docs/screenshots/snap-fit.jpg" width="220" alt="Snap fit joints: a model split into a pair on the plate, three joints placed on the seam, and the joint panel open below">
+  <br>
+  <em>Snap fit: split a model into a pair, place joints on the seam, apply them - and edit or remove any joint afterwards</em>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/layer-first.jpg" width="220" alt="Layer preview at the first layer">
   <img src="docs/screenshots/layer-mid.jpg" width="220" alt="Layer preview mid print, coloured by speed">
   <img src="docs/screenshots/nozzle-path.jpg" width="220" alt="Nozzle path view with travel moves">
@@ -151,6 +157,8 @@ resolved settings before a critical print.
 - The APK is about 500 MB, most of it the embedded Blender and CAD engines, so it is a large
   download and a large install
 - The AI assistant is a client to a DeepSeek harness you run yourself, and photo-to-3D additionally needs a GPU box; neither is bundled, and replies are read from a polling projection rather than streamed
+- Snap-fit joints are verified in the app and in the geometry, not yet in plastic: no printed pair has
+  been clicked together, so treat the clearances as something to tune rather than a finished fit
 
 ## Safety
 
