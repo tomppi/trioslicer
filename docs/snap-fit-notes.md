@@ -1,8 +1,9 @@
 # Snap fit: design decisions so far
 
-Working notes for the split-and-snap feature, recorded while it is being designed so the
-decisions survive the conversation. Phase one (split any model in two, with a live cut
-preview) is being built; the snap itself is phase two.
+Working notes for the split-and-snap feature, recorded while it was being designed so the
+decisions survive the conversation. Both phases have landed - the split with its live cut
+preview, and the snap fit placed on the pair it leaves - and these notes are what the code
+is held to.
 
 ## The feature
 
@@ -91,6 +92,12 @@ dropped ("the seam is hollow where the whole-seam pad would sit; key and
 cantilever only"). The same control pins the full joint, so the app never blocks
 the user: it says what it is placing and why, and he decides.
 
+On a thin seam the material makes two separate statements, and the ladder
+answers both. A seam under about 3.3 mm takes a beam thinner than the clearance
+around it, so its tooth is not proud of that clearance: the joint is still
+built - the user decides what he prints - but it advertises no click and names
+the numbers that did it rather than claiming a hold it does not have.
+
 THIS IS A STEPPING STONE. A complicated model gets the simple solution first;
 a better joint for it can come later. The ladder is not a verdict on what any
 model deserves, and the lighter rungs are not a permanent limit.
@@ -110,15 +117,17 @@ still mate: a proper contoured tongue and groove.
 If the wall cannot keep a rim - a Benchy hull is about a millimetre, and the
 boolean engine itself will not resolve a shell that thin - the pad is refused
 and the ladder drops a rung and says why ("the wall here is too thin for a pad
-with a rim; a bare cantilever only"). The refusal is the ladder working, not a
-failure.
+with a rim; minimal joint only"), naming the rung it used instead. The refusal
+is the ladder working, not a failure.
 
-## Queued: multiple barbs along one beam (cable-tie principle)
+## Multiple barbs along one beam (cable-tie principle)
 
-Asked for and NOT yet built: several barbs on one cantilever, each a 45 degree
-ramp with a square catch, so the mate's pawl catches whichever one it reaches
-and the joint offers several engagement depths from one lever. Pitch derived
-from the lip depth (ramp run plus a lip-depth flat), 1 to 3 barbs, default 1 so
+Asked for and since built - "Built: several joints, stepping, the socket's ramp
+and the multi-barb beam" below is what landed, and what follows is the
+reasoning it followed. Several barbs on one cantilever, each a 45 degree ramp
+with a square catch, so the mate's pawl catches whichever one it reaches and
+the joint offers several engagement depths from one lever. Pitch derived from
+the lip depth (ramp run plus a lip-depth flat), 1 to 3 barbs, default 1 so
 nothing changes unless asked.
 
 The design conclusion reached while working the geometry, so the next attempt
@@ -133,18 +142,21 @@ does not have to rediscover it:
   the one being caught is inside the slot. As the parts close, the beam's
   barbs pass under the pawl one at a time and spring out: the click positions
   are beamLength - catch_i, the first click is the barb nearest the tip
-  (loose), the last is the deepest (seated).
-- The panel must name the engaged click ("first click - loose" ... "seated -
-  tight") and, if there is no assembly-depth control, report the seated one as
-  the designed engagement plus the list of click depths; the risk of this
-  design is a half-closed joint that cannot say where it stopped.
+  (the largest face gap), the last is the deepest (seated).
+- The panel must name the engaged click ("first click" ... "seated") and, if
+  there is no assembly-depth control, report the seated one as the designed
+  engagement plus the list of click depths; the risk of this design is a
+  half-closed joint that cannot say where it stopped. A click is a POSITION,
+  not a fit: "loose" and "tight" belong to the clearance step, so the panel
+  prints the seated click's engagement and the face gap it leaves, each
+  labelled as what it is.
 - Deflection accumulates while the lip rides each ramp, so the strain readout
   takes N x lipDepth as the worst case; the deepest engagement must still clear
   the material it bends through.
 
 This joins the multi-joint work (several joints on one seam, Loose/Tight
 clearance stepping, socket-mouth chamfer, per-joint facing) - also asked for
-and not yet built.
+and since built, in the same section.
 
 ## Built: several joints, stepping, the socket's ramp and the multi-barb beam
 
@@ -227,6 +239,22 @@ SnapFit.halvesMeet is true and SnapJoint.build returns Placed or Flipped rather
 than a refusal, and the pocket of a joint built on it really cuts the mate.
 SnapApplyTest builds the second joint with the real engine on a plate packed
 the way the device packs one and measures what it cuts.
+
+The rule in one line: a pair is READ in the assembled frame - one plane between
+the halves, one shared outline across it - every joint on it is built in that
+frame, and Apply stages the pair back into it before the halves become objects.
+
+## The pair is remembered, and the tool opens on it again
+
+A split pair is part of the workspace descriptor now: the two halves' object
+ids, the assembly axis and each half's own mating face are written with the
+plate and restored with it, so coming back to a workspace does not mean
+splitting again - and a second split destroys the joint already applied. Only
+the ids travel; everything else about the pair is derived from the plate the
+restore builds, and only a pair whose halves really are on that plate is
+written at all. The descriptor's other tolerances still hold: a workspace with
+no pair, a damaged one, or a half whose file will not parse restores as a plate
+with no snap fit on offer, never as a plate that failed to load.
 
 ## The deflection gap was missing, and the single-barb joint could not close
 

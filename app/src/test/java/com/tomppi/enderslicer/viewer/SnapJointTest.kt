@@ -23,7 +23,7 @@ import org.junit.Test
 class SnapJointTest {
     @Test
     fun theChosenLowHalfCarriesTheBeamAndTheOtherGetsThePocket() {
-        val (low, high) = halves()
+        val (low, high) = asymmetricHalves()
 
         val result = SnapJoint.build(
             axis = ModelPlacement.Axis.Z,
@@ -37,14 +37,44 @@ class SnapJointTest {
         val placed = result as SnapJoint.Either.Placed
         assertTrue(placed.placement.chosenHalfCarriesBeam)
         assertEquals("a solid seam carries the full joint", SnapFitRung.FULL, placed.placement.joint.rung)
-        assertSame("the low half takes the beam", low.mesh, placed.placement.beamMesh)
-        assertSame("and the high half the pocket", high.mesh, placed.placement.socketMesh)
-        assertEquals("the beam runs up the positive axis", 1f, placed.placement.joint.frame.axis.z, 1e-6f)
+        // Where the two solids landed, read off the plate rather than from
+        // the meshes the builder was handed: the beam is rooted in the chosen
+        // half and reaches past the plane into the mate, and the pocket is
+        // cut the other way round. The two halves are deliberately different
+        // sizes, so this cannot pass on a swap of the mesh references.
+        val joint = placed.placement.joint
+        val dimensions = joint.dimensions
+        assertEquals(
+            "the beam's root sits in the chosen low half, below the plane",
+            20f - dimensions.beamRootMm,
+            joint.unionSolid.bounds.minZ,
+            1e-2f,
+        )
+        assertEquals(
+            "and its tip reaches into the upper half's material",
+            20f + dimensions.beamLengthMm,
+            joint.unionSolid.bounds.maxZ,
+            1e-2f,
+        )
+        assertEquals(
+            "the pocket opens at the upper half's face",
+            20f - dimensions.matingClearanceMm,
+            joint.subtractSolid.bounds.minZ,
+            1e-2f,
+        )
+        assertEquals(
+            "and is cut into the upper half, one clearance past the beam's tip",
+            20f + dimensions.beamLengthMm + dimensions.lipClearanceMm,
+            joint.subtractSolid.bounds.maxZ,
+            1e-2f,
+        )
+        assertTrue("which is inside the upper half's own material", joint.subtractSolid.bounds.maxZ < 28f)
+        assertEquals("the beam runs up the positive axis", 1f, joint.frame.axis.z, 1e-6f)
     }
 
     @Test
     fun theChosenHighHalfCarriesTheBeamToo() {
-        val (low, high) = halves()
+        val (low, high) = asymmetricHalves()
 
         val result = SnapJoint.build(
             axis = ModelPlacement.Axis.Z,
@@ -57,15 +87,43 @@ class SnapJointTest {
 
         val placed = result as SnapJoint.Either.Placed
         assertTrue(placed.placement.chosenHalfCarriesBeam)
-        assertSame("the chosen half takes the beam", high.mesh, placed.placement.beamMesh)
-        assertSame("and the other the pocket", low.mesh, placed.placement.socketMesh)
+        // The same pair with the choice flipped: the beam's root is now in
+        // the upper half, its tip reaches down through the plane, and the
+        // pocket is cut into the lower half. Flipping moved the geometry.
+        val joint = placed.placement.joint
+        val dimensions = joint.dimensions
+        assertEquals(
+            "the beam's root sits in the chosen upper half, above the plane",
+            20f + dimensions.beamRootMm,
+            joint.unionSolid.bounds.maxZ,
+            1e-2f,
+        )
+        assertEquals(
+            "and its tip reaches into the lower half's material",
+            20f - dimensions.beamLengthMm,
+            joint.unionSolid.bounds.minZ,
+            1e-2f,
+        )
+        assertEquals(
+            "the pocket opens at the lower half's face",
+            20f + dimensions.matingClearanceMm,
+            joint.subtractSolid.bounds.maxZ,
+            1e-2f,
+        )
+        assertEquals(
+            "and is cut into the lower half",
+            20f - dimensions.beamLengthMm - dimensions.lipClearanceMm,
+            joint.subtractSolid.bounds.minZ,
+            1e-2f,
+        )
+        assertTrue("which is inside the lower half's own material", joint.subtractSolid.bounds.minZ > 0f)
         assertEquals(
             "the joint is walked the other way, so the barb still cams in",
             -1f,
-            placed.placement.joint.frame.axis.z,
+            joint.frame.axis.z,
             1e-6f,
         )
-        assertNotNull("and it is still geometry", placed.placement.joint.unionSolid)
+        assertNotNull("and it is still geometry", joint.unionSolid)
     }
 
     @Test
@@ -165,6 +223,17 @@ class SnapJointTest {
         assertEquals(Vec3(1f, 0f, 0f), SnapFit.axisDirection(ModelPlacement.Axis.X))
         assertEquals(Vec3(0f, 1f, 0f), SnapFit.axisDirection(ModelPlacement.Axis.Y))
         assertEquals(Vec3(0f, 0f, 1f), SnapFit.axisDirection(ModelPlacement.Axis.Z))
+    }
+
+    /**
+     * A 40 x 40 x 20 lower half with an 8 mm lid above it: the two halves are
+     * different sizes, so which one a solid landed in can be read from the
+     * coordinates rather than from the mesh the builder was handed.
+     */
+    private fun asymmetricHalves(): Pair<SnapFitHalf, SnapFitHalf> {
+        val lowMesh = MeshFixtures.box(0f, 0f, 0f, 40f, 40f, 20f)
+        val highMesh = MeshFixtures.box(0f, 0f, 20f, 40f, 40f, 28f)
+        return SnapFitHalf.inPlace(lowMesh, 20f) to SnapFitHalf.inPlace(highMesh, 20f)
     }
 
     /** Two halves of one 40 mm cube, cut at Z = 20, each carrying the plane. */

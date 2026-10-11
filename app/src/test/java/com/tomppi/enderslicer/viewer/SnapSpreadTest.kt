@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.viewer
 
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.viewer.BedClipper.Half
+import kotlin.math.abs
 import kotlin.math.hypot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -70,8 +71,37 @@ class SnapSpreadTest {
 
         val proposed = plan as SnapSpread.Plan.Proposed
         assertTrue("2 to 4 joints, as the option promises: " + proposed.anchors.size, proposed.anchors.size in 2..4)
+        // The spacing is the built joint's own footprint across the seam plus
+        // a wall of its own thickness, measured here off the two solids - so a
+        // spacing read from the parameters instead of the joint that was
+        // really built cannot pass.
         val spacing = SnapSpread.spacingFor(probe)
-        assertTrue("the spacing is the footprint plus a wall: " + spacing, spacing > probe.dimensions.beamWidthMm)
+        val reach = maxOf(reachAcross(probe.unionSolid, probe.frame), reachAcross(probe.subtractSolid, probe.socketFrame))
+        assertEquals(
+            "the spacing is the built joint's own diameter plus a wall: " + spacing,
+            2f * reach + probe.dimensions.beamThicknessMm,
+            spacing,
+            1e-3f,
+        )
+        // ... and the negative the claim rests on: a joint the material
+        // clamped short takes proportionally less room, so the spacing is a
+        // property of the solids rather than of the parameters.
+        val shallow = halves(40f, 20f, 4f, 1f)
+        val shallowProbe = probeJoint(shallow.first, shallow.second, Vec3(20f, 10f, 1f))
+        val shallowReach = maxOf(
+            reachAcross(shallowProbe.unionSolid, shallowProbe.frame),
+            reachAcross(shallowProbe.subtractSolid, shallowProbe.socketFrame),
+        )
+        assertEquals(
+            "a clamped joint's spacing follows its own smaller footprint",
+            2f * shallowReach + shallowProbe.dimensions.beamThicknessMm,
+            SnapSpread.spacingFor(shallowProbe),
+            1e-3f,
+        )
+        assertTrue(
+            "which is a real difference: " + SnapSpread.spacingFor(shallowProbe) + " against " + spacing,
+            SnapSpread.spacingFor(shallowProbe) < spacing,
+        )
         // What the spread proposes is what the layout guard lets the user join:
         // the sampling runs on the guard's own rule, because two anchors a joint
         // apart can still have their pockets cross when they sit diagonally, and
@@ -87,12 +117,16 @@ class SnapSpreadTest {
         val grid = rim.grid!!
         val inset = SnapSpread.anchorInsetFor(probe)
         val room = SnapSpread.anchorRoomFor(probe)
+        val rimBound = maxOf(room.maxX, -room.minX, room.maxY, -room.minY) + grid.widestCellMm
         for (anchor in proposed.anchors) {
             val plane = rim.plane(anchor)
             val nearest = rim.rimPoints.minOf { hypot((it.x - plane.x).toDouble(), (it.y - plane.y).toDouble()) }
+            // Both the anchors and the rim are cell centres, so the only slack
+            // is one cell of sampling. An anchor in the middle of the face
+            // would be a whole face away; the negative below holds that bound.
             assertTrue(
                 "a proposed joint is at the rim, not in the middle of the face: " + nearest + " mm from it",
-                nearest <= maxOf(room.maxX, -room.minX) + 2.0f,
+                nearest <= rimBound,
             )
             val distance = grid.distanceToEdge(grid.columnOf(plane.x), grid.rowOf(plane.y), 16)
             assertTrue(
@@ -108,6 +142,15 @@ class SnapSpreadTest {
             )
             assertEquals("with the whole joint on material: " + covered, 1f, covered, 1e-3f)
         }
+        // The negative: the middle of this face is nowhere near the rim, so
+        // the bound above is a real one rather than a number that admits
+        // anything.
+        val middle = SeamPoint(0f, 0f)
+        val middleToRim = rim.rimPoints.minOf { hypot((it.x - middle.x).toDouble(), (it.y - middle.y).toDouble()) }
+        assertTrue(
+            "the middle of the face is not at the rim: " + middleToRim + " mm",
+            middleToRim > rimBound,
+        )
     }
 
     @Test
@@ -364,11 +407,50 @@ class SnapSpreadTest {
             measured.rimPoints,
         )
 
-        assertEquals(measured.rimPoints, SnapSpread.anchorsFor(handBuilt, probe))
-        assertTrue(
-            "a rim with material to measure against is inset from it",
-            SnapSpread.anchorsFor(measured, probe).size != measured.rimPoints.size,
+        assertEquals(
+            "a hand-built rim has nothing to measure, so nothing moves",
+            measured.rimPoints,
+            SnapSpread.anchorsFor(handBuilt, probe),
         )
+
+        // A measured rim is inset instead: every anchor it returns is inside
+        // the material by half the key, and none of them is one of the
+        // outline's own points - the inset is geometry, not a smaller count.
+        val anchors = SnapSpread.anchorsFor(measured, probe)
+        val grid = measured.grid!!
+        val inset = SnapSpread.anchorInsetFor(probe)
+        assertTrue("the measured rim still proposes anchors", anchors.isNotEmpty())
+        for (anchor in anchors) {
+            assertTrue(
+                "an anchor is not one of the rim's own points: " + anchor,
+                measured.rimPoints.none { it == anchor },
+            )
+            val distance = grid.distanceToEdge(grid.columnOf(anchor.x), grid.rowOf(anchor.y), 16)
+            assertTrue(
+                "and sits at least the key's half-width inside it: " + distance + " mm, asked " + inset,
+                distance >= inset - 1e-3f,
+            )
+        }
+        // The negative: the rim's own points are exactly what the inset rule
+        // rejects, so this cannot pass on a count that happens to differ.
+        assertTrue(
+            "the rim they were measured from is closer to the edge than an anchor may sit",
+            measured.rimPoints.any { point ->
+                grid.distanceToEdge(grid.columnOf(point.x), grid.rowOf(point.y), 16) < inset - 1e-3f
+            },
+        )
+    }
+
+    /** How far [mesh] reaches across the seam from [frame]'s own anchor. */
+    private fun reachAcross(mesh: StlMesh, frame: SnapFitFrame): Float {
+        var widest = 0f
+        val vertices = mesh.interleavedVertices
+        for (vertex in 0 until mesh.triangleCount * 3) {
+            val base = vertex * MeshSolidBuilder.FLOATS_PER_VERTEX
+            val local = frame.local(Vec3(vertices[base], vertices[base + 1], vertices[base + 2]))
+            widest = maxOf(widest, abs(local.x), abs(local.y))
+        }
+        return widest
     }
 
     /** How much of one rectangle in the seam's plane is material both halves share. */

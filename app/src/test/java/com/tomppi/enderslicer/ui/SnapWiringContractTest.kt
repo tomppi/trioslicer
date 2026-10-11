@@ -134,6 +134,36 @@ class SnapWiringContractTest {
         assertTrue("which is the pair the descriptor saves", snapshot.contains("snap = state.toSnapshotSnap()"))
     }
 
+    /**
+     * The panel's own numbers and qualifiers are claims about the geometry: the
+     * worst-case strain note belongs to a beam with several teeth, not to the
+     * number of joints on the seam, and the deflection room is on the side the
+     * beam bends towards - not "below" it, which the default frame already made
+     * untrue and an opposite-facing joint put on the other side again.
+     */
+    @Test
+    fun thePanelsNumbersAreLabelledAsTheGeometryHasThem() {
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue(
+            "the strain note is keyed to the joint's own tooth count",
+            app.contains("preview.joint.dimensions.barbCount > 1"),
+        )
+        assertFalse("and not to how many joints are on the seam", app.contains("preview.jointCount > 1"))
+        assertFalse("the deflection room is not called \"below the beam\"", app.contains("mm below the beam"))
+        assertTrue(
+            "it is on the side the beam bends towards",
+            app.contains("on the side the beam bends towards"),
+        )
+        assertTrue(
+            "and the fit line is the joint's own readout",
+            app.contains("one.joint.fitSummary"),
+        )
+        assertFalse(
+            "not a format string built here that no test can reach",
+            app.contains("%.1f mm beam, %.2f mm clearance\".format"),
+        )
+    }
+
     /** The text between [from] and the next [to], with both anchors checked. */
     private fun body(from: String, to: String): String {
         val start = viewModel.indexOf(from)

@@ -4461,11 +4461,8 @@ private fun SnapJointRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "   in " + one.beamHalfName + ": " +
-                "%.1f mm beam, %.2f mm clearance".format(
-                    one.joint.dimensions.beamLengthMm,
-                    one.joint.dimensions.lipClearanceMm,
-                ) + (one.joint.rungReason?.let { " · " + it } ?: ""),
+            "   in " + one.beamHalfName + ": " + one.joint.fitSummary +
+                (one.joint.rungReason?.let { " · " + it } ?: ""),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -4521,13 +4518,16 @@ private fun SnapHookGroup(
         val strain = preview.joint.dimensions.rootStrainPercent
         Text(
             "Root strain %.1f%% at full deflection".format(strain) +
-                (if (preview.jointCount > 1) " (worst case, every tooth's lip)" else "") +
+                // The worst case is one JOINT's teeth: the readout already sums
+                // the whole joint's lips, and another joint on the seam is a
+                // different beam.
+                (if (preview.joint.dimensions.barbCount > 1) " (worst case, every tooth's lip)" else "") +
                 "; PLA is happy to about %.0f%%".format(ROOT_STRAIN_HINT_PERCENT),
             style = MaterialTheme.typography.labelSmall,
             color = if (strain > ROOT_STRAIN_HINT_PERCENT) WarnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "Deflection room %.2f mm below the beam; the pocket floor is cut that deep".format(
+            "Deflection room %.2f mm on the side the beam bends towards (away from the hook); the pocket floor is cut that deep".format(
                 preview.joint.dimensions.deflectionRoomMm,
             ),
             style = MaterialTheme.typography.labelSmall,

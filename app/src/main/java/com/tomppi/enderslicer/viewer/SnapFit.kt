@@ -412,7 +412,8 @@ object SnapFit {
                     askedMm = roomAsked,
                     actualMm = room,
                     reason = "the mate has only " + millimetres(belowAvailable) +
-                        " mm of material below the hook and the hook needs " + millimetres(roomAsked) +
+                        " mm of material on the side the beam bends towards, and the hook needs " +
+                        millimetres(roomAsked) +
                         " mm to bend through; the pocket floor was left with " + millimetres(room) +
                         " mm and the joint may not close",
                 )
@@ -461,7 +462,7 @@ object SnapFit {
                     gapMm = (barbs - 1 - index) * pitch + lipClearance,
                     label = when {
                         barbs == 1 -> SEATED_CLICK
-                        order == 1 -> "first click - loose"
+                        order == 1 -> "first click"
                         order == barbs -> SEATED_CLICK
                         order == 2 -> "second click"
                         else -> "third click"
@@ -1209,8 +1210,13 @@ object SnapFit {
     /** One pawl, up to this many teeth: more than three and the beam is a saw. */
     const val MAX_BARBS = 3
 
-    /** What the panel calls the deepest catch: the engagement the joint is designed for. */
-    const val SEATED_CLICK = "seated - tight"
+    /**
+     * What the panel calls the deepest catch: the engagement the joint is
+     * designed for. It is a POSITION, not a fit - "tight" belongs to the
+     * Loose/Tight clearance step, and a click label that reads as the fit made
+     * the same joint look tight in a line whose neighbour said Loose.
+     */
+    const val SEATED_CLICK = "seated"
 
     /** What the panel says instead of a click when the tooth cannot hold at all. */
     const val NO_ENGAGEMENT = "no click - the tooth is not proud of its clearance"
@@ -1594,7 +1600,7 @@ data class SnapFitDimensions(
      * lip depth together - which is what the strain readout is computed from.
      */
     val deflectionMm: Float,
-    /** How far below the beam the pocket's floor was dropped so the beam can bend. */
+    /** How far the pocket's floor was dropped, on the side the beam bends towards. */
     val deflectionRoomMm: Float,
     /** The socket mouth's chamfer, on the axis: 0 when there is none. */
     val mouthChamferMm: Float,
@@ -1686,16 +1692,42 @@ data class SnapFitJoint(
      */
     val holds: Boolean get() = clicks.isNotEmpty()
 
-    /** The one line the panel shows for where the joint is holding. */
+    /**
+     * The one line the panel shows for where the joint is holding: the seated
+     * click's own engagement and the gap between the mating faces there, then
+     * the other depths it will click through.
+     *
+     * The number beside "engaged" is the tooth's overlap with the pawl; every
+     * other number is a face gap and is labelled as one. A bare millimetre
+     * value here used to read as the fit clearance beside it, which is a
+     * different quantity that happens to be the same number at the seated
+     * click.
+     */
     val clickSummary: String
         get() = seatedClick?.let { seated ->
-            seated.label + " (" + millimetres(seated.gapMm) + " mm)" +
+            val engagement = dimensions.lipDepthMm - dimensions.lipClearanceMm
+            seated.label + " (" + millimetres(engagement) + " mm engaged, faces " +
+                millimetres(seated.gapMm) + " mm apart)" +
                 if (clicks.size > 1) {
                     "; clicks at " + clicks.joinToString(", ") { millimetres(it.gapMm) + " mm" }
                 } else {
                     ""
                 }
         } ?: SnapFit.NO_ENGAGEMENT
+
+    /**
+     * The fit line the panel shows: the beam's own reach and the clearance the
+     * socket was really cut with. Both are built dimensions, so the
+     * Loose/Tight step is the number the user reads, and it is the same number
+     * measured in the socket.
+     */
+    val fitSummary: String
+        get() = String.format(
+            java.util.Locale.ROOT,
+            "%.1f mm beam, %.2f mm clearance",
+            dimensions.beamLengthMm,
+            dimensions.lipClearanceMm,
+        )
 
     private fun millimetres(value: Float): String =
         String.format(java.util.Locale.ROOT, "%.2f", value)

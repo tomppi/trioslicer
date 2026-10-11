@@ -4,6 +4,7 @@ import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.viewer.BedClipper.Half
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -208,9 +209,40 @@ class SnapFitTest {
                     abs(it.y - (dimensions.beamThicknessMm * 0.5f + dimensions.lipClearanceMm)) < 1e-3f
             },
         )
+        // What the tooth has to sink is measured on the two solids rather
+        // than re-arranged out of the dimensions: the beam's crown over the
+        // face the pawl is cut into, and the floor dropped far enough below
+        // the beam for that crown to pass.
+        val crown = localVertices(joint.unionSolid, joint.frame)
+            .filter { abs(it.x) <= dimensions.beamWidthMm * 0.5f + 1e-4f }
+            .maxOf { it.y }
+        val underside = localVertices(joint.unionSolid, joint.frame)
+            .filter { abs(it.x) <= dimensions.beamWidthMm * 0.5f + 1e-4f }
+            .minOf { it.y }
+        val pawlFace = socketVertices
+            .filter { it.z >= landStart - 1e-3f && it.z <= dimensions.pawlMm + 1e-3f }
+            .minOf { it.y }
+        assertEquals(
+            "the tooth's crown stands a whole lip above the beam",
+            dimensions.beamThicknessMm * 0.5f + dimensions.lipDepthMm,
+            crown,
+            1e-4f,
+        )
+        assertEquals(
+            "and the pawl's face one clearance above it",
+            dimensions.beamThicknessMm * 0.5f + dimensions.lipClearanceMm,
+            pawlFace,
+            1e-4f,
+        )
+        assertEquals(
+            "so the pawl pushes the tooth down by the difference between them: " + (crown - pawlFace),
+            dimensions.lipDepthMm - dimensions.lipClearanceMm,
+            crown - pawlFace,
+            1e-4f,
+        )
         assertTrue(
-            "which is at least what the tooth has to sink: " + dimensions.deflectionRoomMm,
-            dimensions.deflectionRoomMm >= dimensions.lipDepthMm - dimensions.lipClearanceMm + dimensions.lipClearanceMm - 1e-4f,
+            "and the floor is dropped by that sink plus a clearance: " + (underside - mouth.minOf { it.y }),
+            underside - mouth.minOf { it.y } >= crown - pawlFace + dimensions.lipClearanceMm - 1e-4f,
         )
         assertEquals(
             "the pocket opens below the mating face by the mating clearance",
@@ -518,13 +550,75 @@ class SnapFitTest {
 
     @Test
     fun theStrainReadoutIsTheClosedFormForTheBeam() {
+        // Numbers picked here rather than read off the joint: 1.2 mm thick,
+        // 0.5 mm lip, a 6 mm free length. eps = 3 h d / (2 L^2), so the 2.5%
+        // below is arithmetic on the page, not the production formula
+        // rearranged and checked against itself.
         val (low, high) = halves()
-        val joint = joint(low, high)
+        val joint = joint(
+            low,
+            high,
+            parameters = SnapFitParameters(
+                beamThicknessOverrideMm = 1.2f,
+                lipDepthOverrideMm = 0.5f,
+                beamLengthOverrideMm = 6f,
+            ),
+        )
         val dimensions = joint.dimensions
+        assertEquals("the beam is the thickness that was asked for", 1.2f, dimensions.beamThicknessMm, 1e-4f)
+        assertEquals("and the lip", 0.5f, dimensions.lipDepthMm, 1e-4f)
+        assertEquals("over the free length that was asked for", 6f, dimensions.beamLengthMm, 1e-4f)
+        assertEquals(
+            "eps = 3 h d / (2 L^2) = 1.5 * 1.2 * 0.5 / 36 * 100 = 2.5%",
+            2.5f,
+            dimensions.rootStrainPercent,
+            1e-3f,
+        )
 
-        val expected = 1.5f * dimensions.beamThicknessMm * dimensions.lipDepthMm /
-            (dimensions.beamLengthMm * dimensions.beamLengthMm) * 100f
-        assertEquals("eps = 3 h d / (2 L^2)", expected, dimensions.rootStrainPercent, 1e-4f)
+        // The free length is the one the joint was BUILT with. A wrong length
+        // is injectable by asking for one the mate cannot take; the readout
+        // has to follow the clamp, not the ask.
+        val clamped = joint(
+            low,
+            high,
+            parameters = SnapFitParameters(
+                beamThicknessOverrideMm = 1.2f,
+                lipDepthOverrideMm = 0.5f,
+                beamLengthOverrideMm = 50f,
+            ),
+        )
+        val built = clamped.dimensions.beamLengthMm
+        assertTrue("the material really does clamp the hook", built < 50f)
+        assertEquals(
+            "and the readout is the closed form on the length that exists",
+            1.5f * 1.2f * 0.5f / (built * built) * 100f,
+            clamped.dimensions.rootStrainPercent,
+            1e-4f,
+        )
+        assertNotEquals(
+            "not the closed form on the length that was asked for",
+            1.5f * 1.2f * 0.5f / (50f * 50f) * 100f,
+            clamped.dimensions.rootStrainPercent,
+            1e-4f,
+        )
+
+        // Twice the free length is a quarter of the strain: the square is
+        // real, so a readout using L, or L cubed, cannot pass.
+        val longer = joint(
+            low,
+            high,
+            parameters = SnapFitParameters(
+                beamThicknessOverrideMm = 1.2f,
+                lipDepthOverrideMm = 0.5f,
+                beamLengthOverrideMm = 12f,
+            ),
+        )
+        assertEquals(
+            "twice the free length, a quarter the strain",
+            2.5f / 4f,
+            longer.dimensions.rootStrainPercent,
+            1e-4f,
+        )
     }
 
     @Test
@@ -574,14 +668,39 @@ class SnapFitTest {
         assertEquals(SnapFitRung.FULL, joint!!.rung)
         assertTrue("with the whole-seam pad", joint.registrationSolid.triangleCount > 0)
         assertTrue("and its recess", joint.registrationRecess.triangleCount > 0)
+        // The pin chooses the rung; it does not switch the key's own fit
+        // check off. On this seam the key's socket would stand over the void,
+        // so the key is left out and the panel is told in the user's terms.
+        val keyClamp = joint.clamps.firstOrNull { it.label == "key" }
+        assertNotNull("the pinned joint still checks the key and reports it: " + joint.clamps, keyClamp)
+        assertEquals("with nothing built in its place", 0f, keyClamp!!.actualMm, 0f)
+        assertTrue(
+            "and the omission named: " + keyClamp.reason,
+            keyClamp.reason.contains("key was left off"),
+        )
         // What the material made it leave out is reported rather than built: a
         // key whose socket would stand over the void is not a key.
-        assertNotNull("and it says what was left out: " + joint.rungReason, joint.rungReason)
-        assertTrue("in the user's terms: " + joint.rungReason, joint.rungReason!!.contains("key"))
+        val leftOut = joint.rungReason
+        assertNotNull("and it says what was left out: " + leftOut, leftOut)
+        assertTrue(
+            "in the user's terms: " + leftOut,
+            leftOut != null && (
+                leftOut.contains("hollow where the pad and key would sit") ||
+                    leftOut.contains("hollow where the key would sit")
+                ),
+        )
         assertEquals(
             "so no key stands past the beam",
             joint.dimensions.beamWidthMm * 0.5f,
             localVertices(joint.unionSolid, joint.frame).maxOf { it.x },
+            1e-3f,
+        )
+        // And nothing was cut for one either: without the key the socket stops
+        // one clearance off the beam's own flank.
+        assertEquals(
+            "and no key socket is cut",
+            joint.dimensions.beamWidthMm * 0.5f + joint.dimensions.lipClearanceMm,
+            localVertices(joint.subtractSolid, joint.socketFrame).maxOf { it.x },
             1e-3f,
         )
     }

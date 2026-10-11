@@ -56,8 +56,22 @@ class SolidSplitterTest {
 
     @Test
     fun aClosedModelIsSplitBySubtractingTheHalfSpaceOnTheOtherSide() {
-        val engine = FakeEngine()
         val cube = cube()
+        // The stand-in answers the subtract the way a real engine does: the
+        // half-space box comes off and the half that is left is the result.
+        // One constant box returned twice would leave the two halves the same
+        // geometry, and the assertions below are what has to see that.
+        var call = 0
+        val engine = FakeEngine(result = { first, _ ->
+            val half = if (call++ == 0) BedClipper.Half.LOW else BedClipper.Half.HIGH
+            MeshBoolean.Result.Success(
+                BedClipper.clipClosed(first, ModelPlacement.Axis.Z, cut, half),
+                SnapFitGate.NO_ERROR,
+                true,
+                1.0,
+                0.0,
+            )
+        })
 
         val split = splitWith(engine, cube)
 
@@ -67,7 +81,19 @@ class SolidSplitterTest {
         assertSame("the original is the first operand of both", cube, engine.models[0])
         assertSame("and stays the model", cube, engine.models[1])
         assertNotSame("the two boxes are each their own half-space", engine.boxes[0], engine.boxes[1])
-        assertNotSame("and the halves are the engine's own results", split.low, split.high)
+        // The halves are two pieces of the model, not one answer reported
+        // twice: the low half ends on the plane and holds nothing above it,
+        // the high half begins there, and the two together are the cube.
+        assertEquals("the low half ends on the cut plane", cut, split.low.bounds.maxZ, 1e-4f)
+        assertEquals("the high half begins there", cut, split.high.bounds.minZ, 1e-4f)
+        assertEquals("and the low half carries none of the high half's reach", 0f, split.low.bounds.maxZ - split.high.bounds.minZ, 1e-4f)
+        assertTrue("the low half is the smaller piece", MeshFixtures.signedVolume(split.low) < MeshFixtures.signedVolume(cube))
+        assertEquals(
+            "the two halves add up to the model that was cut",
+            MeshFixtures.signedVolume(cube),
+            MeshFixtures.signedVolume(split.low) + MeshFixtures.signedVolume(split.high),
+            1e-2,
+        )
     }
 
     @Test

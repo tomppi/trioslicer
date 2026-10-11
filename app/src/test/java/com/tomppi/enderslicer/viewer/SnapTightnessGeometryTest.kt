@@ -57,6 +57,63 @@ class SnapTightnessGeometryTest {
         )
     }
 
+    /**
+     * The panel's numbers are claims about the built socket too: the fit line
+     * prints the clearance the Loose/Tight step chose, and the click line
+     * prints the seated gap and the engagement it holds with. Each is compared
+     * with the socket measured above, so a number that drifted from the
+     * geometry fails the test rather than the fit.
+     */
+    @Test
+    fun theNumbersThePanelPrintsAreTheOnesCutIntoTheSocket() {
+        val loose = joint(SnapFitParameters())
+        val tight = joint(SnapFitParameters().tightenedBy(SnapTightness.TIGHT.stepMm))
+
+        assertEquals("loose: the panel prints the socket's own 0.20 mm", 0.20f, printedClearance(loose), 1e-4f)
+        assertEquals("tight: and the socket's own 0.14 mm", 0.14f, printedClearance(tight), 1e-4f)
+        assertEquals(
+            "exactly the step apart",
+            SnapTightness.TIGHT.stepMm,
+            printedClearance(loose) - printedClearance(tight),
+            1e-4f,
+        )
+        assertEquals("the loose number is the slot the socket really has", slotClearance(loose), printedClearance(loose), 1e-3f)
+        assertEquals("and the tight one", slotClearance(tight), printedClearance(tight), 1e-3f)
+        assertEquals(
+            "the seated click's face gap is that same clearance, labelled as a gap",
+            slotClearance(loose),
+            printedGap(loose.clickSummary),
+            1e-3f,
+        )
+        assertEquals(
+            "and the click line prints the engagement the tooth really holds with",
+            loose.dimensions.lipDepthMm - loose.dimensions.lipClearanceMm,
+            printedEngagement(loose.clickSummary),
+            1e-3f,
+        )
+    }
+
+    /** The clearance as the panel's own fit line renders it. */
+    private fun printedClearance(joint: SnapFitJoint): Float {
+        val printed = Regex("([0-9.]+) mm clearance").find(joint.fitSummary)?.groupValues?.get(1)
+        assertTrue("the fit line names its clearance: " + joint.fitSummary, printed != null)
+        return printed!!.toFloat()
+    }
+
+    /** The seated face gap as the panel's click line renders it. */
+    private fun printedGap(summary: String): Float {
+        val printed = Regex("faces ([0-9.]+) mm apart").find(summary)?.groupValues?.get(1)
+        assertTrue("the click line labels its face gap: " + summary, printed != null)
+        return printed!!.toFloat()
+    }
+
+    /** The engagement as the panel's click line renders it. */
+    private fun printedEngagement(summary: String): Float {
+        val printed = Regex("([0-9.]+) mm engaged").find(summary)?.groupValues?.get(1)
+        assertTrue("the click line names its engagement: " + summary, printed != null)
+        return printed!!.toFloat()
+    }
+
     /** How far the pocket's own wall stands off the beam, read off the socket. */
     private fun slotClearance(joint: SnapFitJoint): Float {
         val dimensions = joint.dimensions

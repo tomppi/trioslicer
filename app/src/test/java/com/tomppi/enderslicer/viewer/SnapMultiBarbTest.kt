@@ -57,10 +57,36 @@ class SnapMultiBarbTest {
             joint.clicks[0].gapMm,
             1e-4f,
         )
-        assertEquals("and it says so in the user's terms", "first click - loose", joint.clicks[0].label)
+        assertEquals("and it says so in the user's terms", "first click", joint.clicks[0].label)
         assertEquals("the deepest catch seats the halves", joint.dimensions.lipClearanceMm, joint.clicks[1].gapMm, 1e-4f)
         assertEquals(SnapFit.SEATED_CLICK, joint.clicks[1].label)
-        assertEquals("the joint reports the seated click as its engagement", joint.clicks.last(), joint.seatedClick)
+        // The seated click's gap is the clearance the built socket really
+        // has: the beam's deepest catch face and the mate's pawl, measured in
+        // the two solids, stand exactly that far apart when the joint closes.
+        val catchFace = localVertices(joint.unionSolid, joint.frame)
+            .filter {
+                abs(it.x) <= joint.dimensions.beamWidthMm * 0.5f + 1e-4f &&
+                    abs(it.z - joint.dimensions.teethCatchMm[1]) < 1e-3f
+            }
+            .maxOf { it.z }
+        val pawlFace = localVertices(joint.subtractSolid, joint.socketFrame)
+            .filter {
+                abs(it.x) <= joint.dimensions.beamWidthMm * 0.5f + joint.dimensions.lipClearanceMm + 1e-4f &&
+                    abs(it.z - joint.dimensions.pawlMm) < 1e-3f
+            }
+            .minOf { it.z }
+        assertEquals(
+            "the seated click's gap is the catch-to-pawl distance in the built solids",
+            joint.clicks[1].gapMm,
+            catchFace - pawlFace,
+            1e-3f,
+        )
+        assertEquals(
+            "which is the clearance around the beam",
+            joint.dimensions.lipClearanceMm,
+            catchFace - pawlFace,
+            1e-3f,
+        )
         assertTrue("and the summary names it: " + joint.clickSummary, joint.clickSummary.contains(SnapFit.SEATED_CLICK))
         assertTrue("with the other depths listed too: " + joint.clickSummary, joint.clickSummary.contains("clicks at"))
     }
@@ -69,7 +95,7 @@ class SnapMultiBarbTest {
     fun threeTeethOfferThreeClicksAndAOneToothBeamOffersOne() {
         val three = joint(SnapFitParameters(barbCount = 3))
         assertEquals(3, three.clicks.size)
-        assertEquals(listOf("first click - loose", "second click", SnapFit.SEATED_CLICK), three.clicks.map { it.label })
+        assertEquals(listOf("first click", "second click", SnapFit.SEATED_CLICK), three.clicks.map { it.label })
         assertTrue("the clicks are a pitch apart", abs(three.clicks[1].gapMm - three.clicks[0].gapMm) > 0f)
         assertEquals(
             "each a pitch further in",
@@ -118,28 +144,56 @@ class SnapMultiBarbTest {
     @Test
     fun theSocketGivesTheBeamRoomToBendOrTheJointCannotClose() {
         val joint = joint(SnapFitParameters())
+        val dimensions = joint.dimensions
+        val half = dimensions.beamThicknessMm * 0.5f
 
-        val sink = joint.dimensions.lipDepthMm - joint.dimensions.lipClearanceMm
-        assertTrue(
-            "the pocket's floor is dropped by the sink plus a clearance: " + joint.dimensions.deflectionRoomMm,
-            joint.dimensions.deflectionRoomMm >= sink + joint.dimensions.lipClearanceMm - 1e-4f,
-        )
-        // The floor really is cut there, in the socket's own frame. Only the
-        // beam's own slot counts: the key's socket is deeper still and is a
-        // different feature.
+        // The floor really is cut where the room says, in the socket's own
+        // frame. Only the beam's own slot counts: the key's socket is deeper
+        // still and is a different feature.
         val pocket = localVertices(joint.subtractSolid, joint.socketFrame).filter {
-            abs(it.x) <= joint.dimensions.beamWidthMm * 0.5f + joint.dimensions.lipClearanceMm + 1e-4f
+            abs(it.x) <= dimensions.beamWidthMm * 0.5f + dimensions.lipClearanceMm + 1e-4f
         }
         val floor = pocket.minOf { it.y }
         assertEquals(
             "and the socket is cut that deep",
-            -(joint.dimensions.beamThicknessMm * 0.5f + joint.dimensions.deflectionRoomMm),
+            -(half + dimensions.deflectionRoomMm),
             floor,
             1e-3f,
         )
+        // What the tooth has to sink, measured on the two solids: its crown
+        // over the narrow face the pawl is cut into. Neither clearance is
+        // written into the comparison, so nothing cancels.
+        val beam = localVertices(joint.unionSolid, joint.frame).filter {
+            abs(it.x) <= dimensions.beamWidthMm * 0.5f + 1e-4f
+        }
+        val crown = beam.maxOf { it.y }
+        val underside = beam.minOf { it.y }
+        val landStart = dimensions.pawlMm - dimensions.pawlLandMm
+        val pawlFace = pocket
+            .filter { it.z >= landStart - 1e-3f && it.z <= dimensions.pawlMm + 1e-3f }
+            .minOf { it.y }
+        assertEquals("the crown is the beam plus its lip", half + dimensions.lipDepthMm, crown, 1e-3f)
+        assertEquals(
+            "and the pawl's face the beam plus the clearance",
+            half + dimensions.lipClearanceMm,
+            pawlFace,
+            1e-3f,
+        )
+        assertEquals(
+            "so the tooth must sink by the difference: " + (crown - pawlFace),
+            dimensions.lipDepthMm - dimensions.lipClearanceMm,
+            crown - pawlFace,
+            1e-3f,
+        )
         assertTrue(
-            "the readout takes every tooth's lip as the worst case: " + joint.dimensions.deflectionMm,
-            joint.dimensions.barbCount * joint.dimensions.lipDepthMm == joint.dimensions.deflectionMm,
+            "and the floor is dropped by that sink plus a clearance: " + (underside - floor),
+            underside - floor >= crown - pawlFace + dimensions.lipClearanceMm - 1e-4f,
+        )
+        assertEquals(
+            "the readout takes every tooth's lip as the worst case: " + dimensions.deflectionMm,
+            dimensions.barbCount * dimensions.lipDepthMm,
+            dimensions.deflectionMm,
+            1e-5f,
         )
     }
 
