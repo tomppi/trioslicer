@@ -103,7 +103,11 @@ internal class MoonrakerTransport(
     }
 
     override fun close() {
-        runCatching { sendFrame(KlipperWebSocket.OPCODE_CLOSE, ByteArray(0)) }
+        // 1000 with it, not an empty payload. A close frame without a code is legal and says
+        // nothing, and Moonraker logs it as "Close Code: None" - exactly what it logs for a
+        // socket that died on the network. When a connection keeps dropping, the host's log is
+        // the only record of which end ended it, and an empty frame threw that away.
+        runCatching { sendFrame(KlipperWebSocket.OPCODE_CLOSE, CLOSE_NORMAL) }
         runCatching { socket?.close() }
         socket = null
         input = null
@@ -287,6 +291,10 @@ internal class MoonrakerTransport(
         const val DEFAULT_PATH = "/websocket"
 
         private const val READ_BUFFER_BYTES = 8 * 1024
+
+        /** RFC 6455's normal closure, written into the close frame as two network-order bytes. */
+        private val CLOSE_NORMAL = byteArrayOf(0x03, 0xE8.toByte())
+
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_HANDSHAKE_BYTES = 8 * 1024
     }

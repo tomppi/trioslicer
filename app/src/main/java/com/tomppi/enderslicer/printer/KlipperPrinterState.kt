@@ -30,6 +30,14 @@ data class KlipperPrinterState(
      * screens.
      */
     val remoteHost: String? = null,
+    /**
+     * The host this state describes, as the choice labels it, or null before one is known.
+     *
+     * The identity tag the screens read instead of inferring a host from the numbers in
+     * front of them: a state that carries the PC's print and the label "this device" is a
+     * state that says so about itself.
+     */
+    val hostLabel: String? = null,
 
     /**
      * The print cameras the host publishes, if it has any.
@@ -89,6 +97,30 @@ data class KlipperPrinterState(
      */
     val published: List<String> = emptyList(),
 ) {
+    /**
+     * The same state, describing no printer at all.
+     *
+     * Every field that came from a host is dropped - the print, its numbers, the
+     * temperatures, the object tree, the host's own identity and cameras - and what is
+     * left says only which host is being connected to. This runs before a connection is
+     * opened, so a screen showing one Klipper's print while the app is pointed at the
+     * other cannot happen: there is no window in which the old host's numbers are on
+     * screen under the new host's name.
+     *
+     * [remoteHost] is set from the CHOICE rather than dropped, because it is what the
+     * screens use to decide which host's own things they are allowed to touch - the
+     * phone's USB bus, its battery, its machine configuration. Leaving it null while
+     * connecting to a computer would put the phone's own machine settings under the
+     * computer's name, which is the same mistake with the hosts the other way round.
+     */
+    internal fun withoutHost(choice: KlipperHostChoice): KlipperPrinterState = KlipperPrinterState(
+        connected = false,
+        state = "connecting",
+        stateMessage = "Connecting to " + choice.label,
+        remoteHost = choice.host.trim().takeIf { choice.isRemote },
+        hostLabel = choice.label,
+    )
+
     val isReady: Boolean get() = connected && state == "ready"
     val isHomed: Boolean get() = homedAxes.contains("x") && homedAxes.contains("y") && homedAxes.contains("z")
     val isPrinting: Boolean get() = printState == "printing"

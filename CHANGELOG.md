@@ -48,6 +48,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A dropped connection to a computer no longer reports the print as interrupted, and one host's
+  state can never be shown as another's.** On the PC route the phone's websocket closing is not the
+  print dying - the printer is a different machine, and it is usually still printing - but every
+  drop ran the local-host path, which posted "The print was interrupted", appended a history record
+  and reset the state the next snapshot is read against: one print collected five of them in the
+  user's own Moonraker log. Only the host this app owns is treated that way now, and even there the
+  print is settled by what the next connection shows - still printing is the same print, a state
+  klippy names for itself is reported by the ordinary transition, and a host that came back with no
+  print at all is reported once, as interrupted, naming the restart. The other half of the same leak
+  is the state: switching hosts cleared only "connected" and "error", so the Phone Klipper tab
+  rendered the PC's cancelled print, its host name, its paths, its boards and its camera - and
+  greyed out Start on the screen that could have started the phone's own host. A host change now
+  starts from a state that describes no printer and names the host being connected to, the state
+  carries the identity of the host it describes, every write is checked against the connection it
+  came from so a reply from a connection the app has left is dropped, and a session closes the
+  socket it opened instead of abandoning it for the next reconnect to replace.
 - **Loading a file back into the CAD or Blender engine no longer kills the app.** Both file screens
   ran the load on a background coroutine and reported the result with a Toast from that same
   thread, and a Toast from a thread with no Looper throws before the message is ever shown - so the

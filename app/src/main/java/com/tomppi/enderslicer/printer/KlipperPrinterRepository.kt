@@ -131,6 +131,14 @@ class KlipperPrinterRepository(
 
     private var watchJob: Job? = null
 
+    /**
+     * Which connection the state belongs to; see [KlipperConnectionGeneration].
+     *
+     * A reply or a push from a connection that is no longer current is dropped rather
+     * than written: the host it describes is not the host the app is pointed at any more.
+     */
+    private val connection = KlipperConnectionGeneration()
+
     /** The print that is running, so that its record knows when it started. */
     private var startedAt = 0L
     private var startedFile = ""
@@ -160,6 +168,9 @@ class KlipperPrinterRepository(
     fun stop() {
         watchJob?.cancel()
         watchJob = null
+        // Nothing in flight belongs to the state any more: the connection is being taken
+        // down on purpose.
+        connection.next()
         client?.close()
         client = null
         _state.update { it.copy(connected = false) }
@@ -172,7 +183,19 @@ class KlipperPrinterRepository(
             } catch (e: Exception) {
                 client?.close()
                 client = null
-                recordPrintLostWithTheHost(e.message)
+                // Only the host this app owns dies with its socket. A host across the
+                // network is a different machine: the phone losing its websocket says
+                // nothing about the printer, which is very often still printing, and
+                // announcing the print as interrupted is a lie the user acts on - it
+                // also left a bogus history record and reset the state the next snapshot
+                // is read against. The runCatching is only so a preference that cannot
+                // be read does not swallow the reconnect; on that failure the
+                // conservative answer is "no print was lost here", and a print that
+                // really did die locally is reported by the reconnect's first snapshot.
+                val lostWithThisHost = runCatching {
+                    KlipperPrintLoss.lostWithTheHost(hostChoice.load())
+                }.getOrDefault(false)
+                if (lostWithThisHost) recordPrintLostWithTheHost(e.message)
                 _state.update {
                     it.copy(connected = false, error = e.message, hostLogTail = readHostLogTail())
                 }
@@ -192,10 +215,18 @@ class KlipperPrinterRepository(
      *
      * Recording it as interrupted is the honest version: the print did not finish, was not
      * cancelled, and the reason is whatever the connection said when it went.
+     *
+     * Two callers, and neither is a guess. A drop on the local route calls it directly,
+     * because there the socket dying is the print dying - and that call clears
+     * [lastPrintState], so the reconnect cannot report the same loss twice. A reconnect calls
+     * it when the host came back with no print at all while the app still believed one was
+     * running ([believedRunning]); that is a host that restarted, and it is the one case the
+     * app has to name for itself. A host with a print, or with a state klippy names for
+     * itself, is never touched from here.
      */
-    private fun recordPrintLostWithTheHost(reason: String?) {
+    private fun recordPrintLostWithTheHost(reason: String?, believedRunning: Boolean = false) {
         val current = _state.value
-        val wasRunning = current.isPrinting || current.isPaused ||
+        val wasRunning = believedRunning || current.isPrinting || current.isPaused ||
             lastPrintState == "printing" || lastPrintState == "paused"
         if (!wasRunning) return
         val name = startedFile.ifBlank { current.printFileName.orEmpty() }
@@ -229,7 +260,34 @@ class KlipperPrinterRepository(
             _state.update { it.copy(connected = false, error = "No host is set for the PC route") }
             error("no Klipper host is set")
         }
+        // This connection's own number. Everything below checks it before writing to the
+        // state, so a reply from the host the app has just left cannot land on the host it
+        // is pointed at now.
+        val mine = connection.next()
+        // And the state starts from no printer, naming the host being connected to: a tab
+        // must never be able to render one host's print under another host's name while
+        // the new connection is still coming up.
+        _state.update { it.withoutHost(choice) }
         val c = KlipperClient(choice.transportFor(socketPath), choice.label)
+        // The session owns its client. However this ends - the host going away, a request
+        // that fails, the app switching hosts - the socket it opened is closed here rather
+        // than left for the next connection to replace. Abandoned, it was a socket nobody
+        // closed: the host saw it die with no close frame long afterwards, and every
+        // reconnect leaked one.
+        try {
+            session(c = c, choice = choice, mine = mine)
+        } finally {
+            runCatching { c.close() }
+            if (client === c) client = null
+        }
+    }
+
+    /**
+     * One connection's whole life: connect, take the snapshot, subscribe, then hold it until
+     * it drops. Every write it makes to the state is checked against [mine], so a reply from
+     * a connection the app has since left is dropped rather than shown.
+     */
+    private suspend fun session(c: KlipperClient, choice: KlipperHostChoice, mine: Long) {
         // A camera belongs to the host, so this is asked of the host - and only of one that is
         // somewhere else, because the app's own host has nothing to ask.
         val webcams = if (choice.isRemote) {
@@ -243,7 +301,12 @@ class KlipperPrinterRepository(
         } else {
             emptyList()
         }
-        c.onNotification = ::applyNotification
+        // A push from the connection being replaced is dropped rather than applied: the
+        // callback belongs to the client, and the client outlives its turn as the current
+        // one by however long a socket takes to notice it was closed.
+        c.onNotification = { message ->
+            if (connection.isCurrent(mine)) applyNotification(message)
+        }
         c.connect()
         // Before anything else, and again on every connection: the subscription belongs
         // to this connection, so a reconnect that forgot it would leave a console that
@@ -257,10 +320,15 @@ class KlipperPrinterRepository(
         // a value that only changes once would stay wrong on the screen.
         val snapshot = c.subscribe(*wanted.toTypedArray())
         client = c
-        _state.update {
-            it.copy(
+        // What the app believed about the print before this connection was made. The drop
+        // that ended the last one deliberately left that belief alone on the remote route,
+        // and the first snapshot is what settles it - see [KlipperPrintLoss].
+        val printWasRunning = lastPrintState == "printing" || lastPrintState == "paused"
+        updateIfCurrent(mine) { previous ->
+            val next = previous.copy(
                 connected = true,
                 remoteHost = choice.host.trim().takeIf { choice.isRemote },
+                hostLabel = choice.label,
                 state = info.optString("state", "unknown"),
                 stateMessage = info.optString("state_message"),
                 error = null,
@@ -268,6 +336,27 @@ class KlipperPrinterRepository(
                 published = published,
                 webcams = webcams,
             ).withStatus(snapshot)
+            // The same notification a push would post: a print that ended while the phone
+            // was disconnected is news, and this is the first the app hears of it.
+            reportPrintEnd(previous, next)
+            next
+        }
+        // The first snapshot goes through the same transitions a push does. A print that
+        // ended while the phone was away is reported here, once, with klippy's own state
+        // and message - and a print that is still going says nothing, which is the point.
+        if (connection.isCurrent(mine)) {
+            recordPrintIfItEnded()
+            if (KlipperPrintLoss.afterReconnect(
+                    printWasRunning = printWasRunning,
+                    printState = _state.value.printState,
+                    printFileName = _state.value.printFileName,
+                ) == KlipperPrintLoss.AfterReconnect.HostRestarted
+            ) {
+                recordPrintLostWithTheHost(
+                    "the host restarted while the print was running",
+                    believedRunning = true,
+                )
+            }
         }
         Log.i(TAG, "watching " + choice.label + " as " + info.optString("state") +
             "; following " + wanted.size + " of " + published.size + " objects")
@@ -283,7 +372,7 @@ class KlipperPrinterRepository(
         if (boards.isNotEmpty()) {
             delay(MCU_RECHECK_MS)
             runCatching { c.query(*boards.toTypedArray()) }.getOrNull()?.let { status ->
-                _state.update { previous ->
+                updateIfCurrent(mine) { previous ->
                     val next = previous.withStatus(status)
                     reportPrintEnd(previous, next)
                     next
@@ -301,7 +390,7 @@ class KlipperPrinterRepository(
             if (++sinceStateCheck >= STATE_POLL_SECONDS) {
                 sinceStateCheck = 0
                 runCatching { c.info() }.getOrNull()?.let { info ->
-                    _state.update {
+                    updateIfCurrent(mine) {
                         it.copy(
                             state = info.optString("state", it.state),
                             stateMessage = info.optString("state_message", it.stateMessage),
@@ -771,6 +860,22 @@ class KlipperPrinterRepository(
         }
 
     /**
+     * Write to the state only while [token] is still the current connection.
+     *
+     * The check is made twice - once before the update and once inside it - because a state
+     * update can run its lambda more than once and the connection can be replaced in between.
+     * A write from a connection that is not the current one is dropped: the host it describes
+     * is not the host the app is pointed at any more.
+     */
+    private inline fun updateIfCurrent(
+        token: Long,
+        update: (KlipperPrinterState) -> KlipperPrinterState,
+    ) {
+        if (!connection.isCurrent(token)) return
+        _state.update { current -> if (connection.isCurrent(token)) update(current) else current }
+    }
+
+    /**
      * One frame from a camera, fetched when a screen asks for one.
      *
      * On demand rather than pushed: the screens that show a picture show one frame a second
@@ -888,9 +993,25 @@ class KlipperPrinterRepository(
      * connection to the new one rather than a wait for the old one to fail.
      */
     fun reconnect() {
+        // Whatever is in flight belongs to the host being left, and it is not the current
+        // connection from this moment: a reply already on its way is dropped rather than
+        // written onto the new host's state.
+        connection.next()
         runCatching { client?.close() }
         client = null
-        _state.update { it.copy(connected = false, error = null) }
+        // The print the app was following belonged to the host being left, and so did the
+        // belief that one was running. Leaving it standing would let the new host's first
+        // failure report the OLD host's print as interrupted - which is the same leak one
+        // step further on: the app has to forget a print when it stops watching the machine
+        // that was printing it.
+        startedAt = 0L
+        startedFile = ""
+        lastPrintState = null
+        // And the state itself starts again describing no printer, naming the host being
+        // connected to. Clearing only "connected" and "error" left the previous host's
+        // print, numbers and identity on screen - which is how the Device tab came to show
+        // the PC's cancelled print with "The Klipper host on <pc>" above it.
+        _state.update { it.withoutHost(hostChoice.load()) }
     }
 
     /**
