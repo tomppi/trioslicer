@@ -4369,7 +4369,13 @@ private fun SnapToolbar(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        if (specs.isEmpty()) "Snap fit joint" else "Snap fit joints (" + specs.size + ")",
+                        if (state.snapStyle == SnapJointStyle.WALL_LIP) {
+                            "Snap fit · the whole seam"
+                        } else if (specs.isEmpty()) {
+                            "Snap fit joint"
+                        } else {
+                            "Snap fit joints (" + specs.size + ")"
+                        },
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Spacer(Modifier.width(EnderSlicerDimens.Space8))
@@ -4392,6 +4398,10 @@ private fun SnapToolbar(
                 }
                 Text(
                     when {
+                        state.snapStyle == SnapJointStyle.WALL_LIP ->
+                            "The wall lip is the whole seam: one tooth ring on the lip half and one " +
+                                "ledge ring on the mate, following the seam's own edge. The two sizes " +
+                                "size the ring."
                         state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
                         state.snapAddingJoint -> "Tap the model to place it."
                         // Every joint removed from a pair that remembers its own halves: the
@@ -4601,6 +4611,7 @@ private fun SnapSetupGroup(
     // Placing is deliberate: this arms the next tap, and the line under the title says so
     // while it is armed. A tap with nothing armed selects the joint nearest the finger
     // instead of adding one, which is what a model being turned used to do.
+    if (state.snapStyle != SnapJointStyle.WALL_LIP) {
     SnapChoiceRow(
         label = null,
         caption = when {
@@ -4644,6 +4655,7 @@ private fun SnapSetupGroup(
             ) { Text("Clear") }
         }
     }
+    }
     // The style. The cantilever is the joint the tool has always built - a beam
     // across the seam with a barb on it, fitted by the ladder. The wall lip is
     // the other design: the tooth stands on the half's own wall, the mate is
@@ -4654,7 +4666,7 @@ private fun SnapSetupGroup(
         caption = when {
             stacked -> "cantilever, or a tooth on the wall"
             style == SnapJointStyle.WALL_LIP ->
-                "one tooth on the half's own wall; the mate gives the ledge"
+                "one tooth ring on the lip half, one ledge ring on the mate - the whole seam"
             else -> "a beam across the seam with a barb on it"
         },
         stacked = stacked,
@@ -4731,13 +4743,18 @@ private fun SnapJointRow(
             contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
         ) {
             Text(
-                (if (selected) "▸ " else "") + "Joint " + (index + 1) + " · " + spec.tightness.label +
-                    if (compact) {
-                        ""
-                    } else {
-                        " · " + spec.barbs + (if (spec.barbs == 1) " tooth" else " teeth") +
-                            " · " + if (spec.facing == SnapFacing.SAME) "same way" else "other way"
-                    },
+                if (spec.style == SnapJointStyle.WALL_LIP) {
+                    // The lip is not one joint among several: it is the seam.
+                    (if (selected) "▸ " else "") + SnapJointStyle.WALL_LIP.label + " · the whole seam"
+                } else {
+                    (if (selected) "▸ " else "") + "Joint " + (index + 1) + " · " + spec.tightness.label +
+                        if (compact) {
+                            ""
+                        } else {
+                            " · " + spec.barbs + (if (spec.barbs == 1) " tooth" else " teeth") +
+                                " · " + if (spec.facing == SnapFacing.SAME) "same way" else "other way"
+                        }
+                },
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -4767,11 +4784,31 @@ private fun SnapJointRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "   tooth in " + one.beamHalfName + ", ledge in " + one.socketHalfName +
-                    " · wall strain %.1f%%".format(one.joint.dimensions.lipStrainPercent),
+                "   tooth ring in " + one.beamHalfName + ", ledge ring in " + one.socketHalfName +
+                    " · worst wall strain %.1f%% at %.0f mm along the ring".format(
+                        one.joint.dimensions.lipStrainPercent,
+                        one.joint.dimensions.lipWorstAtMm,
+                    ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                "   pad %.2f mm: a %.2f mm tooth and its ramp, and the recess %.2f mm with clearance " +
+                    "on every face".format(
+                        one.joint.dimensions.lipStepMm,
+                        one.joint.dimensions.lipToothHeightMm,
+                        one.joint.dimensions.lipRecessMm,
+                    ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (warning in one.joint.warnings) {
+                Text(
+                    "   " + warning,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         } else {
             Text(
                 "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +

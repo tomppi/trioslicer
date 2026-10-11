@@ -187,14 +187,13 @@ object SnapJoint {
             )?.let { Attempt.Built(it) } ?: Attempt.Refused("")
 
             SnapJointStyle.WALL_LIP -> when (
-                val lip = SnapLip.build(
+                val lip = SnapLip.buildRing(
                     axis = directedAxis,
                     anchorMm = anchorMm,
                     scale = scale,
                     lipHalf = beamFit,
                     mateHalf = socketFit,
                     parameters = parameters,
-                    requested = requested,
                 )
             ) {
                 is SnapLip.Outcome.Built -> Attempt.Built(lip.joint)

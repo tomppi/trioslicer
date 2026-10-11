@@ -782,6 +782,113 @@ object SnapFit {
         return inside >= required * COVERAGE_SAMPLES * COVERAGE_SAMPLES
     }
 
+    /**
+     * The cap's own outline: the closed loops its boundary leaves behind, each a
+     * list of (x, y) points in the plane's axes. An edge two cap triangles share
+     * is inside the cross-section; an edge only one of them walks is on its
+     * boundary - which is the whole seam a ring joint follows. Straight runs are
+     * thinned to their corners, so the ring has a vertex per corner and no
+     * staircase of welded triangle edges.
+     */
+    internal fun capOutlines(cap: List<CapTriangle>): List<List<Pair<Float, Float>>> {
+        if (cap.isEmpty()) return emptyList()
+        val seen = HashMap<String, Int>()
+        val directed = ArrayList<FloatArray>()
+        for (triangle in cap) {
+            val c = triangle.corners
+            for (corner in 0 until 3) {
+                val x1 = c[corner * 2]
+                val y1 = c[corner * 2 + 1]
+                val x2 = c[((corner + 1) % 3) * 2]
+                val y2 = c[((corner + 1) % 3) * 2 + 1]
+                val a = weld(x1, y1)
+                val b = weld(x2, y2)
+                if (a == b) continue
+                val forward = a + "|" + b
+                val backward = b + "|" + a
+                val pair = if (forward < backward) forward else backward
+                seen[pair] = (seen[pair] ?: 0) + 1
+                directed += floatArrayOf(x1, y1, x2, y2)
+            }
+        }
+        // The boundary edges, and the walk that chains them end to end. A boolean
+        // engine's cap carries T-junctions - a corner of one triangle in the
+        // middle of another's edge - where a strict key match would lose the
+        // thread and close the loop across the void; the next edge is therefore
+        // the nearest one that starts where this one ended.
+        val boundary = ArrayList<FloatArray>()
+        for (edge in directed) {
+            val forward = weld(edge[0], edge[1]) + "|" + weld(edge[2], edge[3])
+            val backward = weld(edge[2], edge[3]) + "|" + weld(edge[0], edge[1])
+            val pair = if (forward < backward) forward else backward
+            if ((seen[pair] ?: 0) == 1) boundary += edge
+        }
+        val outlines = ArrayList<List<Pair<Float, Float>>>()
+        val used = BooleanArray(boundary.size)
+        for (seed in boundary.indices) {
+            if (used[seed]) continue
+            val points = ArrayList<Pair<Float, Float>>()
+            var current = seed
+            val first = boundary[seed]
+            var guard = 0
+            while (guard++ < MAX_OUTLINE_EDGES) {
+                used[current] = true
+                val edge = boundary[current]
+                points += Pair(edge[0], edge[1])
+                var best = -1
+                var bestDistance = Float.MAX_VALUE
+                for (candidate in boundary.indices) {
+                    if (used[candidate]) continue
+                    val other = boundary[candidate]
+                    val dx = other[0] - edge[2]
+                    val dy = other[1] - edge[3]
+                    val distance = dx * dx + dy * dy
+                    if (distance < bestDistance) {
+                        bestDistance = distance
+                        best = candidate
+                    }
+                }
+                if (best < 0 || bestDistance > CAP_JOIN_MM * CAP_JOIN_MM) break
+                // Back at the start: the loop is closed.
+                if (bestDistance < CAP_JOIN_MM * CAP_JOIN_MM &&
+                    kotlin.math.abs(boundary[best][2] - first[0]) < CAP_JOIN_MM &&
+                    kotlin.math.abs(boundary[best][3] - first[1]) < CAP_JOIN_MM
+                ) {
+                    // The last edge closes the loop: its own start is the corner
+                    // the first edge leaves from, and it belongs on the outline.
+                    used[best] = true
+                    points += Pair(boundary[best][0], boundary[best][1])
+                    break
+                }
+                current = best
+            }
+            if (points.size >= 3) outlines += thin(points)
+        }
+        return outlines
+    }
+
+    private fun weld(x: Float, y: Float): String =
+        Math.round(x / CAP_WELD_MM).toString() + ":" + Math.round(y / CAP_WELD_MM)
+
+    /** The same outline with the points that only continue a straight run removed. */
+    private fun thin(points: List<Pair<Float, Float>>): List<Pair<Float, Float>> {
+        if (points.size < 3) return points
+        val kept = ArrayList<Pair<Float, Float>>()
+        for (at in points.indices) {
+            val previous = points[(at + points.size - 1) % points.size]
+            val here = points[at]
+            val next = points[(at + 1) % points.size]
+            val ax = here.first - previous.first
+            val ay = here.second - previous.second
+            val bx = next.first - here.first
+            val by = next.second - here.second
+            val cross = ax * by - ay * bx
+            val scale = maxOf(abs(ax) + abs(ay), abs(bx) + abs(by))
+            if (abs(cross) > CAP_STRAIGHT_MM * scale) kept += here
+        }
+        return if (kept.size >= 3) kept else points
+    }
+
     /** One cap triangle, in the halves' (side, rise) plane. */
     internal class CapTriangle(
         private val ax: Float,
@@ -797,6 +904,9 @@ object SnapFit {
         val maxX: Float get() = maxOf(ax, bx, cx)
         val minY: Float get() = minOf(ay, by, cy)
         val maxY: Float get() = maxOf(ay, by, cy)
+
+        /** The three corners as (x, y) pairs, for whoever walks the cap's own edge. */
+        val corners: FloatArray get() = floatArrayOf(ax, ay, bx, by, cx, cy)
 
         fun contains(x: Float, y: Float): Boolean {
             if (abs(area) < CAP_AREA_EPSILON) return false
@@ -1267,6 +1377,18 @@ object SnapFit {
 
     /** How close to its own face a triangle has to be to count as cap. */
     private const val CAP_PLANE_TOLERANCE_MM = 0.01f
+
+    /** How close two cap corners have to be to count as the same corner. */
+    private const val CAP_WELD_MM = 1e-3f
+
+    /** How close two boundary edges have to be to be the same outline's next step. */
+    private const val CAP_JOIN_MM = 0.05f
+
+    /** How straight a run has to be for its middle points to be dropped. */
+    private const val CAP_STRAIGHT_MM = 1e-4f
+
+    /** A guard on the outline walk: no real seam has this many boundary edges. */
+    private const val MAX_OUTLINE_EDGES = 200000
     private const val CAP_AREA_EPSILON = 1e-9f
     private const val CAP_EDGE_EPSILON = 1e-6f
 
@@ -1659,6 +1781,19 @@ data class SnapFitDimensions(
     /** How deep the lip's recess was cut along the axis, and how far inboard. */
     val lipRecessMm: Float = 0f,
     val lipRecessInnerMm: Float = 0f,
+    /**
+     * The step the lip's ring lives in, along the axis: the tooth's height and
+     * the ramp's run plus the clearances the pair runs on. The recess is this
+     * plus one more clearance, and it is sized from the ring rather than left at
+     * the cantilever's pad depth. Zero for every cantilever joint.
+     */
+    val lipStepMm: Float = 0f,
+    /** How long the lip's own ring is, around the seam: the contour's perimeter. */
+    val lipRingMm: Float = 0f,
+    /** How many places around that ring the wall was read at. */
+    val lipSamples: Int = 0,
+    /** Where on the ring its worst reading was: millimetres along the contour. */
+    val lipWorstAtMm: Float = 0f,
 )
 
 /** One dimension the material clamped short of what the user asked for. */
@@ -1738,6 +1873,13 @@ data class SnapFitJoint(
      * beam, whose only click is the seated one.
      */
     val clicks: List<SnapClick> = emptyList(),
+    /**
+     * What the material could not give, where the joint was built anyway: the
+     * lip's ring crosses places the wall cannot move, and the user asked for the
+     * whole edge, so those are sentences the panel shows rather than refusals.
+     * Empty for every cantilever joint.
+     */
+    val warnings: List<String> = emptyList(),
 ) {
     /** The click the joint is designed to be used at: the deepest catch. */
     val seatedClick: SnapClick? get() = clicks.lastOrNull()

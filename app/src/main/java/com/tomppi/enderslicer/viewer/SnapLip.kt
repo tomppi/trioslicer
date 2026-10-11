@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 /**
@@ -23,45 +24,47 @@ enum class SnapJointStyle(val label: String) {
 }
 
 /**
- * The wall lip: one tooth on the half's own wall, one ledge on solid material
- * opposite it, and the wall between them as the spring.
+ * The wall lip: one tooth RING around the whole seam, one ledge ring on the
+ * mate, and the wall along that edge as the spring.
  *
- * The design, per joint, one feature on each half (docs, and the agreed
- * drawing):
+ * The design, per pair, one feature on each half (the agreed drawing):
  *
- *  - On the half whose wall is free - the LIP half - a TOOTH stands inward from
- *    the wall's inner face, at the mating plane. Its trailing face is FLAT and
- *    perpendicular to the assembly axis; its leading face is a ramp at the
- *    parameter's angle (45 degrees by default, 90 for a square face). The tooth
+ *  - The seam's own outline - the closed contour the split gives - is the shape.
+ *    The half whose wall is free carries a TOOTH that stands inward from the
+ *    wall's inner face and runs the whole way round it: its trailing face is
+ *    FLAT and perpendicular to the assembly axis, and its leading face is a ramp
+ *    at the parameter's angle (45 degrees by default, 90 for a square face). It
  *    is rooted a little way into the wall, so the union is a volume and not two
  *    shells meeting on a plane.
  *  - On the mate - the half the drawing calls embossed, and which has to be
- *    SOLID a little inboard of the wall - the matching LEDGE protrudes outboard
- *    towards the wall: the same angle on its leading face, the same flat trailing
- *    face opposite the tooth's.
+ *    SOLID a little inboard of the wall - the matching LEDGE runs the same ring:
+ *    the same angle on its leading face, the same flat trailing face opposite
+ *    the tooth's.
  *
  * Assembled, the two flat faces are a clearance apart along the axis, and that
  * pair is the whole hold: pulling the halves apart brings them together over the
  * engagement the user set, and every other face of the joint is a ramp that lets
- * the parts close. The wall bends outward as the ledge rides its tooth's ramp
- * and springs back behind it - the tooth passes under the ledge, and the ledge's
- * flat face comes to rest against the tooth's. There is no beam: the only
- * material that moves is the half's own wall, which is why the wall's thickness
- * and free length are measured from the mesh and why a wall that cannot move - a
- * corner, a stub, a solid block - is refused rather than built.
+ * the parts close. The wall bends outward as the ledge rides the ramp and springs
+ * back behind it. There is no beam and there is no single tooth: the hook is the
+ * edge, and the wall that moves is the whole edge with it.
  *
- * A RECESS is cut into the lip half, inboard of the wall's face and open at the
- * mating plane, and it is what makes the rest possible: the tooth stands in it,
- * the mate's ledge comes into it, and the wall it leaves outboard is free to
- * bend. On a half that is already hollow inboard of the wall the recess cuts
- * nothing, which is the usual case for a split box; on a half with material
- * behind the wall it is the cut that frees the wall.
+ * The ring is SWEPT round the contour with every corner mitred, so it closes on
+ * itself with no gap and no staircase, and it lives in a STEP the two halves give
+ * it: the mate's edge is embossed into the lip half's recess, and that band is
+ * sized from the ring - the tooth's height, its ramp's run and the clearances -
+ * rather than left at the shallow key the cantilever's pad uses.
  *
  * The booleans are NOT the cantilever's: the tooth is unioned into the lip half,
  * the recess is subtracted from the SAME half, and the ledge is unioned into the
  * MATE - two unions on two different halves, which the one-union-per-half
  * pipeline cannot express. [SnapFitJoint] still carries the four solids, and
  * placeEveryJoint's lip branch is what knows where each of them goes.
+ *
+ * The wall is read round the whole ring: its thickness, its free length and the
+ * strain, sampled all the way round, with the shortest free length and the worst
+ * strain reported and their place on the contour named. A ring that crosses a
+ * corner or a hollow mate is BUILT AS ASKED and warned about, because the user
+ * asked for the whole edge and the numbers are how he judges it.
  *
  * Pure: mesh probes and arithmetic, no UI, no engine, no state, no I/O.
  */
@@ -74,25 +77,57 @@ object SnapLip {
         data class Refused(val reason: String) : Outcome
     }
 
+/**
+ * The wall lip: one tooth RING around the whole seam, one ledge ring on the
+ * mate, and the wall along that edge as the spring.
+ *
+ * The design, per pair, one feature on each half (docs, and the drawing the user
+ * agreed to):
+ *
+ * - The seam's own outline - the closed contour the split gives - is the shape.
+ *   The half whose wall is free carries a tooth that stands inward from the
+ *   wall's inner face and runs the whole way round it, with a 45 degree ramp on
+ *   its leading face and a flat face behind; the mate carries a matching ledge,
+ *   ring for ring, and assembled the two flat faces meet and that pair is the
+ *   whole hold. The wall bends outward as the ledge rides the ramp and springs
+ *   back behind it. The ring closes at the corners: the profile is swept round
+ *   the contour with mitred corners, not placed piece by piece, so there is no
+ *   gap and no staircase anywhere on it.
+ *
+ * - The ring lives in a step the two halves give it. The mate's edge is embossed
+ *   into the lip half's recess, and that band has to be deep enough for the
+ *   tooth, its ramp and the flat face behind it: the step is sized FROM the ring
+ *   (the tooth's height plus the ramp's run plus the clearance the pair runs on),
+ *   never left at the shallow key the cantilever's pad uses, and the recess is
+ *   that much again plus the clearance.
+ *
+ * - The sizes are the style's, not a tap's: ENGAGEMENT is how far the tooth and
+ *   its ledge overlap - the hold, and the same number all the way round - and
+ *   TOOTH HEIGHT is the tooth's own height, which is also the ceiling on the
+ *   engagement because the tip has to clear the ledge's inner face.
+ *
+ * - The wall is read around the whole ring rather than at one place: its
+ *   thickness, its free length behind the seam, and the strain a full deflection
+ *   puts on it, at every sample. The reading reports the shortest free length and
+ *   the worst strain and says where on the ring they are. A ring that passes
+ *   places where the wall cannot move - a corner, a boss, a hollow mate - is
+ *   built as asked and warned about by name and number, because the user asked
+ *   for the whole edge and the numbers are how he judges it. Only a ring the
+ *   material cannot carry at all is refused.
+ */
     /**
-     * One lip, built on the pair's own faces. [lipHalf] is the half whose wall
-     * carries the tooth - the half the user chose - and [mateHalf] is the mate
-     * that has to give the ledge something solid to stand on.
-     *
-     * Every dimension comes from the parameters and the scale, and every one of
-     * them is then clamped by what the two halves' own material allows; what the
-     * material refused is reported in [SnapFitJoint.clamps] rather than silently
-     * changed.
+     * The tooth ring, the recess it lives in and the mate's ledge ring, all
+     * swept around the seam's own outline. [anchorMm] only has to be a point on
+     * the seam: the ring is the whole contour, so where the tap was does not
+     * shape it.
      */
-    fun build(
+    fun buildRing(
         axis: Vec3,
-        /** The tapped point, in the two halves' own (unplaced) coordinates. */
         anchorMm: Vec3,
         scale: Float,
         lipHalf: SnapFitHalf,
         mateHalf: SnapFitHalf,
         parameters: SnapFitParameters = SnapFitParameters(),
-        requested: SnapFitRung? = null,
     ): Outcome {
         if (!axis.isFinite() || !anchorMm.isFinite() || !scale.isFinite() || scale <= 0f) {
             return Outcome.Refused("cannot be built: the split's axis or the tap is not a real place.")
@@ -106,127 +141,14 @@ object SnapLip {
         val direction = axis.normalized()
             ?: return Outcome.Refused("cannot be built: the assembly direction has no length.")
         val face = lipHalf.faceMm
-        val mateFace = mateHalf.faceMm
-        if (face > mateFace + PLANE_TOLERANCE_MM) {
+        if (face > mateHalf.faceMm + PLANE_TOLERANCE_MM) {
             return Outcome.Refused(
                 "cannot be built: the two halves overlap along the assembly axis, so there is no seam here.",
             )
         }
-        val rawSide = perpendicularTo(direction)
-        val rawRise = direction.cross(rawSide)
-
-        // The tapped point dropped onto each half's own mating face: each half's
-        // frame has its own face at local z = 0, which is what lets the feature on
-        // one half be built without ever looking at where the other half stands.
-        val alongAnchor = anchorMm.dot(direction)
-        val lipOrigin = anchorMm - direction * (alongAnchor - face)
-        val mateOrigin = anchorMm - direction * (alongAnchor - mateFace)
-
-        // The material each half has AT the seam, read in the plane's own two axes
-        // around the tap: the band of rise nearest the tapped point, which is the
-        // wall (or the block, or the corner) on the lip half and the mate's own
-        // face. The tap may be on either half - it marks a place on the seam - so
-        // each half's band is the nearest material to it on that half.
-        val rawLipCap = SnapFit.capTriangles(lipHalf, direction, rawSide, rawRise, face, lipOrigin)
-        val rawMateCap = SnapFit.capTriangles(mateHalf, direction, rawSide, rawRise, face = mateFace, origin = mateOrigin)
-        if (rawLipCap.isEmpty()) {
-            return Outcome.Refused(
-                "cannot be built: the half the tooth goes into has no material at the seam under this tap.",
-            )
-        }
-        // Which of the plane's two axes is the WALL's thickness: the shorter run
-        // of the material through the tap. The tooth stands along the thickness
-        // and the joint is measured across it, so the frame is turned to put the
-        // thickness on the rise axis - the split hands over two axes with no
-        // promise about which is which, and a lip built along the length of a wall
-        // would measure 40 mm of "wall" and refuse everything.
-        val acrossRise = runInRise(rawLipCap, 0f, 0f)
-        val acrossSide = runInSide(rawLipCap, 0f, 0f)
-        val swap = acrossRise != null && acrossSide != null &&
-            acrossRise.endInclusive - acrossRise.start > acrossSide.endInclusive - acrossSide.start
-        val side = if (swap) rawRise else rawSide
-        val risePlane = if (swap) rawSide else rawRise
-        val lipCap = if (swap) {
-            SnapFit.capTriangles(lipHalf, direction, side, risePlane, face, lipOrigin)
-        } else {
-            rawLipCap
-        }
-        val mateCap = if (swap) {
-            SnapFit.capTriangles(mateHalf, direction, side, risePlane, face = mateFace, origin = mateOrigin)
-        } else {
-            rawMateCap
-        }
-        val lipBand = nearestRun(lipCap, 0f)
-            ?: return Outcome.Refused(
-                "cannot be built: there is no material of the tooth's half within " +
-                    millimetres(BAND_SCAN_LIMIT_MM) + " mm of the tap on the seam.",
-            )
-        val mateBand = nearestRun(mateCap, 0f)
-
-        // Which way is INWARD: the tooth and the ledge both stand from the wall's
-        // inner face, into the material the mate has (or the void the part has).
-        // The mate is the evidence - it is the half that has to be solid there -
-        // and where the two halves carry the same band (a wall cut in two, both
-        // hollow inboard) the lip half's own bulk decides, which puts the joint
-        // inside the part rather than on its outside.
-        val inward = chooseInward(lipHalf, lipBand, mateBand, risePlane, anchorMm)
-        val wallFaceAt = if (inward > 0f) lipBand.endInclusive else lipBand.start
-        val wallThickness = lipBand.endInclusive - lipBand.start
-        if (wallThickness < MIN_WALL_MM) {
-            return Outcome.Refused(
-                "cannot be built: the material at this point is only " + millimetres(wallThickness) +
-                    " mm through, and a lip needs a wall to bend (at least " + millimetres(MIN_WALL_MM) +
-                    " mm). Move the joint along the seam.",
-            )
-        }
-        if (wallThickness > MAX_WALL_MM) {
-            return Outcome.Refused(
-                "cannot be built: the material at this point is " + millimetres(wallThickness) +
-                    " mm of solid, not a wall - the lip's spring is the wall it stands on, and this much " +
-                    "material does not bend. Use the cantilever here, or tap nearer the part's own wall.",
-            )
-        }
-        // The frame the features are laid out in: the same two in-plane axes, with
-        // the rise origin moved onto the wall's inner face and the rise sense
-        // turned inward, so the wall's material is at rise < 0 in every number
-        // below and the wall's face is rise = 0.
-        val riseAxis = risePlane * inward
-        val frameOrigin = lipOrigin + risePlane * wallFaceAt
-        val mateFrameOrigin = mateOrigin + risePlane * wallFaceAt
-
-        // Both halves' material at the seam, re-read in the frame the features are
-        // built in: the wall on its own face at rise < 0, and the mate's face
-        // wherever its material begins outboard of the wall's.
-        val wallCap = SnapFit.capTriangles(lipHalf, direction, side, riseAxis, face, frameOrigin)
-        val mateFrameCap = SnapFit.capTriangles(mateHalf, direction, side, riseAxis, face = mateFace, origin = mateFrameOrigin)
-        val wallSeed = -wallThickness * 0.5f
-        if (runAt(wallCap, 0f, wallSeed) == null) {
-            return Outcome.Refused(
-                "cannot be built: the wall measured at the tap is not there when the joint's own frame " +
-                    "is laid over it; tap the middle of the wall.",
-            )
-        }
-
-        // How far the wall runs along the axis behind the seam before it joins
-        // other material: its free length, and the length the strain is computed
-        // over. A wall that joins something within its own thickness is a stub,
-        // not a spring.
-        val freeLength = freeLength(lipHalf, direction, side, riseAxis, face, frameOrigin, wallThickness)
-        if (freeLength < MIN_FREE_LENGTH_MM || freeLength < wallThickness) {
-            return Outcome.Refused(
-                "cannot be built: the wall only runs " + millimetres(freeLength) +
-                    " mm back from the seam before it joins other material, and a " +
-                    millimetres(wallThickness) + " mm wall that short cannot bend. Move the joint " +
-                    "away from the corner or the boss it runs into.",
-            )
-        }
-
-        // The clearance, the tooth and the hold, in model millimetres.
         val clearance = max(parameters.lipClearanceMm * scale, SnapFit.MIN_CLEARANCE_MM)
-        val toothHeight = parameters.lipToothHeightOverrideMm
-            ?: parameters.lipToothHeightMm * scale
-        val engagementAsked = parameters.lipEngagementOverrideMm
-            ?: parameters.lipEngagementMm * scale
+        val toothHeight = parameters.lipToothHeightOverrideMm ?: parameters.lipToothHeightMm * scale
+        val engagementAsked = parameters.lipEngagementOverrideMm ?: parameters.lipEngagementMm * scale
         if (toothHeight <= 0f || engagementAsked <= 0f) {
             return Outcome.Refused("cannot be built: the tooth's height and the engagement must be positive.")
         }
@@ -243,105 +165,81 @@ object SnapLip {
         }
         val square = parameters.rampAngleDeg >= SnapFit.SQUARE_LEAD_IN_DEG
         val rampAngle = if (square) 90f else parameters.rampAngleDeg
-        // The ramp's run along the axis: a square face takes the room a 45-degree
-        // ramp would, exactly as the cantilever's own square lead-in does - the
-        // shape changes, not the space it needs.
         val run = if (square) toothHeight else toothHeight / tan(rampAngle * DEGREES_TO_RADIANS)
         val lipRun = if (square) engagement else engagement / tan(rampAngle * DEGREES_TO_RADIANS)
-        val root = min(wallThickness / 3f, ROOT_MM)
+        // The step the ring needs and the recess that holds it: the tooth's height
+        // and the ramp's run, the clearnces the pair runs on, and the recess that
+        // much again so the mate's emboss goes in with room on every face.
+        val stepDepth = toothHeight + run + 2f * clearance
+        val recessDepth = stepDepth + clearance
 
-        // The strain a full deflection puts on the wall: eps = 3 W d / (2 L^2) for
-        // a rectangular wall of thickness W, free length L, moved by d - the same
-        // closed form the cantilever's readout uses, with the wall's own numbers.
-        // What the wall has to move is the tooth's tip travel: its height less the
-        // clearance the ledge keeps off the wall's face. At the default tooth
-        // height (the engagement plus two clearances) that travel is exactly the
-        // engagement plus the clearance, which is the rule of thumb for the joint;
-        // a taller tooth travels further and is measured as it is.
-        val deflection = max(0f, toothHeight - clearance)
-        val strainPercent = 1.5f * wallThickness * deflection / (freeLength * freeLength) * 100f
-        if (strainPercent > MATERIAL_STRAIN_PERCENT) {
+        // ------------------------------------------------------------ the seam
+        // The plane's own two axes, and the outline the two halves share there:
+        // the contour the split leaves, walked from the lip half's own cap.
+        val side = perpendicularTo(direction)
+        val rise = direction.cross(side)
+        val alongAnchor = anchorMm.dot(direction)
+        val origin = anchorMm - direction * (alongAnchor - face)
+        val cap = SnapFit.capTriangles(lipHalf, direction, side, rise, face, origin)
+        if (cap.isEmpty()) {
             return Outcome.Refused(
-                "cannot be built: a " + millimetres(wallThickness) + " mm wall bent " +
-                    millimetres(deflection) + " mm over a " + millimetres(freeLength) +
-                    " mm free length reaches " + percent(strainPercent) + " at its root, and PLA's own " +
-                    "figure is " + percent(MATERIAL_STRAIN_PERCENT) + ". Lower the engagement or the tooth's " +
-                    "height, or move the joint to a longer wall.",
+                "cannot be built: the lip half has no material at the seam, so there is no edge to " +
+                    "run the ring around.",
             )
         }
-
-        // The mate's own face, in the joint's frame: where its material begins
-        // inboard of the wall, and how much of it there is. The ledge has to stand
-        // on this, and the tooth has to pass outboard of it.
-        val mateRun = nearestRun(mateFrameCap, 0f, from = 0f)
-        val mateStart = mateRun?.start
-        val mateEnd = mateRun?.endInclusive
-        println("MATEDBG run=$mateRun inward=$inward wallFaceAt=$wallFaceAt capSize=" + mateFrameCap.size)
-        if (mateStart == null || mateEnd == null || mateEnd <= toothHeight + clearance) {
-            return Outcome.Refused(
-                "cannot be built: the other half is hollow just inboard of the wall here" +
-                    (if (mateStart != null && mateEnd != null) {
-                        " (its material ends " + millimetres(mateEnd) + " mm in)"
-                    } else {
-                        ""
-                    }) +
-                    ", and the lip's ledge has nothing solid to stand on. Use the cantilever here, or tap " +
-                    "where the other half is solid inboard of the wall.",
+        val contour = SnapFit.capOutlines(cap)
+            .map { counterClockwise(it) }
+            .filter { it.size >= 3 }
+            .maxByOrNull { abs(polygonArea(it)) }
+            ?: return Outcome.Refused(
+                "cannot be built: the seam's own edge could not be read off the lip half.",
             )
+        if (contour.size < 3) {
+            return Outcome.Refused("cannot be built: the seam's edge is a line, not a ring.")
         }
-        // The ledge reaches from its inner face out to the material it stands on:
-        // the plug is thin enough to print and is rooted that far into the mate.
-        val plugOuter = max(toothHeight + clearance + PLUG_THICKNESS_MM, mateStart + ROOT_MM)
-        if (plugOuter > toothHeight + clearance + MAX_SHANK_MM || plugOuter > mateEnd) {
+        val perimeter = perimeterOf(contour)
+        if (perimeter < 2f * PI_ISH || polygonArea(contour) <= 0f) {
             return Outcome.Refused(
-                "cannot be built: the other half's material starts " + millimetres(mateStart) +
-                    " mm inboard of the wall's face, and the lip's ledge reaches only " +
-                    millimetres(toothHeight + clearance + MAX_SHANK_MM) + " mm. Tap where the other half " +
-                    "comes closer to the wall.",
+                "cannot be built: the seam's edge measures " + millimetres(perimeter) +
+                    " mm around, too little to carry a ring.",
             )
         }
 
-        // The tooth's width along the seam, and whether the wall is long enough
-        // there to carry it: a tooth whose width hangs off the end of the wall is
-        // a tooth half in the air, and a wall that turns a corner within its own
-        // reach cannot bend at all.
-        val run0 = sideRun(wallCap, wallSeed)
-        val cornerAt = cornerDistance(wallCap, run0, wallThickness)
-        val askedWidth = parameters.beamWidthMm * scale
-        val halfWidthWanted = askedWidth * 0.5f
-        val wallRoom = max(0f, min(-run0.start, run0.endInclusive) - SIDE_MARGIN_MM - clearance)
-        val cornerRoom = max(0f, cornerAt - SIDE_MARGIN_MM - clearance)
-        val halfWidth = min(halfWidthWanted, min(wallRoom, cornerRoom))
-        // A tooth at a corner is the one failure the user cannot see on the screen:
-        // it is built, it is closed, and the wall it stands on does not move. The
-        // corner is measured, and a tooth that would reach into it is refused by
-        // name rather than squeezed into a stub.
-        if (cornerRoom < halfWidthWanted && cornerRoom <= wallRoom) {
+        // ------------------------------------------------------- the wall, read
+        // The wall's thickness where the ring will stand: the material's own band
+        // inward from the edge, at samples spread around the whole contour. The
+        // ring's own working thickness is the thinner of that and what a printed
+        // wall can be, so a solid block is given a wall to bend rather than
+        // refused for having none.
+        val samples = ringSamples(contour)
+        val bands = samples.map { bandAt(lipHalf, direction, side, rise, origin, it) }
+        // The wall along the seam is the material's own band round the ring: the
+        // middle one, so a single corner read - where two faces meet and any
+        // thickness is true of something - cannot decide it for the whole edge.
+        val measured = bands.mapNotNull { it?.lengthMm }.sorted()
+        val thinnest = measured.getOrNull(measured.size / 2)
+        if (thinnest == null) {
             return Outcome.Refused(
-                "cannot be built: another wall joins the seam " + millimetres(cornerAt) +
-                    " mm along it from this point, and the tooth needs " + millimetres(askedWidth) +
-                    " mm clear of it - a tooth at a corner has nowhere to move, and the wall there " +
-                    "cannot bend. Move the joint away from the corner.",
+                "cannot be built: the lip half's material could not be read anywhere along the seam.",
             )
         }
-        if (halfWidth < MIN_TOOTH_HALF_MM) {
+        if (thinnest < MIN_WALL_MM) {
             return Outcome.Refused(
-                "cannot be built: the wall is only " + millimetres(run0.endInclusive - run0.start) +
-                    " mm long along the seam here, and the tooth needs " +
-                    millimetres(2f * MIN_TOOTH_HALF_MM) + " mm of it. Move the joint to the middle of " +
-                    "the wall.",
+                "cannot be built: the wall along the seam is only " + millimetres(thinnest) +
+                    " mm through at its thinnest, and a lip needs a wall to bend (at least " +
+                    millimetres(MIN_WALL_MM) + " mm). Use the cantilever here.",
             )
         }
-        val width = halfWidth * 2f
+        val wall = min(thinnest, RING_WALL_MM)
         val clamps = ArrayList<SnapFitClamp>()
-        if (halfWidth < halfWidthWanted - CLAMP_EPSILON_MM) {
+        if (thinnest > RING_WALL_MM + CLAMP_EPSILON_MM) {
             clamps += SnapFitClamp(
-                label = "tooth width",
-                askedMm = askedWidth,
-                actualMm = width,
-                reason = "the wall runs only " + millimetres(run0.endInclusive - run0.start) +
-                    " mm along the seam from this point, so the tooth is " + millimetres(width) +
-                    " mm wide rather than " + millimetres(askedWidth) + " mm",
+                label = "wall thickness",
+                askedMm = thinnest,
+                actualMm = wall,
+                reason = "the part is solid along the seam (" + millimetres(thinnest) +
+                    " mm of material), so the ring's own recess leaves a " + millimetres(wall) +
+                    " mm wall to bend",
             )
         }
         if (engagementAsked > engagement + CLAMP_EPSILON_MM) {
@@ -355,82 +253,130 @@ object SnapLip {
             )
         }
 
-        // ------------------------------------------------------------ the tooth
-        // In the (rise, axis) plane, in the lip half's own frame: the hold face at
-        // z = -run (the tooth's base reaches exactly the mating plane, so nothing
-        // of the lip crosses it), the ramp at the parameter's angle up to the tip,
-        // and a root tab a little way into the wall so the union has a volume to
-        // fuse rather than two shells meeting on a plane.
+        // The wall's own face: the seam's edge inset by the wall's thickness, so
+        // the tooth stands on the wall's inner face and the recess is cut inboard
+        // of it. Where that inset folds into itself the ring cannot exist.
+        val wallFace = insetPolygon(contour, wall)
+            ?: return Outcome.Refused(
+                "cannot be built: a " + millimetres(wall) + " mm wall's inner face folds through " +
+                    "itself somewhere along this edge, so there is no room for the ring. Use a " +
+                    "thinner wall, or the cantilever.",
+            )
+
+        // The ring's own numbers, in the frame the seam is read in: the tooth's
+        // root a little way into the wall, the flat face, the ramp at the
+        // parameter's angle, and the recess and ledge that fit round them.
+        val root = min(wall / 3f, ROOT_MM)
         val tip = toothHeight
         val base = -run
-        val toothProfile = if (square) {
-            listOf(
-                Vec3(-halfWidth, -root, base),
-                Vec3(-halfWidth, tip, base),
-                Vec3(-halfWidth, tip, base + run),
-                Vec3(-halfWidth, -root, base + run),
-            )
-        } else {
-            listOf(
-                Vec3(-halfWidth, -root, base),
-                Vec3(-halfWidth, tip, base),
-                Vec3(-halfWidth, 0f, base + run),
-                Vec3(-halfWidth, -root, base + run),
-            )
-        }
-        val lipFrame = SnapFitFrame(frameOrigin, direction, side, riseAxis, frameOrigin.dot(direction))
-        val mateFrame = SnapFitFrame(mateFrameOrigin, direction, side, riseAxis, mateFrameOrigin.dot(direction))
-        val tooth = MeshSolidBuilder(TOOTH_NAME)
-        SnapFit.addPrism(tooth, lipFrame, toothProfile, Vec3(1f, 0f, 0f), width)
-
-        // ----------------------------------------------------------- the recess
-        // Open at the mating plane, outboard bound on the wall's face (the wall is
-        // never touched), deep enough for the tooth and the ledge and no deeper: it
-        // is the room the mate's material comes into and the reason the wall is a
-        // spring rather than a bump on a block.
-        // The recess is open at the seam and bound on the wall's face, with a
-        // relief no deeper than a quarter of the wall: the cut has to keep off the
-        // wall's own surface plane (a cut exactly on it is the coplanar contact
-        // booleans are worst at) without thinning the spring it leaves behind.
-        val recessOuter = -min(clearance, wallThickness * 0.25f)
-        val recessInner = plugOuter + clearance
-        val recessDepth = run + clearance + lipRun + clearance
-        val recessWidth = width + 2f * clearance
-        val recess = MeshSolidBuilder(RECESS_NAME)
-        SnapFit.boxLocal(
-            recess,
-            lipFrame,
-            SnapFit.LocalRect(-recessWidth * 0.5f, recessWidth * 0.5f, recessOuter, recessInner),
-            -recessDepth,
-            0f,
-        )
-
-        // ------------------------------------------------------------ the ledge
-        // The mate's hook, in the mate half's own frame: the bearing face (the
-        // flat that meets the tooth's, the engagement wide and no wider - behind it
-        // the hook is relieved so the tooth's tip passes), the ramp it shares with
-        // the tooth, and a shank that reaches inboard onto the mate's own material.
         val holdAt = base - clearance
         val holdTop = clearance + engagement
         val neckAt = holdAt - min(clearance, lipRun * 0.5f)
-        val rampBack = holdAt - lipRun
-        val ledgeProfile = listOf(
-            Vec3(-halfWidth, clearance, holdAt),
-            Vec3(-halfWidth, holdTop, holdAt),
-            Vec3(-halfWidth, holdTop, neckAt),
-            Vec3(-halfWidth, tip + clearance, neckAt),
-            Vec3(-halfWidth, tip + clearance, ROOT_MM),
-            Vec3(-halfWidth, plugOuter, ROOT_MM),
-            Vec3(-halfWidth, plugOuter, rampBack),
-            Vec3(-halfWidth, holdTop, rampBack),
-        ).let { points ->
-            // A square tooth has a face across the axis, and the ledge's leading
-            // face has to be the same shape or the two would meet ramp-to-flat.
-            // The room it takes is the ramp's either way.
-            if (square) points + Vec3(-halfWidth, clearance, rampBack) else points
+        // The ledge's ramp spans the whole run the step was sized for, so the
+        // mate's emboss is as deep as the ring needs and no deeper.
+        val rampBack = holdAt - run
+        val recessOuter = -min(clearance, wall * 0.25f)
+        val plugOuter = tip + clearance + PLUG_THICKNESS_MM
+        val recessInner = plugOuter + clearance
+
+        // --------------------------------------------------- the ring, measured
+        // The free length and the strain around the whole ring: the shortest free
+        // length found, the worst strain, and where on the contour they are. A
+        // ring that passes a corner or a boss is not refused for it - the user
+        // asked for the whole edge - it is warned about by name and number.
+        val deflection = max(0f, toothHeight - clearance)
+        val reading = measureRing(
+            lipHalf = lipHalf,
+            mateHalf = mateHalf,
+            axis = direction,
+            side = side,
+            rise = rise,
+            origin = origin,
+            contour = wallFace,
+            wall = wall,
+            recessDepth = recessDepth,
+            deflection = deflection,
+            samples = samples,
+            face = face,
+            direction = direction,
+            mateMustStartBy = tip + clearance + CLAMP_EPSILON_MM,
+            mateMustReach = plugOuter,
+        )
+        if (reading.hollowSamples * 10 >= samples.size * 9) {
+            return Outcome.Refused(
+                "cannot be built: the other half is hollow just inboard of the wall the whole way " +
+                    "round the seam (its material ends " + millimetres(reading.hollowEndMm) +
+                    " mm in at its best), and the ring's ledge has nothing solid to stand on. Use the " +
+                    "cantilever here.",
+            )
         }
-        val ledge = MeshSolidBuilder(LEDGE_NAME)
-        SnapFit.addPrism(ledge, mateFrame, ledgeProfile, Vec3(1f, 0f, 0f), width)
+        val warnings = ArrayList<String>()
+        if (reading.minFreeMm < MIN_FREE_LENGTH_MM || reading.minFreeMm < wall) {
+            warnings += "along " + millimetres(reading.minFreeAtMm) + " mm of the seam the wall only " +
+                "runs " + millimetres(reading.minFreeMm) + " mm back before it joins other material, " +
+                "and a " + millimetres(wall) + " mm wall that short cannot bend: the ring is there and " +
+                "that part of it will not move."
+        }
+        if (reading.maxStrainPercent > MATERIAL_STRAIN_PERCENT) {
+            warnings += "the worst place is " + millimetres(reading.maxStrainAtMm) + " mm along the " +
+                "seam, where a " + millimetres(wall) + " mm wall bent " + millimetres(reading.deflectionMm) +
+                " mm over " + millimetres(reading.minFreeMm) + " mm free reaches " +
+                percent(reading.maxStrainPercent) + " - past PLA's own " +
+                percent(MATERIAL_STRAIN_PERCENT) + " figure. Lower the engagement or the tooth's height."
+        }
+        if (reading.cornerAtMm != null) {
+            warnings += "another wall joins the seam " + millimetres(reading.cornerDistanceMm) +
+                " mm along it from " + millimetres(reading.cornerAtMm) + " mm, and the wall there cannot " +
+                "bend: the ring crosses it, and that stretch of the hook will not flex."
+        }
+        if (reading.hollowAtMm != null) {
+            warnings += "the other half is hollow just inboard of the wall around " +
+                millimetres(reading.hollowAtMm) + " mm along the seam (its material ends " +
+                millimetres(reading.hollowEndMm) + " mm in), so the ledge has no solid to stand on there."
+        }
+
+        // ----------------------------------------------------------- the rings
+        val toothProfile = if (square) {
+            listOf(
+                -root to base,
+                tip to base,
+                tip to base + run,
+                -root to base + run,
+            )
+        } else {
+            listOf(
+                -root to base,
+                tip to base,
+                0f to base + run,
+                -root to base + run,
+            )
+        }
+        val recessProfile = listOf(
+            recessOuter to -recessDepth,
+            recessInner to -recessDepth,
+            recessInner to RECESS_OVER_MM,
+            recessOuter to RECESS_OVER_MM,
+        )
+        val ledgeProfile = listOf(
+            clearance to holdAt,
+            holdTop to holdAt,
+            holdTop to neckAt,
+            tip + clearance to neckAt,
+            tip + clearance to ROOT_MM,
+            plugOuter to ROOT_MM,
+            plugOuter to rampBack,
+            holdTop to rampBack,
+        ) + if (square) listOf(clearance to rampBack) else emptyList()
+
+        val tooth = ringMesh(TOOTH_NAME, wallFace, direction, side, rise, origin, toothProfile)
+            ?: return Outcome.Refused(
+                "cannot be built: the tooth ring folds through itself on this edge, so it cannot be " +
+                    "printed as one closed hook.",
+            )
+        val recess = ringMesh(RECESS_NAME, wallFace, direction, side, rise, origin, recessProfile)
+            ?: return Outcome.Refused("cannot be built: the recess ring folds through itself on this edge.")
+        val ledge = ringMesh(LEDGE_NAME, wallFace, direction, side, rise, origin, ledgeProfile)
+            ?: return Outcome.Refused("cannot be built: the ledge ring folds through itself on this edge.")
 
         val dimensions = SnapFitDimensions(
             style = SnapJointStyle.WALL_LIP,
@@ -440,8 +386,8 @@ object SnapLip {
             keyClearanceMm = 0f,
             keyOffsetMm = 0f,
             beamLengthMm = run,
-            beamWidthMm = width,
-            beamThicknessMm = wallThickness,
+            beamWidthMm = 0f,
+            beamThicknessMm = wall,
             beamRootMm = root,
             lipDepthMm = toothHeight,
             lipRunMm = run,
@@ -450,59 +396,617 @@ object SnapLip {
             rampAngleDeg = rampAngle,
             beamTipMm = run,
             lipBackMm = holdAt,
-            stepDepthMm = 0f,
-            stepRootMm = 0f,
-            stepRimMm = 0f,
-            stepClearanceMm = 0f,
-            rootStrainPercent = strainPercent,
+            stepDepthMm = stepDepth,
+            stepRootMm = ROOT_MM,
+            stepRimMm = clearance,
+            stepClearanceMm = clearance,
+            rootStrainPercent = reading.maxStrainPercent,
             barbCount = 1,
             toothPitchMm = 0f,
             teethCatchMm = listOf(base),
             pawlMm = holdAt,
             pawlLandMm = lipRun,
             clickGapMm = listOf(clearance),
-            deflectionMm = deflection,
+            deflectionMm = reading.deflectionMm,
             deflectionRoomMm = 0f,
             mouthChamferMm = 0f,
             mouthChamferAngleDeg = 0f,
             facing = SnapFacing.SAME,
-            wallThicknessMm = wallThickness,
-            wallFreeLengthMm = freeLength,
+            wallThicknessMm = wall,
+            wallFreeLengthMm = reading.minFreeMm,
             lipEngagementMm = engagement,
             lipToothHeightMm = toothHeight,
-            lipDeflectionMm = deflection,
-            lipStrainPercent = strainPercent,
-            lipWidthMm = width,
+            lipDeflectionMm = reading.deflectionMm,
+            lipStrainPercent = reading.maxStrainPercent,
+            lipWidthMm = perimeter,
             lipHoldAtMm = holdAt,
             lipHoldTopMm = holdTop,
             lipRecessMm = recessDepth,
             lipRecessInnerMm = recessInner,
+            lipStepMm = stepDepth,
+            // The hooks run on the wall's face, not on the part's outer edge: the
+            // ring's own length is the contour the tooth stands on.
+            lipRingMm = perimeterOf(wallFace),
+            lipSamples = samples.size,
+            lipWorstAtMm = reading.maxStrainAtMm,
         )
+        val frame = SnapFitFrame(origin, direction, side, rise, origin.dot(direction))
         return Outcome.Built(
             SnapFitJoint(
-                // The tooth goes into the half the user chose, the recess is cut
-                // from that same half, and the ledge is unioned into the mate.
-                unionSolid = SnapFit.placeOnPlate(tooth.build(), lipHalf, TOOTH_NAME),
-                subtractSolid = SnapFit.placeOnPlate(recess.build(), lipHalf, RECESS_NAME),
-                registrationSolid = SnapFit.placeOnPlate(ledge.build(), mateHalf, LEDGE_NAME),
-                // The lip has no second recess: the cantilever's slot for one is
-                // filled with an empty mesh so the pipeline's own shape is kept.
+                unionSolid = SnapFit.placeOnPlate(tooth, lipHalf, TOOTH_NAME),
+                subtractSolid = SnapFit.placeOnPlate(recess, lipHalf, RECESS_NAME),
+                registrationSolid = SnapFit.placeOnPlate(ledge, mateHalf, LEDGE_NAME),
                 registrationRecess = MeshSolidBuilder(LEDGE_NAME).build(),
-                frame = SnapFit.placeFrame(lipHalf, lipFrame),
-                socketFrame = SnapFit.placeFrame(mateHalf, mateFrame),
+                frame = SnapFit.placeFrame(lipHalf, frame),
+                socketFrame = SnapFit.placeFrame(mateHalf, frame),
                 dimensions = dimensions,
                 style = SnapJointStyle.WALL_LIP,
-                // The lip is no rung of the cantilever's ladder: it is always the
-                // single feature this file builds, and a rung of FULL here would
-                // send it through the pad's contouring, which is the cantilever's.
                 rung = SnapFitRung.MINIMAL,
                 rungReason = null,
                 clamps = clamps,
+                warnings = warnings,
                 clicks = listOf(SnapClick(order = 1, gapMm = clearance, label = SnapFit.SEATED_CLICK)),
             ),
         )
     }
 
+    /**
+     * How far the wall runs along the axis behind the seam before it joins other
+     * material: the free length the strain is computed over.
+     *
+     * A slice a little behind the mating face is walked back one step at a time,
+     * and the material's rise band at each slice is read from the triangles that
+     * cross it, within a window around the anchor's own side. The wall ends where
+     * that band is suddenly more than the wall - it has joined a boss, a base or
+     * another wall - or where the material is gone, which is the wall's own free
+     * end and as good a spring as it gets.
+     */
+    private fun freeLength(
+        half: SnapFitHalf,
+        direction: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        face: Float,
+        origin: Vec3,
+        /** The wall's thickness, measured at the seam: what "still the wall" means here. */
+        wallThickness: Float,
+        /** How far behind the seam the ring's own recess has already freed the wall. */
+        freedDownToMm: Float = 0f,
+    ): Float {
+        val probes = listOfNotNull(half.probe(direction), half.probe(side), half.probe(rise))
+        if (probes.size != 3) return 0f
+        val along = probes[0]
+        val across = probes[1]
+        val through = probes[2]
+        val originSide = origin.dot(side)
+        val originRise = origin.dot(rise)
+        val vertices = half.mesh.interleavedVertices
+        val count = half.mesh.triangleCount
+        val sideAt = FloatArray(count * 3)
+        val riseAt = FloatArray(count * 3)
+        val alongAt = FloatArray(count * 3)
+        for (vertex in 0 until count * 3) {
+            val base = vertex * MeshSolidBuilder.FLOATS_PER_VERTEX
+            val x = vertices[base]
+            val y = vertices[base + 1]
+            val z = vertices[base + 2]
+            sideAt[vertex] = across(x, y, z) - originSide
+            riseAt[vertex] = through(x, y, z) - originRise
+            alongAt[vertex] = along(x, y, z)
+        }
+        // The walk starts just behind the seam, where the wall's own side faces
+        // cross the slice: the plane of the mating face itself is a face, and a
+        // slice through it is the cap the thickness was measured from already.
+        val ceiling = wallThickness + max(CORNER_TOLERANCE_MM, wallThickness * 0.5f)
+        fun stillWall(at: Float): Boolean {
+            // Inside the ring's own recess the wall is free by construction - that
+            // is what the recess is for - so a solid part's walk is not ended by
+            // the block the recess was cut into.
+            if (at <= freedDownToMm) return true
+            // This walk's origin is on the wall's OUTER surface, so the wall lies
+            // at positive rise from it: the seed is half its thickness in.
+            val band = sliceBand(sideAt, riseAt, alongAt, count, face, -at, seed = wallThickness * 0.5f)
+                ?: return false
+            return band.endInclusive - band.start <= ceiling
+        }
+        var walked = 0f
+        var step = 0
+        while (step++ < MAX_FREE_PROBES && walked < MAX_FREE_LENGTH_MM) {
+            val previous = walked
+            walked += FREE_STEP_MM
+            if (stillWall(walked)) continue
+            // The wall's end is between the two probes - its own free end, or the
+            // material it joins - and it is closed by halving the gap, because a
+            // free length a step too long is a strain read a third too low.
+            var inside = previous
+            var outside = walked
+            repeat(REFINE_STEPS) {
+                val middle = (inside + outside) * 0.5f
+                if (stillWall(middle)) inside = middle else outside = middle
+            }
+            return inside
+        }
+        return walked
+    }
+
+    /** Whether the cap's band at [x] is more than the wall the tooth stands on. */
+    private fun bandThicker(cap: List<SnapFit.CapTriangle>, x: Float, wallThickness: Float): Boolean {
+        for (y in 0 until BAND_PROBES) {
+            val at = -BAND_PROBES * BAND_STEP_MM * 0.5f + y * BAND_STEP_MM
+            if (!capContains(cap, x, at)) continue
+            val run = runAt(cap, x, at) ?: continue
+            if (run.endInclusive - run.start > wallThickness + max(CORNER_TOLERANCE_MM, wallThickness * 0.5f)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * The rise band of the material crossing the plane [behind] millimetres along
+     * the axis, within a window either side of the anchor's own side: the wall's
+     * thickness at that slice.
+     *
+     * Each triangle the plane cuts becomes a segment, and the segment is read at
+     * the window rather than at its own ends: a wall's faces are big triangles
+     * whose crossing points sit at the part's corners, so a filter that only kept
+     * the points inside the window would find nothing at all and call every wall
+     * a stub.
+     */
+    private fun sliceBand(
+        sideAt: FloatArray,
+        riseAt: FloatArray,
+        alongAt: FloatArray,
+        triangles: Int,
+        face: Float,
+        behind: Float,
+        /** A rise the wall is known to occupy: the run through it is the one wanted. */
+        seed: Float,
+    ): ClosedFloatingPointRange<Float>? {
+        val plane = face + behind
+        val crossings = ArrayList<Float>()
+        fun include(y: Float) {
+            crossings += y
+        }
+        for (triangle in 0 until triangles) {
+            val a = triangle * 3
+            var firstSide = 0f
+            var firstRise = 0f
+            var secondSide = 0f
+            var secondRise = 0f
+            var crossings = 0
+            for (edge in 0 until 3) {
+                val first = a + edge
+                val second = a + (edge + 1) % 3
+                val one = alongAt[first] - plane
+                val two = alongAt[second] - plane
+                if ((one > 0f) == (two > 0f)) continue
+                val span = one - two
+                if (abs(span) < SLICE_EPSILON_MM) continue
+                val t = one / span
+                val x = sideAt[first] + (sideAt[second] - sideAt[first]) * t
+                val y = riseAt[first] + (riseAt[second] - riseAt[first]) * t
+                if (crossings == 0) {
+                    firstSide = x
+                    firstRise = y
+                    crossings = 1
+                } else if (crossings == 1) {
+                    secondSide = x
+                    secondRise = y
+                    crossings = 2
+                }
+            }
+            if (crossings == 0) continue
+            if (crossings == 1) {
+                if (abs(firstSide) <= SLICE_WINDOW_MM) include(firstRise)
+                continue
+            }
+            // The piece of the segment the window covers, read at its own ends.
+            val lowSide = min(firstSide, secondSide)
+            val highSide = max(firstSide, secondSide)
+            val fromSide = max(lowSide, -SLICE_WINDOW_MM)
+            val toSide = min(highSide, SLICE_WINDOW_MM)
+            if (fromSide > toSide) continue
+            if (abs(highSide - lowSide) < SLICE_EPSILON_MM) {
+                include(firstRise)
+                include(secondRise)
+                continue
+            }
+            val slope = (secondRise - firstRise) / (secondSide - firstSide)
+            include(firstRise + (fromSide - firstSide) * slope)
+            include(firstRise + (toSide - firstSide) * slope)
+        }
+        if (crossings.isEmpty()) return null
+        // The wall is the material the seed sits IN, not everything the slice meets:
+        // a tray's two opposite walls are both crossed at the anchor's side, and the
+        // span from one to the other is the cavity, not the wall. The crossings
+        // either side of the seed bound the piece it is inside - counted once each,
+        // because a face is two triangles and the slice crosses both of them.
+        crossings.sort()
+        val edges = ArrayList<Float>(crossings.size)
+        for (y in crossings) {
+            if (edges.isEmpty() || abs(y - edges.last()) > SLICE_EDGE_MM) edges += y
+        }
+        var below = 0
+        for (y in edges) if (y < seed) below++
+        if (below % 2 == 0) return null
+        val low = edges.last { it < seed }
+        val high = edges.firstOrNull { it > seed } ?: return null
+        return low..high
+    }
+
+    /** A point in the seam's own plane, in the frame the ring is laid out in. */
+    private data class P2(val x: Float, val y: Float) {
+        operator fun plus(other: P2) = P2(x + other.x, y + other.y)
+        operator fun minus(other: P2) = P2(x - other.x, y - other.y)
+        operator fun times(scale: Float) = P2(x * scale, y * scale)
+        fun dot(other: P2) = x * other.x + y * other.y
+        fun cross(other: P2) = x * other.y - y * other.x
+        val length: Float get() = sqrt(x * x + y * y)
+        fun unit(): P2? {
+            val size = length
+            return if (size < 1e-6f) null else P2(x / size, y / size)
+        }
+    }
+
+    /** One place the ring is read at: where it is on the contour, and its own two directions. */
+    private class RingSample(
+        /** How far along the contour this sample sits, from the contour's first point. */
+        val atMm: Float,
+        /** The sample in the plane's own axes. */
+        val point: P2,
+        /** The contour's direction there. */
+        val edge: P2,
+        /** The contour's inward normal there: the way the tooth stands. */
+        val inward: P2,
+        /** Which edge of the contour this sample sits on. */
+        val edgeIndex: Int,
+    )
+
+    /** The material's own band inward from the seam, at one place on the ring. */
+    private class RingBand(val startMm: Float, val lengthMm: Float)
+
+    /** What the ring's own reading found around the whole contour. */
+    private class RingReading(
+        val minFreeMm: Float,
+        val minFreeAtMm: Float,
+        val maxStrainPercent: Float,
+        val maxStrainAtMm: Float,
+        val deflectionMm: Float,
+        val cornerAtMm: Float?,
+        val cornerDistanceMm: Float,
+        val hollowAtMm: Float?,
+        val hollowEndMm: Float,
+        /** How many of the ring's samples have no mate material to stand the ledge on. */
+        val hollowSamples: Int,
+    )
+
+    /** The same points, wound counter-clockwise and with repeated corners dropped. */
+    private fun counterClockwise(points: List<Pair<Float, Float>>): List<P2> {
+        val welded = ArrayList<P2>()
+        for ((x, y) in points) {
+            val point = P2(x, y)
+            if (welded.isEmpty() || (point - welded.last()).length > WELD_MM) welded += point
+        }
+        if (welded.size >= 2 && (welded.first() - welded.last()).length <= WELD_MM) welded.removeAt(welded.size - 1)
+        if (welded.size < 3) return welded
+        return if (polygonArea(welded) < 0f) welded.reversed() else welded
+    }
+
+    private fun polygonArea(points: List<P2>): Float {
+        var twice = 0f
+        for (at in points.indices) {
+            val here = points[at]
+            val next = points[(at + 1) % points.size]
+            twice += here.cross(next)
+        }
+        return twice * 0.5f
+    }
+
+    private fun perimeterOf(points: List<P2>): Float {
+        var total = 0f
+        for (at in points.indices) total += (points[(at + 1) % points.size] - points[at]).length
+        return total
+    }
+
+    private fun insidePolygon(points: List<P2>, point: P2): Boolean {
+        var inside = false
+        for (at in points.indices) {
+            val a = points[at]
+            val b = points[(at + 1) % points.size]
+            if ((a.y > point.y) != (b.y > point.y)) {
+                val x = a.x + (point.y - a.y) / (b.y - a.y) * (b.x - a.x)
+                if (point.x < x) inside = !inside
+            }
+        }
+        return inside
+    }
+
+    /**
+     * The point a corner's own offset lands on: where the two edges either side of
+     * it, each moved [distance] along its inward normal, meet. Both a wall's inner
+     * face and every swept profile corner are this, which is what closes the ring
+     * at a corner instead of leaving a notch or a staircase.
+     */
+    private fun offsetVertex(previous: P2, here: P2, next: P2, distance: Float): P2? {
+        val inEdge = (here - previous).unit() ?: return null
+        val outEdge = (next - here).unit() ?: return null
+        val a = here + P2(-inEdge.y, inEdge.x) * distance
+        val b = here + P2(-outEdge.y, outEdge.x) * distance
+        val denominator = inEdge.cross(outEdge)
+        if (abs(denominator) < 1e-5f) return b
+        val t = (b - a).cross(outEdge) / denominator
+        return a + inEdge * t
+    }
+
+    /** The contour moved inward by [distance], or null where it would fold through itself. */
+    private fun insetPolygon(contour: List<P2>, distance: Float): List<P2>? {
+        val out = ArrayList<P2>(contour.size)
+        for (at in contour.indices) {
+            val point = offsetVertex(
+                contour[(at + contour.size - 1) % contour.size],
+                contour[at],
+                contour[(at + 1) % contour.size],
+                distance,
+            ) ?: return null
+            out += point
+        }
+        if (polygonArea(out) <= 0f) return null
+        for (point in out) if (!insidePolygon(contour, point)) return null
+        return out
+    }
+
+    /** The places the ring is read at, spread around the whole contour. */
+    private fun ringSamples(contour: List<P2>): List<RingSample> {
+        val all = ArrayList<RingSample>()
+        var travelled = 0f
+        for (at in contour.indices) {
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            val edge = next - here
+            val length = edge.length
+            // A boolean engine's outline carries slivers where faces were cut; a
+            // wall is never half a millimetre long, and a sample on a sliver reads
+            // the corner it sits in rather than the wall.
+            if (length < MIN_RING_EDGE_MM) continue
+            val along = edge * (1f / length)
+            val inward = P2(-along.y, along.x)
+            val steps = max(1, ceil(length / RING_SAMPLE_MM).toInt())
+            for (step in 0 until steps) {
+                val where = length * (step + 0.5f) / steps
+                all += RingSample(travelled + where, here + along * where, along, inward, at)
+            }
+            travelled += length
+        }
+        if (all.size <= MAX_RING_SAMPLES) return all
+        val thinned = ArrayList<RingSample>(MAX_RING_SAMPLES)
+        for (at in 0 until MAX_RING_SAMPLES) thinned += all[at * all.size / MAX_RING_SAMPLES]
+        return thinned
+    }
+
+    /** The material's own band inward from one place on the seam. */
+    private fun bandAt(
+        half: SnapFitHalf,
+        axis: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        sample: RingSample,
+    ): RingBand? {
+        val point = origin + side * sample.point.x + rise * sample.point.y
+        val edgeAxis = side * sample.edge.x + rise * sample.edge.y
+        val inwardAxis = side * sample.inward.x + rise * sample.inward.y
+        val cap = SnapFit.capTriangles(half, axis, edgeAxis, inwardAxis, half.faceMm, point)
+        val run = runAt(cap, 0f, 0f) ?: return null
+        return RingBand(run.start, run.endInclusive - run.start)
+    }
+
+    /** The mate's material inward from one place, in the same frame the lip is read in. */
+    private fun mateBandAt(
+        mateHalf: SnapFitHalf,
+        axis: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        sample: RingSample,
+    ): RingBand? {
+        val point = origin + side * sample.point.x + rise * sample.point.y
+        val edgeAxis = side * sample.edge.x + rise * sample.edge.y
+        val inwardAxis = side * sample.inward.x + rise * sample.inward.y
+        val cap = SnapFit.capTriangles(mateHalf, axis, edgeAxis, inwardAxis, mateHalf.faceMm, point)
+        val run = nearestRun(cap, 0f, from = 0f) ?: return null
+        return RingBand(run.start, run.endInclusive - run.start)
+    }
+
+    /**
+     * The free length and the strain around the whole ring.
+     *
+     * One slice of the lip half is taken every half millimetre behind the seam
+     * and every sample still standing is read off it in the same pass: the wall is
+     * still free where the slice's material is the wall's own thickness, and it
+     * stops being free where the material behind it closes up. Inside the ring's
+     * own recess the wall is free by construction - that is what the recess is
+     * for - so those slices do not end it early on a solid part.
+     */
+    private fun measureRing(
+        lipHalf: SnapFitHalf,
+        mateHalf: SnapFitHalf,
+        axis: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        contour: List<P2>,
+        wall: Float,
+        recessDepth: Float,
+        deflection: Float,
+        samples: List<RingSample>,
+        face: Float,
+        direction: Vec3,
+        /** The innermost place the ledge's plug needs the mate's material to have begun. */
+        mateMustStartBy: Float,
+        /** And how far in it has to reach, or the plug has nothing to root in. */
+        mateMustReach: Float,
+    ): RingReading {
+        // The wall's own walk, at places spread around the ring: the same measured
+        // walk the single joint used, which the dev phone's tray confirmed, asked
+        // at eight points instead of one.
+        // One place per edge, at its middle: a corner is where two faces meet and
+        // a slice through it belongs to neither, so the walk is asked where the
+        // wall runs straight rather than at the seam's own joints.
+        val walkSamples = samples.groupBy { it.edgeIndex }.values
+            .map { group -> group[group.size / 2] }
+            .take(WALK_SAMPLES)
+
+        var minFree = Float.MAX_VALUE
+        var minFreeAt = 0f
+        var maxStrain = 0f
+        var maxStrainAt = 0f
+        for (sample in walkSamples) {
+            val point = origin + side * sample.point.x + rise * sample.point.y
+            val edgeAxis = side * sample.edge.x + rise * sample.edge.y
+            val inwardAxis = side * sample.inward.x + rise * sample.inward.y
+            val length = freeLength(
+                half = lipHalf,
+                direction = direction,
+                side = edgeAxis,
+                rise = inwardAxis,
+                face = face,
+                origin = point,
+                wallThickness = wall,
+                freedDownToMm = recessDepth,
+            )
+            val strain = 1.5f * wall * deflection / (max(length, 0.01f) * max(length, 0.01f)) * 100f
+            if (length < minFree) {
+                minFree = length
+                minFreeAt = sample.atMm
+            }
+            if (strain > maxStrain) {
+                maxStrain = strain
+                maxStrainAt = sample.atMm
+            }
+        }
+        if (minFree == Float.MAX_VALUE) {
+            minFree = MAX_FREE_LENGTH_MM
+            minFreeAt = 0f
+        }
+
+        // A corner the ring crosses, and a mate that is hollow inboard of the wall:
+        // both are places the hook is built and cannot work, and both are named
+        // with their numbers rather than refused.
+        var cornerAt: Float? = null
+        var cornerDistance = 0f
+        var hollowAt: Float? = null
+        var hollowEnd = 0f
+        var hollowSamples = 0
+        for (at in samples.indices) {
+            val sample = samples[at]
+            val point = origin + side * sample.point.x + rise * sample.point.y
+            val edgeAxis = side * sample.edge.x + rise * sample.edge.y
+            val inwardAxis = side * sample.inward.x + rise * sample.inward.y
+            if (cornerAt == null) {
+                val cap = SnapFit.capTriangles(lipHalf, direction, edgeAxis, inwardAxis, face, point)
+                val band = runAt(cap, 0f, 0f)
+                if (band != null) {
+                    val distance = cornerDistance(cap, band, wall)
+                    if (distance < CORNER_NEAR_MM) {
+                        cornerAt = sample.atMm
+                        cornerDistance = distance
+                    }
+                }
+            }
+            val mate = mateBandAt(mateHalf, direction, side, rise, origin, sample)
+            val reach = if (mate == null) 0f else mate.startMm + mate.lengthMm
+            if (mate == null || mate.startMm > mateMustStartBy || reach < mateMustReach) {
+                hollowSamples++
+                if (hollowAt == null) {
+                    hollowAt = sample.atMm
+                    hollowEnd = if (mate == null) 0f else mate.startMm
+                }
+            }
+        }
+        return RingReading(
+            minFreeMm = minFree,
+            minFreeAtMm = minFreeAt,
+            maxStrainPercent = maxStrain,
+            maxStrainAtMm = maxStrainAt,
+            deflectionMm = deflection,
+            cornerAtMm = cornerAt,
+            cornerDistanceMm = cornerDistance,
+            hollowAtMm = hollowAt,
+            hollowEndMm = hollowEnd,
+            hollowSamples = hollowSamples,
+        )
+    }
+
+
+
+    /**
+     * One profile swept around the wall's face: the ring itself. The profile's
+     * first coordinate runs inward from the wall's face and its second along the
+     * axis, and every corner of the contour is mitred, so the ring closes on
+     * itself with no gap and no staircase.
+     */
+    private fun ringMesh(
+        name: String,
+        contour: List<P2>,
+        axis: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        profile: List<Pair<Float, Float>>,
+    ): StlMesh? {
+        if (contour.size < 3 || profile.size < 3) return null
+        val corners = ArrayList<P2>(contour.size * profile.size)
+        for (at in contour.indices) {
+            val previous = contour[(at + contour.size - 1) % contour.size]
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            for ((radius, height) in profile) {
+                val point = offsetVertex(previous, here, next, radius) ?: return null
+                corners += point
+            }
+        }
+        fun vertex(sample: Int, corner: Int): Vec3 {
+            val point = corners[sample * profile.size + corner]
+            val (_, height) = profile[corner]
+            return origin + side * point.x + rise * point.y + axis * height
+        }
+        val faces = ArrayList<Array<Vec3>>()
+        for (sample in contour.indices) {
+            val next = (sample + 1) % contour.size
+            for (corner in profile.indices) {
+                val after = (corner + 1) % profile.size
+                val a = vertex(sample, corner)
+                val b = vertex(sample, after)
+                val c = vertex(next, after)
+                val d = vertex(next, corner)
+                faces += arrayOf(a, b, c)
+                faces += arrayOf(a, c, d)
+            }
+        }
+        // A closed sweep's own sense depends on which way the profile is wound and
+        // which way the contour runs: the mesh is only useful wound outward, so it
+        // is measured and turned round if it came out inside-out.
+        var sixTimesVolume = 0f
+        for (face in faces) {
+            val a = face[0]
+            val b = face[1]
+            val c = face[2]
+            sixTimesVolume += a.dot(b.cross(c))
+        }
+        val builder = MeshSolidBuilder(name)
+        for (face in faces) {
+            val a = face[0]
+            val b = if (sixTimesVolume >= 0f) face[1] else face[2]
+            val c = if (sixTimesVolume >= 0f) face[2] else face[1]
+            builder.addTriangle(
+                a.x, a.y, a.z,
+                b.x, b.y, b.z,
+                c.x, c.y, c.z,
+            )
+        }
+        return builder.build()
+    }
     /**
      * The contiguous band of rise the cap covers around [seed], at side [x].
      *
@@ -601,33 +1105,7 @@ object SnapLip {
     private fun runInRise(cap: List<SnapFit.CapTriangle>, x: Float, from: Float): ClosedFloatingPointRange<Float>? =
         runAt(cap, x, from)
 
-    /** The contiguous run of cap material along the side axis, at rise [y]. */
-    private fun runInSide(cap: List<SnapFit.CapTriangle>, y: Float, from: Float): ClosedFloatingPointRange<Float>? {
-        if (!insideAt(cap, from, y)) return null
-        var lo = from
-        var hi = from
-        var guard = 0
-        while (guard++ < MAX_BAND_PROBES && capContains(cap, lo - BAND_STEP_MM, y)) lo -= BAND_STEP_MM
-        guard = 0
-        while (guard++ < MAX_BAND_PROBES && capContains(cap, hi + BAND_STEP_MM, y)) hi += BAND_STEP_MM
-        return refine(cap, y, lo, lo - BAND_STEP_MM, rise = false)..
-            refine(cap, y, hi, hi + BAND_STEP_MM, rise = false)
-    }
 
-    /**
-     * The cap's run along the seam at the anchor's own rise: how much wall there
-     * is to either side of the tap.
-     */
-    private fun sideRun(cap: List<SnapFit.CapTriangle>, riseAt: Float): ClosedFloatingPointRange<Float> {
-        var lo = 0f
-        var hi = 0f
-        var guard = 0
-        while (guard++ < MAX_SIDE_PROBES && capContains(cap, lo - SIDE_STEP_MM, riseAt)) lo -= SIDE_STEP_MM
-        guard = 0
-        while (guard++ < MAX_SIDE_PROBES && capContains(cap, hi + SIDE_STEP_MM, riseAt)) hi += SIDE_STEP_MM
-        return refine(cap, riseAt, lo, lo - SIDE_STEP_MM, rise = false)..
-            refine(cap, riseAt, hi, hi + SIDE_STEP_MM, rise = false)
-    }
 
     /**
      * How far along the seam the wall runs before another wall joins it: a corner,
@@ -651,207 +1129,9 @@ object SnapLip {
         return reach
     }
 
-    /** Whether the cap's band at [x] is more than the wall the tooth stands on. */
-    private fun bandThicker(cap: List<SnapFit.CapTriangle>, x: Float, wallThickness: Float): Boolean {
-        for (y in 0 until BAND_PROBES) {
-            val at = -BAND_PROBES * BAND_STEP_MM * 0.5f + y * BAND_STEP_MM
-            if (!capContains(cap, x, at)) continue
-            val run = runAt(cap, x, at) ?: continue
-            if (run.endInclusive - run.start > wallThickness + max(CORNER_TOLERANCE_MM, wallThickness * 0.5f)) {
-                return true
-            }
-        }
-        return false
-    }
 
-    /**
-     * How far the wall runs along the axis behind the seam before it joins other
-     * material: the free length the strain is computed over.
-     *
-     * A slice a little behind the mating face is walked back one step at a time,
-     * and the material's rise band at each slice is read from the triangles that
-     * cross it, within a window around the anchor's own side. The wall ends where
-     * that band is suddenly more than the wall - it has joined a boss, a base or
-     * another wall - or where the material is gone, which is the wall's own free
-     * end and as good a spring as it gets.
-     */
-    private fun freeLength(
-        half: SnapFitHalf,
-        direction: Vec3,
-        side: Vec3,
-        rise: Vec3,
-        face: Float,
-        origin: Vec3,
-        /** The wall's thickness, measured at the seam: what "still the wall" means here. */
-        wallThickness: Float,
-    ): Float {
-        val probes = listOfNotNull(half.probe(direction), half.probe(side), half.probe(rise))
-        if (probes.size != 3) return 0f
-        val along = probes[0]
-        val across = probes[1]
-        val through = probes[2]
-        val originSide = origin.dot(side)
-        val originRise = origin.dot(rise)
-        val vertices = half.mesh.interleavedVertices
-        val count = half.mesh.triangleCount
-        val sideAt = FloatArray(count * 3)
-        val riseAt = FloatArray(count * 3)
-        val alongAt = FloatArray(count * 3)
-        for (vertex in 0 until count * 3) {
-            val base = vertex * MeshSolidBuilder.FLOATS_PER_VERTEX
-            val x = vertices[base]
-            val y = vertices[base + 1]
-            val z = vertices[base + 2]
-            sideAt[vertex] = across(x, y, z) - originSide
-            riseAt[vertex] = through(x, y, z) - originRise
-            alongAt[vertex] = along(x, y, z)
-        }
-        // The walk starts just behind the seam, where the wall's own side faces
-        // cross the slice: the plane of the mating face itself is a face, and a
-        // slice through it is the cap the thickness was measured from already.
-        val ceiling = wallThickness + max(CORNER_TOLERANCE_MM, wallThickness * 0.5f)
-        fun stillWall(at: Float): Boolean {
-            val band = sliceBand(sideAt, riseAt, alongAt, count, face, -at, seed = -wallThickness * 0.5f)
-                ?: return false
-            return band.endInclusive - band.start <= ceiling
-        }
-        var walked = 0f
-        var step = 0
-        while (step++ < MAX_FREE_PROBES && walked < MAX_FREE_LENGTH_MM) {
-            val previous = walked
-            walked += FREE_STEP_MM
-            if (stillWall(walked)) continue
-            // The wall's end is between the two probes - its own free end, or the
-            // material it joins - and it is closed by halving the gap, because a
-            // free length a step too long is a strain read a third too low.
-            var inside = previous
-            var outside = walked
-            repeat(REFINE_STEPS) {
-                val middle = (inside + outside) * 0.5f
-                if (stillWall(middle)) inside = middle else outside = middle
-            }
-            return inside
-        }
-        return walked
-    }
 
-    /**
-     * The rise band of the material crossing the plane [behind] millimetres along
-     * the axis, within a window either side of the anchor's own side: the wall's
-     * thickness at that slice.
-     *
-     * Each triangle the plane cuts becomes a segment, and the segment is read at
-     * the window rather than at its own ends: a wall's faces are big triangles
-     * whose crossing points sit at the part's corners, so a filter that only kept
-     * the points inside the window would find nothing at all and call every wall
-     * a stub.
-     */
-    private fun sliceBand(
-        sideAt: FloatArray,
-        riseAt: FloatArray,
-        alongAt: FloatArray,
-        triangles: Int,
-        face: Float,
-        behind: Float,
-        /** A rise the wall is known to occupy: the run through it is the one wanted. */
-        seed: Float,
-    ): ClosedFloatingPointRange<Float>? {
-        val plane = face + behind
-        val crossings = ArrayList<Float>()
-        fun include(y: Float) {
-            crossings += y
-        }
-        for (triangle in 0 until triangles) {
-            val a = triangle * 3
-            var firstSide = 0f
-            var firstRise = 0f
-            var secondSide = 0f
-            var secondRise = 0f
-            var crossings = 0
-            for (edge in 0 until 3) {
-                val first = a + edge
-                val second = a + (edge + 1) % 3
-                val one = alongAt[first] - plane
-                val two = alongAt[second] - plane
-                if ((one > 0f) == (two > 0f)) continue
-                val span = one - two
-                if (abs(span) < SLICE_EPSILON_MM) continue
-                val t = one / span
-                val x = sideAt[first] + (sideAt[second] - sideAt[first]) * t
-                val y = riseAt[first] + (riseAt[second] - riseAt[first]) * t
-                if (crossings == 0) {
-                    firstSide = x
-                    firstRise = y
-                    crossings = 1
-                } else if (crossings == 1) {
-                    secondSide = x
-                    secondRise = y
-                    crossings = 2
-                }
-            }
-            if (crossings == 0) continue
-            if (crossings == 1) {
-                if (abs(firstSide) <= SLICE_WINDOW_MM) include(firstRise)
-                continue
-            }
-            // The piece of the segment the window covers, read at its own ends.
-            val lowSide = min(firstSide, secondSide)
-            val highSide = max(firstSide, secondSide)
-            val fromSide = max(lowSide, -SLICE_WINDOW_MM)
-            val toSide = min(highSide, SLICE_WINDOW_MM)
-            if (fromSide > toSide) continue
-            if (abs(highSide - lowSide) < SLICE_EPSILON_MM) {
-                include(firstRise)
-                include(secondRise)
-                continue
-            }
-            val slope = (secondRise - firstRise) / (secondSide - firstSide)
-            include(firstRise + (fromSide - firstSide) * slope)
-            include(firstRise + (toSide - firstSide) * slope)
-        }
-        if (crossings.isEmpty()) return null
-        // The wall is the material the seed sits IN, not everything the slice meets:
-        // a tray's two opposite walls are both crossed at the anchor's side, and the
-        // span from one to the other is the cavity, not the wall. The crossings
-        // either side of the seed bound the piece it is inside - counted once each,
-        // because a face is two triangles and the slice crosses both of them.
-        crossings.sort()
-        val edges = ArrayList<Float>(crossings.size)
-        for (y in crossings) {
-            if (edges.isEmpty() || abs(y - edges.last()) > SLICE_EDGE_MM) edges += y
-        }
-        var below = 0
-        for (y in edges) if (y < seed) below++
-        if (below % 2 == 0) return null
-        val low = edges.last { it < seed }
-        val high = edges.firstOrNull { it > seed } ?: return null
-        return low..high
-    }
 
-    /**
-     * Which way is inward at this tap, as a sign on the rise axis: the direction
-     * the mate's material lies in beyond the lip half's own band, and where the
-     * two bands are the same the direction of the lip half's own bulk.
-     */
-    private fun chooseInward(
-        lipHalf: SnapFitHalf,
-        lipBand: ClosedFloatingPointRange<Float>,
-        mateBand: ClosedFloatingPointRange<Float>?,
-        rise: Vec3,
-        anchorMm: Vec3,
-    ): Float {
-        if (mateBand != null) {
-            val outward = lipBand.start - mateBand.start
-            val inward = mateBand.endInclusive - lipBand.endInclusive
-            if (abs(inward - outward) > BAND_CHOICE_EPSILON_MM) return if (inward > outward) 1f else -1f
-        }
-        // The halves carry the same band: a wall cut in two. The joint belongs
-        // inside the part, so the tooth stands towards the bulk of the half it is
-        // rooted in - the far end of the half's own extent along the rise axis.
-        val span = SnapFit.span(lipHalf, rise) ?: return 1f
-        val anchorAt = anchorMm.dot(rise)
-        return if (span.endInclusive - anchorAt >= anchorAt - span.start) 1f else -1f
-    }
 
     /** Any unit vector perpendicular to [direction]; the frame's side axis. */
     private fun perpendicularTo(direction: Vec3): Vec3 {
@@ -929,6 +1209,35 @@ object SnapLip {
 
     /** Two crossings this close are one edge of the material, not two. */
     private const val SLICE_EDGE_MM = 5e-3f
+
+    /**
+     * The wall the ring is built to when the part is solid along the seam: the
+     * recess leaves this much material at the edge to be the spring, because a
+     * block with no wall at all has nothing to bend.
+     */
+    private const val RING_WALL_MM = 2f
+
+    /** How far apart the ring's own reading samples the seam. */
+    private const val RING_SAMPLE_MM = 1.5f
+    private const val MAX_RING_SAMPLES = 64
+
+    /** How many places round the ring the wall's own walk is asked for its length. */
+    private const val WALK_SAMPLES = 8
+
+    /** Edges shorter than this are cut slivers, not walls, and carry no samples. */
+    private const val MIN_RING_EDGE_MM = 1f
+
+    /** Two contour corners this close are the same corner. */
+    private const val WELD_MM = 5e-3f
+
+    /** How near a corner has to be for the ring to be warned about it. */
+    private const val CORNER_NEAR_MM = 1f
+
+    /** The recess reaches a hair past the mating plane so the cut is clean there. */
+    private const val RECESS_OVER_MM = 0.05f
+
+    /** Below this the seam is a line rather than a ring. */
+    private const val PI_ISH = 0.5f
 
     private val DEGREES_TO_RADIANS = (Math.PI / 180.0).toFloat()
 }

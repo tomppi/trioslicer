@@ -25,14 +25,86 @@ class SnapLipWiringContractTest {
     fun thePanelOffersBothStylesAndWiresTheControl() {
         assertTrue("a style row, from the one enum both styles come from", app.contains("SnapJointStyle.entries"))
         assertTrue("labelled as the choice it is", app.contains("\"Style:\""))
-        assertTrue("with what each one does", app.contains("one tooth on the half's own wall"))
+        assertTrue(
+            "with what each one does",
+            app.contains("one tooth ring on the lip half, one ledge ring on the mate"),
+        )
         assertTrue("and the cantilever's own description kept", app.contains("a beam across the seam with a barb on it"))
         assertTrue("the control reaches the view model", app.contains("onStyle = viewModel::setSnapStyle"))
         assertTrue(
-            "which writes the selected joint's style and the next one's default",
+            "which puts the ring on the seam instead of a tapped joint",
             viewModel.contains("fun setSnapStyle(style: SnapJointStyle)") &&
-                viewModel.contains("copy(style = style)") &&
+                viewModel.contains("listOf(ringJointSpec(state))") &&
                 viewModel.contains("snapStyle = style"),
+        )
+    }
+
+    /**
+     * The lip is one feature and it is the whole seam: the panel says so and does
+     * not offer a tap, a move or a spread, which are the cantilever's.
+     */
+    @Test
+    fun thePanelSaysTheLipIsTheWholeSeamAndOffersNoTaps() {
+        assertTrue(
+            "the sheet names the seam rather than a count",
+            app.contains("\"Snap fit · the whole seam\"") && app.contains("the whole seam"),
+        )
+        assertTrue(
+            "the row is the whole seam and not joint one of several",
+            app.contains("SnapJointStyle.WALL_LIP.label + \" · the whole seam\""),
+        )
+        assertTrue(
+            "the status line says what happens",
+            app.contains("The wall lip is the whole seam: one tooth ring on the lip half and one ") &&
+                app.contains("ledge ring on the mate, following the seam's own edge."),
+        )
+        assertTrue(
+            "and the tap controls are behind the lip's own guard",
+            app.contains("if (state.snapStyle != SnapJointStyle.WALL_LIP) {") &&
+                app.contains("\"Add joint\"") &&
+                app.contains("\"Auto spread\""),
+        )
+        assertTrue(
+            "the step the ring needed is read out with its reason",
+            app.contains("pad %.2f mm: a %.2f mm tooth and its ramp"),
+        )
+        assertTrue(
+            "and what the material could not give is shown rather than swallowed",
+            app.contains("for (warning in one.joint.warnings)"),
+        )
+    }
+
+    /**
+     * The ring follows the seam's own outline, and the two halves' step is sized
+     * from the ring: not the cantilever's pad depth, and not a tooth at a tap.
+     */
+    @Test
+    fun theRingFollowsTheSeamAndSizesItsOwnStep() {
+        val lip = source("viewer/SnapLip.kt")
+        assertTrue(
+            "the contour is the seam's outline",
+            lip.contains("SnapFit.capOutlines(cap)") && lip.contains("insetPolygon(contour, wall)"),
+        )
+        assertTrue(
+            "and it is swept as one closed hook, mitred at every corner",
+            lip.contains("private fun ringMesh(") && lip.contains("offsetVertex(previous, here, next, radius)"),
+        )
+        assertTrue(
+            "the step is sized from the ring: the tooth, its ramp and the clearances",
+            lip.contains("val stepDepth = toothHeight + run + 2f * clearance") &&
+                lip.contains("val recessDepth = stepDepth + clearance"),
+        )
+        assertTrue(
+            "the ring is read round the whole seam, not at one sample",
+            lip.contains("private fun measureRing(") && lip.contains("samples.groupBy { it.edgeIndex }"),
+        )
+        assertTrue(
+            "a corner is a warning with its place, not a refusal",
+            lip.contains("another wall joins the seam ") && lip.contains("val warnings = ArrayList<String>()"),
+        )
+        assertTrue(
+            "the lip is dispatched to the ring, with no tap in the build",
+            source("viewer/SnapJoint.kt").contains("SnapLip.buildRing("),
         )
     }
 

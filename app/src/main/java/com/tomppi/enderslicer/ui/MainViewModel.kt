@@ -2254,15 +2254,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setSnapStyle(style: SnapJointStyle) {
         val state = _uiState.value
-        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
-            state.snapJoints.toMutableList().also {
-                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(style = style)
+        if (style == SnapJointStyle.WALL_LIP) {
+            // The lip is the whole seam: one feature around the contour, so it is
+            // one joint on the list and no tap places it. The cantilever's tapped
+            // joints belong to the other style and are kept out of the way, not
+            // deleted: switching back brings them out again.
+            val joints = state.snapJoints.filter { it.style == SnapJointStyle.WALL_LIP }
+                .ifEmpty { listOf(ringJointSpec(state)) }
+            _uiState.update {
+                it.copy(snapJoints = joints, snapStyle = style, snapSelectedJoint = 0, snapFailure = null)
             }
         } else {
-            state.snapJoints
+            val joints = state.snapJoints.filter { it.style == SnapJointStyle.CANTILEVER }
+            _uiState.update {
+                it.copy(
+                    snapJoints = joints,
+                    snapStyle = style,
+                    snapSelectedJoint = if (joints.isEmpty()) -1 else 0,
+                    snapFailure = null,
+                )
+            }
         }
-        _uiState.update { it.copy(snapJoints = joints, snapStyle = style, snapFailure = null) }
         previewSnapJoint()
+    }
+
+    /**
+     * The one lip joint: the ring runs the seam's own contour, so all it needs is
+     * a point on the pair to read the mating plane from, and the low half's own
+     * bounds give it one without a tap.
+     */
+    private fun ringJointSpec(state: MainUiState): SnapJointSpec {
+        val low = state.snapLowFitHalf
+        val anchor = if (low == null) {
+            Vec3(0f, 0f, 0f)
+        } else {
+            Vec3(
+                (low.mesh.bounds.minX + low.mesh.bounds.maxX) * 0.5f,
+                (low.mesh.bounds.minY + low.mesh.bounds.maxY) * 0.5f,
+                low.faceMm,
+            )
+        }
+        return SnapJointSpec(
+            anchorPointMm = anchor,
+            anchorHalfId = state.snapLowHalfId,
+            beamHalf = SnapJoint.JointHalf.LOW,
+            // The lip has one clearance, so the two tightness steps do not apply
+            // to it: a single seated click is the whole joint.
+            tightness = SnapTightness.LOOSE,
+            barbs = 1,
+            facing = SnapFacing.SAME,
+            style = SnapJointStyle.WALL_LIP,
+            lipEngagementMm = state.snapLipEngagementMm,
+            lipToothHeightMm = state.snapLipToothHeightMm,
+        )
     }
 
     /**
