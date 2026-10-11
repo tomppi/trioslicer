@@ -106,7 +106,7 @@ internal fun KlipperDashboardTab(
         // anybody makes. The card is drawn whether or not the host has published a camera: it
         // used to be emitted only when one existed, so the card appeared once Moonraker answered
         // and everything below it moved up - on a screen that is read while it updates.
-        KlipperCameraCard(state.webcams.firstOrNull(), viewModel)
+        KlipperCameraCard(state.webcams, viewModel)
 
         LimitsCard(state, localGcodePath, viewModel)
         PositionCard(state, viewModel)
@@ -540,10 +540,23 @@ private fun TemperaturesCard(state: KlipperPrinterState, viewModel: KlipperViewM
  * stops with the composition, so a phone in a pocket is not downloading pictures of a printer.
  * The stream itself is left alone - a multipart response would need a decoder to draw, and one
  * frame a second is a first layer you can watch.
+ *
+ * [cameras] is the host's own list, and null means the host has not said rather than that it
+ * has none: an unread list is asked for again here, because the first read happens in the
+ * seconds after a cold start, which is exactly when a network is not up yet.
  */
 @Composable
-private fun KlipperCameraCard(camera: KlipperWebcam?, viewModel: KlipperViewModel) {
+private fun KlipperCameraCard(
+    cameras: List<KlipperWebcam>?,
+    viewModel: KlipperViewModel,
+) {
+    val camera = cameras?.firstOrNull()
     var frame by remember(camera?.snapshotUrl) { mutableStateOf<ImageBitmap?>(null) }
+    // One extra request per composition of "unknown", not a poll: a list that arrives, or one
+    // the host really has empty, is a different state and does not come back here.
+    LaunchedEffect(cameras) {
+        if (cameras == null) viewModel.refreshWebcams()
+    }
     LaunchedEffect(camera?.snapshotUrl) {
         val url = camera?.snapshotUrl ?: return@LaunchedEffect
         while (true) {
@@ -559,6 +572,16 @@ private fun KlipperCameraCard(camera: KlipperWebcam?, viewModel: KlipperViewMode
         // is cropped into that shape rather than stretched.
         val picture = frame
         when {
+            // The list could not be read, which is not a fact about the host's configuration:
+            // saying "no camera is configured" here was a claim made from a request that never
+            // arrived, and it stood for the rest of the session.
+            cameras == null -> Box(modifier = Modifier.fillMaxWidth().aspectRatio(CAMERA_ASPECT)) {
+                Column(verticalArrangement = Arrangement.Center) {
+                    KlipperNote("The camera list could not be read.")
+                    Spacer(Modifier.height(4.dp))
+                    KlipperButton("Check again") { viewModel.refreshWebcams() }
+                }
+            }
             camera == null -> Box(modifier = Modifier.fillMaxWidth().aspectRatio(CAMERA_ASPECT)) {
                 KlipperNote("No camera is configured on this host.")
             }

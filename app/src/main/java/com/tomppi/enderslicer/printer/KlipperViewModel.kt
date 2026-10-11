@@ -77,6 +77,14 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     /** One frame from a camera the host publishes, fetched when a screen asks for one. */
     suspend fun webcamSnapshot(url: String): ByteArray? = repository.webcamSnapshot(url)
 
+    /**
+     * Ask the host for its camera list again.
+     *
+     * The camera card's Check again, and the answer to Moonraker saying the list changed: the
+     * list is not a constant of the connection, and an unread one is not "no cameras".
+     */
+    fun refreshWebcams() = repository.refreshWebcams()
+
     fun startHost() = KlipperEngineService.start(getApplication())
 
     /** Stop the host: the printer is released and the process ends. */

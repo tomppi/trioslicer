@@ -34,7 +34,10 @@ class KlipperHostIdentityTest {
         assertTrue("no position", cleared.position.isEmpty())
         assertTrue("no object tree", cleared.objects.isEmpty())
         assertTrue("no published object list", cleared.published.isEmpty())
-        assertTrue("no cameras from the other host", cleared.webcams.isEmpty())
+        assertTrue(
+            "no cameras from the other host, and none claimed either",
+            cleared.webcams.isNullOrEmpty(),
+        )
         assertEquals(
             "and nothing the Machine tab prints about the other host",
             KlipperHost(),

@@ -101,9 +101,21 @@ internal class MoonrakerWebcams(
     private val apiKey: String? = null,
 ) {
 
-    fun list(): List<KlipperWebcam> {
-        val answer = get("/server/webcams/list") ?: return emptyList()
-        val items = answer.optJSONObject("result")?.optJSONArray("webcams") ?: return emptyList()
+    /**
+     * The host's cameras, or null when the list could not be read.
+     *
+     * Null and empty are different answers and the screen says different things about them.
+     * Empty is a host that answered and publishes no cameras; null is a host that did not
+     * answer at all - a timeout, a refused connection, a Moonraker still coming up, a tailnet
+     * that is not up yet. Both used to come back as an empty list, so the first seconds after
+     * a cold start were reported as a fact about the host's configuration.
+     */
+    fun list(): List<KlipperWebcam>? {
+        val answer = get("/server/webcams/list") ?: return null
+        // It answered: a result without a webcams array is a host with none to list, which is
+        // a fact about it, not a failure to ask.
+        val result = answer.optJSONObject("result") ?: return null
+        val items = result.optJSONArray("webcams") ?: return emptyList()
         return (0 until items.length()).mapNotNull { index ->
             items.optJSONObject(index)?.let { KlipperWebcam.fromMoonraker(it, host) }
         }

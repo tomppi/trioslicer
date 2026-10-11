@@ -113,6 +113,11 @@ internal object MoonrakerDialect {
             "notify_klippy_ready",
             "notify_klippy_shutdown",
             "notify_klippy_disconnected",
+            // Moonraker's own list rather than klippy's: the cameras the host publishes. It is
+            // pushed as webcam:webcams_changed on the same socket, and the app re-reads the
+            // list for it - a camera configured after the app connected used to be invisible
+            // until the next relaunch.
+            "notify_webcams_changed",
             -> listOf(JSONObject().put("method", method))
             else -> emptyList()
         }

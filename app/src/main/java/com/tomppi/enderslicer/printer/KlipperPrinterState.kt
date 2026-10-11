@@ -46,7 +46,15 @@ data class KlipperPrinterState(
      * printer - Moonraker knows about it and the phone is told. Empty on the device route,
      * where there is nothing to ask.
      */
-    val webcams: List<KlipperWebcam> = emptyList(),
+    /**
+     * The cameras the host publishes, or null while that has not been read.
+     *
+     * Null is not "no cameras": it is "the host has not said", which is what a list that could
+     * not be fetched means - and the first seconds after a cold start are full of those. The
+     * camera card has different words for the two, because a phone that cannot read the list
+     * must not tell the user his camera is not configured.
+     */
+    val webcams: List<KlipperWebcam>? = null,
     /**
      * What klippy said about this print, when it had something to say.
      *

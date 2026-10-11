@@ -115,6 +115,16 @@ class KlipperPrinterRepository(
 
     /** How long to let klippy reach ready before asking its boards for their timing again. */
     private val MCU_RECHECK_MS = 2_000L
+
+    /**
+     * How hard the camera list is tried before the state says it could not be read.
+     *
+     * A few attempts with a pause, never a loop: the seconds after a cold start are exactly
+     * when a network is not up yet, and three tries cover the common case while an unreadable
+     * list still ends with the truth on the screen and a Check again beside it.
+     */
+    private val WEBCAM_READ_TRIES = 3
+    private val WEBCAM_READ_PAUSE_MS = 1_500L
     private val _consoleLines = MutableStateFlow<List<KlipperConsoleLine>>(emptyList())
 
     /**
@@ -321,19 +331,6 @@ class KlipperPrinterRepository(
      * a connection the app has since left is dropped rather than shown.
      */
     private suspend fun session(c: KlipperClient, choice: KlipperHostChoice, mine: Long) {
-        // A camera belongs to the host, so this is asked of the host - and only of one that is
-        // somewhere else, because the app's own host has nothing to ask.
-        val webcams = if (choice.isRemote) {
-            runCatching {
-                MoonrakerWebcams(
-                    host = choice.host.trim(),
-                    port = choice.port,
-                    apiKey = choice.apiKey.takeIf { it.isNotBlank() },
-                ).list()
-            }.getOrDefault(emptyList())
-        } else {
-            emptyList()
-        }
         // A push from the connection being replaced is dropped rather than applied: the
         // callback belongs to the client, and the client outlives its turn as the current
         // one by however long a socket takes to notice it was closed.
@@ -367,7 +364,6 @@ class KlipperPrinterRepository(
                 error = null,
                 host = KlipperHost.from(info),
                 published = published,
-                webcams = webcams,
             ).withStatus(snapshot)
             // The same notification a push would post: a print that ended while the phone
             // was disconnected is news, and this is the first the app hears of it.
@@ -391,6 +387,12 @@ class KlipperPrinterRepository(
                 )
             }
         }
+        // The host's cameras, asked for once the connection is up - never before it. Before
+        // it, the first seconds of a cold start (a tailnet not up yet, a Moonraker still
+        // coming up) turned a request that failed into "this host has no cameras", and the
+        // empty answer stood for the whole session. Every session asks again, so a reconnect
+        // heals it, and the read itself tries a few times before it will say it could not ask.
+        scope.launch { readWebcams(choice, mine) }
         Log.i(TAG, "watching " + choice.label + " as " + info.optString("state") +
             "; following " + wanted.size + " of " + published.size + " objects")
         runCatching { c.gcodeHelp() }.onSuccess { help -> _commands.value = help }
@@ -453,6 +455,13 @@ class KlipperPrinterRepository(
     private var lastStatusLog = 0L
 
     private fun applyNotification(message: JSONObject) {
+        // Moonraker's own push, not klippy's: the host's camera list changed. A camera plugged
+        // in, or a [webcam] section edited, is news while the app is connected - the list used
+        // to be read once per session and never again, so it needed a relaunch to appear.
+        if (message.optString("method") == WEBCAMS_CHANGED_METHOD) {
+            refreshWebcams()
+            return
+        }
         when (KlipperProtocol.lifecycle(message)) {
             "notify_klippy_ready" -> _state.update {
                 it.copy(state = "ready", stateMessage = "", error = null)
@@ -1041,6 +1050,56 @@ class KlipperPrinterRepository(
         val file = File(directory, safe.split('/').joinToString("/") { safeFileName(it) })
         file.parentFile?.mkdirs()
         file.writeText(text)
+    }
+
+    /**
+     * Read the chosen host's cameras and put them in the state, or say they could not be read.
+     *
+     * Bounded: a few attempts with a pause, never a loop. A failure is written as null - "the
+     * host has not said" - unless cameras are already known, because one failed request is not
+     * the host having unplugged its camera. Every write is checked against [token], so a list
+     * that arrives after the app has switched hosts is dropped rather than shown.
+     */
+    private suspend fun readWebcams(choice: KlipperHostChoice, token: Long) {
+        if (!choice.isRemote) {
+            // The app's own host has no Moonraker to ask, so an empty list is the fact about
+            // it rather than a failure to ask - and the card says there is no camera here.
+            updateIfCurrent(token) { it.copy(webcams = emptyList()) }
+            return
+        }
+        val webcams = MoonrakerWebcams(
+            host = choice.host.trim(),
+            port = choice.port,
+            apiKey = choice.apiKey.takeIf { it.isNotBlank() },
+        )
+        var read: List<KlipperWebcam>? = null
+        for (attempt in 0 until WEBCAM_READ_TRIES) {
+            if (!connection.isCurrent(token)) return
+            read = withContext(Dispatchers.IO) { webcams.list() }
+            if (read != null) break
+            if (attempt < WEBCAM_READ_TRIES - 1) delay(WEBCAM_READ_PAUSE_MS)
+        }
+        updateIfCurrent(token) { current ->
+            when {
+                read != null -> current.copy(webcams = read)
+                // Nothing known yet: the honest answer is that the host has not said.
+                current.webcams.isNullOrEmpty() -> current.copy(webcams = null)
+                else -> current
+            }
+        }
+    }
+
+    /**
+     * Ask the host for its cameras again, now.
+     *
+     * What the camera card's Check again does, and what Moonraker's own webcams-changed push
+     * does: the list is not a constant of the connection, and a camera configured or plugged
+     * in after the app connected used to need a relaunch to appear.
+     */
+    fun refreshWebcams() {
+        val choice = hostChoice.load()
+        val token = connection.currentToken()
+        scope.launch { readWebcams(choice, token) }
     }
 
     /**
@@ -1914,6 +1973,14 @@ class KlipperPrinterRepository(
 
         /** How often klippy is asked for its own state, which it never pushes. */
         const val STATE_POLL_SECONDS = 5
+
+        /**
+         * Moonraker's own push that its camera list changed.
+         *
+         * Not a klippy method: it arrives on the same socket, the dialect passes it through,
+         * and the answer to it is to read the list again rather than to touch the printer.
+         */
+        const val WEBCAMS_CHANGED_METHOD = "notify_webcams_changed"
 
         /** Where the prints this app has run are written down. */
         const val HISTORY_FILE = "print-history.json"

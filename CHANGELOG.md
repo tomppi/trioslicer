@@ -67,6 +67,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The camera card no longer reports a failed request as a fact about the host.** The list of
+  cameras was fetched once per session, before the connection was made, and every failure - a
+  timeout, a refused connection, a Moonraker still coming up, a tailnet not up yet in the first
+  seconds after a cold start - came back as an empty list, which is the same value as a host that
+  publishes no cameras. The card then read "No camera is configured on this host." for the rest of
+  the session while the camera was fine on the computer. The list is now asked for **after** the
+  connection is up, in a few bounded tries with a pause; "could not be read" is carried as its own
+  state rather than as none; the card says **"The camera list could not be read."** with a **Check
+  again** beside it, and asks again by itself while the screen is open; and Moonraker's own
+  webcams-changed push re-reads it, so a camera configured or plugged in after the app connected
+  appears without a relaunch. A frame that stops arriving is its own state and is unchanged.
 - **Every joint on a seam is in the geometry, and a joint that cannot be built says so on its own
   row.** Each joint was built on the pair's own untouched halves and its result then REPLACED the
   running mesh, because a placement carries the mesh it was built from - so two taps at two places

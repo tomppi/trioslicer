@@ -90,4 +90,13 @@ internal class KlipperConnectionGeneration {
 
     /** True while [token] is still the connection the state should describe. */
     fun isCurrent(token: Long): Boolean = current.get() == token
+
+    /**
+     * The connection that is current now, for a reader that starts its own work.
+     *
+     * The camera list is fetched off to one side of the session loop, and it has to check its
+     * answer against the connection it was asked for - so it needs the number that is current
+     * at the moment it starts, not a new one.
+     */
+    fun currentToken(): Long = current.get()
 }
