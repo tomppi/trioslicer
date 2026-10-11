@@ -56,7 +56,13 @@ internal fun EngineSetupScreen(
     onPrepare: () -> Unit,
     onToggle: (EnginePreparation.Engine) -> Unit,
     onSelectAll: () -> Unit,
-    /** Null where there is nowhere to skip to - the Settings entry, which has Back. */
+    /**
+     * Accepts a finished selection: everything ticked is ready, so there is nothing left to
+     * do and the screen has to say so. In onboarding this finishes step 3 and opens the app;
+     * in Settings it closes the screen.
+     */
+    onDone: () -> Unit,
+    /** Leaving with work still to do. Null where there is nowhere to skip to (Settings). */
     onSkip: (() -> Unit)?,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -66,6 +72,15 @@ internal fun EngineSetupScreen(
 ) {
     val needed = EnginePreparation.neededBytes(selected)
     val enoughSpace = needed <= freeBytes
+    // The run this screen would start: CAD pulls in the Python it borrows, so "ready" is
+    // asked of the engines that would actually be prepared, not only the ticked ones.
+    val effective = EnginePreparation.withDependencies(selected)
+    /**
+     * True when there is nothing left to prepare. The action row follows this and nothing
+     * else: a screen that has just finished six engines and still offers only "Prepare" and
+     * "Skip" ends in a definite state with no way to accept it, which is the bug this fixes.
+     */
+    val allReady = engineSetupFinished(rows, selected)
     // Ticks while a run is in flight, so a row's elapsed seconds move even between two
     // file callbacks. The rule is that nothing on this screen may look frozen.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -84,10 +99,13 @@ internal fun EngineSetupScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 6.dp, vertical = 4.dp),
             ) {
-                TextButton(onClick = onBack) {
+                // Finished work is accepted, not abandoned: with every selected engine ready
+                // this leaves through [onDone] - the same as the Done button - because
+                // nothing here can undo or redo an extraction that has already been paid for.
+                TextButton(onClick = if (allReady) onDone else onBack) {
                     Icon(Icons.Filled.Close, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text(if (onSkip == null) "Back" else "Close")
+                    Text(if (allReady) "Close" else if (onSkip == null) "Back" else "Close")
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -166,33 +184,50 @@ internal fun EngineSetupScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            Button(
-                onClick = onPrepare,
-                enabled = !busy && selected.isNotEmpty() && enoughSpace,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (busy) "Preparing…" else "Prepare selected engines")
-            }
-            if (onSkip != null) {
-                TextButton(
-                    onClick = onSkip,
+            if (allReady) {
+                // Nothing left to do, so the primary action accepts the work rather than
+                // offering to do it again - and there is no "skip" left to misread as
+                // abandoning what the user just watched finish.
+                Button(
+                    onClick = onDone,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Skip for now")
+                    Text("Done")
                 }
-                if (busy) {
-                    Text(
-                        text = "Skipping does not cancel the run; it finishes in the background.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text(
-                        text = "Optional: your first slice or CAD model will unpack what it " +
-                            "needs instead, and will say so while it does.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Text(
+                    text = "All selected engines are ready.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Button(
+                    onClick = onPrepare,
+                    enabled = !busy && selected.isNotEmpty() && enoughSpace,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (busy) "Preparing…" else "Prepare selected engines")
+                }
+                if (onSkip != null) {
+                    TextButton(
+                        onClick = onSkip,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Skip for now")
+                    }
+                    if (busy) {
+                        Text(
+                            text = "Skipping does not cancel the run; it finishes in the background.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            text = "Optional: your first slice or CAD model will unpack what it " +
+                                "needs instead, and will say so while it does.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -253,6 +288,24 @@ private fun phaseLine(row: EnginePreparation.Row, now: Long): String = when (row
             row.elapsedSeconds(now) + "s"
     EnginePreparation.Phase.READY -> "Ready"
     EnginePreparation.Phase.FAILED -> "Failed: " + (row.reason ?: "no reason reported")
+}
+
+/**
+ * True when every engine this selection would prepare is already ready.
+ *
+ * The action row's whole state, in one testable place. It is asked of the *effective*
+ * selection - CAD pulls in the Python it borrows - so a ticked CAD with an unprepared
+ * Klipper is not finished, and an empty selection is never finished either: there would be
+ * nothing to accept.
+ */
+internal fun engineSetupFinished(
+    rows: List<EnginePreparation.Row>,
+    selected: Set<EnginePreparation.Engine>,
+): Boolean {
+    val effective = EnginePreparation.withDependencies(selected)
+    if (effective.isEmpty()) return false
+    val byEngine = rows.associateBy { it.engine }
+    return effective.all { byEngine[it]?.phase == EnginePreparation.Phase.READY }
 }
 
 /** MB below a gigabyte, GB above it: the number a user can hold in their head. */

@@ -1566,6 +1566,7 @@ fun EnderSlicerApp(
                             enginePrepSelection =
                                 encodeEngineSelection(EnginePreparation.Engine.entries.toSet())
                         },
+                        onDone = { engineSetupOpen = false },
                         onSkip = null,
                         onBack = { engineSetupOpen = false },
                         modifier = Modifier

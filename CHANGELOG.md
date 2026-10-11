@@ -14,8 +14,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   new step 3 of the first-run setup, and the same screen from Settings, prepares the engines you
   tick, **one at a time** so the peak is the largest single tree rather than the sum, and shows
   what the selection needs against what is free before anything starts. Every row ends ready or
-  failed with the reason. It is skippable: preparing can be hundreds of megabytes, and each
-  engine's own screen now says what it is waiting for and where to prepare it.
+  failed with the reason. **The action follows the state**: while anything selected is unready it
+  is *Prepare selected engines*, and once every selected engine is ready it becomes **Done**,
+  which finishes the step - a finished run is accepted, never offered a "skip". It is skippable
+  while there is work left, because preparing can be hundreds of megabytes, and each engine's own
+  screen says what it is waiting for and where to prepare it.
 - **The CAD scene says what it has.** The engine seeds a 20 mm cube on the bed when it starts; a
   scene that is empty anyway now shows "Engine ready - nothing in the scene yet" with a button
   that puts the cube back, instead of a bare grid the user has to interpret.

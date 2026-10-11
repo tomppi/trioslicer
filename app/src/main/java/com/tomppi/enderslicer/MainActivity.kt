@@ -170,6 +170,13 @@ class MainActivity : FragmentActivity() {
                                 onSelectAll = {
                                     selection = encodeEngineSelection(EnginePreparation.Engine.entries.toSet())
                                 },
+                                // Both leave through the same door: prepared or skipped, the
+                                // step is finished and the app opens. The screen picks which
+                                // label to show from the state of the rows.
+                                onDone = {
+                                    onboardingStore.complete()
+                                    step = OnboardingFlow.advance(step)
+                                },
                                 onSkip = {
                                     onboardingStore.complete()
                                     step = OnboardingFlow.advance(step)
