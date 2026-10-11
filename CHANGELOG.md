@@ -27,6 +27,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   scene yet", and **Add a 20 mm cube** is the way to a starting primitive, at any time and as
   often as it is asked for. A default that has to decide when it is welcome is a default that
   will eventually overwrite someone.
+- **A joint on a split pair is editable after it has been applied, and a relaunch remembers it.**
+  The snap fit used to be one-way: Apply baked the beam and its pocket into the two halves' meshes
+  and dropped the joints, so the only way to change one was to split again - which destroys the
+  joint. The pair now keeps its own RECORD: the two unjointed halves every joint was built from,
+  in the pair's assembled frame, the panel values, and the joints, each anchor stored in that frame
+  rather than on the plate the packer rearranges between sessions. Opening the tool on such a pair
+  brings the joints back, listed and selectable and editable exactly as ones placed by tapping are,
+  and Apply rebuilds them onto the source rather than onto the meshes that already carry them - so
+  applying the same joints twice leaves the geometry identical, and deleting every joint and
+  applying puts the plain halves back. A record whose source files have gone is dropped with a line
+  saying why: the pair stays, and never the plate.
 - **The long press on a model removes it, or splits it.** The hold-down card that carries
   Rotate, Move and Scale gains the two whole-model actions: **Split at a plane**, which opens
   the same cut tool Model tools > Actions opens and closes the joint maker, and a red X that

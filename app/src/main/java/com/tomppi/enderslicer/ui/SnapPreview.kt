@@ -36,6 +36,58 @@ data class SnapJointSpec(
 )
 
 /**
+ * One joint as the pair REMEMBERS it, for the next session to rebuild.
+ *
+ * The difference from a [SnapJointSpec] is the anchor: a spec carries a point on
+ * the plate, which the packer moves between sessions, while this carries the
+ * same point in the pair's own assembled frame, which it cannot. Which half the
+ * tap landed on travels as a side rather than as an object id, because every
+ * apply gives the two halves fresh ids.
+ */
+data class SnapJointRecord(
+    /** The tap in the pair's own assembled frame - the frame its joints are measured in. */
+    val anchorLocalMm: Vec3,
+    /** True when the tap landed on the half on the low side of the assembly axis. */
+    val onLowHalf: Boolean,
+    val beamHalf: SnapJoint.JointHalf,
+    val tightness: SnapTightness,
+    val barbs: Int,
+    val facing: SnapFacing,
+)
+
+/**
+ * The pair's own record: the two unjointed halves every joint on it is built
+ * from, and the joints that have been built.
+ *
+ * This is what makes a joint editable after it has been applied. The boolean is
+ * baked into the meshes on the plate - a pocket that has been cut cannot be
+ * un-cut - so a second Apply that started from those meshes would union the beam
+ * again and cut the pocket a second time. The source files are the halves as
+ * they were before the first joint: Apply always stages the joints onto THESE,
+ * which is why applying the same joints twice leaves the geometry identical, and
+ * why deleting every joint and applying puts the plain halves back.
+ *
+ * The files belong to the pair and are deleted exactly when the pair dies, never
+ * by the cleanup that takes a replaced object's own file.
+ */
+data class SnapRecord(
+    val lowSourcePath: String,
+    val highSourcePath: String,
+    /** The panel values the recorded joints were built at, restored with them. */
+    val scale: Float,
+    val fullJoint: Boolean,
+    val socketRamp: Boolean,
+    val hookLengthMm: Float?,
+    val hookThicknessMm: Float?,
+    val hookLipMm: Float?,
+    /** Every joint on the pair, in the order it was placed. */
+    val joints: List<SnapJointRecord>,
+) {
+    /** Both files, for the paths that delete or check them together. */
+    val sourcePaths: List<String> get() = listOf(lowSourcePath, highSourcePath)
+}
+
+/**
  * One joint that was really built and put into the two halves, with what it
  * came out as.
  */

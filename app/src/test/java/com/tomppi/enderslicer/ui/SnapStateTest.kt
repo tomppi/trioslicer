@@ -12,6 +12,7 @@ import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -389,7 +390,112 @@ class SnapStateTest {
     }
 
     /**
-     * The preview [state] would have produced, carrying the halves and placements it was
+     * A pair that carries a record opens on the joints it remembers, read out of the pair's
+     * OWN frame through the half each tap landed on.
+     *
+     * The own frame is the point. The packer moves the halves between sessions - that is what
+     * a restore of a packed plate is - so a remembered PLATE point would land somewhere else
+     * on the seam, while an own-frame one lands where it was put. The half travels as a side
+     * and not as an id for the same reason: every apply replaces both objects.
+     */
+    @Test
+    fun theRecordedJointsComeBackOnWhicheverHalfTheyWereTappedOn() {
+        val state = splitState().copy(snapActive = true)
+        val original = state.snapJoints.single()
+        val record = recordOf(state)
+        val restored = state.withSnapPair(
+            lowHalfId = "low",
+            highHalfId = "high",
+            axis = ModelPlacement.Axis.Z,
+            lowFaceMm = 20f,
+            highFaceMm = 20f,
+            record = record,
+        )
+
+        val back = restored.restoredJoints(record).single()
+        assertEquals(
+            "the same plate point, read back out through the same half",
+            original.anchorPointMm,
+            back.anchorPointMm,
+        )
+        assertEquals("named by the half it landed on", original.anchorHalfId, back.anchorHalfId)
+        assertEquals("with the choices it was recorded with", SnapTightness.TIGHT, back.tightness)
+        assertEquals(SnapJoint.JointHalf.HIGH, back.beamHalf)
+        assertEquals(3, back.barbs)
+        assertEquals(SnapFacing.OPPOSITE, back.facing)
+        assertTrue("and the pair knows it has a record", restored.liveSnapRecord != null)
+
+        // The plate moves the low half up 7 mm - the packer's own doing, the source frame
+        // untouched - and the remembered tap follows the half it was made on.
+        val moved = restored.copy(models = listOf(restored.models[0].movedBy(0f, 0f, 7f), restored.models[1]))
+        val movedSpec = moved.restoredJoints(record).single()
+        assertEquals("the tap follows the half", 38f, movedSpec.anchorPointMm.z, 1e-3f)
+        assertEquals("and still names that half", "low", movedSpec.anchorHalfId)
+        assertEquals("with the choices it was recorded with", SnapTightness.TIGHT, movedSpec.tightness)
+        assertEquals(SnapJoint.JointHalf.HIGH, movedSpec.beamHalf)
+        assertEquals(3, movedSpec.barbs)
+        assertEquals(SnapFacing.OPPOSITE, movedSpec.facing)
+    }
+
+    /**
+     * The record is the pair's, not the plate's: a half that leaves takes it with it, and a
+     * pair with no joints left is what "put the plain halves back" is offered on.
+     */
+    @Test
+    fun theRecordLivesExactlyAsLongAsThePairDoes() {
+        val state = splitState().copy(snapActive = true)
+        val record = recordOf(state)
+        val held = state.withSnapPair("low", "high", ModelPlacement.Axis.Z, 20f, 20f, record = record)
+
+        assertNotNull("the pair holds its record", held.liveSnapRecord)
+        assertFalse(
+            "and Apply is not the plain-halves way while a joint is on the seam",
+            held.snapPlainHalvesInstead,
+        )
+
+        val withoutJoints = held.copy(snapJoints = emptyList(), snapSelectedJoint = -1)
+        assertTrue("every joint removed: Apply puts the plain halves back", withoutJoints.snapPlainHalvesInstead)
+        assertNull("and the panel does not ask for a tap", withoutJoints.snapBlockedReason)
+
+        val halfGone = held.copy(models = listOf(held.models.first()))
+        assertNull("a half that left takes the record with it", halfGone.liveSnapRecord)
+
+        val noRecord = held.copy(snapRecord = null)
+        assertNull(noRecord.liveSnapRecord)
+        assertFalse(
+            "and a pair that never recorded anything cannot clear joints it does not know",
+            noRecord.copy(snapJoints = emptyList()).snapPlainHalvesInstead,
+        )
+        assertEquals(
+            "it asks for a tap, exactly as it always did",
+            "Tap the model to place a joint on the seam.",
+            noRecord.copy(snapJoints = emptyList()).snapBlockedReason,
+        )
+    }
+
+    /** The record [state]'s selected joint would leave behind, in the pair's own frame. */
+    private fun recordOf(state: MainUiState): SnapRecord = SnapRecord(
+        lowSourcePath = "pair-low.stl",
+        highSourcePath = "pair-high.stl",
+        scale = 1f,
+        fullJoint = false,
+        socketRamp = false,
+        hookLengthMm = null,
+        hookThicknessMm = null,
+        hookLipMm = null,
+        joints = listOf(
+            SnapJointRecord(
+                anchorLocalMm = requireNotNull(state.snapAnchorLocalMm),
+                onLowHalf = true,
+                beamHalf = SnapJoint.JointHalf.HIGH,
+                tightness = SnapTightness.TIGHT,
+                barbs = 3,
+                facing = SnapFacing.OPPOSITE,
+            ),
+        ),
+    )
+
+    /** The preview [state] would have produced, carrying the halves and placements it was
      * built from the way the ViewModel's own construction does.
      */
     private fun previewOf(state: MainUiState): SnapPreview = SnapPreview(

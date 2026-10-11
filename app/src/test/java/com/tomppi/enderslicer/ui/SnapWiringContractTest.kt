@@ -173,6 +173,102 @@ class SnapWiringContractTest {
         )
     }
 
+    /**
+     * The pair's own source is the stage of record - and the only thing that makes a joint
+     * editable after it has been applied.
+     *
+     * A pocket that has been cut cannot be un-cut, so a preview or an apply that began from
+     * the meshes on the plate would union the beam a second time and cut the pocket again.
+     * Both paths therefore read the pair's own halves: the recorded source when the pair has
+     * one, and the halves the plate holds when it is being jointed for the first time. The
+     * plain-halves path is the same source read the other way - every joint removed, the
+     * halves staged as they are.
+     */
+    @Test
+    fun everyJointBuildStartsFromThePairsOwnHalves() {
+        val viewModel = source("ui/MainViewModel.kt")
+        assertTrue(
+            "one reader for the pair's own halves",
+            viewModel.contains("private suspend fun pairOwnHalves(state: MainUiState)"),
+        )
+        val preview = body("private suspend fun computeSnapPreview(", "private fun SnapFitHalf.withOwnMesh")
+        assertTrue("the preview booleans them", preview.contains("pairOwnHalves(state)"))
+        assertTrue(preview.contains("lowFit.withOwnMesh(own.first, lowHalf.name)"))
+        assertTrue(preview.contains("highFit.withOwnMesh(own.second, highHalf.name)"))
+        assertTrue(
+            "and a source it cannot read degrades to the pair with no joints, saying why",
+            preview.contains("SNAP_RECORD_LOST_MESSAGE") &&
+                preview.contains("snapJoints = emptyList()") &&
+                preview.contains("snapRecord = null"),
+        )
+
+        val apply = body("fun applySnapJoint(", "private fun middleOf(")
+        assertTrue("apply reads them too", apply.contains("pairOwnHalves(state)"))
+        assertTrue(
+            "and reuses the files a recorded pair already owns rather than writing new ones",
+            apply.contains("record.lowSourcePath to record.highSourcePath"),
+        )
+        assertTrue("first writing them for a pair that has none", apply.contains("pairSourceFile()"))
+        assertTrue(
+            "an apply that does not commit takes the files it wrote with it",
+            apply.contains("writtenSources.forEach { it.delete() }"),
+        )
+        assertTrue(
+            "every joint removed: the source halves are the ones staged",
+            apply.contains("val puttingPlainHalvesBack = state.snapPlainHalvesInstead"),
+        )
+        assertTrue("and the pair keeps its record", apply.contains("record = nextRecord"))
+    }
+
+    /**
+     * A pair's files are deleted exactly when the pair is, and the cleanup that takes a
+     * replaced object's staged copy must never take them: they are not an object's file.
+     */
+    @Test
+    fun aPairsFilesGoOnlyWhenThePairDoes() {
+        val viewModel = source("ui/MainViewModel.kt")
+        assertTrue(
+            "one place decides: the same two paths mean the pair survived",
+            viewModel.contains("private fun releasePairSources(before: SnapRecord?, after: SnapRecord?)"),
+        )
+        val split = body("fun splitModel(", "private fun cutPathNote")
+        assertTrue(
+            "a split replaces the pair, so its files go",
+            split.contains("releasePairSources(state.liveSnapRecord, null)"),
+        )
+        val remove = body("fun removeModel(", "fun splitModel(")
+        assertTrue(
+            "a half removed takes its pair's files",
+            remove.contains("releasePairSources(state.liveSnapRecord, next.liveSnapRecord)"),
+        )
+        val restore = body("private fun restoreWorkspace(", "private fun workspaceSnapshot(state:")
+        assertTrue("a restore puts the record back on the pair", restore.contains("record = record"))
+        assertTrue(
+            "and a pair it could not rebuild releases its files",
+            restore.contains("deletePairSources(listOf(lowSource, highSource))"),
+        )
+    }
+
+    /**
+     * Opening the tool is where a record becomes joints again - and where a record whose
+     * source has gone is dropped rather than trusted, with the panel saying why.
+     */
+    @Test
+    fun openingTheToolRestoresTheRecordAndSaysWhenItCannot() {
+        val open = body("fun setSnapActive(", "fun placeSnapJoint(")
+        assertTrue("the recorded joints come back", open.contains("state::restoredJoints"))
+        assertTrue(
+            "only while the halves they were built from are still there",
+            open.contains("recorded.sourcePaths.all { File(it).isFile }"),
+        )
+        assertTrue("and a record that cannot be used is dropped", open.contains("SNAP_RECORD_LOST_MESSAGE"))
+        assertTrue("with its files", open.contains("deletePairSources(recorded.sourcePaths)"))
+        assertTrue(
+            "and the restored joints are built, or Apply would open disabled",
+            open.contains("if (restored.isNotEmpty()) previewSnapJoint()"),
+        )
+    }
+
     /** The descriptor writes the pair, and the restore puts it back on the plate. */
     @Test
     fun aRestoredDescriptorPutsItsPairBackOnThePlate() {

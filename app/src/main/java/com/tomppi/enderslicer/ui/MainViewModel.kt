@@ -1601,6 +1601,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (!stillUsed) {
                         removed.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
                     }
+                    // A removed half takes its pair with it, and with the pair the source
+                    // files its joints were recorded from. Deleting them here rather than
+                    // when the panel next opens keeps the model directory to what the plate
+                    // actually references.
+                    releasePairSources(state.liveSnapRecord, next.liveSnapRecord)
                 }
                 _uiState.update { commit(it) }
             }.onFailure(::showOperationFailure)
@@ -1784,6 +1789,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (packed.none { it.sourcePath == model.sourcePath }) {
                         model.sourcePath?.let(::File)?.takeIf { it.isFile }?.delete()
                     }
+                    // The pair this split replaced is gone with the halves it was recorded on,
+                    // so the source files it owned go too. The new pair starts with none: it
+                    // has not been jointed yet.
+                    releasePairSources(state.liveSnapRecord, null)
                 }
                 // The plate the history was recorded against no longer exists: every step
                 // in it is a placement of the whole model on the pre-split plate, and
@@ -1864,6 +1873,120 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // --- The snap fit -------------------------------------------------------
 
     /**
+     * The pair's own halves, in the assembled frame every joint on it is measured in.
+     *
+     * A pair that carries a record has its own source files: the halves as they were BEFORE
+     * the first joint was applied. That is the whole reason the record exists - a pocket that
+     * has been cut cannot be un-cut - so a preview or an apply that began from the meshes on
+     * the plate would union the beam a second time and cut the pocket again. A pair with no
+     * record is being jointed for the first time, and the halves the plate holds ARE its
+     * source; they are unplaced into the pair's own frame so both cases hand back the same
+     * thing.
+     *
+     * Null when a recorded source cannot be read. The caller reports that and treats the pair
+     * as one with no record, never as a failed preview.
+     */
+    private suspend fun pairOwnHalves(state: MainUiState): Pair<StlMesh, StlMesh>? {
+        val lowFit = state.snapLowFitHalf ?: return null
+        val highFit = state.snapHighFitHalf ?: return null
+        val record = state.liveSnapRecord
+        if (record == null) {
+            // Walking two meshes, not reading files: the plate's own halves are already here.
+            return withContext(Dispatchers.Default) {
+                val low = lowFit.unplace(lowFit.mesh, lowFit.mesh.displayName) ?: return@withContext null
+                val high = highFit.unplace(highFit.mesh, highFit.mesh.displayName) ?: return@withContext null
+                low to high
+            }
+        }
+        return withContext(Dispatchers.IO) {
+            val low = readPairSource(record.lowSourcePath, lowFit.mesh.displayName)
+                ?: return@withContext null
+            val high = readPairSource(record.highSourcePath, highFit.mesh.displayName)
+                ?: return@withContext null
+            low to high
+        }
+    }
+
+    /** One recorded source half, or null when it cannot be read. */
+    private fun readPairSource(path: String, displayName: String): StlMesh? = runCatching {
+        StlParser.parse(
+            file = File(path),
+            displayName = displayName,
+            maxTriangles = MeshTriangleLimits.current(),
+        )
+    }.getOrNull()
+
+    /**
+     * A staging path for one of the pair's OWN halves.
+     *
+     * The same directory and the same one-shot naming as [stagedModelFile], under a name of
+     * its own: these files are not an object's file and must never be deleted by the cleanup
+     * that takes a replaced object's staged copy. The pair owns them, and they go when it does
+     * - see [releasePairSources].
+     */
+    private fun pairSourceFile(): File =
+        File(File(app.filesDir, "models").apply { mkdirs() }, "pair-${System.nanoTime()}.stl")
+
+    /** Deletes the files one pair owns; the pair they belonged to is gone. */
+    private fun deletePairSources(paths: List<String>) {
+        paths.forEach { path -> runCatching { File(path).takeIf { it.isFile }?.delete() } }
+    }
+
+    /**
+     * The files of a pair that did not survive: [before] is the record the state held, and
+     * [after] the one that replaced it - the same two paths while the pair is the same pair,
+     * and nothing when the pair died.
+     *
+     * Every path that replaces the plate or the pair goes through this, so a record's files
+     * follow the rule an object's staged file already follows: unreferenced means deleted.
+     */
+    private fun releasePairSources(before: SnapRecord?, after: SnapRecord?) {
+        if (before == null) return
+        if (after != null && before.lowSourcePath == after.lowSourcePath &&
+            before.highSourcePath == after.highSourcePath
+        ) {
+            return
+        }
+        deletePairSources(before.sourcePaths)
+    }
+
+    /**
+     * What an apply leaves behind: the source files the pair owns, the panel values the joints
+     * were built at, and the joints themselves - each anchor read out of the plate's
+     * coordinates into the pair's own frame, because the packer moves the halves between
+     * sessions and a saved plate point would land somewhere else on the seam.
+     */
+    private fun recordOfPair(
+        state: MainUiState,
+        lowSourcePath: String,
+        highSourcePath: String,
+    ): SnapRecord = SnapRecord(
+        lowSourcePath = lowSourcePath,
+        highSourcePath = highSourcePath,
+        scale = state.snapScale,
+        fullJoint = state.snapFullJoint,
+        socketRamp = state.snapSocketRamp,
+        hookLengthMm = state.snapHookLengthMm,
+        hookThicknessMm = state.snapHookThicknessMm,
+        hookLipMm = state.snapHookLipMm,
+        joints = state.snapJoints.mapIndexed { index, spec ->
+            val local = state.snapAnchorHalfFor(spec)?.toLocal(spec.anchorPointMm)
+                ?: throw IllegalStateException(
+                    "Joint " + (index + 1) + " is not on either half any more - " +
+                        SNAP_PAIR_STALE_MESSAGE,
+                )
+            SnapJointRecord(
+                anchorLocalMm = local,
+                onLowHalf = spec.anchorHalfId == state.snapLowHalfId,
+                beamHalf = spec.beamHalf,
+                tightness = spec.tightness,
+                barbs = spec.barbs,
+                facing = spec.facing,
+            )
+        },
+    )
+
+    /**
      * Opens the Snap fit tool over the cut's own pair of halves.
      *
      * There is no pair to nominate: the split recorded the two objects and the
@@ -1895,22 +2018,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        // A pair that was jointed in an earlier session carries its own record: the source
+        // halves its joints were built from, and the joints themselves. Opening the tool on
+        // those is the point of the record - a joint that has been applied is editable, not
+        // final. A record whose files have gone is dropped rather than trusted: the panel
+        // says so, and the pair opens with no joints, which is what the plate can still
+        // honestly offer.
+        val recorded = state.liveSnapRecord
+        val usable = recorded != null && recorded.sourcePaths.all { File(it).isFile }
+        val record = recorded?.takeIf { usable }
+        val restored = record?.let(state::restoredJoints).orEmpty()
+        if (recorded != null && !usable) {
+            Diagnostics.failure(
+                "snap fit",
+                IllegalStateException("the pair's recorded source halves are gone"),
+            )
+            viewModelScope.launch(Dispatchers.IO) { deletePairSources(recorded.sourcePaths) }
+        }
         Diagnostics.info("snap fit", "opened over the split pair; Manifold " + MeshBoolean.engineVersion)
         _uiState.update {
             it.copy(
                 snapActive = true,
-                snapJoints = emptyList(),
-                snapSelectedJoint = -1,
+                snapJoints = restored,
+                snapSelectedJoint = restored.indices.firstOrNull() ?: -1,
                 snapMovingJoint = false,
                 snapMixedFacing = false,
                 snapFacing = SnapFacing.SAME,
                 snapBarbs = 1,
-                snapSocketRamp = false,
-                snapScale = 1f,
+                snapSocketRamp = record?.socketRamp ?: false,
+                snapScale = record?.scale ?: 1f,
+                snapFullJoint = record?.fullJoint ?: false,
+                snapHookLengthMm = record?.hookLengthMm,
+                snapHookThicknessMm = record?.hookThicknessMm,
+                snapHookLipMm = record?.hookLipMm,
                 snapPreview = null,
-                snapFailure = null,
+                snapFailure = if (recorded != null && !usable) SNAP_RECORD_LOST_MESSAGE else null,
+                snapRecord = if (recorded != null && !usable) null else it.snapRecord,
             )
         }
+        // The restored joints are a list, not yet geometry: the panel's Apply needs the
+        // booleans over the pair's source, exactly as a tapped joint would schedule them.
+        // Without this an opened record showed its joints with Join disabled, because
+        // nothing had built them.
+        if (restored.isNotEmpty()) previewSnapJoint()
     }
 
     /**
@@ -2324,6 +2474,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        // The booleans run on the pair's OWN halves - the recorded source when it has one, so
+        // that re-previewing a pair which already carries a joint rebuilds it from the plain
+        // halves instead of stacking a second beam on the first. Those halves go back onto the
+        // plate through the fit's own transform, which is the frame the rest of this screen
+        // reads anchors, spans and probes in. A pair with no record is previewed from the
+        // halves the plate holds, exactly as it always was: they ARE its source.
+        val recorded = state.liveSnapRecord
+        val own = recorded?.let { pairOwnHalves(state) }
+        if (recorded != null && own == null) {
+            // The files the record names cannot be read: keep the pair, drop the joints, and
+            // say why. An unreadable source is not a broken plate.
+            withContext(Dispatchers.IO) { deletePairSources(recorded.sourcePaths) }
+            _uiState.update {
+                it.copy(
+                    snapJoints = emptyList(),
+                    snapRecord = null,
+                    snapPreview = null,
+                    snapFailure = SNAP_RECORD_LOST_MESSAGE,
+                )
+            }
+            return
+        }
+        val lowBasis = if (own == null) lowFit else lowFit.withOwnMesh(own.first, lowHalf.name)
+        val highBasis = if (own == null) highFit else highFit.withOwnMesh(own.second, highHalf.name)
         // Every joint's tap, read in the half it landed on: the plate has moved
         // the two apart since the split, so the same plate point is a different
         // spot in each half's own frame.
@@ -2343,11 +2517,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             anchors += local
         }
         val prepared = withContext(Dispatchers.Default) prepared@{
-            val lowReady = SnapFitGate.prepare(lowFit.mesh, SnapFitGate.NativeEngine, lowHalf.name)
+            val lowReady = SnapFitGate.prepare(lowBasis.mesh, SnapFitGate.NativeEngine, lowHalf.name)
             if (lowReady is SnapFitGate.Result.Refused) {
                 return@prepared SnapPreviewResult.Refused(lowReady.reason)
             }
-            val highReady = SnapFitGate.prepare(highFit.mesh, SnapFitGate.NativeEngine, highHalf.name)
+            val highReady = SnapFitGate.prepare(highBasis.mesh, SnapFitGate.NativeEngine, highHalf.name)
             if (highReady is SnapFitGate.Result.Refused) {
                 return@prepared SnapPreviewResult.Refused(highReady.reason)
             }
@@ -2358,8 +2532,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // The gate's repair, if any, replaces the mesh the joints measure;
             // each half's own face and placement travel with it unchanged.
             SnapPreviewResult.Prepared(
-                lowHalf = lowFit.copy(mesh = lowPrepared.mesh),
-                highHalf = highFit.copy(mesh = highPrepared.mesh),
+                lowHalf = lowBasis.copy(mesh = lowPrepared.mesh),
+                highHalf = highBasis.copy(mesh = highPrepared.mesh),
                 note = note,
             )
         }
@@ -2417,6 +2591,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /**
+     * [fit], with [ownMesh] - that half in the pair's own frame - in place of the mesh the
+     * plate holds. The fit's own transform and face are kept, so everything measured lands
+     * where the plate has the half standing.
+     */
+    private fun SnapFitHalf.withOwnMesh(ownMesh: StlMesh, name: String): SnapFitHalf =
+        copy(mesh = place(ownMesh, name))
 
     /** What a whole set of joints came out as. */
     private sealed interface SnapPlacement {
@@ -2740,8 +2922,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun applySnapJoint() {
         val state = _uiState.value
+        val specs = state.snapJoints
         val preview = state.snapShownMeshes
-        if (preview == null) {
+        // Two ways to have something to apply: a previewed joint, and a pair whose every joint
+        // has been removed - the second is the way back to the plain halves, and it needs no
+        // preview because there is nothing to build, only the pair's own source to put back.
+        val puttingPlainHalvesBack = state.snapPlainHalvesInstead
+        if (preview == null && !puttingPlainHalvesBack) {
             val reason = state.snapBlockedReason
                 ?: "The joint preview is still being built; try again in a moment"
             showSnapFailure(IllegalStateException(reason))
@@ -2762,6 +2949,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         snapPreviewJob?.cancel()
         viewModelScope.launch {
             val staged = ArrayList<File>(2)
+            // The pair files this apply itself creates, so a failure that never commits the
+            // record does not leave two orphans behind. A pair that already has its source
+            // keeps the files it has.
+            val writtenSources = ArrayList<File>(2)
             runCatching {
                 // The pair goes back into its OWN frame before it is staged: the
                 // assembled frame the joints are measured in. Staged as the plate
@@ -2773,12 +2964,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (fitLow == null || fitHigh == null) {
                     throw IllegalStateException(SNAP_PAIR_STALE_MESSAGE)
                 }
+                // The unjointed halves this build starts from. The recorded source when the
+                // pair has one and the build has a preview; otherwise the halves on the plate,
+                // unplaced into the pair's frame - which is also what the pair files are first
+                // written from.
+                val record = state.liveSnapRecord
+                val own = if (record == null || preview == null) {
+                    pairOwnHalves(state) ?: throw IllegalStateException(SNAP_RECORD_LOST_MESSAGE)
+                } else {
+                    null
+                }
+                val sourcePaths = if (record != null) {
+                    record.lowSourcePath to record.highSourcePath
+                } else {
+                    withContext(Dispatchers.IO) {
+                        val lowSource = pairSourceFile()
+                        val highSource = pairSourceFile()
+                        writtenSources += lowSource
+                        writtenSources += highSource
+                        StlMeshWriter.writeBinary(
+                            own!!.first.copy(displayName = lowSource.name),
+                            lowSource,
+                        )
+                        StlMeshWriter.writeBinary(
+                            own.second.copy(displayName = highSource.name),
+                            highSource,
+                        )
+                        lowSource.absolutePath to highSource.absolutePath
+                    }
+                }
+                // With every joint removed there is nothing to boolean: the pair's own halves
+                // go back on the plate as the objects, which is what makes the source the one
+                // stage of record. Otherwise the previewed meshes are staged, exactly as
+                // before.
+                val lowMesh = preview?.lowMesh
+                    ?: own?.let { fitLow.place(it.first, low.name) }
+                    ?: throw IllegalStateException(SNAP_RECORD_LOST_MESSAGE)
+                val highMesh = preview?.highMesh
+                    ?: own?.let { fitHigh.place(it.second, high.name) }
+                    ?: throw IllegalStateException(SNAP_RECORD_LOST_MESSAGE)
+                val nextRecord = recordOfPair(state, sourcePaths.first, sourcePaths.second)
                 val applied = withContext(Dispatchers.IO) {
                     val pair = SnapApply.stage(
                         lowHalf = fitLow,
                         highHalf = fitHigh,
-                        lowMesh = preview.lowMesh,
-                        highMesh = preview.highMesh,
+                        lowMesh = lowMesh,
+                        highMesh = highMesh,
                         lowName = low.name,
                         highName = high.name,
                     )
@@ -2824,6 +3055,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     live.models.indices.all { live.models[it] === state.models[it] }
                 if (!unchanged) {
                     runCatching { staged.forEach { it.delete() } }
+                    runCatching { writtenSources.forEach { it.delete() } }
                     _uiState.update {
                         it.copy(
                             isBusy = false,
@@ -2833,16 +3065,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@runCatching
                 }
-                val message = "Joined " + low.name + " and " + high.name +
-                    " with a snap fit; slice again to export G-code"
+                val message = if (puttingPlainHalvesBack) {
+                    "Removed every joint from " + low.name + " and " + high.name +
+                        "; the plain halves are back - slice again to export G-code"
+                } else {
+                    "Joined " + low.name + " and " + high.name +
+                        " with a snap fit; slice again to export G-code"
+                }
                 val commit = { current: MainUiState ->
                     current.withoutPublishedSlice(message).copy(
                         models = packed,
                         selectedModelId = lowObject.id,
                         isBusy = false,
                     ).afterPlateReplaced().withSnapPair(
-                        // The pair is the jointed halves now, so the tool can be
-                        // opened again to add a second joint to the same pair.
+                        // The pair is the halves just staged, so the tool can be
+                        // opened again to change the joints on the same pair.
                         // Apply stages the previewed meshes through
                         // [SnapApply.stage], so both new objects' own frames are
                         // the pair's own assembled frame again, and the faces
@@ -2854,6 +3091,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         axis = state.snapAxis,
                         lowFaceMm = stagedPair.lowFaceMm,
                         highFaceMm = stagedPair.highFaceMm,
+                        // And with them the record: the pair's own unjointed source, which is
+                        // what the next session rebuilds an edited joint from, and the joints
+                        // that are on the plate now.
+                        record = nextRecord,
                     )
                 }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))
@@ -2877,6 +3118,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { commit(it) }
             }.onFailure { error ->
                 runCatching { staged.forEach { it.delete() } }
+                // The pair files this apply wrote are not referenced by any state yet, so
+                // they go with the objects it staged. A pair that already had its source
+                // keeps it: those paths were reused, not rewritten.
+                runCatching { writtenSources.forEach { it.delete() } }
                 // Apply runs from the snap panel, so its failure belongs on the line the
                 // panel shows, the same as its refusals do.
                 showSnapFailure(error)
@@ -4516,6 +4761,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 objects.any { it.id == saved.lowHalfId } &&
                 objects.any { it.id == saved.highHalfId }
         }
+        // The record the descriptor carried, when it carried one: the pair's own source halves
+        // and the joints built on them, which is what lets a joint be opened and edited in
+        // this session rather than only added to. Null - no record, no joints - for every
+        // descriptor written before this existed.
+        val record = pair?.let { saved ->
+            val lowSource = saved.lowSourcePath?.takeIf { it.isNotBlank() } ?: return@let null
+            val highSource = saved.highSourcePath?.takeIf { it.isNotBlank() } ?: return@let null
+            SnapRecord(
+                lowSourcePath = lowSource,
+                highSourcePath = highSource,
+                scale = saved.scale,
+                fullJoint = saved.fullJoint,
+                socketRamp = saved.socketRamp,
+                hookLengthMm = saved.hookLengthMm,
+                hookThicknessMm = saved.hookThicknessMm,
+                hookLipMm = saved.hookLipMm,
+                joints = saved.joints.map { joint ->
+                    SnapJointRecord(
+                        anchorLocalMm = Vec3(joint.anchorXMm, joint.anchorYMm, joint.anchorZMm),
+                        onLowHalf = joint.onLowHalf,
+                        beamHalf = joint.beamHalf,
+                        tightness = joint.tightness,
+                        barbs = joint.barbs,
+                        facing = joint.facing,
+                    )
+                },
+            )
+        }
+        // A record whose pair did not survive the restore has no owner any more, and its
+        // files would sit in the model directory for good: the pair is the only thing that
+        // can rebuild from them.
+        if (record == null) {
+            snapshot.snap?.let { saved ->
+                val lowSource = saved.lowSourcePath
+                val highSource = saved.highSourcePath
+                if (!lowSource.isNullOrBlank() && !highSource.isNullOrBlank()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        deletePairSources(listOf(lowSource, highSource))
+                    }
+                }
+            }
+        }
         _uiState.update { current ->
             current.withoutPublishedSlice()
                 .withModels(objects)
@@ -4536,6 +4823,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     axis = pair?.axis ?: ModelPlacement.Axis.Z,
                     lowFaceMm = pair?.lowFaceMm,
                     highFaceMm = pair?.highFaceMm,
+                    record = record,
                 )
                 .withoutSnap()
         }
@@ -4569,7 +4857,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val high = snapHighHalfId ?: return null
         val lowFace = snapLowFaceMm ?: return null
         val highFace = snapHighFaceMm ?: return null
-        return WorkspaceStateStore.SnapState(low, high, snapAxis, lowFace, highFace)
+        // The pair's record travels with it: the joints on it are only editable next session
+        // if the halves they were built from do too. A record whose files have gone is not
+        // written - there would be nothing to rebuild the joints from, and the pair alone is
+        // what the plate can still honestly offer.
+        val record = liveSnapRecord?.takeIf { saved -> saved.sourcePaths.all { File(it).isFile } }
+        return WorkspaceStateStore.SnapState(
+            lowHalfId = low,
+            highHalfId = high,
+            axis = snapAxis,
+            lowFaceMm = lowFace,
+            highFaceMm = highFace,
+            lowSourcePath = record?.lowSourcePath,
+            highSourcePath = record?.highSourcePath,
+            scale = record?.scale ?: 1f,
+            fullJoint = record?.fullJoint ?: false,
+            socketRamp = record?.socketRamp ?: false,
+            hookLengthMm = record?.hookLengthMm,
+            hookThicknessMm = record?.hookThicknessMm,
+            hookLipMm = record?.hookLipMm,
+            joints = record?.joints?.map { joint ->
+                WorkspaceStateStore.SnapState.JointState(
+                    anchorXMm = joint.anchorLocalMm.x,
+                    anchorYMm = joint.anchorLocalMm.y,
+                    anchorZMm = joint.anchorLocalMm.z,
+                    onLowHalf = joint.onLowHalf,
+                    beamHalf = joint.beamHalf,
+                    tightness = joint.tightness,
+                    barbs = joint.barbs,
+                    facing = joint.facing,
+                )
+            }.orEmpty(),
+        )
     }
 
     /**

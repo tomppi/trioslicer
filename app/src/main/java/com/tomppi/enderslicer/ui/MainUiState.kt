@@ -51,6 +51,20 @@ internal const val SNAP_PAIR_STALE_MESSAGE =
     "The plate changed since the split - split the model again and retry"
 
 /**
+ * What the snap fit says when a pair's own record cannot be trusted: the source
+ * halves it was built from have gone, so the joints recorded on it cannot be
+ * rebuilt.
+ *
+ * The pair itself is fine and stays on offer - it is the recorded joints, and
+ * only they, that are lost. A sentence rather than an exception, for the same
+ * reason as the stale pair above: files going missing is an ordinary thing for
+ * a plate to have done.
+ */
+internal const val SNAP_RECORD_LOST_MESSAGE =
+    "The halves this pair's joints were recorded from are gone; the joints can no longer be " +
+        "edited, and the pair is offered as it stands"
+
+/**
  * The two halves a split recorded, as the plate has them now.
  *
  * [Stale] is the missing half, the replaced half and the empty plate alike: the
@@ -203,6 +217,15 @@ data class MainUiState(
     val snapHookLengthMm: Float? = null,
     val snapHookThicknessMm: Float? = null,
     val snapHookLipMm: Float? = null,
+    /**
+     * What the pair remembers: its own unjointed halves and the joints built on
+     * them, so a joint can be edited after it has been applied.
+     *
+     * Kept while the pair is, and dropped with it - see [liveSnapRecord]. A pair
+     * that has only ever been split has none, and behaves as it always did: the
+     * halves on the plate ARE its source.
+     */
+    val snapRecord: SnapRecord? = null,
     /**
      * The last previewed result: the two booleaned halves and the joint they
      * carry. Null while nothing has been previewed yet.
@@ -476,6 +499,28 @@ data class MainUiState(
     val snapAvailable: Boolean get() = snapHalvesPresent
 
     /**
+     * The pair's record, kept only while the pair really is on the plate.
+     *
+     * Every reader goes through this rather than the field: a half that has left
+     * the plate - deleted, replaced by another split, or restored away - takes
+     * the record's meaning with it, even though nothing had to clear a field to
+     * say so. Its files go with it, which the view model does where the plate is
+     * known to have changed.
+     */
+    val liveSnapRecord: SnapRecord? get() = snapRecord?.takeIf { snapHalvesPresent }
+
+    /**
+     * True when Apply means "put the plain halves back": every joint has been
+     * removed from a pair that has a record, so the source it was built from is
+     * what the plate should hold again.
+     *
+     * A pair with no record cannot do this - there is no unjointed source, and
+     * the halves on the plate are all there is.
+     */
+    val snapPlainHalvesInstead: Boolean
+        get() = snapJoints.isEmpty() && liveSnapRecord != null
+
+    /**
      * The low half as the joint builder needs it: placed, with its own mating
      * face carried, or null when it is gone or the plane it was split on was
      * never recorded.
@@ -538,6 +583,37 @@ data class MainUiState(
         snapLowHalfId -> snapLowFitHalf
         snapHighHalfId -> snapHighFitHalf
         else -> null
+    }
+
+    /**
+     * The record's joints, back as specs on the plate: each own-frame anchor is
+     * read out through the half the tap landed on, and named by that half's
+     * CURRENT id.
+     *
+     * The half is chosen by side rather than by a saved id for a reason that
+     * shows the moment a joint is applied: every apply replaces both objects, so
+     * an id stored with the joint would name something that no longer exists,
+     * while "the low half" keeps naming the same side of the same seam.
+     *
+     * Empty when either half's face is unknown - the same state that leaves the
+     * panel saying the pair cannot be worked on.
+     */
+    fun restoredJoints(record: SnapRecord): List<SnapJointSpec> {
+        val low = snapLowHalf ?: return emptyList()
+        val high = snapHighHalf ?: return emptyList()
+        val lowFit = snapLowFitHalf ?: return emptyList()
+        val highFit = snapHighFitHalf ?: return emptyList()
+        return record.joints.map { joint ->
+            val fit = if (joint.onLowHalf) lowFit else highFit
+            SnapJointSpec(
+                anchorPointMm = fit.toPlate(joint.anchorLocalMm),
+                anchorHalfId = if (joint.onLowHalf) low.id else high.id,
+                beamHalf = joint.beamHalf,
+                tightness = joint.tightness,
+                barbs = joint.barbs,
+                facing = joint.facing,
+            )
+        }
     }
 
     /**
@@ -633,7 +709,11 @@ data class MainUiState(
             !snapHalvesPresent -> SNAP_PAIR_STALE_MESSAGE
             snapLowFaceMm == null || snapHighFaceMm == null ->
                 "The plane this pair was split on is not known; split the model again."
-            snapJoints.isEmpty() -> "Tap the model to place a joint on the seam."
+            // Nothing to put on the seam yet - unless the pair carries a record,
+            // in which case an empty list is the user having removed every joint,
+            // and Apply is the way back to the plain halves.
+            snapJoints.isEmpty() && liveSnapRecord == null ->
+                "Tap the model to place a joint on the seam."
             else -> null
         }
 
@@ -650,12 +730,15 @@ data class MainUiState(
         axis: ModelPlacement.Axis,
         lowFaceMm: Float?,
         highFaceMm: Float?,
+        /** The pair's own record, when it has one; a new pair starts with none. */
+        record: SnapRecord? = null,
     ): MainUiState = copy(
         snapLowHalfId = lowHalfId,
         snapHighHalfId = highHalfId,
         snapAxis = axis,
         snapLowFaceMm = lowFaceMm,
         snapHighFaceMm = highFaceMm,
+        snapRecord = record,
     )
 
     /**

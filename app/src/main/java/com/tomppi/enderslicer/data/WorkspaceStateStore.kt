@@ -4,6 +4,9 @@ import android.content.Context
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
+import com.tomppi.enderslicer.viewer.SnapFacing
+import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapTightness
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -35,6 +38,15 @@ class WorkspaceStateStore(private val filesDirectory: File) {
      * Only the ids travel; every other field of the pair is derived from the plate the restore
      * builds. A pair naming an object the descriptor does not hold degrades to no snap rather
      * than failing the load, so a damaged descriptor costs the tool and never the plate.
+     *
+     * A pair that has been jointed carries its own RECORD as well: the two unjointed halves
+     * every joint on it was built from, in the pair's assembled frame, the panel values those
+     * joints were built at, and the joints themselves. That is what makes a joint editable
+     * after the fact - the boolean is baked into the meshes on the plate, and a pocket that
+     * has been cut cannot be un-cut, so Apply has to start from these files rather than from
+     * what the plate holds. Every one of these fields is optional on the way in: a descriptor
+     * written before the record existed decodes as the pair with no recorded joints, which is
+     * exactly what that build knew.
      */
     data class SnapState(
         val lowHalfId: String,
@@ -42,7 +54,40 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val axis: ModelPlacement.Axis,
         val lowFaceMm: Float,
         val highFaceMm: Float,
-    )
+        /** The pair's own unjointed halves, in its assembled frame; null when none recorded. */
+        val lowSourcePath: String? = null,
+        val highSourcePath: String? = null,
+        /** The panel values the recorded joints were built at. */
+        val scale: Float = 1f,
+        val fullJoint: Boolean = false,
+        val socketRamp: Boolean = false,
+        val hookLengthMm: Float? = null,
+        val hookThicknessMm: Float? = null,
+        val hookLipMm: Float? = null,
+        /** The joints built on the pair, in the pair's own frame; empty when none recorded. */
+        val joints: List<JointState> = emptyList(),
+    ) {
+        /** True when both source halves are named: the pair carries a record. */
+        val hasRecord: Boolean
+            get() = !lowSourcePath.isNullOrBlank() && !highSourcePath.isNullOrBlank()
+
+        /**
+         * One joint as the record keeps it: where it sits in the pair's own frame - a plate
+         * point travels with the packer, an own-frame one does not - which half the tap landed
+         * on by SIDE rather than by id (every apply gives the halves fresh ids), and the four
+         * choices that make one joint different from its neighbour.
+         */
+        data class JointState(
+            val anchorXMm: Float,
+            val anchorYMm: Float,
+            val anchorZMm: Float,
+            val onLowHalf: Boolean,
+            val beamHalf: SnapJoint.JointHalf,
+            val tightness: SnapTightness,
+            val barbs: Int,
+            val facing: SnapFacing,
+        )
+    }
 
     /**
      * The saved plate.
@@ -204,7 +249,39 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                     .put("highHalfId", snap.highHalfId)
                     .put("axis", snap.axis.name)
                     .put("lowFaceMm", snap.lowFaceMm.toDouble())
-                    .put("highFaceMm", snap.highFaceMm.toDouble()),
+                    .put("highFaceMm", snap.highFaceMm.toDouble())
+                    // The record is written only when the pair carries one, so a pair that has
+                    // never been jointed keeps the byte shape older builds wrote - and reads
+                    // back the same way in one.
+                    .apply {
+                        if (!snap.hasRecord) return@apply
+                        put("lowSourcePath", snap.lowSourcePath)
+                        put("highSourcePath", snap.highSourcePath)
+                        put("scale", snap.scale.toDouble())
+                        put("fullJoint", snap.fullJoint)
+                        put("socketRamp", snap.socketRamp)
+                        snap.hookLengthMm?.let { put("hookLengthMm", it.toDouble()) }
+                        snap.hookThicknessMm?.let { put("hookThicknessMm", it.toDouble()) }
+                        snap.hookLipMm?.let { put("hookLipMm", it.toDouble()) }
+                        put(
+                            "joints",
+                            JSONArray().apply {
+                                snap.joints.forEach { joint ->
+                                    put(
+                                        JSONObject()
+                                            .put("x", joint.anchorXMm.toDouble())
+                                            .put("y", joint.anchorYMm.toDouble())
+                                            .put("z", joint.anchorZMm.toDouble())
+                                            .put("onLowHalf", joint.onLowHalf)
+                                            .put("beamHalf", joint.beamHalf.name)
+                                            .put("tightness", joint.tightness.name)
+                                            .put("barbs", joint.barbs)
+                                            .put("facing", joint.facing.name),
+                                    )
+                                }
+                            },
+                        )
+                    },
             )
         }
         return root
@@ -260,9 +337,80 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                 .getOrNull() ?: return null
             val lowFace = json.optDouble("lowFaceMm").takeIf { it.isFinite() }?.toFloat() ?: return null
             val highFace = json.optDouble("highFaceMm").takeIf { it.isFinite() }?.toFloat() ?: return null
-            SnapState(low, high, axis, lowFace, highFace)
+            // The record is decoded on its own and leniently: a descriptor written before it
+            // existed has none of these keys, and a damaged one costs the record - never the
+            // pair, and never the plate.
+            val record = decodeRecord(json)
+            SnapState(
+                lowHalfId = low,
+                highHalfId = high,
+                axis = axis,
+                lowFaceMm = lowFace,
+                highFaceMm = highFace,
+                lowSourcePath = record?.lowSourcePath,
+                highSourcePath = record?.highSourcePath,
+                scale = record?.scale ?: 1f,
+                fullJoint = record?.fullJoint ?: false,
+                socketRamp = record?.socketRamp ?: false,
+                hookLengthMm = record?.hookLengthMm,
+                hookThicknessMm = record?.hookThicknessMm,
+                hookLipMm = record?.hookLipMm,
+                joints = record?.joints.orEmpty(),
+            )
         }.getOrNull()
     }
+
+    /** A decoded record: the pair's own source halves, the panel values and the joints. */
+    private data class Record(
+        val lowSourcePath: String,
+        val highSourcePath: String,
+        val scale: Float,
+        val fullJoint: Boolean,
+        val socketRamp: Boolean,
+        val hookLengthMm: Float?,
+        val hookThicknessMm: Float?,
+        val hookLipMm: Float?,
+        val joints: List<SnapState.JointState>,
+    )
+
+    /**
+     * The pair's own record, or null when the descriptor carries none - or carries a damaged
+     * one. Nothing here throws: every field is read for what it is worth, and a joint that
+     * cannot be read costs the whole record rather than silently leaving a joint out of a seam
+     * the user will then apply.
+     */
+    private fun decodeRecord(json: JSONObject): Record? = runCatching {
+        val low = json.optString("lowSourcePath").takeIf { it.isNotBlank() } ?: return null
+        val high = json.optString("highSourcePath").takeIf { it.isNotBlank() } ?: return null
+        val array = json.optJSONArray("joints") ?: JSONArray()
+        val joints = (0 until array.length()).map { index ->
+            decodeJoint(array.getJSONObject(index))
+        }
+        Record(
+            lowSourcePath = low,
+            highSourcePath = high,
+            scale = json.optDouble("scale", 1.0).takeIf { it.isFinite() && it > 0.0 }
+                ?.toFloat() ?: 1f,
+            fullJoint = json.optBoolean("fullJoint", false),
+            socketRamp = json.optBoolean("socketRamp", false),
+            hookLengthMm = json.optDouble("hookLengthMm").takeIf { it.isFinite() }?.toFloat(),
+            hookThicknessMm = json.optDouble("hookThicknessMm").takeIf { it.isFinite() }?.toFloat(),
+            hookLipMm = json.optDouble("hookLipMm").takeIf { it.isFinite() }?.toFloat(),
+            joints = joints,
+        )
+    }.getOrNull()
+
+    /** One recorded joint; throws on anything unreadable, which [decodeRecord] turns into none. */
+    private fun decodeJoint(json: JSONObject): SnapState.JointState = SnapState.JointState(
+        anchorXMm = json.getDouble("x").toFloat(),
+        anchorYMm = json.getDouble("y").toFloat(),
+        anchorZMm = json.getDouble("z").toFloat(),
+        onLowHalf = json.getBoolean("onLowHalf"),
+        beamHalf = SnapJoint.JointHalf.valueOf(json.getString("beamHalf")),
+        tightness = SnapTightness.valueOf(json.getString("tightness")),
+        barbs = json.getInt("barbs"),
+        facing = SnapFacing.valueOf(json.getString("facing")),
+    )
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()
         .put("linear", JSONArray(placement.linear))

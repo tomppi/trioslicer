@@ -4352,6 +4352,10 @@ private fun SnapToolbar(
                 Text(
                     when {
                         state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
+                        // Every joint removed from a pair that remembers its own halves: the
+                        // plate still carries the joints, and Apply is what takes them off.
+                        state.snapPlainHalvesInstead ->
+                            "No joints left on the list; Apply puts the pair's plain halves back."
                         specs.isEmpty() -> "Tap the model where a joint should sit; every tap adds one."
                         else -> "Tap again to add another joint, or use Auto to spread them along the seam."
                     },
@@ -4394,11 +4398,19 @@ private fun SnapToolbar(
                 }
                 Button(
                     onClick = actions.onApply,
-                    enabled = state.snapShownMeshes != null && !state.isBusy,
+                    // A pair whose joints have all been removed has no preview - there is
+                    // nothing to build - but Apply still means something there: it puts the
+                    // plain halves back from the pair's own source.
+                    enabled = (state.snapShownMeshes != null || state.snapPlainHalvesInstead) &&
+                        !state.isBusy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        if (specs.size > 1) "Join the halves with " + specs.size + " joints" else "Join the halves",
+                        when {
+                            state.snapPlainHalvesInstead -> "Put the plain halves back"
+                            specs.size > 1 -> "Join the halves with " + specs.size + " joints"
+                            else -> "Join the halves"
+                        },
                     )
                 }
                 state.snapBlockedReason?.let { reason ->

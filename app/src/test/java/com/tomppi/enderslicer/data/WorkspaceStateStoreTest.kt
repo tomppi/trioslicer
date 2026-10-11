@@ -2,6 +2,9 @@ package com.tomppi.enderslicer.data
 
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.SlicerSettings
+import com.tomppi.enderslicer.viewer.SnapFacing
+import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapTightness
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -237,6 +240,204 @@ class WorkspaceStateStoreTest {
             assertNull("$what must read as no pair", restored.snap)
             assertEquals("and the plate survives it: $what", 2, restored.models.size)
         }
+    }
+
+    /**
+     * The pair's RECORD - the unjointed halves every joint on it was built from, the panel
+     * values, and the joints themselves - has to survive the descriptor too: it is what makes
+     * an applied joint editable in the next session rather than final.
+     *
+     * The anchors are the part worth checking: they are stored in the pair's OWN frame, so
+     * they mean the same thing on a plate the packer has since rearranged.
+     */
+    @Test
+    fun theRecordedJointsAndTheirSourceHalvesSurviveTheDescriptor() {
+        val files = createTempDirectory("enderslicer-workspace-record").toFile()
+        val store = WorkspaceStateStore(files)
+        val low = model(files, "models/low.stl")
+        val high = model(files, "models/high.stl")
+        val lowSource = model(files, "models/pair-low.stl")
+        val highSource = model(files, "models/pair-high.stl")
+        val base = snapshot(low)
+        val held = base.copy(
+            models = listOf(
+                WorkspaceStateStore.Entry(low.absolutePath, "part lower", base.placement, id = "low-id"),
+                WorkspaceStateStore.Entry(high.absolutePath, "part upper", base.placement, id = "high-id"),
+            ),
+            snap = WorkspaceStateStore.SnapState(
+                lowHalfId = "low-id",
+                highHalfId = "high-id",
+                axis = ModelPlacement.Axis.Z,
+                lowFaceMm = 20f,
+                highFaceMm = 20f,
+                lowSourcePath = lowSource.absolutePath,
+                highSourcePath = highSource.absolutePath,
+                scale = 1.25f,
+                fullJoint = true,
+                socketRamp = true,
+                hookLengthMm = 9f,
+                hookThicknessMm = 1.6f,
+                hookLipMm = 0.5f,
+                joints = listOf(
+                    WorkspaceStateStore.SnapState.JointState(
+                        anchorXMm = 12f,
+                        anchorYMm = 13f,
+                        anchorZMm = 20f,
+                        onLowHalf = true,
+                        beamHalf = SnapJoint.JointHalf.LOW,
+                        tightness = SnapTightness.LOOSE,
+                        barbs = 1,
+                        facing = SnapFacing.SAME,
+                    ),
+                    WorkspaceStateStore.SnapState.JointState(
+                        anchorXMm = 28f,
+                        anchorYMm = 27f,
+                        anchorZMm = 20f,
+                        onLowHalf = false,
+                        beamHalf = SnapJoint.JointHalf.HIGH,
+                        tightness = SnapTightness.TIGHT,
+                        barbs = 2,
+                        facing = SnapFacing.OPPOSITE,
+                    ),
+                ),
+            ),
+        )
+
+        store.save(held)
+        val restored = requireNotNull(store.load())
+
+        assertEquals("the record is part of the pair", held, restored)
+        val pair = requireNotNull(restored.snap)
+        assertTrue("which now carries one", pair.hasRecord)
+        assertEquals(
+            listOf(lowSource.absolutePath, highSource.absolutePath),
+            listOf(pair.lowSourcePath, pair.highSourcePath),
+        )
+        assertEquals(1.25f, pair.scale, 0f)
+        assertTrue(pair.fullJoint)
+        assertTrue(pair.socketRamp)
+        assertEquals(9f, pair.hookLengthMm!!, 0f)
+        assertEquals(2, pair.joints.size)
+        assertEquals(
+            "and every choice that makes one joint different travels",
+            SnapTightness.TIGHT,
+            pair.joints[1].tightness,
+        )
+        assertEquals(SnapJoint.JointHalf.HIGH, pair.joints[1].beamHalf)
+        assertEquals(2, pair.joints[1].barbs)
+        assertEquals(SnapFacing.OPPOSITE, pair.joints[1].facing)
+        assertFalse("with the side the tap landed on, not an object id", pair.joints[1].onLowHalf)
+        assertEquals(28f, pair.joints[1].anchorXMm, 0f)
+    }
+
+    /**
+     * A descriptor written before the record existed has a snap object with only the pair in
+     * it. It must read as exactly that - the pair, with no joints - because a build that
+     * never remembered joints cannot have any to offer.
+     */
+    @Test
+    fun aDescriptorFromBeforeTheRecordDecodesAsAPairWithNoJoints() {
+        val files = createTempDirectory("enderslicer-workspace-old-snap").toFile()
+        val store = WorkspaceStateStore(files)
+        val low = model(files, "models/low.stl")
+        val high = model(files, "models/high.stl")
+        val base = snapshot(low)
+        store.save(
+            base.copy(
+                models = listOf(
+                    WorkspaceStateStore.Entry(low.absolutePath, "part lower", base.placement, id = "low-id"),
+                    WorkspaceStateStore.Entry(high.absolutePath, "part upper", base.placement, id = "high-id"),
+                ),
+                snap = WorkspaceStateStore.SnapState(
+                    lowHalfId = "low-id",
+                    highHalfId = "high-id",
+                    axis = ModelPlacement.Axis.Z,
+                    lowFaceMm = 20f,
+                    highFaceMm = 20f,
+                    lowSourcePath = "pair-low.stl",
+                    highSourcePath = "pair-high.stl",
+                    scale = 1.5f,
+                    joints = listOf(jointAt(1f, 2f, 3f)),
+                ),
+            ),
+        )
+        stripTheRecordKeys(workspaceFile(files))
+
+        val restored = requireNotNull(store.load())
+
+        val pair = requireNotNull(restored.snap) { "the pair itself is untouched" }
+        assertEquals("low-id", pair.lowHalfId)
+        assertEquals(20f, pair.lowFaceMm, 0f)
+        assertFalse("there is no record in what that build wrote", pair.hasRecord)
+        assertNull(pair.lowSourcePath)
+        assertTrue(pair.joints.isEmpty())
+        assertEquals("and the panel opens at its own defaults", 1f, pair.scale, 0f)
+    }
+
+    /**
+     * The record is optional, so damage to it costs the record - never the pair, and never the
+     * plate. A joint whose enums do not exist is what a hand edit or a future build looks
+     * like, and the whole record goes rather than a joint being silently left out of a seam
+     * the user is about to apply.
+     */
+    @Test
+    fun aDamagedRecordCostsTheJointsAndNeverThePair() {
+        val files = createTempDirectory("enderslicer-workspace-damaged-record").toFile()
+        val store = WorkspaceStateStore(files)
+        val low = model(files, "models/low.stl")
+        val high = model(files, "models/high.stl")
+        val base = snapshot(low)
+        store.save(
+            base.copy(
+                models = listOf(
+                    WorkspaceStateStore.Entry(low.absolutePath, "part lower", base.placement, id = "low-id"),
+                    WorkspaceStateStore.Entry(high.absolutePath, "part upper", base.placement, id = "high-id"),
+                ),
+                snap = WorkspaceStateStore.SnapState(
+                    lowHalfId = "low-id",
+                    highHalfId = "high-id",
+                    axis = ModelPlacement.Axis.Z,
+                    lowFaceMm = 20f,
+                    highFaceMm = 20f,
+                    lowSourcePath = "pair-low.stl",
+                    highSourcePath = "pair-high.stl",
+                    joints = listOf(jointAt(1f, 2f, 3f)),
+                ),
+            ),
+        )
+        val root = JSONObject(workspaceFile(files).readText())
+        root.getJSONObject("snap").getJSONArray("joints").getJSONObject(0).put("beamHalf", "SIDEWAYS")
+        workspaceFile(files).writeText(root.toString())
+
+        val restored = requireNotNull(store.load())
+
+        val pair = requireNotNull(restored.snap) { "the pair is still the pair" }
+        assertFalse("but its record cannot be trusted", pair.hasRecord)
+        assertTrue(pair.joints.isEmpty())
+        assertEquals("and the plate is untouched", 2, restored.models.size)
+    }
+
+    /** One recorded joint, in the shape the descriptor writes. */
+    private fun jointAt(x: Float, y: Float, z: Float) = WorkspaceStateStore.SnapState.JointState(
+        anchorXMm = x,
+        anchorYMm = y,
+        anchorZMm = z,
+        onLowHalf = true,
+        beamHalf = SnapJoint.JointHalf.LOW,
+        tightness = SnapTightness.LOOSE,
+        barbs = 1,
+        facing = SnapFacing.SAME,
+    )
+
+    /** The descriptor as a build without the record wrote it: the pair, and none of its keys. */
+    private fun stripTheRecordKeys(file: File) {
+        val root = JSONObject(file.readText())
+        val snap = root.getJSONObject("snap")
+        listOf(
+            "lowSourcePath", "highSourcePath", "scale", "fullJoint", "socketRamp",
+            "hookLengthMm", "hookThicknessMm", "hookLipMm", "joints",
+        ).forEach { snap.remove(it) }
+        file.writeText(root.toString())
     }
 
     private fun model(files: File, path: String): File = File(files, path).apply {
