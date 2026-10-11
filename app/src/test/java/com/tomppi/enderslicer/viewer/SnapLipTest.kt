@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.viewer
 
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import kotlin.math.abs
 
@@ -11,9 +12,18 @@ import kotlin.math.abs
  * Every claim is read off the meshes the builder produced, and where the hold
  * itself is the question, off the pair after the joint has been applied to it -
  * which is what the app does and what the user sees.
+ *
+ * The halves are cut with the host Manifold build (scripts/build-manifold-host.sh),
+ * which is only packaged for arm64-v8a. Where that build is absent - CI - the
+ * class skips rather than measuring meshes it could not cut.
  */
 class SnapLipTest {
     private val seam = 30f
+
+    @Before
+    fun theHostBooleanEngine() {
+        assumeTrue("the host Manifold build is not on java.library.path", MeshBoolean.ensureLoaded())
+    }
 
     /** A hollow half: the outer block up to [seam], with a cavity cut clean through the top. */
     private fun hollowHalf(
