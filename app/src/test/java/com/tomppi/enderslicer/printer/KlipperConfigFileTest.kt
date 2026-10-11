@@ -192,33 +192,45 @@ class KlipperConfigFileTest {
             rotation_distance: 4.69
             dir_pin: !PB3
         """.trimIndent()
-        val rewrite = KlipperConfigFile.forDevice(host, "/data/pty", "/data/gcodes")
-        assertTrue(rewrite.text.contains("serial: /data/pty"))
+        val rewrite = KlipperConfigFile.forDevice(host, PTY, "/data/gcodes")
+        assertTrue(rewrite.text.contains("serial: $PTY"))
         assertTrue(rewrite.text.contains("path: /data/gcodes"))
-        // klippy reads this option for the app's connection - only /dev/rpmsg_* and
-        // /tmp/klipper_host_* are treated otherwise - and with it absent it falls through to
-        // toggling DTR, which a bridge that moves bytes cannot deliver. So it stays, as the
-        // one reset this connection can do.
-        assertTrue(rewrite.text.contains("restart_method: command"))
+        // The option a host writes for its serial port is exactly the one a pty cannot carry.
+        // klippy reads restart_method only when a baud rate was set, the app's pty has none,
+        // and an option nothing read makes it refuse the whole configuration - so the import
+        // takes it out, and klippy's own default on this connection is already 'command'.
+        assertFalse(rewrite.text.contains("restart_method"))
+        assertTrue(rewrite.changes.any { it.contains("removed restart_method") })
         // And the printer's own settings are none of the app's business.
         assertTrue(rewrite.text.contains("rotation_distance: 4.69"))
         assertTrue(rewrite.text.contains("dir_pin: !PB3"))
-        // Two changes, because this file already said "command": a value that is already
-        // right is not a change, and a screen that listed it as one would be lying about
-        // what it did to the user's file.
-        assertEquals(2, rewrite.changes.size)
+        // Three changes: the serial, the sdcard, and the option that had to go.
+        assertEquals(3, rewrite.changes.size)
         assertTrue(rewrite.changes.any { it.contains("micro-controller") })
     }
 
     @Test
-    fun aFileThatSaysNothingAboutResettingGetsTheOneResetThatWorks() {
-        // No restart_method at all: klippy falls through to toggling DTR, which this
-        // connection cannot deliver, so the app writes the method that asks the board to
-        // reset itself - and says that it did.
-        val without = "[mcu]\nserial: /dev/ttyUSB0\n"
-        val rewrite = KlipperConfigFile.forDevice(without, "/data/pty", "/data/gcodes")
+    fun aRealSerialPortKeepsTheResetTheBoardNeeds() {
+        // A board on a real serial port is reset by command, not by DTR: the app's bridge
+        // moves bytes and nothing else, so a DTR toggle never reaches the board. On that
+        // route - a caller really talking to a serial port - the option stays and is forced
+        // to command, which is today's behaviour and must not change. (baud still goes: the
+        // app's own connection is a pty whatever the file said, and a pty has no line rate.)
+        val without = "[mcu]\nserial: /dev/ttyUSB0\nrestart_method: arduino\nbaud: 250000\n"
+        val rewrite = KlipperConfigFile.forDevice(without, "/dev/ttyUSB0", "/data/gcodes")
         assertTrue(rewrite.text.contains("restart_method: command"))
         assertTrue(rewrite.changes.any { it.contains("reset the board by command") })
+        assertFalse("the pty has no line rate, so the number goes", rewrite.text.contains("baud"))
+
+        val absent = KlipperConfigFile.forDevice(
+            "[mcu]\nserial: /dev/ttyUSB0\n",
+            "/dev/ttyUSB0",
+            "/data/gcodes",
+        )
+        assertTrue(
+            "and a file that says nothing gets the method that works",
+            absent.text.contains("restart_method: command"),
+        )
     }
 
     @Test
@@ -736,4 +748,79 @@ class KlipperConfigFileTest {
         val otherCase = KlipperConfigFile.forDevice(text, "/pty", "/gcodes", setOf("Macros.cfg"))
         assertTrue("a case difference is a different file", otherCase.text.contains("# [include macros.cfg]"))
     }
+
+    /**
+     * The option a pty makes fatal, and the repair for a file that already has it.
+     *
+     * klippy reads restart_method only when a baud rate was set. The app's connection is a
+     * pty, which has none - the vendored mcu.py treats a port resolving into /dev/pts as a
+     * pipe, as upstream treats /dev/rpmsg_ - so the option is never read, and klippy refuses
+     * the whole configuration with "Option 'restart_method' is not valid in section 'mcu'".
+     * Every phone host this app prepared stopped there and never started.
+     */
+    @Test
+    fun aPtyConfigurationLosesTheOptionsOnlyASerialPortCanCarry() {
+        val host = """
+            [mcu]
+            serial: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+            restart_method: arduino
+            baud: 250000
+
+            [virtual_sdcard]
+            path: /home/pi/printer_data/gcodes
+        """.trimIndent()
+        val rewrite = KlipperConfigFile.forDevice(host, PTY, "/data/gcodes")
+
+        assertFalse("klippy would refuse the file for this", rewrite.text.contains("restart_method"))
+        assertFalse("and for a baud it never reads on a pty", rewrite.text.contains("baud"))
+        assertTrue(rewrite.text.contains("serial: $PTY"))
+        assertTrue(rewrite.changes.any { it.contains("removed restart_method") })
+    }
+
+    @Test
+    fun healingTakesTheOptionOutOfAFileThatAlreadyHasIt() {
+        val broken = """
+            [mcu]
+            serial: $PTY
+            restart_method: command
+
+            [printer]
+            kinematics: cartesian
+
+            #*# <---------------------- SAVE_CONFIG ---------------------->
+            #*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
+            #*#
+            #*# [bltouch]
+            #*# z_offset = 1.830
+        """.trimIndent()
+
+        val healed = KlipperConfigFile.withoutPtyOnlyOptions(broken, PTY)
+
+        assertFalse(healed.contains("restart_method"))
+        assertTrue("everything else is left alone", healed.contains("kinematics: cartesian"))
+        assertTrue("including what the printer saved", healed.contains("#*# z_offset = 1.830"))
+        assertTrue(healed.contains("serial: $PTY"))
+    }
+
+    @Test
+    fun aRealSerialPortIsLeftExactlyAsItIs() {
+        val host = "[mcu]\nserial: /dev/ttyUSB0\nrestart_method: arduino\nbaud: 250000\n"
+        assertEquals(host, KlipperConfigFile.withoutPtyOnlyOptions(host, "/dev/ttyUSB0"))
+    }
+
+    @Test
+    fun thePtyIsRecognisedByItsNameAndByWhereItResolves() {
+        assertTrue(KlipperConfigFile.isPtySerial("$PTY"))
+        assertTrue(KlipperConfigFile.isPtySerial("/somewhere/else/printer-pty"))
+        assertTrue(KlipperConfigFile.isPtySerial("/dev/pts/0"))
+        assertFalse(KlipperConfigFile.isPtySerial("/dev/ttyUSB0"))
+        assertFalse(KlipperConfigFile.isPtySerial("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"))
+        assertFalse(KlipperConfigFile.isPtySerial(""))
+    }
+
+    private companion object {
+        /** The link the app hands klippy, as the prepare and import paths build it. */
+        const val PTY = "/data/data/com.tomppi.enderslicercura/files/printer-pty"
+    }
 }
+

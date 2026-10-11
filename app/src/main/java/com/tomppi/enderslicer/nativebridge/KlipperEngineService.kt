@@ -494,14 +494,26 @@ class KlipperEngineService : Service() {
         installKamp()
         val config = File(directory, KlipperHostFiles.CONFIG)
         if (!config.isFile || config.readText().isBlank()) {
-            config.writeText(withHostIncludes(resolved))
+            config.writeText(
+                KlipperConfigFile.withoutPtyOnlyOptions(withHostIncludes(resolved), serialPath),
+            )
             Log.i(TAG, "seeded ${config.absolutePath}")
         } else {
             val existing = config.readText()
-            val included = withHostIncludes(existing)
-            if (included != existing) {
-                config.writeText(included)
-                Log.i(TAG, "added the includes this host needs to ${config.absolutePath}")
+            // What the file needs before klippy reads it: the includes this host adds to
+            // every configuration, and - the part that was missing - no options that only
+            // mean something on a real serial port. Every file this app prepared before the
+            // pty rule was understood has restart_method: command in [mcu], which klippy
+            // never reads on a pty and refuses the whole configuration for, so healing here,
+            // on the file that is about to be read, is what fixes a phone that is already in
+            // that state without anyone importing anything again.
+            val wanted = KlipperConfigFile.withoutPtyOnlyOptions(
+                withHostIncludes(existing),
+                serialPath,
+            )
+            if (wanted != existing) {
+                config.writeText(wanted)
+                Log.i(TAG, "updated ${config.absolutePath} for this connection")
             }
         }
         Log.i(TAG, "printer config ${config.absolutePath}: serial $serialPath")

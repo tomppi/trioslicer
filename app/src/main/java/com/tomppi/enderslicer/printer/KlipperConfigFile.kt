@@ -1,5 +1,7 @@
 package com.tomppi.enderslicer.printer
 
+import java.io.File
+
 /**
  * The printer's configuration file, and the part of it klippy writes itself.
  *
@@ -34,6 +36,60 @@ internal object KlipperConfigFile {
     fun resolve(template: String, serialPath: String, gcodeDirectory: String): String =
         template.replace(SERIAL_PLACEHOLDER, serialPath)
             .replace(GCODES_PLACEHOLDER, gcodeDirectory)
+
+    /**
+     * True when [serialPath] is the pseudo-terminal this app drives the printer through,
+     * rather than a board on a real serial port.
+     *
+     * Both the app's own name and the path it resolves to are checked. The link is
+     * files/printer-pty, and inside the app it resolves into /dev/pts - which is exactly the
+     * test the vendored klippy makes for "not a real UART" (scripts/stage-klipper-android.sh
+     * patches mcu.py with it), so this has to agree with that or the two disagree about what
+     * kind of connection this is.
+     */
+    fun isPtySerial(serialPath: String): Boolean {
+        val path = serialPath.trim()
+        if (path.isEmpty()) return false
+        if (path == KlipperHostFiles.PTY_LINK || path.endsWith("/" + KlipperHostFiles.PTY_LINK)) {
+            return true
+        }
+        if (path.startsWith("/dev/pts/")) return true
+        return runCatching { File(path).canonicalPath.startsWith("/dev/pts/") }.getOrDefault(false)
+    }
+
+    /**
+     * The options this app's connection makes invalid, removed from a configuration.
+     *
+     * klippy reads `baud` and `restart_method` only when it is talking to a real serial port.
+     * The vendored mcu.py treats a port that resolves into /dev/pts as a pipe, like upstream
+     * treats /dev/rpmsg_ and /tmp/klipper_host_ - so the baud rate is never read, and the
+     * reset method is only read when there IS a baud rate. What klippy then does with an
+     * option nothing read is refuse the whole configuration:
+     *
+     *     configparser.Error: Option 'restart_method' is not valid in section 'mcu'
+     *
+     * That is fatal, not a warning, and it is why a phone host could not start at all. A
+     * configuration already carrying either option - every one this app prepared before this
+     * was understood, and anything imported from a host that needed it - is repaired here.
+     * `_restart_method` defaults to 'command' before the option is considered, which is what
+     * this connection needs anyway, so nothing about the reset changes.
+     *
+     * Returns [text] itself when there is nothing to remove, so a caller can tell the two apart.
+     */
+    fun withoutPtyOnlyOptions(text: String, serialPath: String): String {
+        if (!isPtySerial(serialPath)) return text
+        val lines = text.lines().toMutableList()
+        var removed = false
+        // One at a time, each search from the top: removing a line moves the others.
+        for (option in listOf(RESTART_OPTION, BAUD_OPTION)) {
+            val at = indexOfOption(lines, "mcu", option)
+            if (at >= 0) {
+                lines.removeAt(at)
+                removed = true
+            }
+        }
+        return if (removed) lines.joinToString("\n") else text
+    }
 
     /**
      * Everything klippy has saved, from the marker down, or "" when it has saved nothing.
@@ -212,17 +268,27 @@ internal object KlipperConfigFile {
             changes += "removed ${next.second}: there is no second board for the app to reach"
         }
 
-        // A board on this connection is reset by command, not by DTR.
+        // The reset method, and the option that must NOT be written here.
         //
-        // klippy really does read restart_method here: only /dev/rpmsg_* and
-        // /tmp/klipper_host_* are treated as something other than a serial port, and this
-        // app's path is a symlink under its own files directory (mcu.py:569-579). With the
-        // option absent klippy falls through to the arduino method - toggling DTR - and the
-        // bridge moves bytes and nothing else, so the toggle never reaches the board and
-        // FIRMWARE_RESTART ends in "Failed automated reset of MCU". 'command' asks the board
-        // to reset itself, which is what the printer's own configuration used.
+        // On a real serial port the board is reset by command, not by DTR: the bridge moves
+        // bytes and nothing else, so a DTR toggle never reaches the board and FIRMWARE_RESTART
+        // ends in "Failed automated reset of MCU". That is what this used to force - and it
+        // wrote the option unconditionally, including on the app's own connection, where
+        // klippy never reads it: with a pty there is no baud rate, and restart_method is read
+        // only when there is one (mcu.py:576-579). An option nothing read is an option klippy
+        // refuses the whole configuration for, so every phone host stopped at "Option
+        // 'restart_method' is not valid in section 'mcu'" and never started.
+        //
+        // So it is removed here instead. klippy's own default with no baud rate is 'command'
+        // - the very reset this connection needs - so the board still resets the same way.
         val restartAt = indexOfOption(lines, "mcu", RESTART_OPTION)
-        if (restartAt >= 0) {
+        if (isPtySerial(serialPath)) {
+            if (restartAt >= 0) {
+                lines.removeAt(restartAt)
+                changes += "removed restart_method: klippy reads no reset method on a pty, " +
+                    "and refuses a configuration that carries one - it resets by command anyway"
+            }
+        } else if (restartAt >= 0) {
             val current = lines[restartAt].substringAfter(':').substringAfter('=').trim()
             if (!current.equals("command", ignoreCase = true)) {
                 lines[restartAt] = lines[restartAt].takeWhile { it.isWhitespace() } +
@@ -231,17 +297,15 @@ internal object KlipperConfigFile {
                     "connection can deliver"
             }
         } else if (serialAt >= 0) {
-            // A CAN board needs nothing: with no baud klippy uses the command method already.
             lines.add(serialAt + 1, "restart_method: command")
             changes += "reset the board by command, which is the only reset this connection " +
                 "can deliver"
         }
 
-        // baud is removed because it means nothing on this connection: the printer is reached
-        // through a pseudo-terminal, where there is no line rate to set. (klippy does read the
-        // option here - the comment that used to stand in this place claimed it refused the
-        // option outright, which is not so - so it is harmless either way, and removing it
-        // keeps a brought configuration from carrying a number that describes nothing.)
+        // baud goes for the same reason as restart_method above, and it is the reason that
+        // one is fatal: the app's pty resolves into /dev/pts, klippy never reads a baud rate
+        // for such a port, and an option nothing read is refused outright. A brought
+        // configuration carrying a number that describes nothing would stop the host.
         val baudAt = indexOfOption(lines, "mcu", BAUD_OPTION)
         if (baudAt >= 0) {
             lines.removeAt(baudAt)

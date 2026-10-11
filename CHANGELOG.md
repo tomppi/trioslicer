@@ -48,6 +48,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The phone's own Klipper host can start again, which is why it could not before.** Every
+  configuration this app prepared carried `restart_method: command` in [mcu], and klippy reads that
+  option only when a baud rate was set - which on the app's connection it never is, because a pty
+  has no baud rate and the vendored mcu.py treats a port resolving into /dev/pts as a pipe, exactly
+  as upstream treats /dev/rpmsg_. An option nothing read is refused outright: "Option
+  'restart_method' is not valid in section 'mcu'", a fatal configuration error before a printer is
+  touched, so Phone Klipper said only "Host not reachable". The option is removed rather than
+  written now - klippy's own default with no baud rate is 'command', the reset this connection needs
+  - the shipped configuration no longer carries it, and both the prepare path and the import path
+  take it (and a baud rate) out of a file that already has one, so an installed app is healed by the
+  update rather than needing anything imported again.
 - **A dropped connection to a computer no longer reports the print as interrupted, and one host's
   state can never be shown as another's.** On the PC route the phone's websocket closing is not the
   print dying - the printer is a different machine, and it is usually still printing - but every

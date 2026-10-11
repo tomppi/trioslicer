@@ -50,16 +50,25 @@ class PrinterConfigAssetTest {
         }
     }
 
+    /**
+     * The one option this file must NOT carry, and the mistake it caused.
+     *
+     * klippy reads restart_method only when a baud rate was set. The app's connection is a
+     * pty, which has none - the vendored mcu.py treats a port resolving into /dev/pts as a
+     * pipe, exactly as upstream treats /dev/rpmsg_ and /tmp/klipper_host_ - so the option is
+     * never read, and klippy's strict unused-option check refuses the whole configuration:
+     *
+     *     configparser.Error: Option 'restart_method' is not valid in section 'mcu'
+     *
+     * That is fatal. Every phone host stopped there and never started. The reset is not lost
+     * by removing it: klippy's own default with no baud rate is 'command', which is the reset
+     * this connection needs. An earlier revision of this file asserted the opposite and is
+     * why the phone route could not run at all.
+     */
     @Test
-    fun theBoardIsResetByCommandOnThisConnection() {
-        // klippy reads restart_method on this connection: only /dev/rpmsg_* and
-        // /tmp/klipper_host_* are pipe ports with no baud rate. Toggling DTR for the arduino
-        // method cannot reach the board through the app's pty, so the board is asked to reset
-        // itself. An earlier revision of this file asserted the opposite and cost the phone
-        // route its only working FIRMWARE_RESTART.
-        assertTrue(
-            "the shipped [mcu] asks the board to reset itself",
-            config.contains("restart_method: command"),
-        )
+    fun theShippedConfigCarriesNoOptionOnlyASerialPortCanUse() {
+        val mcu = config.substringAfter("[mcu]").substringBefore("\n[")
+        assertFalse("restart_method is never read on a pty, and is fatal there", mcu.contains("restart_method"))
+        assertFalse("and neither is a baud rate", Regex("\\bbaud\\b").containsMatchIn(mcu))
     }
 }
