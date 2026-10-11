@@ -73,6 +73,12 @@ class SnapLipWiringContractTest {
             "and what the material could not give is shown rather than swallowed",
             app.contains("for (warning in one.joint.warnings)"),
         )
+        assertTrue(
+            "the readout is beside the row in one column and under the list in the wide panel, " +
+                "where the list's own height cap cannot clip its last line",
+            app.contains("if (!compact) SnapLipReadout(one)") &&
+                app.contains("SnapJointStyle.WALL_LIP) SnapLipReadout(one)"),
+        )
     }
 
     /**

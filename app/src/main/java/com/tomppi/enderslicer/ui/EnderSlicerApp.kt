@@ -4608,6 +4608,13 @@ private fun SnapSetupGroup(
             }
         }
     }
+    // The wide panel's list is capped at a row's height: the lip's readout is
+    // longer than that and is drawn here, under the list, where nothing clips it.
+    if (stacked) {
+        shown?.joints?.getOrNull(selected)?.let { one ->
+            if (one.joint.style == SnapJointStyle.WALL_LIP) SnapLipReadout(one)
+        }
+    }
     // Placing is deliberate: this arms the next tap, and the line under the title says so
     // while it is armed. A tap with nothing armed selects the joint nearest the finger
     // instead of adding one, which is what a model being turned used to do.
@@ -4722,6 +4729,44 @@ private fun SnapSetupGroup(
 }
 
 /**
+ * The wall lip's whole readout: the hold its two sizes set, the wall they are
+ * measured against, the step the ring forced and why, and whatever the material
+ * could not give. It is shown beside the joint's own row in the single column,
+ * and under the list in the wide panel - where the list's height cap, sized for
+ * rows, would otherwise clip the last line off it.
+ */
+@Composable
+private fun SnapLipReadout(one: SnapPlacedJoint) {
+    Text(
+        "   " + SnapJointStyle.WALL_LIP.label + " · " + one.joint.lipSummary +
+            " · " + one.joint.lipFitSummary,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "   tooth ring in " + one.beamHalfName + ", ledge ring in " + one.socketHalfName +
+            " · worst wall strain %.1f%% at %.0f mm along the ring".format(
+                one.joint.dimensions.lipStrainPercent,
+                one.joint.dimensions.lipWorstAtMm,
+            ),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "   " + one.joint.lipStepSummary,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    for (warning in one.joint.warnings) {
+        Text(
+            "   " + warning,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+/**
  * One joint in the list, with what it came out as and the two edits it takes.
  * In a column the row's own label is shortened: the teeth and the facing it
  * used to carry are on the joint's first line of detail either way.
@@ -4775,35 +4820,10 @@ private fun SnapJointRow(
         // as a whole. And the click it holds at, because a beam with several
         // teeth holds at several depths and the panel has to say which.
         if (one.joint.style == SnapJointStyle.WALL_LIP) {
-            // The lip's own numbers: the hold the two size controls set, and the
-            // wall they are measured against.
-            Text(
-                "   " + SnapJointStyle.WALL_LIP.label + " · " + one.joint.lipSummary +
-                    " · " + one.joint.lipFitSummary,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "   tooth ring in " + one.beamHalfName + ", ledge ring in " + one.socketHalfName +
-                    " · worst wall strain %.1f%% at %.0f mm along the ring".format(
-                        one.joint.dimensions.lipStrainPercent,
-                        one.joint.dimensions.lipWorstAtMm,
-                    ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "   " + one.joint.lipStepSummary,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            for (warning in one.joint.warnings) {
-                Text(
-                    "   " + warning,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
+            // Beside its row in the single column. The wide panel draws it below
+            // the list instead, because this readout is longer than a row and the
+            // list's own height cap was clipping its last line.
+            if (!compact) SnapLipReadout(one)
         } else {
             Text(
                 "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +

@@ -40,6 +40,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The wall lip's step line printed its format string instead of its numbers
   ("pad %.2f mm: a %.2f mm tooth and its ramp"). The sentence is built with the joint now, where a
   test reads it, and the panel prints that.
+- The wide panel clipped the same line off the bottom: its joint list carries a height cap sized for
+  joint rows, and the lip's readout is longer than a row. In the wide panel the readout is drawn under
+  the list, where the cap cannot reach it, so the step and any warning are both readable.
 
 ### Notes
 
