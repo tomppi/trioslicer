@@ -29,8 +29,8 @@ import com.tomppi.enderslicer.BuildConfig
 import com.tomppi.enderslicer.printer.KlipperImportResult
 import com.tomppi.enderslicer.printer.KlipperMcu
 import com.tomppi.enderslicer.printer.KlipperPrinterState
+import com.tomppi.enderslicer.printer.KlipperAdoptPreview
 import com.tomppi.enderslicer.printer.KlipperSyncResult
-import com.tomppi.enderslicer.printer.KlipperSyncSource
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.printer.describeConfigAge
 import com.tomppi.enderslicer.printer.endstops
@@ -280,6 +280,20 @@ internal fun KlipperMachineTab(state: KlipperPrinterState, viewModel: KlipperVie
             },
         )
 
+        AdoptCard(
+            viewModel = viewModel,
+            onDevice = onDevice,
+            onAdopted = {
+                scope.launch {
+                    config = viewModel.readConfig()
+                    configDiffers = viewModel.configDiffersFromShipped()
+                    // klippy reads its configuration once, at the start: a new one means a new
+                    // host, which is also what applies the paths this app wrote into it.
+                    viewModel.restartHost()
+                }
+            },
+        )
+
         SyncCard(viewModel)
 
         TextFileCard(
@@ -421,6 +435,162 @@ private fun McuCard(mcu: KlipperMcu) {
 }
 
 /**
+ * Bring the computer's whole configuration to this phone.
+ *
+ * The sync card below moves the printer's own settings between two configurations that both
+ * exist; this is for the case where the one here was never set up for the printer the
+ * computer runs - the user's own words were "a way to copy the entire printer cfg and
+ * replace only the necessary parts to make it work for the phone klipper". So everything
+ * comes: pins, steps, kinematics, the probe, the macros, the includes. Only the parts that
+ * describe the computer itself are replaced, by the same rule the file-picker import uses
+ * ([KlipperConfigFile.forDevice]), and the changes and warnings it produces are shown
+ * before anything is written - a whole configuration being replaced is the user's decision.
+ */
+@Composable
+private fun AdoptCard(viewModel: KlipperViewModel, onDevice: Boolean, onAdopted: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var preview by remember { mutableStateOf<KlipperAdoptPreview?>(null) }
+    var outcome by remember { mutableStateOf<String?>(null) }
+    var confirm by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+
+    KlipperCard(
+        title = "Adopt PC Klipper's configuration",
+        subtitle = "The computer's printer.cfg, brought here and adapted for this device",
+        trailing = {
+            if (onDevice) {
+                KlipperButton("Check what would change", enabled = !busy) {
+                    scope.launch {
+                        busy = true
+                        outcome = null
+                        preview = viewModel.previewAdoptingComputerConfig()
+                        busy = false
+                    }
+                }
+            }
+        },
+    ) {
+        if (!onDevice) {
+            KlipperNote(
+                "This writes Phone Klipper's own configuration. Switch to Phone Klipper on " +
+                    "the Print tab to use it.",
+            )
+            return@KlipperCard
+        }
+        outcome?.let { message ->
+            KlipperNote(message)
+            Spacer(Modifier.height(8.dp))
+        }
+        val result = preview
+        when {
+            busy -> KlipperNote("Reading PC Klipper's configuration…")
+            result == null -> KlipperNote(
+                "Copies the computer's whole printer.cfg here - pins, steps, the probe, the " +
+                    "macros and the files it includes - and replaces only what describes the " +
+                    "computer: its serial port, its gcodes directory, its second boards and " +
+                    "its reset method. An include this device cannot fetch is commented out " +
+                    "with a line saying so. Nothing is written until you have seen what " +
+                    "would change.",
+            )
+            result.error != null -> KlipperNote(
+                text = "Nothing could be read: " + result.error,
+                color = MaterialTheme.colorScheme.error,
+            )
+            else -> {
+                Text(
+                    text = "Phone Klipper's configuration would become:",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                KlipperNote(
+                    buildString {
+                        result.changes.forEach { append("• ").append(it).append('\n') }
+                        if (result.companions.isNotEmpty()) {
+                            append("• brought along: ")
+                            append(result.companions.keys.joinToString(", "))
+                            append('\n')
+                        }
+                    }.trimEnd(),
+                )
+                if (result.warnings.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    KlipperNote(
+                        text = buildString {
+                            append("Worth knowing:\n")
+                            result.warnings.forEach { append("• ").append(it).append('\n') }
+                        }.trimEnd(),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (result.savedValuesLost.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    KlipperNote(
+                        text = "Saved on this phone, and replaced with the file:\n" +
+                            result.savedValuesLost.joinToString("\n") { "• $it" },
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                KlipperButtons {
+                    KlipperButton("Adopt PC Klipper's configuration", enabled = !busy) {
+                        confirm = true
+                    }
+                }
+            }
+        }
+    }
+    val checked = preview
+    if (confirm && checked != null) {
+        KlipperConfirmDialog(
+            title = "Replace this phone's configuration with PC Klipper's?",
+            text = buildString {
+                append("Phone Klipper's configuration is replaced by the computer's, adapted ")
+                append("for this device: pins, steps, the probe and the macros come from PC ")
+                append("Klipper, and only the parts that describe the computer itself - its ")
+                append("serial port, its gcodes directory, its boards, its reset method - are ")
+                append("replaced. The values klippy has saved go with the file they are in.")
+                if (checked.savedValuesLost.isEmpty()) {
+                    append("\n\nThis phone has saved none of its own, so nothing else is lost.")
+                } else {
+                    append("\n\nSaved on this phone, and lost with the file:")
+                    checked.savedValuesLost.forEach { append("\n• ").append(it) }
+                }
+                append("\n\nA print on Phone Klipper's host does not survive the restart ")
+                append("that follows.")
+            },
+            confirmLabel = "Adopt",
+            destructive = true,
+            onConfirm = {
+                confirm = false
+                scope.launch {
+                    busy = true
+                    viewModel.adoptComputerConfig(checked)
+                        .onSuccess { result ->
+                            outcome = "Adopted PC Klipper's " + result.fileName +
+                                (if (result.companions.isEmpty()) {
+                                    ""
+                                } else {
+                                    ", with " + result.companions.size + " file" +
+                                        (if (result.companions.size == 1) "" else "s") +
+                                        " it includes"
+                                }) +
+                                ". The host has been restarted."
+                            preview = null
+                            onAdopted()
+                        }
+                        .onFailure { error ->
+                            outcome = "Nothing was written: " +
+                                (error.message ?: "the configuration could not be written")
+                        }
+                    busy = false
+                }
+            },
+            onDismiss = { confirm = false },
+        )
+    }
+}
+
+/**
  * Copy the printer's own settings from one host's configuration to the other.
  *
  * The two files describe one machine and must differ only in how each host reaches it, so what
@@ -434,7 +604,7 @@ private fun SyncCard(viewModel: KlipperViewModel) {
     val scope = rememberCoroutineScope()
     var preview by remember { mutableStateOf<KlipperSyncResult?>(null) }
     var outcome by remember { mutableStateOf<String?>(null) }
-    var direction by remember { mutableStateOf<KlipperSyncSource?>(null) }
+    var confirmCopy by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { preview = viewModel.syncDifferences() }
@@ -484,10 +654,26 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                         mark(remoteChanged, deviceChanged),
                 )
                 Spacer(Modifier.height(8.dp))
+                // How many lines the two files differ on, counted at all: the settings list
+                // below is only what this button is allowed to move, and a user reading
+                // "nothing differs" while looking at two obviously different files has been
+                // told something untrue about his own configuration.
+                result.lineDifferences?.let { lines ->
+                    KlipperNote(
+                        when (lines) {
+                            0 -> "The two files are the same, line for line."
+                            else -> "The two files differ on $lines " +
+                                (if (lines == 1) "line" else "lines") +
+                                " - each host's serial port, gcodes directory, boards and " +
+                                "includes are among them, and this button never moves those."
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
                 if (result.differences.isEmpty()) {
                     KlipperNote(
-                        "Nothing differs: the two agree about every setting this copies. Each " +
-                            "host's serial port, gcodes directory, boards and includes stay its own.",
+                        "None of the settings this app moves - calibrations, rotation distance, " +
+                            "pressure advance, limits - differs.",
                     )
                 } else {
                     KlipperNote("Phone Klipper's value first, PC Klipper's second.")
@@ -500,11 +686,12 @@ private fun SyncCard(viewModel: KlipperViewModel) {
                     }
                     Spacer(Modifier.height(8.dp))
                     KlipperButtons {
+                        // One direction only. The way a configuration reaches this phone is
+                        // adoption, above: the whole file, adapted. Copying only the printer's
+                        // own values into a configuration that does not describe the printer
+                        // was the thing that left the phone host unable to run it.
                         KlipperButton("Copy to PC Klipper", enabled = !busy) {
-                            direction = KlipperSyncSource.THE_DEVICE
-                        }
-                        KlipperButton("Copy to Phone Klipper", enabled = !busy) {
-                            direction = KlipperSyncSource.THE_REMOTE_HOST
+                            confirmCopy = true
                         }
                     }
                 }
@@ -512,49 +699,42 @@ private fun SyncCard(viewModel: KlipperViewModel) {
         }
     }
 
-    direction?.let { from ->
-        val fromComputer = from == KlipperSyncSource.THE_REMOTE_HOST
+    if (confirmCopy) {
         KlipperConfirmDialog(
-            title = if (fromComputer) {
-                "Copy PC Klipper's settings to Phone Klipper?"
-            } else {
-                "Copy Phone Klipper's settings to PC Klipper?"
-            },
-            text = if (fromComputer) {
-                "The printer's own settings in PC Klipper's printer.cfg replace Phone " +
-                    "Klipper's: the calibrations klippy saved, the extruder's rotation " +
-                    "distance and pressure advance, the motion limits. Phone Klipper's serial " +
-                    "port, its gcodes directory and its [include app.cfg] are left exactly as " +
-                    "they are. Nothing restarts here by itself: the host reads the new file " +
-                    "the next time it is restarted from this screen."
-            } else {
-                "The printer's own settings in Phone Klipper's printer.cfg replace PC " +
-                    "Klipper's. Everything that describes the PC rather than the printer - " +
-                    "its serial port, its gcodes directory, its [mcu rpi] section, its " +
-                    "includes - is left exactly as it is. PC Klipper is asked to restart, " +
-                    "which a print in progress there does not survive."
-            },
-            confirmLabel = if (fromComputer) "Copy to Phone Klipper" else "Copy to PC Klipper",
+            title = "Copy Phone Klipper's settings to PC Klipper?",
+            text = "The printer's own settings in Phone Klipper's printer.cfg replace PC " +
+                "Klipper's. Everything that describes the PC rather than the printer - " +
+                "its serial port, its gcodes directory, its [mcu rpi] section, its " +
+                "includes - is left exactly as it is. PC Klipper is asked to restart, " +
+                "which a print in progress there does not survive.",
+            confirmLabel = "Copy to PC Klipper",
             onConfirm = {
+                confirmCopy = false
                 scope.launch {
                     busy = true
-                    val result = viewModel.syncConfiguration(from)
+                    val result = viewModel.copySettingsToComputer()
                     busy = false
-                    outcome = syncOutcome(result, fromComputer)
+                    outcome = syncOutcome(result)
                     preview = viewModel.syncDifferences()
                 }
             },
-            onDismiss = { direction = null },
+            onDismiss = { confirmCopy = false },
         )
     }
 }
 
-/** What a copy did, in the direction it was asked for. */
-private fun syncOutcome(result: KlipperSyncResult, fromComputer: Boolean): String = when {
+/**
+ * What copying the phone's settings to the computer did.
+ *
+ * The empty case names the settings it compared rather than saying the two agree: this copy
+ * moves the printer's own figures and nothing else, and the two FILES always differ - each
+ * host's serial port, its gcodes directory, its boards, its includes are supposed to. "The
+ * two agree already" was read, correctly, as the app saying the files match when they do not.
+ */
+private fun syncOutcome(result: KlipperSyncResult): String = when {
     result.error != null -> "Nothing was copied: " + result.error
-    result.copied.isEmpty() -> "Nothing was copied: the two agree already."
-    fromComputer -> countCopied(result.copied.size) +
-        " into this device's printer.cfg. The host here reads it the next time it restarts."
+    result.copied.isEmpty() -> "Nothing was copied: the settings this app moves - calibrations, " +
+        "rotation distance, pressure advance, limits - already match."
     result.restarted -> countCopied(result.copied.size) + " to PC Klipper, which has been " +
         "asked to restart."
     else -> countCopied(result.copied.size) + " to PC Klipper. It could not be asked to " +

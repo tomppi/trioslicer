@@ -446,8 +446,28 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     internal suspend fun syncDifferences(): KlipperSyncResult = repository.syncDifferences()
 
     /** Copy the printer's own settings from one host's configuration to the other. */
-    internal suspend fun syncConfiguration(from: KlipperSyncSource): KlipperSyncResult =
-        repository.syncConfiguration(from)
+    /**
+     * Copy the printer's own settings from this phone's configuration to the computer's.
+     *
+     * The values klippy saved here exist only here, and the printer is on this phone's cable.
+     * A configuration reaches this phone whole, by adoption, instead.
+     */
+    internal suspend fun copySettingsToComputer(): KlipperSyncResult =
+        repository.copySettingsToComputer()
+
+    /**
+     * What adopting PC Klipper's configuration would change here, before anything is written.
+     *
+     * The whole file, not the settings a sync moves: this replaces the phone's configuration
+     * with the computer's, adapted for this device.
+     */
+    internal suspend fun previewAdoptingComputerConfig(): KlipperAdoptPreview =
+        repository.previewAdoptingComputerConfig()
+
+    /** Write the previewed configuration over this phone's own, if the computer's has not moved. */
+    internal suspend fun adoptComputerConfig(
+        preview: KlipperAdoptPreview,
+    ): Result<KlipperImportResult> = repository.adoptComputerConfig(preview)
 
     /** The tail of klippy's own log, for the Machine screen. */
     suspend fun readLog(): String? = repository.readHostLog()

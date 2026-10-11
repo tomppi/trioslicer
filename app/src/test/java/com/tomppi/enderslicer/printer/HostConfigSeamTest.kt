@@ -196,7 +196,7 @@ class HostConfigSeamTest {
                 "# this device configuration\n[printer]\nmax_accel: 4000\n",
             )
             val repository = KlipperPrinterRepository(context, scope)
-            val result = repository.syncConfiguration(KlipperSyncSource.THE_DEVICE)
+            val result = repository.copySettingsToComputer()
             // What is pinned is that the target is read again after the sources were gathered:
             // the old code read it once, so one read is what this catches. Whether the second
             // read is the one that sees an edit depends on how many reads precede it, which is
@@ -243,7 +243,7 @@ class HostConfigSeamTest {
             KlipperHostFiles.config(context.filesDir).writeText("# this device configuration\n" +
                 "[printer]\nmax_accel: 4000\n")
             val repository = KlipperPrinterRepository(context, scope)
-            val result = repository.syncConfiguration(KlipperSyncSource.THE_DEVICE)
+            val result = repository.copySettingsToComputer()
             assertTrue("the sync refuses", result.error != null)
             assertEquals("and the computer is not restarted", 0, restarts.get())
         } finally {

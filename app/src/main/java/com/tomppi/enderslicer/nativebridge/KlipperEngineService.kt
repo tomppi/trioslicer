@@ -521,18 +521,13 @@ class KlipperEngineService : Service() {
     }
 
     /**
-     * The configuration with the includes this host needs: the app's own sections, and
-     * KAMP's macros.
+     * The configuration with the includes this host needs.
      *
-     * Both go above the saved block and neither is added twice, so this can run at every
-     * start - which is what makes it work for a configuration somebody brought, and not
-     * only for the one the app seeds.
+     * One definition, in KlipperConfigFile, because two things write a configuration now -
+     * this start, and adopting the computer's from the Print tab - and a file from either
+     * road has to get the same two include lines.
      */
-    private fun withHostIncludes(text: String): String =
-        KlipperConfigFile.withAppInclude(
-            KlipperConfigFile.withAppInclude(text),
-            name = KlipperHostFiles.KAMP_SETTINGS,
-        )
+    private fun withHostIncludes(text: String): String = KlipperConfigFile.withHostIncludes(text)
 
     /**
      * Put KAMP's files beside the configuration, writing only what is missing.

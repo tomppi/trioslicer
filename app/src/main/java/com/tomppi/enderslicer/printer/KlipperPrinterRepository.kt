@@ -25,15 +25,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
-/** Which host's configuration a sync copies the printer's own settings from. */
-internal enum class KlipperSyncSource {
-    /** This phone's own printer.cfg, in the app's storage. */
-    THE_DEVICE,
-
-    /** The computer's printer.cfg, read and written through Moonraker. */
-    THE_REMOTE_HOST,
-}
-
 /**
  * What a sync found, or what it did.
  *
@@ -47,9 +38,51 @@ internal data class KlipperSyncResult(
     val copied: List<KlipperConfigFile.Difference> = emptyList(),
     val error: String? = null,
     val restarted: Boolean = false,
+    /**
+     * How many lines the two files do not have in common at all.
+     *
+     * A sync moves the printer's own settings and nothing else, which leaves a real and
+     * common state: two files that differ in many lines - each host's serial port, its gcodes
+     * directory, its boards, its includes - and in none of the settings this button moves.
+     * "Nothing was copied" must not read as "the two files are the same", so the count of
+     * lines that differ is carried beside the list of settings that do.
+     */
+    val lineDifferences: Int? = null,
     /** When each configuration file was last written, so the two dates can be compared. */
     val deviceChangedAtMillis: Long? = null,
     val remoteChangedAtMillis: Long? = null,
+)
+
+/**
+ * The computer's configuration, adapted for this device, as it would be written.
+ *
+ * A preview rather than a write: bringing a whole configuration over replaces the one this
+ * phone runs, and what that costs - a calibration only the phone had, a print that does not
+ * survive the restart - is the user's to agree to rather than the app's to assume. [text] is
+ * held so the confirmation writes exactly what was shown.
+ */
+internal data class KlipperAdoptPreview(
+    val fileName: String = KlipperHostFiles.CONFIG,
+    /** What would be written to this phone: the computer's file, adapted, in full. */
+    val text: String = "",
+    /** The computer's own file as it was read, so a write can refuse one that moved on. */
+    val sourceText: String = "",
+    /** The files it includes, by their paths under the computer's config root. */
+    val companions: Map<String, String> = emptyMap(),
+    /** What had to change so this device could run it. */
+    val changes: List<String> = emptyList(),
+    /** What it asks for that this device cannot supply. */
+    val warnings: List<String> = emptyList(),
+    /**
+     * What this phone has saved and would lose, one line per value.
+     *
+     * A whole file replaces a whole file, and the saved block goes with it: the probe offset
+     * this phone measured, its PID terms, its mesh profiles exist only in that block. Empty
+     * when the phone has saved nothing, which is also a fact the confirmation can state.
+     */
+    val savedValuesLost: List<String> = emptyList(),
+    /** Why there is no preview at all. */
+    val error: String? = null,
 )
 
 /**
@@ -777,6 +810,10 @@ class KlipperPrinterRepository(
                 is SyncSources.Failed -> KlipperSyncResult(error = sources.reason)
                 is SyncSources.Both -> KlipperSyncResult(
                     differences = KlipperConfigFile.differences(sources.device, sources.remote),
+                    lineDifferences = KlipperConfigFile.lineDifferences(
+                        sources.device,
+                        sources.remote,
+                    ),
                     deviceChangedAtMillis = sources.deviceChangedAtMillis,
                     remoteChangedAtMillis = sources.remoteChangedAtMillis,
                 )
@@ -787,38 +824,42 @@ class KlipperPrinterRepository(
     }
 
     /**
-     * Copy the printer's own settings from one host's configuration to the other.
+     * Copy the printer's own settings from this phone's configuration to the computer's.
+     *
+     * One direction only, and it is the one nothing else can do: what klippy saved here - the
+     * probe offset, the PID terms, a mesh profile - exists in this phone's file and nowhere
+     * else, and the printer is on this phone's cable. The other direction used to copy those
+     * same values into the phone, which is what left a phone host able to start only if its
+     * file already described the printer; a configuration reaches this phone whole now, by
+     * [adoptComputerConfig].
      *
      * The two configurations describe one machine and have to agree about it: the calibrations
      * klippy saved, the extruder's own figures, the motion limits. They have to differ in how
      * each host reaches the machine - the serial port, the gcode directory, the [mcu] sections,
-     * the includes - and none of that is ever touched, whichever direction this is asked for.
-     * [KlipperConfigFile.withSynced] is the whole of that rule.
+     * the includes - and none of that is ever touched. [KlipperConfigFile.withSynced] is the
+     * whole of that rule.
      *
      * A configuration written for the computer is followed by a restart there, because it is
-     * not the running one until the computer reads it again. This phone's own file is written
-     * and nothing is restarted for it: the Machine screen offers that, and the host here may
-     * not even be running.
+     * not the running one until the computer reads it again.
      */
-    internal suspend fun syncConfiguration(from: KlipperSyncSource): KlipperSyncResult =
+    internal suspend fun copySettingsToComputer(): KlipperSyncResult =
         withContext(Dispatchers.IO) {
             runCatching {
                 when (val sources = syncSources()) {
                     is SyncSources.Failed -> KlipperSyncResult(error = sources.reason)
                     is SyncSources.Both -> {
-                        val toComputer = from == KlipperSyncSource.THE_DEVICE
-                        val target = if (toComputer) sources.remote else sources.device
-                        val source = if (toComputer) sources.device else sources.remote
-                        // In the preview's order, not the writer's: source first, whichever
-                        // direction this is. Only the count is shown today, but a list rendered
-                        // in the other order would read as the arrow pointing the wrong way.
+                        val target = sources.remote
+                        val source = sources.device
+                        // In the preview's order: the phone's value first, the computer's
+                        // second. Only the count is shown today, but a list rendered in the
+                        // other order would read as the arrow pointing the wrong way.
                         val differences = KlipperConfigFile.differences(source, target)
                         val synced = KlipperConfigFile.withSynced(target, source)
                         // Every outcome carries both files' times, so the card can say which one
-                        // was written last whichever branch this takes.
-                        val outcome = when {
-                            synced == target -> KlipperSyncResult(differences = differences)
-                            toComputer -> {
+                        // was written last.
+                        val outcome = if (synced == target) {
+                            KlipperSyncResult(differences = differences)
+                        } else {
                                 // Read when the card was prepared, written now: a SAVE_CONFIG on
                                 // the computer, an edit in Fluidd or another screen of this app
                                 // in between would be silently overwritten by a whole-file
@@ -837,18 +878,17 @@ class KlipperPrinterRepository(
                                             "prepared; look at the differences again and repeat",
                                     )
                                 }
-                                KlipperSyncResult(
-                                    differences = differences,
-                                    copied = differences,
-                                    restarted = writeRemoteConfig(sources.files, synced, sources.remote),
-                                )
-                            }
-                            else -> {
-                                writeDeviceConfig(synced)
-                                KlipperSyncResult(differences = differences, copied = differences)
-                            }
+                            KlipperSyncResult(
+                                differences = differences,
+                                copied = differences,
+                                restarted = writeRemoteConfig(sources.files, synced, sources.remote),
+                            )
                         }
                         outcome.copy(
+                            lineDifferences = KlipperConfigFile.lineDifferences(
+                                sources.device,
+                                sources.remote,
+                            ),
                             deviceChangedAtMillis = sources.deviceChangedAtMillis,
                             remoteChangedAtMillis = sources.remoteChangedAtMillis,
                         )
@@ -858,6 +898,150 @@ class KlipperPrinterRepository(
                 KlipperSyncResult(error = error.message ?: "the configuration could not be written")
             }
         }
+
+    /**
+     * Read the computer's configuration and work out what this device would need changed.
+     *
+     * The whole file is brought, not the whitelist a sync moves: the point is that a user who
+     * runs the printer from a computer can run the same printer from the phone without
+     * hand-editing anything, and that means the pins, the kinematics, the probe, the macros -
+     * everything the computer's file has - with only the parts that describe the computer
+     * itself replaced. [KlipperConfigFile.forDevice] is that rule, and it is the same one the
+     * file-picker import uses; this only saves the user from finding the file on the phone.
+     *
+     * Nothing is written here.
+     */
+    internal suspend fun previewAdoptingComputerConfig(): KlipperAdoptPreview =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val files = computerFiles() ?: throw IllegalStateException(
+                    "no computer is set: choose PC Klipper on the Print tab and give its address first",
+                )
+                val main = when (val read = files.readConfig()) {
+                    is MoonrakerFiles.ConfigRead.Found -> read.text
+                    MoonrakerFiles.ConfigRead.Missing ->
+                        throw IllegalStateException("PC Klipper has no printer.cfg to copy")
+                    MoonrakerFiles.ConfigRead.Unreachable ->
+                        throw IllegalStateException("PC Klipper did not answer")
+                }
+                adoptPreview(main, fetchIncludes(files, main))
+            }.getOrElse { error ->
+                KlipperAdoptPreview(
+                    error = error.message ?: "PC Klipper's configuration could not be read",
+                )
+            }
+        }
+
+    /**
+     * Write the previewed configuration over this phone's own, and keep what it replaced.
+     *
+     * The computer is asked for its file once more first: a SAVE_CONFIG over there, or an edit
+     * in Fluidd, between the preview and the confirmation would otherwise be silently
+     * overwritten by a whole-file replace - and the preview the user agreed to would not be
+     * what was written. A file that changed is a refusal with something to do about it, not a
+     * write.
+     *
+     * The files the configuration includes are written before the configuration itself, so
+     * there is no moment in which klippy could be started against a file whose includes are
+     * not there yet. The configuration the app shipped, or the one that was running, is kept
+     * as printer.cfg.previous; the source marker makes this file the user's, so no app update
+     * ever replaces it with the shipped template.
+     */
+    internal suspend fun adoptComputerConfig(preview: KlipperAdoptPreview): Result<KlipperImportResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val files = computerFiles() ?: throw IllegalStateException("no computer is set")
+                val now = when (val read = files.readConfig()) {
+                    is MoonrakerFiles.ConfigRead.Found -> read.text
+                    MoonrakerFiles.ConfigRead.Missing -> ""
+                    MoonrakerFiles.ConfigRead.Unreachable -> throw IllegalStateException(
+                        "PC Klipper stopped answering before it could be written",
+                    )
+                }
+                if (now != preview.sourceText) {
+                    throw IllegalStateException(
+                        "PC Klipper's configuration changed while this was being prepared; " +
+                            "check the changes again and repeat",
+                    )
+                }
+                val directory = KlipperHostFiles.directory(application.filesDir).apply { mkdirs() }
+                preview.companions.forEach { (path, text) -> writeCompanion(directory, path, text) }
+                writeDeviceConfig(preview.text)
+                writeConfigSource(
+                    KlipperConfigSource(
+                        imported = true,
+                        name = "PC Klipper's " + preview.fileName,
+                        atMillis = System.currentTimeMillis(),
+                    ),
+                )
+                KlipperImportResult(
+                    fileName = preview.fileName,
+                    changes = preview.changes,
+                    warnings = preview.warnings,
+                    companions = preview.companions.keys.toList(),
+                )
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message) }
+            }
+        }
+
+    /**
+     * The computer's configuration, adapted: the text that would be written and what changed.
+     *
+     * The saved block is the computer's and comes with it: adopting a configuration is taking
+     * that printer's own figures - the probe's offset, the PID terms, the shaper frequencies -
+     * not this phone's idea of them.
+     */
+    private fun adoptPreview(main: String, companions: Map<String, String>): KlipperAdoptPreview {
+        // The app's own two files are written by the host start whatever the configuration
+        // says, so an include naming them is satisfied even though the computer's file does
+        // not bring them.
+        val available = companions.keys.toMutableSet()
+        available += KlipperHostFiles.APP_CONFIG
+        available += KlipperHostFiles.KAMP_SETTINGS
+        val rewrite = KlipperConfigFile.forDevice(
+            text = main,
+            serialPath = KlipperHostFiles.pty(application.filesDir).absolutePath,
+            gcodeDirectory = gcodeDirectory().absolutePath,
+            availableFiles = available,
+        )
+        return KlipperAdoptPreview(
+            text = KlipperConfigFile.withHostIncludes(
+                KlipperConfigFile.withSavedValues(rewrite.text, main),
+            ),
+            sourceText = main,
+            companions = companions,
+            changes = rewrite.changes,
+            warnings = rewrite.warnings,
+            savedValuesLost = deviceConfigText()?.let(KlipperConfigFile::savedValues).orEmpty(),
+        )
+    }
+
+    /**
+     * Every file the computer's configuration includes, fetched, by path under its config root.
+     *
+     * The closure rather than the first level: KAMP_Settings.cfg includes its macros by
+     * relative path, and a configuration that arrived without them would have those includes
+     * commented out by forDevice - the app telling the user it could not bring macros it had
+     * just brought. A file that cannot be fetched is left out and named in the warnings, which
+     * is where the user sees it.
+     */
+    private fun fetchIncludes(files: MoonrakerFiles, main: String): Map<String, String> =
+        KlipperConfigFile.includeClosure(main) { path -> files.configText(path) }
+
+    /**
+     * One of the files a configuration includes, written where it is looked for.
+     *
+     * The name is a path under the config root, so a file in a subdirectory keeps its place -
+     * an include that says ./KAMP/Line_Purge.cfg is resolved from the directory of the file
+     * that names it, and a companion flattened into the root would not be found there.
+     */
+    private fun writeCompanion(directory: File, path: String, text: String) {
+        val safe = KlipperConfigFile.companionPath(path) ?: return
+        val file = File(directory, safe.split('/').joinToString("/") { safeFileName(it) })
+        file.parentFile?.mkdirs()
+        file.writeText(text)
+    }
 
     /**
      * Write to the state only while [token] is still the current connection.
@@ -1231,8 +1415,21 @@ class KlipperPrinterRepository(
      * different places, and the only thing that decides which is the host choice.
      */
     private fun remoteFiles(): MoonrakerFiles? {
+        if (!hostChoice.load().isRemote) return null
+        return computerFiles()
+    }
+
+    /**
+     * The computer's file API, whichever host the app is driving.
+     *
+     * remoteFiles is "the host in use, if it is the computer": every write follows the host
+     * choice. Adopting the computer's configuration is the one read that must not, because it
+     * runs on the Phone Klipper route - the file is being brought here - and the computer's
+     * host, port and key are still stored from the last time it was chosen.
+     */
+    private fun computerFiles(): MoonrakerFiles? {
         val choice = hostChoice.load()
-        if (!choice.isRemote || choice.host.isBlank()) return null
+        if (choice.host.isBlank()) return null
         return MoonrakerFiles(
             host = choice.host.trim(),
             port = choice.port,

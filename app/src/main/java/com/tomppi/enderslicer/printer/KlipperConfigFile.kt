@@ -333,9 +333,13 @@ internal object KlipperConfigFile {
         // start if it is not there. One that came along is left alone; one that did not is
         // commented out here, where the user is being told about it.
         includesOf(text).forEach { name ->
-            val known = availableFiles.contains(name)
+            // Both the name as written and the path it resolves to: a file that says
+            // "./KAMP_Settings.cfg" is naming the same file as one that says
+            // "KAMP_Settings.cfg", and a caller that fetched it holds one of the two.
+            val known = availableFiles.contains(name) ||
+                availableFiles.contains(includePath("", name))
             if (known) return@forEach
-            val at = lines.indexOfFirst { INCLUDE.matches(it.trim()) && INCLUDE.find(it.trim())?.groupValues?.get(1)?.trim() == name }
+            val at = lines.indexOfFirst { includeNameOf(it) == name }
             if (at >= 0) lines[at] = "# " + lines[at].trim() + "   # not imported: the app has no such file"
             warnings += "this configuration includes $name, which was not imported; the include has " +
                 "been commented out"
@@ -452,10 +456,150 @@ internal object KlipperConfigFile {
         val dampingRatio: Double? = null,
     )
 
-    /** The files a configuration includes, by the name it gives them. */
+    /**
+     * The files a configuration includes, by the name it gives them.
+     *
+     * A leading "./" is dropped, because it says nothing about which file is meant and two
+     * spellings of one name are how an include that arrived looks missing. A comment after
+     * the bracket is allowed: KAMP's own settings file writes one on every include line, and
+     * reading those as unparseable is how a file that is right gets itself commented out.
+     */
     fun includesOf(text: String): List<String> = text.lines()
-        .mapNotNull { INCLUDE.matchEntire(it.trim())?.groupValues?.get(1)?.trim() }
+        .mapNotNull { includeNameOf(it) }
         .filter { it.isNotEmpty() }
+
+    /** The file one line names, or null when the line is not an include. */
+    private fun includeNameOf(line: String): String? {
+        val raw = INCLUDE.matchEntire(line.trim())?.groupValues?.get(1)?.trim() ?: return null
+        return raw.removePrefix("./").trim()
+    }
+
+    /**
+     * Where the include [name] in the file [from] lives, as a path under the config root.
+     *
+     * klippy resolves an include relative to the file that names it, so a settings file in a
+     * subdirectory naming "./KAMP/Line_Purge.cfg" means KAMP/KAMP/Line_Purge.cfg, and one
+     * naming "../macros.cfg" means the root's macros.cfg. A closure walked for a host has to
+     * resolve them the same way or it fetches the wrong file, or none. [from] is "" for the
+     * configuration itself, which klippy resolves includes in from the config root.
+     */
+    fun includePath(from: String, name: String): String {
+        val directory = from.substringBeforeLast('/', "")
+        val combined = if (directory.isEmpty()) name else "$directory/$name"
+        val parts = mutableListOf<String>()
+        for (part in combined.split('/')) {
+            when (part) {
+                "", "." -> Unit
+                ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.size - 1)
+                else -> parts += part
+            }
+        }
+        return parts.joinToString("/")
+    }
+
+    /**
+     * Every file a configuration includes, walked to the end, read by [read].
+     *
+     * The closure and not the first level: KAMP_Settings.cfg includes its macros by relative
+     * path, and a configuration that arrived without them would have those includes commented
+     * out by [forDevice] - the app telling the user it could not bring macros it had just
+     * brought. Resolution is klippy's: relative to the file that names the include, which is
+     * why the walk carries the including file's path with every name.
+     *
+     * [read] answers with the file's text, or null when there is no such file to be had - a
+     * name that does not resolve, a file the host will not serve, a permission. Those are
+     * simply not in the map, and a caller passing it to [forDevice] gets its include commented
+     * out with the warning that says so. A cycle is a file that includes itself, directly or
+     * through another, and each path is read once.
+     */
+    fun includeClosure(main: String, read: (String) -> String?): Map<String, String> {
+        val fetched = LinkedHashMap<String, String>()
+        val queue = ArrayDeque(includesOf(main).map { it to "" })
+        val seen = mutableSetOf<String>()
+        while (queue.isNotEmpty()) {
+            val (name, from) = queue.removeFirst()
+            val path = includePath(from, name)
+            if (path.isEmpty() || !seen.add(path)) continue
+            val text = read(path) ?: continue
+            fetched[path] = text
+            includesOf(text).forEach { queue += it to path }
+        }
+        return fetched
+    }
+
+    /**
+     * What a configuration has saved, one line per value, as "[section] option = value".
+     *
+     * Read the way klippy reads its own block, and named for a person rather than for a
+     * parser: these are the numbers that exist nowhere else - the probe's offset, the PID
+     * terms, a bed mesh profile - so a screen that is about to replace the file they live in
+     * lists them instead of saying "saved values" and leaving the user to guess which.
+     */
+    fun savedValues(text: String): List<String> {
+        val values = mutableListOf<String>()
+        var section = ""
+        for (raw in savedBlock(text).lineSequence()) {
+            val line = raw.removePrefix(SAVED_PREFIX).trim()
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length - 1).trim()
+                continue
+            }
+            if (section.isEmpty() || line.isEmpty() || line.startsWith("#")) continue
+            if (!line.contains(':') && !line.contains('=')) continue
+            values += "[" + section + "] " + line
+        }
+        return values
+    }
+
+    /**
+     * A companion's path under the config root, safe to write, or null when it names nothing.
+     *
+     * The names come from a file this app did not write, so "." and ".." segments are dropped
+     * rather than followed out of the directory the configuration lives in.
+     */
+    fun companionPath(path: String): String? {
+        val safe = path.split('/')
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+            .joinToString("/")
+        return safe.ifBlank { null }
+    }
+
+    /**
+     * How many lines the two configurations do not have in common.
+     *
+     * Asked so a screen can say that two files differ at all, which is a different fact from
+     * the list of settings this app is allowed to move between them: "the files differ but
+     * nothing this button moves does" is a real and common state - each host's serial port,
+     * gcodes directory, boards and includes are in it - and it must not be reported as the
+     * two files agreeing. Blank lines and a line's own indentation are not differences.
+     */
+    fun lineDifferences(a: String, b: String): Int {
+        fun lines(text: String) = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val mine = lines(a).groupingBy { it }.eachCount().toMutableMap()
+        var onlyTheirs = 0
+        for (line in lines(b)) {
+            val count = mine[line] ?: 0
+            if (count > 0) {
+                if (count == 1) mine.remove(line) else mine[line] = count - 1
+            } else {
+                onlyTheirs++
+            }
+        }
+        return mine.values.sum() + onlyTheirs
+    }
+
+    /**
+     * The configuration with the includes this host needs: the app's own sections, and KAMP's
+     * macros.
+     *
+     * Both go above the saved block and neither is added twice, so this can run at every
+     * start - which is what makes it work for a configuration somebody brought, and not only
+     * for the one the app seeds. The host start and the adoption of another host's
+     * configuration both write through here, so a file that arrived by either road gets the
+     * same two lines.
+     */
+    fun withHostIncludes(text: String): String =
+        withAppInclude(withAppInclude(text, KlipperHostFiles.APP_CONFIG), KlipperHostFiles.KAMP_SETTINGS)
 
     /** The first option in a named section that matches, or -1. */
     private fun indexOfOption(lines: List<String>, section: String, option: Regex): Int {
@@ -825,7 +969,7 @@ internal object KlipperConfigFile {
     private const val MAX_DAMPING_RATIO = 0.9
 
     private val SDCARD_PATH = Regex("path\\s*[:=].*", RegexOption.IGNORE_CASE)
-    private val INCLUDE = Regex("\\[include\\s+(.+?)]", RegexOption.IGNORE_CASE)
+    private val INCLUDE = Regex("\\[include\\s+([^]#]+?)\\s*](?:\\s*#.*)?", RegexOption.IGNORE_CASE)
     private val EXTRA_MCU = Regex("\\[mcu\\s+(.+?)]", RegexOption.IGNORE_CASE)
 
     /** The runs of whitespace between the parts of a value, which say nothing about it. */

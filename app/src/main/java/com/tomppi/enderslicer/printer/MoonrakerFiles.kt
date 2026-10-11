@@ -318,7 +318,15 @@ internal class MoonrakerFiles(
         fun filePath(name: String): String = "/server/files/" + ROOT + "/" + encodePath(name)
 
         /** One configuration file, from the root klippy reads. */
-        fun configPath(name: String): String = "/server/files/" + CONFIG_ROOT + "/" + encodePath(name)
+        /**
+         * A configuration file's path, by segment.
+         *
+         * Encoding the whole name would turn a subdirectory's separator into %2F; encoding the
+         * segments keeps the path a path and lets a file under KAMP/ be asked for by the same
+         * name the configuration includes it by.
+         */
+        fun configPath(name: String): String = "/server/files/" + CONFIG_ROOT + "/" +
+            name.split('/').filter { it.isNotEmpty() }.joinToString("/") { encodePath(it) }
 
         /** One file's slicer metadata. */
         fun metadataPath(name: String): String =

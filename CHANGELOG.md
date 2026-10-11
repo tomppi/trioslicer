@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Adopt PC Klipper's configuration, whole.** The Machine tab, on the Phone Klipper route, reads
+  the computer's printer.cfg over Moonraker and brings the entire file here - pins, steps,
+  kinematics, the probe, the macros and the files it includes, walked to the end of the include
+  closure so KAMP's own settings file brings its macros - and shows what would change and what is
+  lost with the file before anything is written. Only the parts that describe the computer are
+  replaced: the serial port points at the app's pty, the virtual SD card at the app's files, a
+  second `[mcu ...]` section is removed, `restart_method` and `baud` are removed (a pty has no
+  baud rate and klippy refuses an option it never reads), an include that cannot be fetched is
+  commented out with a line saying so, and `[include app.cfg]` is added for the app's own
+  sections. Companion files are written under the paths the configuration names them by, the file
+  that was replaced is kept as printer.cfg.previous, and the source marker makes the result the
+  user's: no app update replaces it afterwards. The host restarts to read it, and the Z probe
+  screen then shows the offset the computer had saved.
 - **Prepare the engines, once, on purpose.** Every payload used to unpack lazily on first use -
   the CAD tree 533 MB, Blender's Python 140 MB, Orca's profiles 80 MB, the Klipper Python 27 MB -
   so a fresh install met them one surprise at a time with no way to tell working from stuck. The
@@ -48,6 +61,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The comparison between the two configurations says what it compared.** "Nothing was copied:
+  the two agree already" was read - correctly - as the app claiming the two files match, when all
+  it meant was that the settings one button moves do. The card now says how many lines the two
+  files differ on at all, the empty copy names the settings it moves (calibrations, rotation
+  distance, pressure advance, limits), and the Z probe screen only says the printer has no probe
+  when a configuration has really been read for the connection in use: with none read it says it
+  cannot tell yet, which is the state a starting host leaves it in. The copy towards the phone is
+  gone with it - copying only the printer's own values into a configuration that did not describe
+  the printer was how a phone host ended up unable to run it - while copying towards the computer
+  stays, because what klippy saved on the phone exists nowhere else and the printer is on the
+  phone's cable.
 - **The phone's own Klipper host can start again, which is why it could not before.** Every
   configuration this app prepared carried `restart_method: command` in [mcu], and klippy reads that
   option only when a baud rate was set - which on the app's connection it never is, because a pty

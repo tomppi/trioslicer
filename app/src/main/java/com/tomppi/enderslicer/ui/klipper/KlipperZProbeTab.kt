@@ -51,7 +51,26 @@ internal fun KlipperZProbeTab(state: KlipperPrinterState, viewModel: KlipperView
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.configSections != null && state.probeSection == null) {
+        if (state.configSections == null) {
+            // Nothing has been read for the connection in use, so this screen does not know
+            // whether the printer has a probe. Saying it has none is a claim about a file
+            // nobody has read - and it is what a user sees while the host is still starting,
+            // or after switching hosts, which is exactly when a wrong answer costs most.
+            KlipperCard(title = "Z probe") {
+                KlipperNote(
+                    if (state.connected) {
+                        "The printer's configuration has not been read yet, so this screen " +
+                            "cannot tell whether it has a probe. It is read when the host " +
+                            "finishes connecting."
+                    } else {
+                        "The host is not reachable, so there is no configuration to read: this " +
+                            "screen cannot tell whether the printer has a probe."
+                    },
+                )
+            }
+            return@Column
+        }
+        if (state.probeSection == null) {
             KlipperCard(title = "Z probe") {
                 KlipperNote(
                     "This printer's configuration has no [bltouch] or [probe] section, so " +
