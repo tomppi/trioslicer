@@ -141,6 +141,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-asking an engine that has said why it cannot come up rather than leaving "Rendering..." over
   a dead port.
 
+### Notes
+
+- **The printed snap fit has not been verified yet.** Everything up to the G-code is: the boolean
+  in the pair's assembled frame, the joints accumulating in the running halves, the record that
+  survives a relaunch and comes back editable, the byte-identical re-apply, and the two hooks a
+  two-joint pair really carries. What has not happened is a pair printed and clicked together -
+  the first attempt was lost to an extrusion problem at the printer, well before the halves were
+  finished. The clearances (a 0.20 mm seat, the mating faces left 0.20 mm apart) are defaults and
+  are unproven in plastic, so treat a printed pair as something to tune: Tight or Loose on each
+  joint, then Thick, then Scale, and apply again.
+- **A profile cannot yet state what its hotend melts.** There is no maximum-volumetric-speed
+  setting, so a print speed the slicer accepts can ask for more plastic than the machine can
+  deliver - 250 mm/s over a 0.4 mm line at a 0.2 mm layer is 20 mm3/s on every long move - and the
+  result is extrusion that thins and breaks on long fast lines while the perimeters, which never
+  reach full speed, look right.
+
 ## [1.8.9] - 2026-10-10
 - **First-run setup is now two steps and neither can be skipped.** Printing setup offers Continue
   and nothing else - no Skip, and Back says the setup has to be finished instead of quietly
