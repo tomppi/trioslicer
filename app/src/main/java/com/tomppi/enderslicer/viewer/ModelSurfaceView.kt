@@ -67,6 +67,10 @@ class ModelSurfaceView(
     private val pendingPaintCoordinates = java.util.concurrent.atomic.AtomicReference<FloatArray?>(null)
     private val paintPickLock = Any()
     private var paintPickScheduled = false
+    // One slot, overwritten: a slow pick must not queue a backlog of stale drag
+    // positions behind it, exactly like the paint brush's own samples.
+    private val pendingJointDrag = java.util.concurrent.atomic.AtomicReference<FloatArray?>(null)
+    private var jointDragScheduled = false
 
     /** When not [SupportPaintMode.NONE], a single-finger drag paints instead of rotating. */
     var paintMode: SupportPaintMode = SupportPaintMode.NONE
@@ -110,10 +114,47 @@ class ModelSurfaceView(
             // Through the GL thread, like every other renderer change: writing the
             // gizmo from the UI thread left the GL thread reading its own copy, so
             // Done closed the menu while the ribbons stayed on screen.
-            val geometry = gizmoFor(value)
-            queueEvent { modelRenderer.setGizmo(geometry) }
-            requestRender()
+            refreshGizmo()
         }
+
+    /**
+     * The gizmo the snap tool draws while a joint is being moved: the plate's
+     * own move arrows, standing on the hook.
+     *
+     * It takes precedence over [gizmoMode]'s while it is up, and the two are
+     * never both wanted - one set of handles is aimed at at a time - so the
+     * joint's own goes on top and its owner clears it when the move ends.
+     */
+    var jointGizmo: GizmoOverlay? = null
+        set(value) {
+            field = value
+            refreshGizmo()
+        }
+
+    /**
+     * True while the snap panel's Move is live: a finger drag on the model
+     * slides the selected joint along the seam instead of orbiting the camera.
+     *
+     * The mode is deliberate - the panel's Move puts it up and takes it down -
+     * so a single finger belongs to the joint for as long as it is on, exactly
+     * as a cut stroke owns it while "Cut wall" is armed. Two fingers still
+     * orbit, pan and zoom.
+     */
+    var jointMoveActive: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) {
+                draggingJoint = false
+                pendingJointDrag.set(null)
+            }
+        }
+
+    /** Invoked on the UI thread with a drag sample: the plate point the pick hit. */
+    var onJointDrag: ((MeshPicker.Hit) -> Unit)? = null
+
+    /** True between a joint drag's touch-down and the finger lifting. */
+    private var draggingJoint = false
 
     /** A long press that landed on the model: the app puts the three modes up. */
     var onTransformRequested: ((Float, Float) -> Unit)? = null
@@ -371,7 +412,7 @@ class ModelSurfaceView(
         modelRenderer.setPreviewTransform(null, null, 0f, 1f)
         queueEvent { modelRenderer.setMeshes(meshes, selected) }
         // The gizmo is sized from the model, so a new model gets a new one.
-        queueEvent { modelRenderer.setGizmo(gizmoFor(gizmoMode)) }
+        refreshGizmo()
         // setMeshes resets the camera on the GL thread for a new model.
         queueEvent { notifyOrientation() }
         requestRender()
@@ -467,7 +508,15 @@ class ModelSurfaceView(
                 previousX = event.x
                 previousY = event.y
                 panning = false
-                if (jointPickActive) {
+                if (jointMoveActive) {
+                    // The joint's own mode: a finger down on the model begins a
+                    // slide, and the first pick is where it starts from. The
+                    // tap a placement reads is not scheduled at all, because a
+                    // tap is not what moves a joint any more.
+                    draggingJoint = true
+                    pendingJointDrag.set(floatArrayOf(event.x, event.y))
+                    scheduleJointDrag()
+                } else if (jointPickActive) {
                     // Where the joint goes is the point the tap lands on, and the
                     // picker runs off the UI thread like every other probe here:
                     // the coordinates are copied, not the event.
@@ -577,7 +626,12 @@ class ModelSurfaceView(
                     panning = true
                     requestRender()
                 } else if (!scaleDetector.isInProgress) {
-                    if (jointStrokeActive && strokeActive) {
+                    if (draggingJoint) {
+                        // The joint is being slid: every sample is a new place
+                        // for it, and the camera stays where it is.
+                        pendingJointDrag.set(floatArrayOf(event.x, event.y))
+                        scheduleJointDrag()
+                    } else if (jointStrokeActive && strokeActive) {
                         // A cut stroke owns the movement: the camera does not turn
                         // while the finger is drawing the slit's direction. Until
                         // the pick answers, hold what moved in case the gesture
@@ -690,6 +744,12 @@ class ModelSurfaceView(
             MotionEvent.ACTION_UP -> {
                 performClick()
                 panning = false
+                if (draggingJoint) {
+                    // The slide is over; the mode stays up until the panel's
+                    // Move takes it down, so another drag can follow at once.
+                    draggingJoint = false
+                    pendingJointDrag.set(null)
+                }
                 if (jointStrokeActive && strokeActive) {
                     // A tap cuts where it landed; a drag cuts one place with the
                     // slit across the finger's travel. The pick may still be in
@@ -762,6 +822,10 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_CANCEL -> {
                 panning = false
+                if (draggingJoint) {
+                    draggingJoint = false
+                    pendingJointDrag.set(null)
+                }
                 if (strokeFirstHit == null) replayStrokeAsOrbit()
                 resetJointStroke()
                 if (draggingRotate) {
@@ -788,6 +852,18 @@ class ModelSurfaceView(
             }
         }
         return true
+    }
+
+    /**
+     * Hands the renderer the handles that belong on screen: the joint's own
+     * while a joint is being moved, the mode's otherwise. One writer, so the
+     * two can never both be drawn and a cleared joint gizmo always puts the
+     * mode's own back.
+     */
+    private fun refreshGizmo() {
+        val geometry = jointGizmo ?: gizmoFor(gizmoMode)
+        queueEvent { modelRenderer.setGizmo(geometry) }
+        requestRender()
     }
 
     /** The gizmo geometry for a mode, sized from the model on screen. */
@@ -944,6 +1020,39 @@ class ModelSurfaceView(
         strokePendingUp = false
         strokeAccumDx = 0f
         strokeAccumDy = 0f
+    }
+
+    /**
+     * Resolves one drag sample of a joint being moved, off the UI thread.
+     *
+     * Same shape as [schedulePaintPick]: at most one run is in flight, and the
+     * coordinates that arrive during a run are picked up by the drain loop
+     * rather than queued as separate tasks. This is the seam's own pick - the
+     * clip and the preview objects are part of it - so what comes back is the
+     * point the user can see under the finger.
+     */
+    private fun scheduleJointDrag() {
+        synchronized(paintPickLock) {
+            if (jointDragScheduled) return
+            jointDragScheduled = true
+        }
+        paintPickExecutor.execute {
+            try {
+                while (true) {
+                    val coordinates = pendingJointDrag.getAndSet(null) ?: break
+                    if (!jointMoveActive) break
+                    val hit = modelRenderer.pickTriangle(coordinates[0], coordinates[1]) ?: continue
+                    post {
+                        // The finger may have lifted while the pick ran: a
+                        // sample that lands after it must not move anything.
+                        if (draggingJoint) onJointDrag?.invoke(hit)
+                    }
+                }
+            } finally {
+                synchronized(paintPickLock) { jointDragScheduled = false }
+                if (pendingJointDrag.get() != null) scheduleJointDrag()
+            }
+        }
     }
 
     private fun schedulePaintPick() {
@@ -1179,8 +1288,11 @@ class ModelSurfaceView(
         }
 
         override fun onLongPress(event: MotionEvent) {
+            // The joint's move owns the handles while it is up: a long press on
+            // the model would put the model's own card behind arrows that stand
+            // on the hook, which is two gizmos for one finger.
             if (cameraInteractive && paintMode == SupportPaintMode.NONE &&
-                !annotationActive && gizmoMode == TransformGizmoMode.NONE
+                !annotationActive && !jointMoveActive && gizmoMode == TransformGizmoMode.NONE
             ) {
                 scheduleTransformProbe(event.x, event.y)
             }

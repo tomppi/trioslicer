@@ -1923,6 +1923,16 @@ fun EnderSlicerApp(
                                     state.models.getOrNull(hit.objectIndex)?.id,
                                 )
                             },
+                            onJointDrag = { hit ->
+                                // The half the finger is over travels with the point: the
+                                // plate has moved the two apart since the split, and each
+                                // half's own placement is what says where the finger is on
+                                // the seam the joint belongs to.
+                                viewModel.dragSnapJoint(
+                                    Vec3(hit.x, hit.y, hit.z),
+                                    state.models.getOrNull(hit.objectIndex)?.id,
+                                )
+                            },
                             cutActions = CutActions(
                                 onAxis = viewModel::setCutAxis,
                                 onOffset = viewModel::setCutOffset,
@@ -3263,6 +3273,8 @@ private fun ViewerPanel(
     onJointPick: (MeshPicker.Hit) -> Unit,
     /** A drag while "Cut wall" is armed: the point the stroke began on, and its plate direction. */
     onJointStroke: (MeshPicker.Hit, Vec3) -> Unit,
+    /** A drag while the selected joint is being moved: the plate point under the finger. */
+    onJointDrag: (MeshPicker.Hit) -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -3425,6 +3437,13 @@ private fun ViewerPanel(
                         // the panel merely open a drag still turns the model.
                         view.jointStrokeActive = state.snapActive && state.snapCuttingWall
                         view.onJointStroke = onJointStroke
+                        // The joint being moved: the plate's own move arrows on the
+                        // hook, and a drag that slides it along the seam. The arrows
+                        // are the state's, so they can never be left standing with no
+                        // joint under them.
+                        view.jointGizmo = state.snapMoveGizmo
+                        view.jointMoveActive = state.snapActive && state.snapMovingJoint
+                        view.onJointDrag = onJointDrag
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
@@ -4487,11 +4506,15 @@ private fun SnapToolbar(
                 }
                 Text(
                     when {
+                        // The move is the live mode, so what it asks for comes first:
+                        // every style is moved the same way, the lip's ring included.
+                        state.snapMovingJoint ->
+                            "Joint " + (selected + 1) + ": drag the model and it slides along the " +
+                                "seam; press Move again when it is where you want it."
                         state.snapStyle == SnapJointStyle.WALL_LIP ->
                             "The wall lip is the whole seam: one tooth ring on the lip half and one " +
                                 "ledge ring on the mate, following the seam's own edge. The two sizes " +
                                 "size the ring."
-                        state.snapMovingJoint -> "Tap the model where joint " + (selected + 1) + " should move to."
                         state.snapAddingJoint -> "Tap the model to place it."
                         // Every joint removed from a pair that remembers its own halves: the
                         // plate still carries the joints, and Apply is what takes them off.
@@ -4697,6 +4720,9 @@ private fun SnapSetupGroup(
                     // the others stand: it is that joint's answer, not the set's.
                     failed = shown?.failed?.firstOrNull { it.index == index },
                     selected = index == selected,
+                    // The one being moved: its Move button is filled, because the
+                    // same press is also how the user stops.
+                    moving = state.snapMovingJoint && index == selected,
                     compact = stacked,
                     actions = actions,
                 )
@@ -4722,7 +4748,8 @@ private fun SnapSetupGroup(
         label = null,
         caption = when {
             state.snapAddingJoint -> "tap the model to place it"
-            state.snapMovingJoint -> "moving joint " + (selected + 1) + ": tap where it should go"
+            state.snapMovingJoint ->
+                "moving joint " + (selected + 1) + ": drag it along the seam, Move again to stop"
             else -> "place a joint, or tap one to select it"
         },
         stacked = stacked,
@@ -5069,6 +5096,8 @@ private fun SnapJointRow(
     /** What refused this joint, when the material did - it has no placement then. */
     failed: SnapJointFailure?,
     selected: Boolean,
+    /** True while this joint is the one being moved: Move is then the way out. */
+    moving: Boolean,
     compact: Boolean,
     actions: SnapActions,
 ) {
@@ -5099,10 +5128,20 @@ private fun SnapJointRow(
             )
         }
         Spacer(Modifier.weight(1f))
-        TextButton(
-            onClick = { actions.onMove(index) },
-            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
-        ) { Text("Move") }
+        // Move is a mode, not a one-shot: while it is on the button is filled the
+        // way the app's other toggles show their state, because pressing it again
+        // is how the move stops and the arrows go away.
+        if (moving) {
+            Button(
+                onClick = { actions.onMove(index) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+            ) { Text("Move") }
+        } else {
+            TextButton(
+                onClick = { actions.onMove(index) },
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+            ) { Text("Move") }
+        }
         TextButton(
             onClick = { actions.onRemove(index) },
             contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),

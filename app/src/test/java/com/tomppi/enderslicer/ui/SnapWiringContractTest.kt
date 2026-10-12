@@ -435,6 +435,76 @@ class SnapWiringContractTest {
         )
     }
 
+    /**
+     * The joint move: Move in the joint's own row IS the mode.
+     *
+     * There is no second menu and no Done button - the same press turns the
+     * arrows on and, pressed again, off - so the wiring that matters is that
+     * every way out of the mode is wired, and that a tap has nothing to do with
+     * moving a joint any more. The arrows are drawn from the state that names
+     * the joint, so they cannot be left standing over nothing.
+     */
+    @Test
+    fun theJointMoveIsAToggleThatTakesItsArrowsWithIt() {
+        val move = body("fun moveSnapJoint(", "fun dragSnapJoint(")
+        assertTrue("Move is a mode, not a one-shot: the same press puts it away", move.contains("stopSnapMove()"))
+        assertTrue("and pressing it on raises it", move.contains("snapMovingJoint = true,"))
+        assertTrue("with Add's arming taken down", move.contains("snapAddingJoint = false,"))
+        assertTrue("and the seam's own edge read for the drag", move.contains("readSnapMoveContour(index)"))
+
+        assertTrue(
+            "picking another joint ends the move with the selection",
+            body("fun selectSnapJoint(", "fun moveSnapJoint(").contains("stopSnapMove()"),
+        )
+        assertTrue(
+            "closing the panel drops the contour's read",
+            body("fun setSnapActive(", "fun placeSnapJoint(").contains("snapContourJob?.cancel()"),
+        )
+        assertTrue(
+            "arming a placement ends it",
+            body("fun addSnapJoint(", "fun cancelSnapPlacement(").contains("snapMovingJoint = false,"),
+        )
+        assertTrue(
+            "and a joint placed by tap does too",
+            body("fun placeSnapJoint(", "fun placeSnapCutStroke(").contains("snapMovingJoint = false,"),
+        )
+        assertTrue(
+            "and the style switch, which rebuilds the list",
+            body("fun setSnapStyle(", "fun setSnapLibraryShape(").contains("stopSnapMove()"),
+        )
+        assertFalse(
+            "a tap is not a place any more: the move is the drag's",
+            body("fun placeSnapJoint(", "fun placeSnapCutStroke(")
+                .contains("copy(anchorPointMm = point, anchorHalfId = tappedHalfId)"),
+        )
+
+        val drag = body("fun dragSnapJoint(", "private fun readSnapMoveContour(")
+        assertTrue(
+            "the drag is read in the half the finger is over",
+            drag.contains("snapJointSlidTo(point, contour, fingerHalfId)"),
+        )
+        assertTrue("and re-arms the preview so the geometry follows", drag.contains("previewSnapJoint()"))
+
+        val contour = body("private fun readSnapMoveContour(", "private fun stopSnapMove(")
+        assertTrue("the contour is read off the pair's own halves", contour.contains("pairOwnHalves(state)"))
+        assertTrue("in the joint's own half", contour.contains("SnapSeam.contour("))
+
+        val state = source("ui/MainUiState.kt")
+        assertTrue("the arrows stand on the joint, where it stands now", state.contains("val snapMoveGizmo: GizmoOverlay?"))
+        assertTrue("and only while the move is live with a joint under it", state.contains("if (!snapActive || !snapMovingJoint) return@lazy null"))
+        assertTrue("the drag is projected onto the seam's own edge", state.contains("contour.nearest(local, here)"))
+
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue("the plate view is given the joint's own gizmo", app.contains("view.jointGizmo = state.snapMoveGizmo"))
+        assertTrue("and the mode that owns a drag", app.contains("view.jointMoveActive = state.snapActive && state.snapMovingJoint"))
+        assertTrue("the drag goes to the view model", app.contains("viewModel.dragSnapJoint("))
+        assertTrue("the row's Move shows that it is on", app.contains("if (moving) {"))
+        assertTrue(
+            "and the panel says what to do, in its own voice",
+            app.contains("\"seam; press Move again when it is where you want it.\""),
+        )
+    }
+
     /** The text between [from] and the next [to], with both anchors checked. */
     private fun body(from: String, to: String): String {
         val start = viewModel.indexOf(from)

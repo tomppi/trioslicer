@@ -6,8 +6,11 @@ import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.viewer.MeshFixtures
 import com.tomppi.enderslicer.viewer.MeshSolidBuilder
 import com.tomppi.enderslicer.viewer.SnapFacing
+import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapSeam
+import com.tomppi.enderslicer.viewer.SnapSeamContour
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
@@ -301,6 +304,136 @@ class SnapStateTest {
             state.copy(snapJoints = emptyList()).nearestSnapJoint(Vec3(6f, 20f, 20f)),
         )
     }
+
+    /**
+     * The move is a mode, and a mode has to be able to end.
+     *
+     * The arrows are the state's own, so putting the mode away takes them with
+     * it - and every way out of the mode (the control pressed again, another
+     * joint picked, a joint placed, the panel closed) leaves the joints exactly
+     * where they were.
+     */
+    @Test
+    fun theMoveIsAModeThatGoesAwayWithoutTouchingTheJoints() {
+        val moving = splitState().copy(snapActive = true, snapMovingJoint = true)
+
+        assertNotNull("the arrows stand on the joint while the mode is on", moving.snapMoveGizmo)
+        assertNull("and none once it is put away", moving.endSnapMove().snapMoveGizmo)
+        assertNull(
+            "nor with no joint under them",
+            moving.copy(snapSelectedJoint = -1).snapMoveGizmo,
+        )
+        assertNull("nor with the panel closed", moving.copy(snapActive = false).snapMoveGizmo)
+        assertNull(
+            "nor with the joint's own half off the plate",
+            moving.copy(models = listOf(moving.models[1])).snapMoveGizmo,
+        )
+        assertEquals(
+            "putting the mode away is not a move",
+            moving.snapJoints,
+            moving.endSnapMove().snapJoints,
+        )
+        assertNull("and the contour goes with it", moving.endSnapMove().snapMoveContour)
+    }
+
+    /**
+     * The drag itself: the finger's point is read in the joint's own half,
+     * dropped onto the seam's own edge there, and written back through the same
+     * half.
+     *
+     * This is the whole of the drag's arithmetic, so it is measured in the
+     * half's own frame: a drag of N mm along the seam moves the joint N mm along
+     * it, a finger that wanders off the edge comes back to it, and the mating
+     * plane is never left.
+     */
+    @Test
+    fun theDragSlidesTheAnchorAlongTheSeamsOwnEdge() {
+        val state = splitState().copy(snapActive = true, snapMovingJoint = true)
+        val contour = seamContourOf(state)
+
+        val first = requireNotNull(state.snapJointSlidTo(Vec3(6f, 3f, 20f), contour))
+        assertTrue(
+            "the finger's own place on the seam, not the middle of the face",
+            (first.snapAnchorLocalMm!! - Vec3(6f, 0f, 20f)).length() < 0.05f,
+        )
+
+        val moved = requireNotNull(first.snapJointSlidTo(Vec3(16f, 3f, 20f), contour))
+        val from = first.snapAnchorLocalMm!!
+        val to = moved.snapAnchorLocalMm!!
+        assertEquals(
+            "a 10 mm drag along the seam moves the joint 10 mm along it",
+            10f,
+            (to - from).length(),
+            0.1f,
+        )
+        assertEquals("and it never leaves the mating plane", 20f, to.z, 1e-3f)
+
+        val off = requireNotNull(first.snapJointSlidTo(Vec3(60f, 60f, 20f), contour))
+        assertEquals(
+            "a drag off the part comes back to the seam",
+            0f,
+            contour.distanceTo(off.snapAnchorLocalMm!!),
+            1e-3f,
+        )
+        assertEquals("on the mating plane too", 20f, off.snapAnchorLocalMm!!.z, 1e-3f)
+    }
+
+    /**
+     * A joint that was dragged is BUILT where the drag left it: the joint's own
+     * solids move with the anchor, measured in the meshes rather than read back
+     * from the state.
+     */
+    @Test
+    fun aJointThatWasDraggedIsBuiltWhereTheDragLeftIt() {
+        val state = splitState().copy(snapActive = true, snapMovingJoint = true)
+        val before = jointFor(state)
+        val moved = requireNotNull(
+            state.snapJointSlidTo(Vec3(30f, 3f, 20f), seamContourOf(state)),
+        )
+        val after = jointFor(moved)
+
+        // The tap was (20, 20) in the pair's own plane; the drag left the joint
+        // on the front edge of the seam, at (30, 0).
+        val placed = moved.snapAnchorLocalMm!!
+        assertEquals("the anchor is where the finger was", 30f, placed.x, 0.1f)
+        assertEquals("and not where the tap was", 0f, placed.y, 0.1f)
+
+        // The meshes say the same thing: the joint's own solids stand at the new
+        // place - and they are the solids a joint TAPPED there would have been,
+        // the material's own clamps and all.
+        val direct = (SnapJoint.build(
+            axis = moved.snapAxis,
+            anchorMm = Vec3(30f, 0f, 20f),
+            scale = 1f,
+            lowHalf = moved.snapLowFitHalf!!,
+            highHalf = moved.snapHighFitHalf!!,
+            beamHalf = SnapJoint.JointHalf.LOW,
+        ) as SnapJoint.Either.Placed).placement.joint
+        assertEquals(
+            "the dragged joint is the joint that belongs there",
+            direct.unionSolid.bounds,
+            after.unionSolid.bounds,
+        )
+        assertTrue(
+            "which is not the geometry it had",
+            before.unionSolid.bounds != after.unionSolid.bounds,
+        )
+        assertEquals(
+            "and the hook's own body stands at the new anchor, not the old one",
+            0f,
+            (after.unionSolid.bounds.centerX - 30f) + (after.unionSolid.bounds.centerY - 0f),
+            4f,
+        )
+    }
+
+    /** The seam's own edge for [state]'s selected joint, read the way the move reads it. */
+    private fun seamContourOf(state: MainUiState): SnapSeamContour = requireNotNull(
+        SnapSeam.contour(
+            requireNotNull(state.snapLowFitHalf),
+            SnapFit.axisDirection(state.snapAxis),
+            requireNotNull(state.snapAnchorLocalMm),
+        ),
+    )
 
     @Test
     fun placingIsArmedAndDisarmedByTheState() {

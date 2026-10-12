@@ -162,9 +162,14 @@ and since built, in the same section.
 
 All four landed together, and each one changed something the others depend on.
 
-- SEVERAL JOINTS. A tap adds a joint to the pair rather than moving the one
-  joint; the panel lists them, selects one, moves it, removes it or clears the
-  lot. Every joint is BUILT on the pair's own faces - so its rung is the
+- SEVERAL JOINTS. A tap adds a joint to the pair; the panel lists them, selects
+  one, moves it, removes it or clears the lot. MOVING is the plate's own move
+  gizmo on the hook: pressing Move in the joint's row raises the same axis
+  arrows the model's long-press card draws, a drag slides the joint along the
+  seam's own contour - the outline the wall lip's ring follows - and the same
+  press puts them away again. The drag is a point read in the half under the
+  finger and dropped onto that contour, so the hook is on the part's own edge
+  and on the mating plane wherever the packer has left the two halves. Every joint is BUILT on the pair's own faces - so its rung is the
   material's answer about that place on the seam, not about how many joints
   came before it - and the BOOLEANS then run one joint after another over the
   running halves, which is what the printed parts are. Nothing is ever dropped
