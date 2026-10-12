@@ -27,6 +27,12 @@ data class PreviewCapacity(
     val windows: Int,
     /** Travel lines the GPU buffers may hold. */
     val travels: Int,
+    /**
+     * Layer-view budget, in stored layer paths. The layer preview keeps every layer's paths in
+     * the Java heap (six floats, 24 bytes, against the path view's ten), so the same heap share
+     * buys five thirds as many of them; the geometry built from them is one layer's worth.
+     */
+    val segments: Int = PreviewMemoryPolicy.LOW_MEMORY_SEGMENTS,
     /** Where the number came from, for the panel and the log. */
     val note: String,
 ) {
@@ -37,6 +43,7 @@ data class PreviewCapacity(
             moves = 400_000,
             windows = RibbonBand.MAX_WINDOWS,
             travels = RibbonBand.MAX_TRAVELS,
+            segments = PreviewMemoryPolicy.LOW_MEMORY_SEGMENTS,
             note = "default profile",
         )
     }
@@ -79,6 +86,12 @@ internal object PreviewMemoryPolicy {
     const val LOW_MEMORY_WINDOWS = 200_000
     const val LOW_MEMORY_TRAVELS = 200_000
 
+    /** The layer view's conservative figure, the segment cap that shipped before. */
+    const val LOW_MEMORY_SEGMENTS = 800_000
+
+    /** What one stored layer path costs the Java heap (six floats). */
+    const val LAYER_SEGMENT_BYTES = 24L
+
     /** Never ask for more than this, whatever the RAM says: 4,000,000 windows are 3.2 GB. */
     const val MAX_WINDOWS = 4_000_000
 
@@ -98,6 +111,7 @@ internal object PreviewMemoryPolicy {
         profile: PreviewMemoryProfile,
         device: PreviewDeviceMemory,
         conservativeMoves: Int,
+        conservativeSegments: Int = LOW_MEMORY_SEGMENTS,
     ): PreviewCapacity {
         if (profile == PreviewMemoryProfile.LOW_MEMORY ||
             (profile == PreviewMemoryProfile.AUTO && device.lowRamDevice)
@@ -107,6 +121,7 @@ internal object PreviewMemoryPolicy {
                 moves = conservativeMoves,
                 windows = LOW_MEMORY_WINDOWS,
                 travels = LOW_MEMORY_TRAVELS,
+                segments = conservativeSegments,
                 note = "low-memory profile",
             )
         }
@@ -116,7 +131,8 @@ internal object PreviewMemoryPolicy {
             .coerceIn(LOW_MEMORY_WINDOWS.toLong(), MAX_WINDOWS.toLong())
             .toInt()
         val heapBytes = max(device.largeMemoryClassMb, device.memoryClassMb).toLong() * 1024L * 1024L
-        val heapMoves = ((heapBytes * HEAP_SHARE).toLong() / MOVE_BYTES)
+        val heapShare = (heapBytes * HEAP_SHARE).toLong()
+        val heapMoves = (heapShare / MOVE_BYTES)
             .coerceAtLeast(conservativeMoves.toLong())
             .toInt()
         val label = if (profile == PreviewMemoryProfile.AUTO) "auto" else "unlocked"
@@ -127,9 +143,30 @@ internal object PreviewMemoryPolicy {
             // A travel line is 56 bytes against a window's 792, so one line per window is a
             // seventh of the ribbon's cost and never the binding budget.
             travels = windows,
+            segments = (heapShare / LAYER_SEGMENT_BYTES)
+                .coerceAtLeast(conservativeSegments.toLong())
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt(),
             note = label + " profile · " + gigabytes(free) + " free",
         )
     }
+
+    /**
+     * The layer preview's path budget for this device and the profile the user has stored. Read
+     * fresh at parse time, because the storage is built once and the geometry is rebuilt per
+     * layer from it.
+     */
+    fun layerSegments(context: Context): Int {
+        val profile = runCatching {
+            PreviewMemoryProfile.valueOf(
+                com.tomppi.enderslicer.data.AppStateStore(context).restorePreviewMemoryProfile(),
+            )
+        }.getOrDefault(PreviewMemoryProfile.AUTO)
+        return resolve(profile, probePreviewDeviceMemory(context), DEFAULT_CONSERVATIVE_MOVES).segments
+    }
+
+    /** The move figure the conservative profiles keep; the parsers own their own defaults. */
+    private const val DEFAULT_CONSERVATIVE_MOVES = 400_000
 
     private fun gigabytes(bytes: Long): String =
         String.format(java.util.Locale.US, "%.1f GB", bytes.toDouble() / 1_000_000_000.0)

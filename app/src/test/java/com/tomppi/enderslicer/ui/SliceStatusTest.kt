@@ -67,7 +67,7 @@ class SliceStatusTest {
                 minX = 0f, minY = 0f, maxX = 10f, maxY = 10f,
                 minSpeedMmPerSecond = 0f, maxSpeedMmPerSecond = 0f,
                 minLayerHeightMm = 0.2f, maxLayerHeightMm = 0.2f,
-                totalSegmentCount = 0, truncated = false,
+                totalSegmentCount = 0, folded = false,
             )
         },
         warnings = warnings,

@@ -41,20 +41,39 @@ class LayerPreviewSurfaceView(
         setRenderer(layerRenderer)
         renderMode = RENDERMODE_WHEN_DIRTY
         isClickable = true
+        layerRenderer.onPreviewStatus = { status -> post { onPreviewStatus?.invoke(status) } }
     }
 
     fun setPreview(
         preview: GcodeLayerPreview,
         selectedLayerIndex: Int,
         style: LayerPreviewStyle,
+        capacity: PreviewCapacity,
     ) {
+        if (queuedPreview === preview && queuedLayerIndex == selectedLayerIndex &&
+            queuedStyle == style && queuedCapacity == capacity
+        ) {
+            return
+        }
+        queuedPreview = preview
+        queuedLayerIndex = selectedLayerIndex
+        queuedStyle = style
+        queuedCapacity = capacity
         queueEvent {
-            layerRenderer.setPreview(preview)
+            layerRenderer.setPreview(preview, capacity)
             layerRenderer.setStyle(style)
             layerRenderer.setSelectedLayer(selectedLayerIndex)
         }
         requestRender()
     }
+
+    /** What the buffers hold: the layers in view and the profile that sized them. */
+    var onPreviewStatus: ((String) -> Unit)? = null
+
+    private var queuedPreview: GcodeLayerPreview? = null
+    private var queuedLayerIndex = -1
+    private var queuedStyle: LayerPreviewStyle? = null
+    private var queuedCapacity: PreviewCapacity? = null
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         gestureDetector.onTouchEvent(event)
@@ -157,15 +176,18 @@ class LayerPreviewSurfaceView(
 private class LayerPreviewRenderer : GLSurfaceView.Renderer {
     private var preview: GcodeLayerPreview? = null
     private var selectedLayerIndex = 0
-    private var pathPositionBuffer: FloatBuffer? = null
-    private var pathColorBuffer: FloatBuffer? = null
-    private var cumulativePathVertices = IntArray(0)
+    private var capacity = PreviewCapacity.Default
+    /**
+     * The geometry of the layers in view. Only the window around the selected layer is built, and
+     * it is rebuilt when the selection leaves it; the paths of every layer stay in the parser's
+     * storage.
+     */
+    private var geometry: LayerPreviewGeometry? = null
     private var maximumLayerZ = 0f
     private var style = LayerPreviewStyle.CURRENT_LAYER
-    private var currentRibbonPositionBuffer: FloatBuffer? = null
-    private var currentRibbonColorBuffer: FloatBuffer? = null
-    private var currentHaloPositionBuffer: FloatBuffer? = null
-    private var currentRibbonVertexCount = 0
+
+    /** What the buffers hold, for the footer. */
+    var onPreviewStatus: ((String) -> Unit)? = null
 
     private var colorProgram = 0
     private var solidProgram = 0
@@ -186,22 +208,23 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
     private val modelView = FloatArray(16)
     private val mvp = FloatArray(16)
 
-    fun setPreview(value: GcodeLayerPreview) {
-        if (preview === value) return
+    fun setPreview(value: GcodeLayerPreview, previewCapacity: PreviewCapacity) {
+        if (preview === value && capacity == previewCapacity) return
         preview = value
-        buildPathBuffers(value)
-        buildGrid(value)
+        capacity = previewCapacity
         selectedLayerIndex = if (value.layers.indices.isEmpty()) 0 else selectedLayerIndex.coerceIn(value.layers.indices)
-        buildCurrentLayerRibbons()
+        geometry = LayerPreviewGeometry(value, previewCapacity).also { it.select(selectedLayerIndex) }
+        buildGrid(value)
         resetCamera()
+        onPreviewStatus?.invoke(geometry?.status ?: "")
     }
 
     fun setSelectedLayer(value: Int) {
         val current = preview ?: return
         val bounded = if (current.layers.indices.isEmpty()) 0 else value.coerceIn(current.layers.indices)
-        val changed = selectedLayerIndex != bounded
         selectedLayerIndex = bounded
-        if (changed) buildCurrentLayerRibbons()
+        geometry?.select(bounded)
+        onPreviewStatus?.invoke(geometry?.status ?: "")
     }
 
     fun setStyle(value: LayerPreviewStyle) {
@@ -287,20 +310,17 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
 
         drawSolidLines(gridBuffer, gridVertexCount, 1f, 0.26f, 0.32f, 0.42f, 0.50f)
-        val previousPathVertices = if (selectedLayerIndex > 0) cumulativePathVertices[selectedLayerIndex - 1] else 0
-        if (style == LayerPreviewStyle.BUILD_UP && previousPathVertices > 0) {
-            drawColoredPaths(firstVertex = 0, vertexCount = previousPathVertices, alpha = 0.15f, mode = GLES20.GL_LINES)
+        val built = geometry ?: return
+        // Build-up draws the layers the window holds under the selection as context, at the
+        // same faint alpha as before; the current layer is drawn in full over its own ribbons.
+        val currentStart = built.vertexStart(selectedLayerIndex)
+        if (style == LayerPreviewStyle.BUILD_UP && currentStart > 0) {
+            drawColoredPaths(firstVertex = 0, vertexCount = currentStart, alpha = 0.15f, mode = GLES20.GL_LINES)
         }
-        drawSolidTriangles(currentHaloPositionBuffer, currentRibbonVertexCount, 0.0f, 0.0f, 0.0f, 0.96f)
-        drawColoredTriangles(currentRibbonPositionBuffer, currentRibbonColorBuffer, currentRibbonVertexCount)
-        val currentStart = previousPathVertices
-        val currentEnd = cumulativeVertexCount(cumulativePathVertices)
+        drawSolidTriangles(built.ribbonHalo, built.ribbonVertexCount, 0.0f, 0.0f, 0.0f, 0.96f)
+        drawColoredTriangles(built.ribbonPositions, built.ribbonColors, built.ribbonVertexCount)
+        val currentEnd = built.vertexEnd(selectedLayerIndex)
         drawColoredPaths(currentStart, currentEnd - currentStart, 1f, GLES20.GL_LINES)
-    }
-
-    private fun cumulativeVertexCount(counts: IntArray): Int {
-        if (counts.isEmpty()) return 0
-        return counts[selectedLayerIndex.coerceIn(counts.indices)]
     }
 
     private fun drawSolidLines(
@@ -330,8 +350,8 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
     }
 
     private fun drawColoredPaths(firstVertex: Int, vertexCount: Int, alpha: Float, mode: Int) {
-        val positions = pathPositionBuffer ?: return
-        val colors = pathColorBuffer ?: return
+        val positions = geometry?.pathPositions ?: return
+        val colors = geometry?.pathColors ?: return
         if (vertexCount <= 0) return
         drawColoredBuffer(positions, colors, firstVertex, vertexCount, alpha, mode)
     }
@@ -395,168 +415,6 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         GLES20.glDisableVertexAttribArray(position)
     }
 
-    private fun buildPathBuffers(value: GcodeLayerPreview) {
-        pathPositionBuffer = null
-        pathColorBuffer = null
-        cumulativePathVertices = IntArray(0)
-
-        val totalSegments = value.layers.sumOf { it.segmentCount }
-        val plan = PreviewMemoryBudget.plan(totalSegments, selectedLayerSegments = 0)
-        val positions = allocateFloatBuffer(
-            PreviewMemoryBudget.checkedFloatCount(plan.baseSegmentLimit, BASE_POSITION_FLOATS_PER_SEGMENT),
-        )
-        val colors = allocateFloatBuffer(
-            PreviewMemoryBudget.checkedFloatCount(plan.baseSegmentLimit, BASE_COLOR_FLOATS_PER_SEGMENT),
-        )
-        val pathCounts = IntArray(value.layers.size)
-        var sourceIndex = 0
-        var renderedSegments = 0
-
-        value.layers.forEachIndexed { layerIndex, layer ->
-            val values = layer.segments
-            var offset = 0
-            while (offset + 5 < values.size) {
-                val retain = PreviewMemoryBudget.shouldRetain(
-                    sourceIndex = sourceIndex++,
-                    sourceCount = totalSegments,
-                    retainedLimit = plan.baseSegmentLimit,
-                )
-                if (retain) {
-                    val x1 = values[offset]
-                    val y1 = values[offset + 1]
-                    val x2 = values[offset + 2]
-                    val y2 = values[offset + 3]
-                    val speed = values[offset + 4]
-                    val feature = GcodeLayerPreview.Feature.fromCode(values[offset + 5].toInt())
-                    putLine(positions, x1, y1, layer.z, x2, y2, layer.z)
-                    putPreviewColor(
-                        buffer = colors,
-                        feature = feature,
-                        speed = speed,
-                        minimum = value.minSpeedMmPerSecond,
-                        maximum = value.maxSpeedMmPerSecond,
-                        copies = 2,
-                    )
-                    renderedSegments++
-                }
-                offset += GcodeLayerPreview.VALUES_PER_SEGMENT
-            }
-            pathCounts[layerIndex] = renderedSegments * 2
-        }
-
-        positions.position(0)
-        colors.position(0)
-        pathPositionBuffer = positions
-        pathColorBuffer = colors
-        cumulativePathVertices = pathCounts
-        maximumLayerZ = value.layers.maxOfOrNull { it.z } ?: 0f
-    }
-
-    private fun buildCurrentLayerRibbons() {
-        currentRibbonPositionBuffer = null
-        currentHaloPositionBuffer = null
-        currentRibbonColorBuffer = null
-        currentRibbonVertexCount = 0
-
-        val current = preview ?: return
-        if (current.layers.isEmpty()) return
-        val layer = current.layers[selectedLayerIndex.coerceIn(current.layers.indices)]
-        val totalSegments = current.layers.sumOf { it.segmentCount }
-        val plan = PreviewMemoryBudget.plan(totalSegments, layer.segmentCount)
-        if (plan.ribbonSegmentLimit <= 0) return
-
-        val core = allocateFloatBuffer(
-            PreviewMemoryBudget.checkedFloatCount(plan.ribbonSegmentLimit, RIBBON_POSITION_FLOATS_PER_SEGMENT),
-        )
-        val halo = allocateFloatBuffer(
-            PreviewMemoryBudget.checkedFloatCount(plan.ribbonSegmentLimit, RIBBON_POSITION_FLOATS_PER_SEGMENT),
-        )
-        val colors = allocateFloatBuffer(
-            PreviewMemoryBudget.checkedFloatCount(plan.ribbonSegmentLimit, RIBBON_COLOR_FLOATS_PER_SEGMENT),
-        )
-        val values = layer.segments
-        var offset = 0
-        var sourceIndex = 0
-        var renderedSegments = 0
-        while (offset + 5 < values.size) {
-            val retain = PreviewMemoryBudget.shouldRetain(
-                sourceIndex = sourceIndex++,
-                sourceCount = layer.segmentCount,
-                retainedLimit = plan.ribbonSegmentLimit,
-            )
-            if (retain) {
-                val x1 = values[offset]
-                val y1 = values[offset + 1]
-                val x2 = values[offset + 2]
-                val y2 = values[offset + 3]
-                val speed = values[offset + 4]
-                val feature = GcodeLayerPreview.Feature.fromCode(values[offset + 5].toInt())
-                putRibbon(core, x1, y1, x2, y2, layer.z + 0.035f, CORE_RIBBON_WIDTH)
-                putRibbon(halo, x1, y1, x2, y2, layer.z + 0.025f, HALO_RIBBON_WIDTH)
-                putPreviewColor(
-                    buffer = colors,
-                    feature = feature,
-                    speed = speed,
-                    minimum = current.minSpeedMmPerSecond,
-                    maximum = current.maxSpeedMmPerSecond,
-                    copies = 6,
-                )
-                renderedSegments++
-            }
-            offset += GcodeLayerPreview.VALUES_PER_SEGMENT
-        }
-        core.position(0)
-        halo.position(0)
-        colors.position(0)
-        currentRibbonPositionBuffer = core
-        currentHaloPositionBuffer = halo
-        currentRibbonColorBuffer = colors
-        currentRibbonVertexCount = renderedSegments * 6
-    }
-
-    private fun putRibbon(
-        buffer: FloatBuffer,
-        x1: Float,
-        y1: Float,
-        x2: Float,
-        y2: Float,
-        z: Float,
-        width: Float,
-    ) {
-        val dx = x2 - x1
-        val dy = y2 - y1
-        val length = sqrt(dx * dx + dy * dy).coerceAtLeast(0.0001f)
-        val nx = -dy / length * width * 0.5f
-        val ny = dx / length * width * 0.5f
-        val ax = x1 + nx
-        val ay = y1 + ny
-        val bx = x1 - nx
-        val by = y1 - ny
-        val cx = x2 - nx
-        val cy = y2 - ny
-        val dx2 = x2 + nx
-        val dy2 = y2 + ny
-        buffer.put(ax).put(ay).put(z)
-        buffer.put(bx).put(by).put(z)
-        buffer.put(cx).put(cy).put(z)
-        buffer.put(ax).put(ay).put(z)
-        buffer.put(cx).put(cy).put(z)
-        buffer.put(dx2).put(dy2).put(z)
-    }
-
-    private fun putLine(
-        buffer: FloatBuffer,
-        x1: Float,
-        y1: Float,
-        z1: Float,
-        x2: Float,
-        y2: Float,
-        z2: Float,
-    ) {
-        buffer.put(x1).put(y1).put(z1)
-        buffer.put(x2).put(y2).put(z2)
-    }
-
     private fun cameraDistance(): Float {
         val current = preview
         val width = max((current?.maxX ?: 0f) - (current?.minX ?: 0f), MIN_SCENE_SIZE)
@@ -586,70 +444,6 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         )
         gridBuffer = floatBuffer(array)
         gridVertexCount = array.size / 3
-    }
-
-    private fun putPreviewColor(
-        buffer: FloatBuffer,
-        feature: GcodeLayerPreview.Feature,
-        speed: Float,
-        minimum: Float,
-        maximum: Float,
-        copies: Int,
-    ) {
-        val red: Float
-        val green: Float
-        val blue: Float
-        when (feature) {
-            GcodeLayerPreview.Feature.SUPPORT -> {
-                red = 0.15f; green = 0.95f; blue = 1f
-            }
-            GcodeLayerPreview.Feature.SUPPORT_INTERFACE -> {
-                red = 1f; green = 0.25f; blue = 0.9f
-            }
-            GcodeLayerPreview.Feature.ADHESION -> {
-                red = 1f; green = 0.62f; blue = 0.08f
-            }
-            GcodeLayerPreview.Feature.ARC_OVERHANG -> {
-                red = 0.72f; green = 0.38f; blue = 1f
-            }
-            GcodeLayerPreview.Feature.WAVE_OVERHANG -> {
-                red = 0.12f; green = 0.92f; blue = 0.82f
-            }
-            else -> {
-                val range = max(maximum - minimum, 0.001f)
-                val normalized = ((speed - minimum) / range).coerceIn(0f, 1f)
-                val hue = 240f * (1f - normalized)
-                val saturation = 0.95f
-                val value = 1f
-                val chroma = value * saturation
-                val hueSection = (hue / 60f) % 6f
-                val x = chroma * (1f - abs(hueSection % 2f - 1f))
-                val match = value - chroma
-                when {
-                    hueSection < 1f -> {
-                        red = chroma + match; green = x + match; blue = match
-                    }
-                    hueSection < 2f -> {
-                        red = x + match; green = chroma + match; blue = match
-                    }
-                    hueSection < 3f -> {
-                        red = match; green = chroma + match; blue = x + match
-                    }
-                    hueSection < 4f -> {
-                        red = match; green = x + match; blue = chroma + match
-                    }
-                    hueSection < 5f -> {
-                        red = x + match; green = match; blue = chroma + match
-                    }
-                    else -> {
-                        red = chroma + match; green = match; blue = x + match
-                    }
-                }
-            }
-        }
-        repeat(copies) {
-            buffer.put(red).put(green).put(blue).put(1f)
-        }
     }
 
     private fun allocateFloatBuffer(size: Int): FloatBuffer {
@@ -687,12 +481,6 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         const val MAX_GRID_LINES = 512
         const val MIN_SCENE_SIZE = 20f
         const val PATH_WIDTH = 3.8f
-        const val CORE_RIBBON_WIDTH = 0.38f
-        const val HALO_RIBBON_WIDTH = 0.96f
-        const val BASE_POSITION_FLOATS_PER_SEGMENT = 6
-        const val BASE_COLOR_FLOATS_PER_SEGMENT = 8
-        const val RIBBON_POSITION_FLOATS_PER_SEGMENT = 18
-        const val RIBBON_COLOR_FLOATS_PER_SEGMENT = 24
 
         const val COLOR_VERTEX_SHADER = """
             uniform mat4 uMvpMatrix;

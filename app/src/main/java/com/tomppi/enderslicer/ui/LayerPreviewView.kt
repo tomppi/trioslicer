@@ -1,7 +1,9 @@
 package com.tomppi.enderslicer.ui
 
+import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -38,6 +40,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -47,6 +51,11 @@ import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.viewer.LayerPreviewStyle
 import com.tomppi.enderslicer.viewer.LayerPreviewSurfaceView
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
+import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
+import com.tomppi.enderslicer.viewer.label
+import com.tomppi.enderslicer.viewer.next
+import com.tomppi.enderslicer.viewer.probePreviewDeviceMemory
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -64,16 +73,36 @@ internal fun LayerPreviewView(
     events: List<LayerEvent>,
     onLayerSelected: (Int) -> Unit,
     onEditEvents: () -> Unit,
+    memoryProfile: PreviewMemoryProfile = PreviewMemoryProfile.AUTO,
+    onMemoryProfileChange: (PreviewMemoryProfile) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val safeIndex = selectedLayerIndex.coerceIn(preview.layers.indices)
     val layer = preview.layers[safeIndex]
     val visibleLayers = preview.layers.subList(0, safeIndex + 1)
-    val visibleSegmentCount = visibleLayers.sumOf { it.segmentCount }
+    // Every count here is the source paths, never the geometry: the fold may draw several paths
+    // as one straight run, and the figures the user reads must not shrink because of it.
+    val visibleSegmentCount = visibleLayers.sumOf { it.sourceSegmentCount }
     val visibleSupportCount = visibleLayers.sumOf { it.supportSegmentCount }
     val visibleInterfaceCount = visibleLayers.sumOf { it.supportInterfaceSegmentCount }
     val layerEvents = events.filter { it.layerNumber == layer.number }
     var style by rememberSaveable { mutableStateOf(LayerPreviewStyle.CURRENT_LAYER) }
+    var previewStatus by remember(preview) { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    // The same device profile the Path tab uses: it sizes the storage the parser folds to and
+    // the window of layers the buffers hold. Only the selected layer's geometry is ever built.
+    val capacity = remember(preview, memoryProfile) {
+        PreviewMemoryPolicy.resolve(
+            memoryProfile,
+            probePreviewDeviceMemory(context.applicationContext),
+            PreviewMemoryPolicy.LOW_MEMORY_SEGMENTS / 2,
+        ).also { resolved ->
+            Log.i(
+                "LayerPreviewView",
+                "layer preview capacity: " + resolved.note + " · " + resolved.segments + " stored paths",
+            )
+        }
+    }
 
     BoxWithConstraints(modifier = modifier) {
         val shortWindow = maxHeight < 520.dp
@@ -118,7 +147,10 @@ internal fun LayerPreviewView(
                 factory = { context ->
                     LayerPreviewSurfaceView(context).also { previewView = it }
                 },
-                update = { view -> view.setPreview(preview, safeIndex, style) },
+                update = { view ->
+                    view.onPreviewStatus = { status -> previewStatus = status }
+                    view.setPreview(preview, safeIndex, style, capacity)
+                },
             )
 
             Card(
@@ -153,14 +185,29 @@ internal fun LayerPreviewView(
                         Text(if (layerEvents.isEmpty()) "Add event" else "Events ${layerEvents.size}")
                     }
                 }
-                if (visibleSupportCount > 0 || visibleInterfaceCount > 0 || preview.truncated) {
+                if (visibleSupportCount > 0 || visibleInterfaceCount > 0 || preview.folded) {
                     Text(
                         buildString {
                             if (visibleSupportCount > 0) append("Support $visibleSupportCount  ")
                             if (visibleInterfaceCount > 0) append("Interface $visibleInterfaceCount  ")
-                            if (preview.truncated) append("Preview sampled across full print")
+                            if (preview.folded) {
+                                append(
+                                    "Preview folded, nothing dropped: " + preview.totalSegmentCount +
+                                        " paths stored as " + preview.storedSegmentCount + " runs",
+                                )
+                            }
                         }.trim(),
                         style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                previewStatus?.let { status ->
+                    Text(
+                        "Layer preview · " + memoryProfile.label + ": " + status + " · tap to change",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { onMemoryProfileChange(memoryProfile.next()) },
                     )
                 }
                 LayerTimeline(

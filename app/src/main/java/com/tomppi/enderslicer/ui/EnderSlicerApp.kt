@@ -1825,6 +1825,7 @@ fun EnderSlicerApp(
                             state = state,
                             viewerMode = viewerMode,
                             onPreviewMemoryProfileChange = viewModel::setPreviewMemoryProfile,
+                            onEnsureLayerPreview = viewModel::ensureLayerPreview,
                             expandedLayout = expandedLayout,
                             selectedLayerIndex = selectedLayerIndex,
                             modelOrientation = modelOrientation,
@@ -3249,6 +3250,8 @@ private fun ViewerPanel(
     viewerMode: ViewerMode,
     /** A tap on the path view's memory readout: the next preview memory profile. */
     onPreviewMemoryProfileChange: (PreviewMemoryProfile) -> Unit,
+    /** Reads the layer preview of a restored artifact, which no slice has parsed this session. */
+    onEnsureLayerPreview: () -> Unit,
     /** True on the app's expanded (unfolded) layout; the snap panel splits on it. */
     expandedLayout: Boolean,
     selectedLayerIndex: Int,
@@ -3322,6 +3325,17 @@ private fun ViewerPanel(
     Box(modifier = modifier) {
         val preview = state.layerPreview.takeIf { gcodeAvailable }
         when {
+            // A restored artifact has no preview until it is read: the Layers tab says so and
+            // reads it, rather than quietly showing the model instead.
+            viewerMode == ViewerMode.LAYERS && gcodeAvailable && preview == null -> {
+                LaunchedEffect(state.gcodePath) { onEnsureLayerPreview() }
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Reading the file's layers…", modifier = Modifier.padding(24.dp))
+                }
+            }
             viewerMode == ViewerMode.LAYERS && preview != null -> LayerPreviewView(
                 preview = preview,
                 engineLabel = state.sliceEngine?.label,
@@ -3329,6 +3343,8 @@ private fun ViewerPanel(
                 events = state.layerEvents,
                 onLayerSelected = onLayerSelected,
                 onEditEvents = onEditLayerEvents,
+                memoryProfile = state.previewMemoryProfile,
+                onMemoryProfileChange = onPreviewMemoryProfileChange,
                 modifier = Modifier.fillMaxSize(),
             )
             viewerMode == ViewerMode.NOZZLE_PATH && gcodeAvailable -> if (state.sliceEngine != SlicerEngine.CURA) {
@@ -3686,7 +3702,7 @@ private fun ViewerPanel(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     ViewerModeButton("Model", ViewerMode.MODEL, viewerMode, true, onViewerMode)
-                    ViewerModeButton("Layers", ViewerMode.LAYERS, viewerMode, preview != null, onViewerMode)
+                    ViewerModeButton("Layers", ViewerMode.LAYERS, viewerMode, preview != null || gcodeAvailable, onViewerMode)
                     ViewerModeButton("Path", ViewerMode.NOZZLE_PATH, viewerMode, gcodeAvailable, onViewerMode)
                 }
             }

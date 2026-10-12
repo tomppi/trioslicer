@@ -55,7 +55,8 @@ class GcodeLayerPreviewParserTest {
         assertEquals(1, preview.layers[0].supportInterfaceSegmentCount)
         assertEquals(4, preview.layers[0].segmentCount)
         assertEquals(2, preview.layers[1].segmentCount)
-        assertFalse(preview.truncated)
+        assertFalse(preview.folded)
+        assertEquals(6, preview.storedSegmentCount)
 
         val packed = preview.layers[0].segments
         assertEquals(
@@ -93,8 +94,13 @@ class GcodeLayerPreviewParserTest {
         assertEquals(GcodeLayerPreview.Feature.ARC_OVERHANG.code, featureCode)
     }
 
+    /**
+     * The cap is a memory guard, not a sampling policy: it merges runs, so a capped preview
+     * still holds every layer and every path rather than the first slice of the print. The old
+     * behaviour kept 5 of the 12 paths and left the rest of the layer sparse.
+     */
     @Test
-    fun cappedPreviewSamplesAllLayersInsteadOfDroppingTheTopOfThePrint() {
+    fun cappedPreviewFoldsAllLayersInsteadOfDroppingPaths() {
         val file = kotlin.io.path.createTempFile("enderslicer-capped-layer-preview", ".gcode")
             .toFile()
             .apply {
@@ -120,10 +126,16 @@ class GcodeLayerPreviewParserTest {
 
         val preview = GcodeLayerPreviewParser.parse(file, maxSegments = 5)
 
-        assertTrue(preview.truncated)
-        assertEquals(5, preview.totalSegmentCount)
+        assertTrue(preview.folded)
+        assertEquals("source paths are counted, not the runs", 12, preview.totalSegmentCount)
+        assertTrue("the fold has to store fewer runs than paths", preview.storedSegmentCount < 12)
+        assertTrue("every layer keeps its paths", preview.layers.all { it.segmentCount > 0 })
+        assertTrue(
+            "each layer's runs cover its own paths",
+            preview.layers.all { it.segmentCount >= it.sourceSegmentCount / 4 },
+        )
         assertEquals(listOf(0, 1, 2), preview.layers.map { it.number })
         assertEquals(0.6f, preview.layers.last().z, 0.0001f)
-        assertTrue(preview.layers.all { it.segmentCount > 0 })
+        assertTrue(preview.layers.all { it.sourceSegmentCount == 4 })
     }
 }

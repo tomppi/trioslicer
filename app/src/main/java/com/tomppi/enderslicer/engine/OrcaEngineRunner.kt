@@ -8,6 +8,7 @@ import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.model.withSettings
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -215,7 +216,11 @@ class OrcaEngineRunner(private val context: Context) {
             }
             val estimateSeconds = parseEstimateSeconds(workspace.output) ?: summary.estimatedSeconds
             val preview = runCatching {
-                GcodeLayerPreviewParser.parse(workspace.output, GcodeDialect.ORCA)
+                GcodeLayerPreviewParser.parse(
+                    workspace.output,
+                    GcodeDialect.ORCA,
+                    PreviewMemoryPolicy.layerSegments(context),
+                )
             }.getOrNull()
 
             val artifact = publisher.publish(

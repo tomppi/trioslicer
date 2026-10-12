@@ -1,7 +1,9 @@
 package com.tomppi.enderslicer.engine
 
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sqrt
 
 /** Compact post-slice toolpath data for the interactive layer viewer. */
 data class GcodeLayerPreview(
@@ -14,8 +16,18 @@ data class GcodeLayerPreview(
     val maxSpeedMmPerSecond: Float,
     val minLayerHeightMm: Float,
     val maxLayerHeightMm: Float,
+    /** Source paths across the whole print, before any folding. Authoritative for the footers. */
     val totalSegmentCount: Int,
-    val truncated: Boolean,
+    /**
+     * Stored runs across the whole print. Equal to [totalSegmentCount] unless the move budget
+     * merged runs, and never smaller than the paths the fold stands for.
+     */
+    val storedSegmentCount: Int = totalSegmentCount,
+    /**
+     * True when the move budget merged paths into longer straight runs. Nothing is ever dropped:
+     * a folded preview draws every path of a layer, some of them as one straight move.
+     */
+    val folded: Boolean = false,
 ) {
     data class Layer(
         val number: Int,
@@ -23,9 +35,13 @@ data class GcodeLayerPreview(
         val height: Float,
         /** Packed x1, y1, x2, y2, speed-mm/s, feature-code values. */
         val segments: FloatArray,
+        /** Source support/adhesion paths, counted before any folding. */
         val supportSegmentCount: Int,
         val supportInterfaceSegmentCount: Int,
-        /** Source paths before preview sampling. This remains authoritative for event placement. */
+        /**
+         * Source paths before the fold. Authoritative for event placement and for every count
+         * the footer shows; [segmentCount] is what the geometry holds.
+         */
         val sourceSegmentCount: Int = segments.size / VALUES_PER_SEGMENT,
     ) {
         val segmentCount: Int get() = segments.size / VALUES_PER_SEGMENT
@@ -129,8 +145,11 @@ object GcodeLayerPreviewParser {
         val source = scanSource(file, dialect)
         require(source.totalSegmentCount > 0) { "No printable layer paths were found in the G-code" }
         val reservedIndices = reserveRareFeatureSamples(source, maxSegments)
-        val remainingLimit = (maxSegments - reservedIndices.size).coerceAtLeast(0)
-        val remainingSourceCount = source.totalSegmentCount - reservedIndices.size
+        // The budget spreads over the print, so a dense layer folds more than a sparse one and a
+        // capped preview still reaches the last layer. It is a memory guard, never a sampling
+        // policy: folding may only make a run longer, it may not drop a path.
+        val overBudget = source.totalSegmentCount > maxSegments
+        val spanTarget = if (overBudget) max(1.0, source.totalSegmentCount.toDouble() / maxSegments) else 0.0
 
         val layers = mutableListOf<GcodeLayerPreview.Layer>()
         var currentLayerNumber: Int? = null
@@ -156,11 +175,41 @@ object GcodeLayerPreviewParser {
         var minSpeed = Float.POSITIVE_INFINITY
         var maxSpeed = Float.NEGATIVE_INFINITY
         var sourceSegmentIndex = 0
-        var nonReservedSourceIndex = 0
-        var retainedSegments = 0
-        val truncated = source.totalSegmentCount > maxSegments
+        var storedRuns = 0
+
+        // The run being folded: a chain of moves that genuinely continue each other, drawn as
+        // one straight move. It closes at the move that continues it once it has stood for its
+        // share of the budget, and never across a corner or a feature change.
+        var merging = false
+        var mergingFeature = GcodeLayerPreview.Feature.OTHER
+        var mergingStartX = 0f
+        var mergingStartY = 0f
+        var mergingEndX = 0f
+        var mergingEndY = 0f
+        var mergingDirX = 0.0
+        var mergingDirY = 0.0
+        var mergingSpeed = 0f
+        var mergingMoves = 0
+        var mergingSourceIndex = -1
+
+        /** Stores the run being folded, which always ends where its last move ended. */
+        fun flushRun() {
+            if (!merging) return
+            currentSegments.add(
+                mergingStartX,
+                mergingStartY,
+                mergingEndX,
+                mergingEndY,
+                mergingSpeed,
+                mergingFeature.code.toFloat(),
+            )
+            storedRuns++
+            merging = false
+        }
 
         fun finishLayer() {
+            // A run still open when the layer ends belongs to the layer it was made in.
+            flushRun()
             val number = currentLayerNumber ?: return
             layers += GcodeLayerPreview.Layer(
                 number = number,
@@ -246,38 +295,82 @@ object GcodeLayerPreviewParser {
                         }
 
                         val currentSourceIndex = sourceSegmentIndex++
-                        val retain = if (currentSourceIndex in reservedIndices) {
-                            true
-                        } else {
-                            shouldRetainSegment(
-                                sourceIndex = nonReservedSourceIndex++,
-                                sourceCount = remainingSourceCount,
-                                retainedLimit = remainingLimit,
-                            )
-                        }
-                        if (!retain) return@forEach
-
-                        currentSegments.add(
-                            startX.toFloat(),
-                            startY.toFloat(),
-                            nextX.toFloat(),
-                            nextY.toFloat(),
-                            speed,
-                            feature.code.toFloat(),
-                        )
+                        // The counters name the source paths, never the folded runs: they are what
+                        // the footer, the timeline and the event placement report.
                         when (feature) {
                             GcodeLayerPreview.Feature.SUPPORT -> currentSupportCount++
                             GcodeLayerPreview.Feature.SUPPORT_INTERFACE -> currentSupportInterfaceCount++
                             else -> Unit
                         }
-                        retainedSegments++
+
+                        val moveDx = nextX - startX
+                        val moveDy = nextY - startY
+                        val moveLength = sqrt(moveDx * moveDx + moveDy * moveDy)
+                        val dirX = if (moveLength > 0.0) moveDx / moveLength else 0.0
+                        val dirY = if (moveLength > 0.0) moveDy / moveLength else 0.0
+                        // A move that does not genuinely continue the run may not be folded into
+                        // it: folding across a corner cuts the corner, and a run that changes
+                        // feature would be drawn in the wrong colour.
+                        val continues = merging &&
+                            feature == mergingFeature &&
+                            moveLength > 0.0 &&
+                            dirX * mergingDirX + dirY * mergingDirY >= GcodeNozzlePathParser.FOLD_COLLINEAR_DOT &&
+                            abs((nextX - mergingStartX) * -mergingDirY + (nextY - mergingStartY) * mergingDirX) <=
+                            GcodeNozzlePathParser.FOLD_DRIFT_MM
+                        val requested = currentSourceIndex in reservedIndices ||
+                            shouldRetainSegment(currentSourceIndex, source.totalSegmentCount, maxSegments)
+                        // The budget is the memory guard the old sampler used to drop paths with.
+                        // It may only make a run longer: a run closes at the move that genuinely
+                        // continues it once it has stood for its share of the paths.
+                        val closeHere = !overBudget || (requested && mergingMoves + 1 >= spanTarget)
+
+                        if (continues && !closeHere) {
+                            // Fold this move into the run: it continues it, so the one straight
+                            // move drawn for the run still covers it.
+                            mergingMoves++
+                            mergingSourceIndex = currentSourceIndex
+                            mergingSpeed = speed
+                            mergingEndX = nextX.toFloat()
+                            mergingEndY = nextY.toFloat()
+                            return@forEach
+                        }
+                        if (merging && !continues) {
+                            // The run ends at the move before this one, so the turn the printer
+                            // made is drawn rather than a chord across it.
+                            flushRun()
+                        }
+                        if (closeHere) {
+                            currentSegments.add(
+                                if (merging) mergingStartX else startX.toFloat(),
+                                if (merging) mergingStartY else startY.toFloat(),
+                                nextX.toFloat(),
+                                nextY.toFloat(),
+                                speed,
+                                feature.code.toFloat(),
+                            )
+                            storedRuns++
+                            merging = false
+                        } else {
+                            // This move starts the next run.
+                            merging = true
+                            mergingFeature = feature
+                            mergingStartX = startX.toFloat()
+                            mergingStartY = startY.toFloat()
+                            mergingEndX = nextX.toFloat()
+                            mergingEndY = nextY.toFloat()
+                            mergingDirX = dirX
+                            mergingDirY = dirY
+                            mergingSpeed = speed
+                            mergingMoves = 0
+                            mergingSourceIndex = currentSourceIndex
+                        }
                     }
                 }
             }
         }
         finishLayer()
 
-        require(layers.isNotEmpty() && retainedSegments > 0) { "No printable layer paths were found in the G-code" }
+        require(layers.isNotEmpty() && storedRuns > 0) { "No printable layer paths were found in the G-code" }
         val layersWithHeights = layers.mapIndexed { index, layer ->
             val previousZ = if (index == 0) 0f else layers[index - 1].z
             layer.copy(height = (layer.z - previousZ).coerceAtLeast(0f))
@@ -299,8 +392,9 @@ object GcodeLayerPreviewParser {
             maxSpeedMmPerSecond = maxSpeed,
             minLayerHeightMm = minimumLayerHeight,
             maxLayerHeightMm = maximumLayerHeight,
-            totalSegmentCount = retainedSegments,
-            truncated = truncated,
+            totalSegmentCount = source.totalSegmentCount,
+            storedSegmentCount = storedRuns,
+            folded = storedRuns < source.totalSegmentCount,
         )
     }
 

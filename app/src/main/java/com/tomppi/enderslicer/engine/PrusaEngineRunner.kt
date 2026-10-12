@@ -12,6 +12,7 @@ import com.tomppi.enderslicer.model.PrusaPresetSelection
 import com.tomppi.enderslicer.model.PrusaSliceSettings
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.model.withSettings
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
 import java.io.File
 import java.time.Instant
 import java.util.UUID
@@ -273,7 +274,11 @@ private val datadir = File(context.filesDir, "prusa/datadir")
             }
             val prusaEstimateSeconds = parsePrusaEstimateSeconds(workspace.output) ?: summary.estimatedSeconds
             val preview = runCatching {
-                GcodeLayerPreviewParser.parse(workspace.output, GcodeDialect.PRUSA)
+                GcodeLayerPreviewParser.parse(
+                    workspace.output,
+                    GcodeDialect.PRUSA,
+                    PreviewMemoryPolicy.layerSegments(context),
+                )
             }.getOrNull()
 
             val artifact = publisher.publish(

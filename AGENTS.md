@@ -18,6 +18,26 @@ a sentence nothing on that path could ever change, because the tree it named was
 - The first-run **Prepare the engines** screen prepares each payload through these same paths, in
   dependency order (the Python before the CAD tree), one engine at a time.
 
+## Every G-code reader that draws must draw everything it read
+
+The app reads G-code for display in exactly four places. **None of them may sample** - a stride
+is what took a third of every layer out of the Layers tab:
+
+| reader | what it feeds | budget behaviour |
+|---|---|---|
+| `GcodeNozzlePathParser` | Path tab, Cura dialect | folds only, never drops |
+| `PrusaNozzlePathParser` | Path tab, PrusaSlicer and OrcaSlicer output | folds only, never drops |
+| `GcodeLayerPreviewParser` | Layers tab, all three dialects | folds only, never drops |
+| `GcodeLayerEventProcessor` | event injection into a rewritten file | streams every line, no budget |
+
+Read-only helpers that look like readers but cannot drop geometry: `ParseProgress` (byte
+progress), `PrintTimeEstimate` (one header string), `KlipperGcodeFiles` (metadata and a
+thumbnail; its 200-entry cap is a list of prints, not moves), `GcodeSanitizer` (validates and
+repairs every line; a rejected line is a named error, not a silent drop), the conical and
+conformal transformers (they rewrite every move and `check` the `MAX_EMITTED_MOVES` guard
+rather than trimming), and `NozzleCollisionScanner` (reads every move; its caps bound the
+sweep's step count and a safety grid, not the toolpath).
+
 ## The nozzle-path preview must draw every move
 
 `GcodeNozzlePathParser` (and `PrusaNozzlePathParser`) feed the start-to-finish path view. Their
@@ -71,6 +91,35 @@ genuinely continue each other are drawn as one straight move.
   carries both numbers.
 - Cura's layer view is the reference for this screen, and it draws every line it reads:
   `plugins/GCodeReader` and `plugins/SimulationView` in github.com/Ultimaker/Cura.
+
+## The layer view draws every path of the layer it shows
+
+`GcodeLayerPreviewParser` feeds the Layers tab. Its cap is the same kind of memory guard as the
+path view's, and it used to behave the way that view's did before the fold: past 800,000 segments
+it kept one path in three spread across the whole print, so a single layer came out sparse - the
+reported PrusaSlicer print showed "1228 paths - 1228 through this layer" where the layer really
+holds about three times that.
+
+- The cap **folds**: a run closes only at a move that genuinely continues it (same feature, same
+  direction within `GcodeNozzlePathParser.FOLD_COLLINEAR_DOT`, no further off the run's line than
+  `FOLD_DRIFT_MM`), and every source path is covered exactly once.
+  `GcodeLayerPreviewFoldTest` proves it for Cura, PrusaSlicer and OrcaSlicer files past the cap,
+  and `RealGcodeLayerCoverageTest` measures the reported prints.
+- Every count the Layers tab shows - "N paths", "N through this layer", "Support N" - is the
+  **source** count (`sourceSegmentCount`, `supportSegmentCount`), never the stored runs.
+- The vertex buffers hold a **window** of layers around the selection (the selected layer, eight
+  under it for the build-up style, two above), planned by `LayerWindow.plan` from the device
+  profile's `PreviewCapacity.segments`. Never build the whole print's lines into one buffer: that
+  is what the old 800,000-segment cap was really protecting, and it cost the layer in view its
+  paths.
+- A driver may refuse the window's allocation, so the path budget halves down to the selected
+  layer alone (`BandAllocator`); a layer that even then will not fit is **named with both
+  numbers** (`LayerWindow.refusal`), never sampled.
+- The window's ribbons belong to the selected layer and are rebuilt on every selection change,
+  including moves inside the window; the path buffers are rebuilt only when the selection leaves
+  it (`LayerPreviewGeometry.select`).
+- A restored artifact has no preview until it is read: the Layers tab says "Reading the file's
+  layers…" and the ViewModel parses it (`ensureLayerPreview`) instead of showing the model.
 
 ## Bead geometry follows Cura, not our own conventions
 

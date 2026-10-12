@@ -24,6 +24,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintModifier
 import com.tomppi.enderslicer.supportpaint.SupportPaintModifiers
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.StlParser
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
 import com.tomppi.enderslicer.viewer.StlSliceTransform
 import java.io.File
 import java.time.Instant
@@ -519,7 +520,11 @@ class CuraEngineRunner(private val context: Context) {
         val workspace = createWorkspace("events")
         try {
             copyStable(baseGcodeFile, workspace.base, "The original sliced G-code changed while it was being read")
-            val preview = GcodeLayerPreviewParser.parse(workspace.base)
+            val preview = GcodeLayerPreviewParser.parse(
+                workspace.base,
+                GcodeDialect.CURA,
+                PreviewMemoryPolicy.layerSegments(context),
+            )
             val layers = preview.layers.mapTo(hashSetOf()) { it.number }
             val validEvents = LayerEventOrdering.normalize(
                 events.filter { it.layerNumber in layers },
@@ -547,7 +552,11 @@ class CuraEngineRunner(private val context: Context) {
                 settingsTransport = if (validEvents.isEmpty()) transport else "$transport+layer-events",
                 printerEnvelope = printerEnvelope,
             )
-            val resultPreview = GcodeLayerPreviewParser.parse(workspace.output)
+            val resultPreview = GcodeLayerPreviewParser.parse(
+                workspace.output,
+                GcodeDialect.CURA,
+                PreviewMemoryPolicy.layerSegments(context),
+            )
             val artifact = publisher.publish(
                 id = workspace.id,
                 gcodeSource = workspace.output,
@@ -697,8 +706,8 @@ class CuraEngineRunner(private val context: Context) {
                 appendLine("Model/total filament mm: ${summary.filamentMillimeters}/${summary.totalFilamentMillimeters}")
                 appendLine("Extrusion bounds: X ${summary.minX}..${summary.maxX}, Y ${summary.minY}..${summary.maxY}, Z ${summary.minZ}..${summary.maxZ}")
                 result.layerPreview?.let {
-                    appendLine("Layer preview layers/segments: ${it.layers.size}/${it.totalSegmentCount}")
-                    appendLine("Layer preview truncated: ${it.truncated}")
+                    appendLine("Layer preview layers/paths: ${it.layers.size}/${it.totalSegmentCount}")
+                    appendLine("Layer preview stored runs: ${it.storedSegmentCount}, folded: ${it.folded}")
                 } ?: appendLine("Layer preview unavailable: ${result.previewFailure?.message ?: "unknown parse error"}")
                 appendLine("Applied layer events: ${result.layerEvents.size}")
                 appendLine("Zero-event fast path: ${result.usedZeroEventFastPath}")

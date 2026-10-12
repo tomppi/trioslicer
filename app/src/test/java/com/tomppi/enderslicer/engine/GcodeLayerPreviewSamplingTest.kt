@@ -19,14 +19,28 @@ class GcodeLayerPreviewSamplingTest {
         assertTrue(GcodeLayerPreview.Feature.ADHESION in retained)
     }
 
+    /**
+     * A cap far below the path count no longer throws classes away to fit: it merges the runs
+     * that continue each other, so every feature class is still in the stored geometry. The old
+     * sampler kept exactly one, which is how a single layer came out sparse.
+     */
     @Test
-    fun capOneUsesDocumentedRareFeaturePriority() {
+    fun capOneStillStoresEveryFeatureClass() {
         val preview = GcodeLayerPreviewParser.parse(featureGcode(), maxSegments = 1)
 
         assertEquals(
-            setOf(GcodeLayerPreview.Feature.ARC_OVERHANG),
+            setOf(
+                GcodeLayerPreview.Feature.ARC_OVERHANG,
+                GcodeLayerPreview.Feature.SUPPORT_INTERFACE,
+                GcodeLayerPreview.Feature.SUPPORT,
+                GcodeLayerPreview.Feature.ADHESION,
+                GcodeLayerPreview.Feature.MODEL,
+            ),
             retainedFeatures(preview),
         )
+        assertTrue(preview.folded)
+        assertEquals(8, preview.totalSegmentCount)
+        assertTrue(preview.storedSegmentCount < 8)
     }
 
     private fun featureGcode(): File = temporaryGcode(

@@ -27,7 +27,10 @@ import com.tomppi.enderslicer.data.SlicerSettingsJson
 import com.tomppi.enderslicer.data.WorkspaceStateStore
 import com.tomppi.enderslicer.engine.BlenderModelHandoff
 import com.tomppi.enderslicer.engine.CuraEngineRunner
+import android.util.Log
+import com.tomppi.enderslicer.engine.GcodeDialect
 import com.tomppi.enderslicer.engine.GcodeLayerPreview
+import com.tomppi.enderslicer.engine.GcodeLayerPreviewParser
 import com.tomppi.enderslicer.engine.LayerEvent
 import com.tomppi.enderslicer.engine.LayerEventSource
 import com.tomppi.enderslicer.engine.SequentialPrintCheck
@@ -87,6 +90,7 @@ import java.util.Locale
 import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.BedClipper
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
 import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.MeshBoolean
 import com.tomppi.enderslicer.viewer.MeshPicker
@@ -200,6 +204,9 @@ private data class EngineSliceOutcome(
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    /** One layer-preview read at a time, for the tab that is opened before a slice exists. */
+    private val layerPreviewParse = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private data class PendingImport(
         val config: ImportedCuraConfig,
         val stagedFile: File,
@@ -1319,6 +1326,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Switches the Cura definition chain and clears the previous slice, which no longer matches
      * the machine the G-code was built for. The choice is stored, so it survives a restart.
      */
+    /**
+     * Parses the layer preview for the artifact on screen when this process did not keep one:
+     * after a restart the Layers tab would otherwise show the model instead of the file's own
+     * layers. The parse is the same one the slice runs, folds to the device's budget, and never
+     * samples - a layer is drawn whole or named.
+     */
+    fun ensureLayerPreview() {
+        val current = _uiState.value
+        if (current.layerPreview != null || current.isBusy) return
+        val path = current.gcodePath ?: return
+        val file = File(path)
+        if (!file.isFile) return
+        val dialect = when (current.sliceEngine) {
+            SlicerEngine.PRUSA -> GcodeDialect.PRUSA
+            SlicerEngine.ORCA -> GcodeDialect.ORCA
+            else -> GcodeDialect.CURA
+        }
+        if (!layerPreviewParse.compareAndSet(false, true)) return
+        viewModelScope.launch {
+            val preview = runCatching {
+                withContext(Dispatchers.IO) {
+                    GcodeLayerPreviewParser.parse(
+                        file,
+                        dialect,
+                        PreviewMemoryPolicy.layerSegments(getApplication()),
+                    )
+                }
+            }.getOrNull()
+            layerPreviewParse.set(false)
+            if (preview != null) {
+                _uiState.update { state ->
+                    if (state.gcodePath == path) state.copy(layerPreview = preview) else state
+                }
+            } else {
+                Log.w("TrioSlicer", "layer preview: could not read " + file.name + " for the Layers tab")
+            }
+        }
+    }
+
+    /** True while a restarted session's layer preview is being read. */
+    val layerPreviewParsing: Boolean get() = layerPreviewParse.get()
+
     /** Chooses the nozzle-path preview's memory profile; stored so it survives a restart. */
     fun setPreviewMemoryProfile(profile: PreviewMemoryProfile) {
         if (_uiState.value.previewMemoryProfile == profile) return

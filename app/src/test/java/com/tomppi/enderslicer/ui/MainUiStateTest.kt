@@ -61,7 +61,7 @@ class MainUiStateTest {
             minLayerHeightMm = 0.2f,
             maxLayerHeightMm = 0.2f,
             totalSegmentCount = 0,
-            truncated = false,
+            folded = false,
         ),
         layerEvents = listOf(
             LayerEvent(

@@ -4,28 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class PreviewBudgetAndGridTest {
-    @Test
-    fun densePreviewPlanStaysInsideByteBudget() {
-        val plan = PreviewMemoryBudget.plan(
-            totalSegments = 800_000,
-            selectedLayerSegments = 800_000,
-        )
-
-        assertTrue(plan.totalBytes <= PreviewMemoryBudget.DEFAULT_RENDERER_BYTE_BUDGET)
-        assertTrue(plan.baseSegmentLimit > 0)
-        assertTrue(plan.ribbonSegmentLimit in 1 until 800_000)
-    }
-
-    @Test
-    fun checkedFloatCountRejectsIntegerOverflow() {
-        val error = runCatching {
-            PreviewMemoryBudget.checkedFloatCount(Int.MAX_VALUE, 18)
-        }.exceptionOrNull()
-
-        assertTrue(error is ArithmeticException)
-    }
-
+class LayerGridBuilderTest {
     @Test
     fun largeFiniteGridTerminatesWithBoundedLineCount() {
         val values = LayerGridBuilder.build(
