@@ -65,7 +65,13 @@ internal object GcodeCommand {
 
         val parameters = linkedMapOf<Char, Double>()
         val remainder = command.substring(opcodeMatch.range.last + 1).trim()
-        PARAMETER.findAll(remainder).forEach { match ->
+        // Object names ride in quotes (M486 A"cube10.stl"), and a name's own digits are not
+        // parameters: scanning "cube10.stl" found E10, so the engine's labelled output was
+        // rejected as "M486 rejects unsupported parameters" and could not be published at all.
+        // Quoted spans carry text, so they are not scanned for parameters; the raw arguments
+        // keep them for the messages and for everything that reads the labels.
+        val scannable = QUOTED.replace(remainder, " ")
+        PARAMETER.findAll(scannable).forEach { match ->
             val letter = match.groupValues[1].single().uppercaseChar()
             val value = match.groupValues[2].toDoubleOrNull()
             if (value != null && value.isFinite()) parameters[letter] = value
@@ -86,4 +92,7 @@ internal object GcodeCommand {
     // Scientific notation is intentionally excluded here: in compact G-code,
     // E starts the extrusion parameter (for example Y-2E1.25), not an exponent.
     private val PARAMETER = Regex("([A-Za-z])\\s*([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+))")
+
+    /** A quoted name, which is text rather than a parameter list. */
+    private val QUOTED = Regex("\"[^\"]*\"|'[^']*'")
 }

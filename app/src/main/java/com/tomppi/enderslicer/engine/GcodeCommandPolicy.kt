@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.engine
 
 import java.util.Locale
+import kotlin.math.floor
 
 /** One canonical, fail-closed command policy shared by all G-code safety consumers. */
 internal object GcodeCommandPolicy {
@@ -263,13 +264,22 @@ internal object GcodeCommandPolicy {
                 bounded('R', 0.0, 500.0)
             }
             486 -> {
-                // Object tracking. PrusaSlicer 3.x and OrcaSlicer number the objects on the
-                // plate from zero and emit M486 S<id>, with M486 S-1 to clear the selection and
-                // M486 A<object name> to register the names. The bound was -1..1 from when the
-                // plate held a single model, which rejected the third object's marker after the
-                // engine had already produced good G-code - reported as "the slicer failed".
-                only('S', 'A')
-                bounded('S', -1.0, MAX_OBJECT_ID)
+                // Object tracking, as Marlin defines it and Klipper's sample macro implements
+                // it: S<index> selects an object (S-1 clears the selection), A"<name>"
+                // registers a name, C cancels the current object, P<name> cancels a named
+                // one, T resets the list and U<name> recovers one. PrusaSlicer's firmware
+                // labelling emits these and so does the app's own multi-object writer, so the
+                // syntax is accepted as written rather than bounded to the plate's own ids.
+                // The names are quoted, and the parser skips quoted spans: a name's digits
+                // ("cube10.stl") are not parameters, which is what used to reject the engine's
+                // own output as "unsupported M486 parameters" before it could be published.
+                only('S', 'A', 'C', 'P', 'T', 'U')
+                val index = command.value('S')
+                if (index != null) {
+                    require(index.isFinite() && index >= -1.0 && index == floor(index)) {
+                        "$consumer rejects M486 S outside whole object ids from -1 up$location"
+                    }
+                }
             }
             74 -> {
                 // PrusaSlicer 3.x per-layer marker. W is the extruded filament
@@ -505,14 +515,6 @@ internal object GcodeCommandPolicy {
             "RETRACT_SPEED=[+]?(\\d+(?:\\.\\d*)?|\\.\\d+)$",
         RegexOption.IGNORE_CASE,
     )
-    /**
-     * The highest object id an M486 may select.
-     *
-     * One id per object on the plate, so this is far above any plate that fits on a bed; it only
-     * has to stop a nonsense value from passing as an object selection.
-     */
-    private const val MAX_OBJECT_ID = 100_000.0
-
     private const val KLIPPER_ADVANCE_MIN = 0.0
     private const val KLIPPER_ADVANCE_MAX = 100.0
     private const val KLIPPER_RETRACT_LENGTH_MIN = 0.0

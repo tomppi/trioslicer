@@ -134,6 +134,67 @@ class LayerPreviewGeometryTest {
         )
     }
 
+    /**
+     * The reported Build-up regression: with 6.9 GB free the footer read "1 layer in the
+     * buffers". The window near the start of the print is small (the file ends there), and the
+     * planner's remembered refusal turned that small window into a ceiling for the rest of the
+     * session, so every later selection held one layer. A small window is a planning outcome,
+     * not a memory limit, and it may not stick.
+     */
+    @Test
+    fun aSmallWindowAtTheStartDoesNotShrinkTheOnesAfterIt() {
+        val value = preview(layers = 400, pathsOf = { 30 })
+        val geometry = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
+
+        geometry.select(1)
+        assertTrue("the first window is clamped by the start of the print", geometry.window.first == 0)
+        val firstCount = geometry.window.count()
+
+        geometry.select(200)
+        assertEquals(
+            "the window has to be the full context again",
+            1 + LayerWindow.CONTEXT_BELOW + LayerWindow.CONTEXT_ABOVE,
+            geometry.window.count(),
+        )
+        assertTrue("and it grew rather than staying small", geometry.window.count() > firstCount)
+        assertEquals(200 - LayerWindow.CONTEXT_BELOW, geometry.window.first)
+        assertEquals(200 + LayerWindow.CONTEXT_ABOVE, geometry.window.last)
+    }
+
+    /** Build-up draws the layers below, so the window always holds them when they fit. */
+    @Test
+    fun buildUpHoldsTheSelectedLayerAndTheContextAroundIt() {
+        val value = preview(layers = 400, pathsOf = { 20 })
+        val geometry = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
+        geometry.select(300)
+
+        assertEquals(300 - LayerWindow.CONTEXT_BELOW, geometry.window.first)
+        assertEquals(300 + LayerWindow.CONTEXT_ABOVE, geometry.window.last)
+        assertTrue(
+            "the layers below the selection are in the path buffers",
+            geometry.vertexStart(300) > 0 && geometry.vertexEnd(300) > geometry.vertexStart(300),
+        )
+        assertEquals(geometry.pathVertexCount(), geometry.vertexEnd(geometry.window.last))
+    }
+
+    @Test
+    fun aReducedWindowSaysWhatItIsMissingAndWhy() {
+        val value = preview(layers = 40, pathsOf = { 100 })
+        // 300 segments of budget: three layers, where the context would give eleven.
+        val geometry = LayerPreviewGeometry(value, capacity(300))
+        geometry.select(20)
+
+        assertEquals(3, geometry.window.count())
+        assertTrue(geometry.status, geometry.status.contains("the window holds 300 of the 1100 runs"))
+        assertTrue(geometry.status, geometry.status.contains("the 11 layers around it hold"))
+
+        // The capacity comes from the device profile, so a profile tap that frees room gives the
+        // full window back rather than staying where the small one left it.
+        val wide = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
+        wide.select(20)
+        assertEquals(1 + LayerWindow.CONTEXT_BELOW + LayerWindow.CONTEXT_ABOVE, wide.window.count())
+    }
+
     @Test
     fun aTinyBudgetLeavesTheSelectedLayerAlone() {
         val value = preview(pathsOf = { 10 })

@@ -38,6 +38,22 @@ conformal transformers (they rewrite every move and `check` the `MAX_EMITTED_MOV
 rather than trimming), and `NozzleCollisionScanner` (reads every move; its caps bound the
 sweep's step count and a safety grid, not the toolpath).
 
+## Object labels are text, not parameters
+
+`GcodeCommand` scans parameters as `letter + number`, so a quoted object name's own digits used to
+become parameters. PrusaSlicer's firmware labelling writes `M486 A"cube10.stl lower"`, the scan found
+`E10` in the name, and the published-G-code policy rejected the engine's own output - the
+PrusaSlicer engine could not publish a slice at all unless `gcode_label_objects` was set to 0 by
+hand, and the label the printer needs never reached the file.
+
+- Quoted spans are **text**: `GcodeCommand` does not scan them for parameters, and `rawArguments`
+  keeps them for the labels the printer and the app read.
+- **M486 accepts Marlin's whole parameter set** - `S` (any whole object id from -1 up, no upper
+  bound), `A"name"`, `C`, `P"name"`, `T`, `U` - because both PrusaSlicer's firmware labelling
+  and the app's own multi-object writer emit it. A letter outside that set, or an `S` that is not a
+  whole id from -1 up, is still refused by name. `PublishedObjectLabelTest` holds both halves, and
+  checks that a published file keeps its labels.
+
 ## The nozzle-path preview must draw every move
 
 `GcodeNozzlePathParser` (and `PrusaNozzlePathParser`) feed the start-to-finish path view. Their
@@ -120,6 +136,11 @@ holds about three times that.
   it (`LayerPreviewGeometry.select`).
 - A restored artifact has no preview until it is read: the Layers tab says "Reading the file's
   layers…" and the ViewModel parses it (`ensureLayerPreview`) instead of showing the model.
+- The window is **re-planned for every selection** from the device's capacity, and nothing about a
+  smaller window is remembered between them. Remembering it is what collapsed Build-up to "1 layer in
+  the buffers" while 6.9 GB were free: the window near the start of a print is small because the
+  print ends there, not because a driver refused anything. Only a refused allocation halves the plan,
+  and a reduced window says so in the footer with both numbers.
 
 ## Bead geometry follows Cura, not our own conventions
 

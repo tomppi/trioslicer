@@ -58,8 +58,6 @@ internal class LayerPreviewGeometry(
     /** True when the buffers hold the selected layer's geometry. */
     val ready: Boolean get() = pathPositions != null && !window.isEmpty()
 
-    private var sessionCeiling = Int.MAX_VALUE
-
     fun select(layerIndex: Int): Boolean {
         val bounded = if (value.layers.isEmpty()) 0 else layerIndex.coerceIn(value.layers.indices)
         val changed = selectedLayerIndex != bounded || window.isEmpty()
@@ -76,7 +74,12 @@ internal class LayerPreviewGeometry(
                 ribbonVertexCount = 0
                 allocateRibbons()
                 buildRibbons()
-                status = describe(window, LayerWindow.segments(window) { costs[it] })
+                status = describe(
+                    range = window,
+                    segments = LayerWindow.segments(window) { costs[it] },
+                    context = fullContext(),
+                    refused = null,
+                )
             }
             else -> rebuild()
         }
@@ -112,24 +115,32 @@ internal class LayerPreviewGeometry(
         if (value.layers.isEmpty()) return
 
         // The driver may refuse what the figures promised, so try the whole window, then half
-        // the path budget, down to the selected layer alone.
-        for (attempt in BandAllocator.attempts(capacity.segments, LayerWindow.MINIMUM_SEGMENTS, sessionCeiling)) {
+        // the path budget, down to the selected layer alone. Nothing is remembered between
+        // selections: a smaller window is a planning outcome (a selection near either end of
+        // the print, or the layer-count caps), and treating it as a ceiling for the session is
+        // what collapsed Build-up to "1 layer in the buffers" while 6.9 GB were free. A refusal
+        // that really is the driver's costs one failed allocation to find again, which is cheap.
+        val context = fullContext()
+        var refused: Int? = null
+        for (attempt in BandAllocator.attempts(capacity.segments, LayerWindow.MINIMUM_SEGMENTS, Int.MAX_VALUE)) {
             val range = LayerWindow.plan(value.layers.size, { costs[it] }, selectedLayerIndex, attempt)
             val segments = LayerWindow.segments(range) { costs[it] }
             val granted = try {
                 allocate(range, segments)
                 true
-            } catch (refused: OutOfMemoryError) {
+            } catch (refusedAllocation: OutOfMemoryError) {
                 false
             } catch (overflow: ArithmeticException) {
                 false
             }
-            if (!granted) continue
+            if (!granted) {
+                refused = maxOf(refused ?: 0, segments)
+                continue
+            }
             window = range
-            sessionCeiling = min(sessionCeiling, segments.coerceAtLeast(LayerWindow.MINIMUM_SEGMENTS))
             buildPaths(range)
             buildRibbons()
-            status = describe(range, segments)
+            status = describe(range, segments, context, refused)
             return
         }
         val layer = value.layers[selectedLayerIndex]
@@ -223,12 +234,25 @@ internal class LayerPreviewGeometry(
         ribbonVertexCount = drawn * 6
     }
 
-    private fun describe(range: IntRange, segments: Int): String {
+    /** The window the context caps alone would give, whatever the path budget says. */
+    private fun fullContext(): IntRange =
+        LayerWindow.plan(value.layers.size, { costs[it] }, selectedLayerIndex, Int.MAX_VALUE)
+
+    private fun describe(range: IntRange, segments: Int, context: IntRange, refused: Int?): String {
         val paths = if (range.isEmpty()) 0 else range.sumOf { value.layers[it].sourceSegmentCount }
         val layers = range.count()
         val text = StringBuilder()
         text.append(if (layers == 1) "1 layer" else "$layers layers")
         text.append(" in the buffers · ").append(segments).append(" runs for ").append(paths).append(" paths")
+        // A reduced window says what it is missing and why, with both numbers.
+        if (range.count() < context.count()) {
+            val contextSegments = LayerWindow.segments(context) { costs[it] }
+            text.append(" · the window holds ").append(segments).append(" of the ")
+                .append(contextSegments).append(" runs the ").append(context.count()).append(" layers around it hold")
+            if (refused != null) {
+                text.append(", after the device refused ").append(refused)
+            }
+        }
         if (value.folded) {
             text.append(" · folded across the print (").append(value.totalSegmentCount)
                 .append(" paths, ").append(value.storedSegmentCount).append(" runs)")
