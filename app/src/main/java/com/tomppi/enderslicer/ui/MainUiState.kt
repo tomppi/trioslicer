@@ -219,6 +219,9 @@ data class MainUiState(
      */
     val snapLipEngagementMm: Float? = null,
     val snapLipToothHeightMm: Float? = null,
+    /** The wall the lip's ring leaves, and how far its recess goes past the step. */
+    val snapLipWallMm: Float? = null,
+    val snapLipDepthMm: Float? = null,
     /** True when every joint's socket mouth is chamfered: the lead-in in the hole. */
     val snapSocketRamp: Boolean = false,
     /** One control for the whole joint: every dimension and clearance scales with it. */
@@ -637,6 +640,8 @@ data class MainUiState(
                 style = joint.style,
                 lipEngagementMm = joint.lipEngagementMm,
                 lipToothHeightMm = joint.lipToothHeightMm,
+                lipWallMm = joint.lipWallMm,
+                lipRecessExtraMm = joint.lipRecessExtraMm,
             )
         }
     }
@@ -655,6 +660,8 @@ data class MainUiState(
         socketRamp = snapSocketRamp,
         lipEngagementOverrideMm = spec.lipEngagementMm,
         lipToothHeightOverrideMm = spec.lipToothHeightMm,
+        lipWallOverrideMm = spec.lipWallMm,
+        lipRecessExtraOverrideMm = spec.lipRecessExtraMm,
     ).tightenedBy(spec.tightness.stepMm)
 
     /**

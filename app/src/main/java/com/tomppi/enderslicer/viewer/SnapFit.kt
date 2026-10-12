@@ -1790,6 +1790,10 @@ data class SnapFitDimensions(
     val lipStepMm: Float = 0f,
     /** How long the lip's own ring is, around the seam: the contour's perimeter. */
     val lipRingMm: Float = 0f,
+    /** The wall thickness the user asked for, before the part clamped it. */
+    val lipWallAskedMm: Float = 0f,
+    /** How far the recess floor was cut past the step the tooth and its ramp need. */
+    val lipDepthExtraMm: Float = 0f,
     /** How many places around that ring the wall was read at. */
     val lipSamples: Int = 0,
     /** Where on the ring its worst reading was: millimetres along the contour. */
@@ -1951,11 +1955,12 @@ data class SnapFitJoint(
     val lipStepSummary: String
         get() = String.format(
             java.util.Locale.ROOT,
-            "pad %.2f mm: a %.2f mm tooth and its ramp, and the recess %.2f mm with clearance " +
-                "on every face",
+            "pad %.2f mm: a %.2f mm tooth and its ramp, and the recess %.2f mm - the step plus " +
+                "%.2f mm of depth - with clearance on every face",
             dimensions.lipStepMm,
             dimensions.lipToothHeightMm,
             dimensions.lipRecessMm,
+            dimensions.lipDepthExtraMm,
         )
 
     /**
@@ -2063,6 +2068,27 @@ data class SnapFitParameters(
     val lipEngagementOverrideMm: Float? = null,
     /** The tooth height the user typed, in millimetres, or null for the scaled parameter. */
     val lipToothHeightOverrideMm: Float? = null,
+    /**
+     * The wall lip: the wall the ring leaves where the part is solid, in
+     * millimetres. A thinner wall bends more easily and the pair closes with
+     * less effort; a thicker one is stiffer - and the strain readout moves with
+     * it, because the wall is what that closed form is computed over. Where the
+     * part's own wall is thinner than this, the part decides and the clamp says
+     * so.
+     */
+    val lipWallMm: Float = 2f,
+    /**
+     * The wall lip: how far the recess floor is cut into the part BEYOND the
+     * step the tooth and its ramp need, in millimetres. Zero is the step and
+     * nothing more, which is the joint exactly as it was before this control
+     * existed; the free length is measured from the floor, so the strain falls
+     * as the depth grows.
+     */
+    val lipRecessExtraMm: Float = 0f,
+    /** The wall thickness the user typed, in millimetres, or null for the scaled parameter. */
+    val lipWallOverrideMm: Float? = null,
+    /** The extra recess depth the user typed, in millimetres, or null for the scaled parameter. */
+    val lipRecessExtraOverrideMm: Float? = null,
 ) {
     /**
      * The same joint with every fit clearance tightened by [stepMm] millimetres,
@@ -2083,14 +2109,18 @@ data class SnapFitParameters(
         val lengths = listOf(
             keySizeMm, keyHeightMm, keyClearanceMm, beamLengthMm, beamWidthMm, beamThicknessMm,
             beamRootMm, lipDepthMm, lipClearanceMm, matingClearanceMm, keyGapMm,
-            stepDepthMm, stepRimMm, lipEngagementMm, lipToothHeightMm,
+            stepDepthMm, stepRimMm, lipEngagementMm, lipToothHeightMm, lipWallMm,
         )
         val overrides = listOfNotNull(
             beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm,
-            lipEngagementOverrideMm, lipToothHeightOverrideMm,
+            lipEngagementOverrideMm, lipToothHeightOverrideMm, lipWallOverrideMm,
         )
         return lengths.all { it.isFinite() && it > 0f } &&
             overrides.all { it.isFinite() && it > 0f } &&
+            // The extra depth may be zero - that is the joint without any - but
+            // not negative, and it is a length like every other one.
+            lipRecessExtraMm.isFinite() && lipRecessExtraMm >= 0f &&
+            (lipRecessExtraOverrideMm?.let { it.isFinite() && it >= 0f } ?: true) &&
             rampAngleDeg.isFinite() && rampAngleDeg > 1f && rampAngleDeg <= SnapFit.SQUARE_LEAD_IN_DEG &&
             barbCount >= 1 && mouthChamferDeg.isFinite() && mouthChamferDeg in 1f..SnapFit.MOUTH_CHAMFER_DEG
     }

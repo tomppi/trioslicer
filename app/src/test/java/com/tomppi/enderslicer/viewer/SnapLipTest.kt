@@ -192,8 +192,15 @@ class SnapLipTest {
         val outcome = build(MeshFixtures.box(0f, 0f, 0f, 40f, 40f, seam, name = "block"), solidHalf())
         check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
         val joint = (outcome as SnapLip.Outcome.Built).joint
-        check(joint.dimensions.wallThicknessMm <= 2.01f) { "the ring's own wall is the whole block" }
-        check(joint.clamps.any { it.label == "wall thickness" }) { "the clamp went unsaid: " + joint.clamps }
+        // The part gave 40 mm of solid, and the ring's own recess leaves the asked
+        // 2.00 mm of it: nothing to clamp, and the strain that wall carries is
+        // the warning the user reads.
+        check(abs(joint.dimensions.wallThicknessMm - 2f) < 0.01f) {
+            "the ring left " + joint.dimensions.wallThicknessMm + " mm of wall in a solid block"
+        }
+        check(joint.clamps.none { it.label == "wall thickness" }) {
+            "a solid part clamped a wall it was asked to make: " + joint.clamps
+        }
         check(joint.warnings.any { it.contains("2.0%") }) { "no strain warning on a solid block: " + joint.warnings }
     }
 
@@ -212,6 +219,152 @@ class SnapLipTest {
         check(outcome is SnapLip.Outcome.Refused) { "a 0.3 mm wall carried a ring" }
         val reason = (outcome as SnapLip.Outcome.Refused).reason
         check(reason.contains("0.3")) { reason }
+    }
+
+    /** A solid block: the case the Wall control is for - there is no wall until the ring makes one. */
+    private fun block(size: Float = 40f, depth: Float = seam): StlMesh =
+        MeshFixtures.box(0f, 0f, seam - depth, size, size, seam, name = "block")
+
+    @Test
+    fun theWallControlReallyChangesTheWallInTheMeshes() {
+        // The recess ring's outboard surface IS the wall's inner face, so the
+        // wall it leaves is measurable off the mesh: the part's edge to the
+        // recess, less the relief the recess keeps on that face.
+        fun measuredWall(wall: Float): Float {
+            val outcome = build(
+                block(),
+                solidHalf(),
+                SnapFitParameters(lipWallOverrideMm = wall, lipRecessExtraOverrideMm = 0f),
+            )
+            check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+            val recess = (outcome as SnapLip.Outcome.Built).joint.subtractSolid
+            // The block's own edge is x = 0 and the recess's outer face sits the
+            // wall less its relief in from it.
+            return recess.bounds.minX + 0.2f
+        }
+        val thin = measuredWall(1.2f)
+        val thick = measuredWall(3.0f)
+        check(abs(thin - 1.2f) < 0.06f) { "a 1.20 mm wall measured " + thin + " mm in the mesh" }
+        check(abs(thick - 3.0f) < 0.06f) { "a 3.00 mm wall measured " + thick + " mm in the mesh" }
+    }
+
+    @Test
+    fun theDepthControlReallyMovesTheRecessFloor() {
+        fun floorAndJoint(extra: Float): Triple<Float, Float, Float> {
+            val outcome = build(
+                block(),
+                solidHalf(),
+                SnapFitParameters(lipWallOverrideMm = 2f, lipRecessExtraOverrideMm = extra),
+            )
+            check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+            val joint = (outcome as SnapLip.Outcome.Built).joint
+            val floor = joint.subtractSolid.bounds.minZ - seam
+            return Triple(floor, joint.dimensions.wallFreeLengthMm, joint.dimensions.lipStrainPercent)
+        }
+        val (flat, flatFree, flatStrain) = floorAndJoint(0f)
+        val (deep, deepFree, deepStrain) = floorAndJoint(2.5f)
+        // Both floors are behind the seam, so the deeper one is the smaller number.
+        check(abs((flat - deep) - 2.5f) < 0.02f) {
+            "the floor moved " + (flat - deep) + " mm for a 2.50 mm depth"
+        }
+        check(abs(flatFree - (flat * -1f)) < 0.6f) {
+            "on a solid block the free length is the band's own depth: " + flatFree + " against " + flat
+        }
+        check(deepFree > flatFree + 1.5f) { "the free length did not follow the floor: " + deepFree }
+        check(deepStrain < flatStrain) { "the strain did not fall with the depth" }
+    }
+
+    @Test
+    fun aPartWhoseOwnWallIsThinnerKeepsItsWallAndSaysSo() {
+        val outcome = build(
+            hollowHalf(wall = 2f),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 3f),
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        val joint = (outcome as SnapLip.Outcome.Built).joint
+        check(abs(joint.dimensions.wallThicknessMm - 2f) < 0.1f) {
+            "the part's own 2 mm wall was not kept: " + joint.dimensions.wallThicknessMm
+        }
+        val clamp = joint.clamps.firstOrNull { it.label == "wall thickness" }
+        checkNotNull(clamp) { "the clamp went unsaid: " + joint.clamps }
+        check(clamp.reason.contains("3.0 mm asked for")) { clamp.reason }
+        check(clamp.reason.contains("2.0 mm")) { clamp.reason }
+    }
+
+    @Test
+    fun aWallUnderWhatALipNeedsIsRefusedWithItsNumber() {
+        val outcome = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 0.3f),
+        )
+        check(outcome is SnapLip.Outcome.Refused) { "a 0.30 mm wall carried a ring" }
+        val reason = (outcome as SnapLip.Outcome.Refused).reason
+        check(reason.contains("0.3 mm")) { reason }
+        check(reason.contains("0.4 mm")) { reason }
+    }
+
+    @Test
+    fun aDepthPastThePartsOwnMaterialIsHeldOffWithItsNumber() {
+        // A half only 5 mm deep: the step and its clearance take 3.0 mm of it and
+        // the band keeps 0.4 mm of wall under itself, so 1.6 mm of extra depth is
+        // all there is.
+        val outcome = build(
+            block(depth = 5f),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipRecessExtraOverrideMm = 5f),
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        val joint = (outcome as SnapLip.Outcome.Built).joint
+        check(abs(joint.dimensions.lipDepthExtraMm - 1.6f) < 0.05f) {
+            "the extra came out at " + joint.dimensions.lipDepthExtraMm + " mm"
+        }
+        val clamp = joint.clamps.firstOrNull { it.label == "recess depth" }
+        checkNotNull(clamp) { "the clamp went unsaid: " + joint.clamps }
+        check(clamp.reason.contains("5.0 mm asked for")) { clamp.reason }
+        check(clamp.reason.contains("0.4 mm of wall under it")) { clamp.reason }
+    }
+
+    @Test
+    fun aHalfTooShallowForTheStepIsRefusedWithItsNumber() {
+        val outcome = build(
+            block(depth = 3.2f),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f),
+        )
+        check(outcome is SnapLip.Outcome.Refused) { "a 3.2 mm deep half carried the step" }
+        val reason = (outcome as SnapLip.Outcome.Refused).reason
+        check(reason.contains("3.2")) { reason }
+        check(reason.contains("before a wall is left under the band")) { reason }
+    }
+
+    @Test
+    fun theDefaultsAreTheJointItHasAlwaysBeen() {
+        // Wall 2.00 and Depth 0.00 are the joint as it was before either control
+        // existed: the same solids, to the triangle and the cubic millimetre.
+        val joint = built()
+        println(
+            "RINGGOLD tooth=" + joint.unionSolid.triangleCount + "/" + "%.3f".format(volumeOf(joint.unionSolid)) +
+                " recess=" + joint.subtractSolid.triangleCount + "/" + "%.3f".format(volumeOf(joint.subtractSolid)) +
+                " ledge=" + joint.registrationSolid.triangleCount + "/" + "%.3f".format(volumeOf(joint.registrationSolid)) +
+                " recessDepth=" + joint.dimensions.lipRecessMm + " wall=" + joint.dimensions.wallThicknessMm,
+        )
+        check(abs(joint.dimensions.lipDepthExtraMm) < 0.001f) { "the default depth is not zero" }
+        check(abs(joint.dimensions.lipWallAskedMm - 2f) < 0.001f) { "the default wall is not 2.00 mm" }
+        // The solids themselves, to the triangle and the cubic millimetre: the
+        // numbers the build produced before either control existed.
+        check(joint.unionSolid.triangleCount == 32) { "the tooth ring is " + joint.unionSolid.triangleCount + " triangles" }
+        check(abs(volumeOf(joint.unionSolid) - 206.796f) < 0.01f) { "the tooth ring is " + volumeOf(joint.unionSolid) + " mm3" }
+        check(joint.subtractSolid.triangleCount == 32) { "the recess ring is " + joint.subtractSolid.triangleCount + " triangles" }
+        check(abs(volumeOf(joint.subtractSolid) - 1222.498f) < 0.01f) { "the recess ring is " + volumeOf(joint.subtractSolid) + " mm3" }
+        check(joint.registrationSolid.triangleCount == 64) { "the ledge ring is " + joint.registrationSolid.triangleCount + " triangles" }
+        check(abs(volumeOf(joint.registrationSolid) - 611.615f) < 0.01f) { "the ledge ring is " + volumeOf(joint.registrationSolid) + " mm3" }
+        val step = joint.dimensions.lipToothHeightMm + joint.dimensions.lipRunMm +
+            2f * joint.dimensions.lipClearanceMm
+        check(abs(joint.dimensions.lipRecessMm - (step + joint.dimensions.lipClearanceMm)) < 0.01f) {
+            "the recess is " + joint.dimensions.lipRecessMm + " and the step and its clearance are " + (step + 0.2f)
+        }
     }
 
     @Test

@@ -454,6 +454,8 @@ class WorkspaceStateStoreTest {
                             style = SnapJointStyle.WALL_LIP,
                             lipEngagementMm = 1.1f,
                             lipToothHeightMm = 2.2f,
+                            lipWallMm = 1.4f,
+                            lipRecessExtraMm = 3.3f,
                         ),
                     ),
                 ),
@@ -471,6 +473,10 @@ class WorkspaceStateStoreTest {
         assertEquals(SnapJointStyle.WALL_LIP, pair.joints[1].style)
         assertEquals(1.1f, pair.joints[1].lipEngagementMm!!, 1e-4f)
         assertEquals(2.2f, pair.joints[1].lipToothHeightMm!!, 1e-4f)
+        assertEquals("the wall the ring leaves", 1.4f, pair.joints[1].lipWallMm!!, 1e-4f)
+        assertEquals("and how far its recess goes past the step", 3.3f, pair.joints[1].lipRecessExtraMm!!, 1e-4f)
+        assertFalse("a cantilever joint writes no wall either", joints.getJSONObject(0).has("lipWallMm"))
+        assertFalse("nor a depth", joints.getJSONObject(0).has("lipRecessExtraMm"))
 
         // A build that wrote a style this one does not know must not cost the joint.
         joints.getJSONObject(1).put("style", "SOMETHING_ELSE")

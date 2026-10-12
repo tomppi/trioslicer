@@ -170,8 +170,36 @@ object SnapLip {
         // The step the ring needs and the recess that holds it: the tooth's height
         // and the ramp's run, the clearnces the pair runs on, and the recess that
         // much again so the mate's emboss goes in with room on every face.
+        val clamps = ArrayList<SnapFitClamp>()
         val stepDepth = toothHeight + run + 2f * clearance
-        val recessDepth = stepDepth + clearance
+        val extraAsked = parameters.lipRecessExtraOverrideMm ?: parameters.lipRecessExtraMm * scale
+        // How deep the lip half's own material goes behind the seam, so the extra
+        // can be held off its end rather than cutting the part through.
+        val availableDepth = depthBehindSeam(lipHalf, direction, face)
+        val stepAndClearance = stepDepth + clearance
+        val maxExtra = max(0f, availableDepth - MIN_WALL_MM - stepAndClearance)
+        if (stepAndClearance >= availableDepth - MIN_WALL_MM) {
+            return Outcome.Refused(
+                "cannot be built: the lip half is only " + millimetres(availableDepth) +
+                    " mm deep behind the seam, and the ring's own step and clearance need " +
+                    millimetres(stepAndClearance) + " mm of it before a wall is left under the " +
+                    "band. Use the cantilever here.",
+            )
+        }
+        val extra = min(extraAsked, maxExtra)
+        val recessDepth = stepAndClearance + extra
+        if (extraAsked > maxExtra + CLAMP_EPSILON_MM) {
+            clamps += SnapFitClamp(
+                label = "recess depth",
+                askedMm = extraAsked,
+                actualMm = extra,
+                reason = "the lip half's material behind the seam is " + millimetres(availableDepth) +
+                    " mm deep, and the ring's step leaves room for " + millimetres(maxExtra) +
+                    " mm of extra depth rather than the " + millimetres(extraAsked) +
+                    " mm asked for - the band always keeps " + millimetres(MIN_WALL_MM) +
+                    " mm of wall under it",
+            )
+        }
 
         // ------------------------------------------------------------ the seam
         // The plane's own two axes, and the outline the two halves share there:
@@ -230,16 +258,27 @@ object SnapLip {
                     millimetres(MIN_WALL_MM) + " mm). Use the cantilever here.",
             )
         }
-        val wall = min(thinnest, RING_WALL_MM)
-        val clamps = ArrayList<SnapFitClamp>()
-        if (thinnest > RING_WALL_MM + CLAMP_EPSILON_MM) {
+        // The wall the ring leaves: what the user asked for, and never more than
+        // the part itself gives. A solid part is given the asked wall by the
+        // ring's own recess, which is the case this control is for; a part whose
+        // own wall is thinner keeps its wall, and the clamp says so.
+        val wallAsked = parameters.lipWallOverrideMm ?: parameters.lipWallMm * scale
+        if (!wallAsked.isFinite() || wallAsked < MIN_WALL_MM) {
+            return Outcome.Refused(
+                "cannot be built: a " + millimetres(wallAsked) + " mm wall is under the " +
+                    millimetres(MIN_WALL_MM) + " mm a lip needs to bend at all. Raise the wall's " +
+                    "thickness, or use the cantilever.",
+            )
+        }
+        val wall = min(thinnest, wallAsked)
+        if (thinnest < wallAsked - CLAMP_EPSILON_MM) {
             clamps += SnapFitClamp(
                 label = "wall thickness",
-                askedMm = thinnest,
+                askedMm = wallAsked,
                 actualMm = wall,
-                reason = "the part is solid along the seam (" + millimetres(thinnest) +
-                    " mm of material), so the ring's own recess leaves a " + millimetres(wall) +
-                    " mm wall to bend",
+                reason = "the part's own wall along the seam is only " + millimetres(thinnest) +
+                    " mm through, so the wall is " + millimetres(wall) + " mm rather than the " +
+                    millimetres(wallAsked) + " mm asked for - the part decides where it is thinner",
             )
         }
         if (engagementAsked > engagement + CLAMP_EPSILON_MM) {
@@ -424,6 +463,8 @@ object SnapLip {
             lipRecessMm = recessDepth,
             lipRecessInnerMm = recessInner,
             lipStepMm = stepDepth,
+            lipWallAskedMm = wallAsked,
+            lipDepthExtraMm = extra,
             // The hooks run on the wall's face, not on the part's outer edge: the
             // ring's own length is the contour the tooth stands on.
             lipRingMm = perimeterOf(wallFace),
@@ -633,6 +674,24 @@ object SnapLip {
         val low = edges.last { it < seed }
         val high = edges.firstOrNull { it > seed } ?: return null
         return low..high
+    }
+
+    /**
+     * How deep the half's own material goes behind the seam, along the axis: the
+     * room the ring's recess has to cut into before it would come out the part's
+     * other end.
+     */
+    private fun depthBehindSeam(half: SnapFitHalf, direction: Vec3, face: Float): Float {
+        val along = half.probe(direction) ?: return 0f
+        val vertices = half.mesh.interleavedVertices
+        val stride = MeshSolidBuilder.FLOATS_PER_VERTEX
+        var deepest = Float.MAX_VALUE
+        for (vertex in 0 until half.mesh.triangleCount * 3) {
+            val at = vertex * stride
+            deepest = min(deepest, along(vertices[at], vertices[at + 1], vertices[at + 2]))
+        }
+        if (deepest == Float.MAX_VALUE) return 0f
+        return max(0f, face - deepest)
     }
 
     /** A point in the seam's own plane, in the frame the ring is laid out in. */
@@ -1209,13 +1268,6 @@ object SnapLip {
 
     /** Two crossings this close are one edge of the material, not two. */
     private const val SLICE_EDGE_MM = 5e-3f
-
-    /**
-     * The wall the ring is built to when the part is solid along the seam: the
-     * recess leaves this much material at the edge to be the spring, because a
-     * block with no wall at all has nothing to bend.
-     */
-    private const val RING_WALL_MM = 2f
 
     /** How far apart the ring's own reading samples the seam. */
     private const val RING_SAMPLE_MM = 1.5f

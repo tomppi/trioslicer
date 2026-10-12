@@ -1986,6 +1986,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 style = spec.style,
                 lipEngagementMm = spec.lipEngagementMm,
                 lipToothHeightMm = spec.lipToothHeightMm,
+                lipWallMm = spec.lipWallMm,
+                lipRecessExtraMm = spec.lipRecessExtraMm,
             )
         },
     )
@@ -2057,6 +2059,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?.lipEngagementMm,
                 snapLipToothHeightMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
                     ?.lipToothHeightMm,
+                snapLipWallMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }?.lipWallMm,
+                snapLipDepthMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
+                    ?.lipRecessExtraMm,
                 snapSocketRamp = record?.socketRamp ?: false,
                 snapScale = record?.scale ?: 1f,
                 snapFullJoint = record?.fullJoint ?: false,
@@ -2118,6 +2123,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     style = state.snapStyle,
                     lipEngagementMm = state.snapLipEngagementMm,
                     lipToothHeightMm = state.snapLipToothHeightMm,
+                    lipWallMm = state.snapLipWallMm,
+                    lipRecessExtraMm = state.snapLipDepthMm,
                 )
                 _uiState.update {
                     it.copy(
@@ -2306,6 +2313,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             style = SnapJointStyle.WALL_LIP,
             lipEngagementMm = state.snapLipEngagementMm,
             lipToothHeightMm = state.snapLipToothHeightMm,
+            lipWallMm = state.snapLipWallMm,
+            lipRecessExtraMm = state.snapLipDepthMm,
         )
     }
 
@@ -2339,6 +2348,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             state.snapJoints
         }
         _uiState.update { it.copy(snapJoints = joints, snapLipToothHeightMm = millimetres, snapFailure = null) }
+    }
+
+    /**
+     * The wall the lip's ring leaves where the part is solid, in millimetres;
+     * null hands it back to the scale. A thinner wall bends more easily and
+     * closes with less effort, a thicker one is stiffer, and the strain readout
+     * is computed over whatever this ends up being.
+     */
+    fun setSnapLipWall(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipWallMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipWallMm = millimetres, snapFailure = null) }
+    }
+
+    /**
+     * How far the lip's recess floor is cut past the step the tooth and its ramp
+     * need, in millimetres; null hands it back to the scale. The free length is
+     * measured from that floor, so the strain falls as this grows.
+     */
+    fun setSnapLipDepth(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipRecessExtraMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipDepthMm = millimetres, snapFailure = null) }
     }
 
     /**
@@ -2431,6 +2477,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             style = state.snapStyle,
             lipEngagementMm = state.snapLipEngagementMm,
             lipToothHeightMm = state.snapLipToothHeightMm,
+            lipWallMm = state.snapLipWallMm,
+            lipRecessExtraMm = state.snapLipDepthMm,
         )
         val parameters = state.snapParametersFor(probeSpec)
         // A probe joint, built at the rim's own reference point, is what the
@@ -2496,6 +2544,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         style = state.snapStyle,
                         lipEngagementMm = state.snapLipEngagementMm,
                         lipToothHeightMm = state.snapLipToothHeightMm,
+                        lipWallMm = state.snapLipWallMm,
+                        lipRecessExtraMm = state.snapLipDepthMm,
                     )
                 }
             }

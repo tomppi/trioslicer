@@ -1929,6 +1929,8 @@ fun EnderSlicerApp(
                                 onStyle = viewModel::setSnapStyle,
                                 onLipEngagement = viewModel::setSnapLipEngagement,
                                 onLipToothHeight = viewModel::setSnapLipToothHeight,
+                                onLipWall = viewModel::setSnapLipWall,
+                                onLipDepth = viewModel::setSnapLipDepth,
                                 onTightness = viewModel::setSnapJointTightness,
                                 onFlipAll = viewModel::flipSnapFacing,
                                 onMixedFacing = viewModel::setSnapMixedFacing,
@@ -4200,6 +4202,12 @@ private val HOOK_LIP_RANGE = 0.2f..4f
 private val LIP_ENGAGEMENT_RANGE = 0.2f..3f
 private val LIP_TOOTH_RANGE = 0.6f..6f
 
+/** The wall the ring leaves: under a millimetre it will not bend, over three is a block. */
+private val LIP_WALL_RANGE = 1f..3f
+
+/** How far the recess floor may go past the step: deeper is a longer, softer spring. */
+private val LIP_DEPTH_RANGE = 0f..8f
+
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f
 
@@ -4219,6 +4227,8 @@ private class SnapActions(
     /** The wall lip's engagement and tooth height, in millimetres, or null for the scale's own. */
     val onLipEngagement: (Float?) -> Unit,
     val onLipToothHeight: (Float?) -> Unit,
+    val onLipWall: (Float?) -> Unit,
+    val onLipDepth: (Float?) -> Unit,
     /** Loose or tight for one joint: clearance, and nothing else. */
     val onTightness: (Int, SnapTightness) -> Unit,
     /** The pair-level flip: every joint on the seam turns together. */
@@ -4316,6 +4326,12 @@ private fun SnapToolbar(
     val lipToothHeight = state.snapSelectedSpec?.lipToothHeightMm
         ?: state.snapLipToothHeightMm
         ?: (defaults.lipToothHeightMm * state.snapScale)
+    val lipWall = state.snapSelectedSpec?.lipWallMm
+        ?: state.snapLipWallMm
+        ?: (defaults.lipWallMm * state.snapScale)
+    val lipDepth = state.snapSelectedSpec?.lipRecessExtraMm
+        ?: state.snapLipDepthMm
+        ?: (defaults.lipRecessExtraMm * state.snapScale)
     // One call per group, so the three-column panel and the single-column one
     // cannot drift apart: both are these three, in this order.
     val setup: @Composable () -> Unit = {
@@ -4339,6 +4355,8 @@ private fun SnapToolbar(
             hookLip = hookLip,
             lipEngagement = lipEngagement,
             lipToothHeight = lipToothHeight,
+            lipWall = lipWall,
+            lipDepth = lipDepth,
         )
     }
     val fits: @Composable () -> Unit = {
@@ -4877,6 +4895,8 @@ private fun SnapHookGroup(
     hookLip: Float,
     lipEngagement: Float,
     lipToothHeight: Float,
+    lipWall: Float,
+    lipDepth: Float,
 ) {
     if (style == SnapJointStyle.WALL_LIP) {
         // The engagement is the hold: how far the tooth and the ledge overlap.
@@ -4898,6 +4918,28 @@ private fun SnapHookGroup(
             valueText = "%.2f mm".format(lipToothHeight),
             onValueChangeFinished = actions.onCommit,
         )
+        // The wall the ring leaves where the part is solid: the spring itself, so
+        // thinner bends more easily and closes with less effort, and the strain
+        // readout is computed over whatever this is.
+        CompactSliderRow(
+            label = "Wall",
+            value = lipWall,
+            range = LIP_WALL_RANGE,
+            onValueChange = { actions.onLipWall(it) },
+            valueText = "%.2f mm".format(lipWall),
+            onValueChangeFinished = actions.onCommit,
+        )
+        // How far the recess floor goes past what the tooth and its ramp need:
+        // the free length is measured from that floor, so a deeper band is a
+        // longer, softer spring and the strain falls with it.
+        CompactSliderRow(
+            label = "Depth",
+            value = lipDepth,
+            range = LIP_DEPTH_RANGE,
+            onValueChange = { actions.onLipDepth(it) },
+            valueText = "%.2f mm".format(lipDepth),
+            onValueChangeFinished = actions.onCommit,
+        )
         shown?.takeIf { it.joint.style == SnapJointStyle.WALL_LIP }?.let { preview ->
             val lip = preview.joint.dimensions
             Text(
@@ -4915,10 +4957,16 @@ private fun SnapHookGroup(
                 },
             )
             Text(
-                "The wall is the spring: %.1f mm thick, %.1f mm free behind the seam".format(
-                    lip.wallThicknessMm,
-                    lip.wallFreeLengthMm,
-                ) + "; it bends outward as the ledge rides past and springs back behind it",
+                (
+                    "The wall is the spring: %.2f mm thick (asked %.2f, and the part decides " +
+                        "where it is thinner), %.1f mm free behind the seam, with the recess floor " +
+                        "%.2f mm behind it"
+                    ).format(
+                        lip.wallThicknessMm,
+                        lip.lipWallAskedMm,
+                        lip.wallFreeLengthMm,
+                        lip.lipRecessMm,
+                    ) + "; it bends outward as the ledge rides past and springs back behind it",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

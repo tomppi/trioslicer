@@ -17,6 +17,7 @@ import org.junit.Test
  */
 class SnapLipWiringContractTest {
     private val app = source("ui/EnderSlicerApp.kt")
+    private val state = source("ui/MainUiState.kt")
     private val viewModel = source("ui/MainViewModel.kt")
     private val store = source("data/WorkspaceStateStore.kt")
 
@@ -36,6 +37,61 @@ class SnapLipWiringContractTest {
             viewModel.contains("fun setSnapStyle(style: SnapJointStyle)") &&
                 viewModel.contains("listOf(ringJointSpec(state))") &&
                 viewModel.contains("snapStyle = style"),
+        )
+    }
+
+    /**
+     * The two controls the ring is sized by: the wall it leaves where the part is
+     * solid, and how far its recess floor goes past the step. Both are the lip's
+     * own, both reach the build, and both come back with the record.
+     */
+    @Test
+    fun theWallAndDepthControlsBelongToTheLipAndReachTheBuild() {
+        val hook = body(app, "private fun SnapHookGroup(", "private fun SnapFitsGroup(")
+        assertTrue("the wall's own row", hook.contains("label = \"Wall\""))
+        assertTrue("and the depth's", hook.contains("label = \"Depth\""))
+        assertTrue(
+            "each with its own range",
+            hook.contains("LIP_WALL_RANGE") && hook.contains("LIP_DEPTH_RANGE"),
+        )
+        assertTrue(
+            "shown for a wall lip only, beside Engage and Tooth",
+            hook.contains("if (style == SnapJointStyle.WALL_LIP) {") && hook.contains("label = \"Engage\""),
+        )
+        assertTrue(
+            "they reach the view model",
+            app.contains("onLipWall = viewModel::setSnapLipWall") &&
+                app.contains("onLipDepth = viewModel::setSnapLipDepth"),
+        )
+        assertTrue(
+            "which write the selected joint and the next one's default",
+            viewModel.contains("lipWallMm = millimetres") &&
+                viewModel.contains("snapLipWallMm = millimetres") &&
+                viewModel.contains("lipRecessExtraMm = millimetres") &&
+                viewModel.contains("snapLipDepthMm = millimetres"),
+        )
+        assertTrue(
+            "the build is told both",
+            state.contains("lipWallOverrideMm = spec.lipWallMm") &&
+                state.contains("lipRecessExtraOverrideMm = spec.lipRecessExtraMm"),
+        )
+        assertTrue(
+            "the record keeps both, and a cantilever writes neither",
+            viewModel.contains("lipWallMm = spec.lipWallMm") &&
+                store.contains("put(\"lipWallMm\"") &&
+                store.contains("put(\"lipRecessExtraMm\"") &&
+                store.contains("put(\"style\", joint.style.name)"),
+        )
+        assertTrue(
+            "the wall the readout names is the one the closed form used",
+            hook.contains("lip.wallThicknessMm") && hook.contains("lip.lipWallAskedMm") &&
+                hook.contains("lip.lipRecessMm"),
+        )
+        val lip = source("viewer/SnapLip.kt")
+        assertTrue(
+            "and the build sizes the wall and the floor from them",
+            lip.contains("val wallAsked = parameters.lipWallOverrideMm ?: parameters.lipWallMm * scale") &&
+                lip.contains("val recessDepth = stepAndClearance + extra"),
         )
     }
 
@@ -99,7 +155,12 @@ class SnapLipWiringContractTest {
         assertTrue(
             "the step is sized from the ring: the tooth, its ramp and the clearances",
             lip.contains("val stepDepth = toothHeight + run + 2f * clearance") &&
-                lip.contains("val recessDepth = stepDepth + clearance"),
+                lip.contains("val stepAndClearance = stepDepth + clearance"),
+        )
+        assertTrue(
+            "and the depth control is the extra cut past that step",
+            lip.contains("val recessDepth = stepAndClearance + extra") &&
+                lip.contains("val extraAsked = parameters.lipRecessExtraOverrideMm"),
         )
         assertTrue(
             "the ring is read round the whole seam, not at one sample",

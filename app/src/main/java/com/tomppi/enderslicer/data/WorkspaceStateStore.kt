@@ -95,6 +95,8 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
             val lipEngagementMm: Float? = null,
             val lipToothHeightMm: Float? = null,
+            val lipWallMm: Float? = null,
+            val lipRecessExtraMm: Float? = null,
         )
     }
 
@@ -293,6 +295,8 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                                 put("style", joint.style.name)
                                                 joint.lipEngagementMm?.let { put("lipEngagementMm", it.toDouble()) }
                                                 joint.lipToothHeightMm?.let { put("lipToothHeightMm", it.toDouble()) }
+                                                joint.lipWallMm?.let { put("lipWallMm", it.toDouble()) }
+                                                joint.lipRecessExtraMm?.let { put("lipRecessExtraMm", it.toDouble()) }
                                             },
                                     )
                                 }
@@ -434,6 +438,11 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             .getOrDefault(SnapJointStyle.CANTILEVER),
         lipEngagementMm = json.optDouble("lipEngagementMm").takeIf { it.isFinite() }?.toFloat(),
         lipToothHeightMm = json.optDouble("lipToothHeightMm").takeIf { it.isFinite() }?.toFloat(),
+        // The two the ring is sized by: absent in a record written before they
+        // existed, which is the 2.00 mm wall and no extra depth - the joint as it
+        // was.
+        lipWallMm = json.optDouble("lipWallMm").takeIf { it.isFinite() }?.toFloat(),
+        lipRecessExtraMm = json.optDouble("lipRecessExtraMm").takeIf { it.isFinite() }?.toFloat(),
     )
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()

@@ -40,6 +40,10 @@ data class SnapJointSpec(
     val lipEngagementMm: Float? = null,
     /** The lip's tooth height in millimetres, or null for the scale's own. */
     val lipToothHeightMm: Float? = null,
+    /** The wall the lip's ring leaves where the part is solid, or null for the scale's own. */
+    val lipWallMm: Float? = null,
+    /** How far the lip's recess floor goes past the step, or null for the scale's own. */
+    val lipRecessExtraMm: Float? = null,
 )
 
 /**
@@ -69,6 +73,8 @@ data class SnapJointRecord(
     val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
     val lipEngagementMm: Float? = null,
     val lipToothHeightMm: Float? = null,
+    val lipWallMm: Float? = null,
+    val lipRecessExtraMm: Float? = null,
 )
 
 /**
