@@ -658,10 +658,16 @@ data class MainUiState(
         barbCount = spec.barbs,
         facing = spec.facing,
         socketRamp = snapSocketRamp,
-        lipEngagementOverrideMm = spec.lipEngagementMm,
-        lipToothHeightOverrideMm = spec.lipToothHeightMm,
-        lipWallOverrideMm = spec.lipWallMm,
-        lipRecessExtraOverrideMm = spec.lipRecessExtraMm,
+        // The lip's four sizes fall back to the panel's own values. A joint that
+        // carries its own keeps it, but a joint saved before a size existed - or
+        // one restored from a record written without them - has none, and then the
+        // slider the user is holding is the number the build must use. Without
+        // this the sliders moved, the panel read the old wall, and Apply staged
+        // geometry nobody asked for.
+        lipEngagementOverrideMm = spec.lipEngagementMm ?: snapLipEngagementMm,
+        lipToothHeightOverrideMm = spec.lipToothHeightMm ?: snapLipToothHeightMm,
+        lipWallOverrideMm = spec.lipWallMm ?: snapLipWallMm,
+        lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: snapLipDepthMm,
     ).tightenedBy(spec.tightness.stepMm)
 
     /**

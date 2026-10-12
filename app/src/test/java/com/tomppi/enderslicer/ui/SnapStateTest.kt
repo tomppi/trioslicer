@@ -448,6 +448,43 @@ class SnapStateTest {
     }
 
     @Test
+    fun aJointWithNoSizesOfItsOwnTakesThePanelsOwn() {
+        // A lip joint saved before the wall and depth controls existed carries
+        // none of the four sizes, and a record is read back leniently, so it comes
+        // back with all four null. The panel's own values are what the build must
+        // use: without that the sliders moved, the readout kept the old wall, and
+        // Apply staged geometry nobody asked for.
+        val state = splitState().copy(
+            snapActive = true,
+            snapLipEngagementMm = 1.1f,
+            snapLipToothHeightMm = 1.4f,
+            snapLipWallMm = 3f,
+            snapLipDepthMm = 2f,
+        ).withJoint(Vec3(20f, 20f, 31f))
+        val bare = state.snapJoints.first().copy(
+            lipEngagementMm = null,
+            lipToothHeightMm = null,
+            lipWallMm = null,
+            lipRecessExtraMm = null,
+        )
+
+        val built = state.snapParametersFor(bare)
+        assertEquals("the wall the panel shows is the wall the build gets", 3f, built.lipWallOverrideMm ?: 0f, 1e-4f)
+        assertEquals("and its depth", 2f, built.lipRecessExtraOverrideMm ?: 0f, 1e-4f)
+        assertEquals("and the engagement", 1.1f, built.lipEngagementOverrideMm ?: 0f, 1e-4f)
+        assertEquals("and the tooth", 1.4f, built.lipToothHeightOverrideMm ?: 0f, 1e-4f)
+
+        // A joint that carries its own keeps it: the panel's value is a fallback, not a rule.
+        val own = bare.copy(lipWallMm = 1.5f)
+        assertEquals(
+            "a joint's own wall still wins",
+            1.5f,
+            state.snapParametersFor(own).lipWallOverrideMm ?: 0f,
+            1e-4f,
+        )
+    }
+
+    @Test
     fun theTwoStepsAreTheSameJointWithLessClearance() {
         // The stepping is clearance and nothing else: a tight joint has the same
         // beam at the same place, with 0.06 mm less room in its sockets.

@@ -71,9 +71,20 @@ class SnapLipWiringContractTest {
                 viewModel.contains("snapLipDepthMm = millimetres"),
         )
         assertTrue(
-            "the build is told both",
-            state.contains("lipWallOverrideMm = spec.lipWallMm") &&
-                state.contains("lipRecessExtraOverrideMm = spec.lipRecessExtraMm"),
+            "the build is told both, and takes the panel's own when a joint carries none",
+            state.contains("lipWallOverrideMm = spec.lipWallMm ?: snapLipWallMm") &&
+                state.contains("lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: snapLipDepthMm"),
+        )
+        assertTrue(
+            "a size that moved is built again, so the readout is the joint and not the one before it",
+            viewModel.contains("private fun snapSizeTargetIndex") &&
+                viewModel.contains("previewSnapJoint()\n    }"),
+        )
+        assertTrue(
+            "and the placement's own parameters carry all four, or the sliders are decoration",
+            viewModel.contains("lipWallOverrideMm = spec.lipWallMm ?: state.snapLipWallMm") &&
+                viewModel.contains("lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: state.snapLipDepthMm") &&
+                viewModel.contains("lipEngagementOverrideMm = spec.lipEngagementMm ?: state.snapLipEngagementMm"),
         )
         assertTrue(
             "the record keeps both, and a cantilever writes neither",

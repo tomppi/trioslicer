@@ -2326,28 +2326,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSnapLipEngagement(millimetres: Float?) {
         if (millimetres != null && !millimetres.isFinite()) return
         val state = _uiState.value
-        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
             state.snapJoints.toMutableList().also {
-                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipEngagementMm = millimetres)
+                it[target] = it[target].copy(lipEngagementMm = millimetres)
             }
         } else {
             state.snapJoints
         }
         _uiState.update { it.copy(snapJoints = joints, snapLipEngagementMm = millimetres, snapFailure = null) }
+        // The readout is the built joint, and the strain line is what the user
+        // judges the setting by, so a size that moved has to be built again - the
+        // debounce in previewSnapJoint is what keeps a drag from stuttering.
+        previewSnapJoint()
     }
+
+    /**
+     * The joint a style-level size belongs to: the selected one, or - the lip has
+     * exactly one joint on the list and no tap places it - that ring. A panel whose
+     * selection has gone to -1 still has to edit the joint it is showing, or the
+     * sizes it writes are ones the build never reads.
+     */
+    private fun snapSizeTargetIndex(state: MainUiState): Int =
+        state.snapSelectedJoint.takeIf { it in state.snapJoints.indices }
+            ?: state.snapJoints.indexOfFirst { it.style == SnapJointStyle.WALL_LIP }
 
     /** The wall lip's tooth height in millimetres; null hands it back to the scale. */
     fun setSnapLipToothHeight(millimetres: Float?) {
         if (millimetres != null && !millimetres.isFinite()) return
         val state = _uiState.value
-        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
             state.snapJoints.toMutableList().also {
-                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipToothHeightMm = millimetres)
+                it[target] = it[target].copy(lipToothHeightMm = millimetres)
             }
         } else {
             state.snapJoints
         }
         _uiState.update { it.copy(snapJoints = joints, snapLipToothHeightMm = millimetres, snapFailure = null) }
+        // The readout is the built joint, and the strain line is what the user
+        // judges the setting by, so a size that moved has to be built again - the
+        // debounce in previewSnapJoint is what keeps a drag from stuttering.
+        previewSnapJoint()
     }
 
     /**
@@ -2359,14 +2379,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSnapLipWall(millimetres: Float?) {
         if (millimetres != null && !millimetres.isFinite()) return
         val state = _uiState.value
-        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
             state.snapJoints.toMutableList().also {
-                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipWallMm = millimetres)
+                it[target] = it[target].copy(lipWallMm = millimetres)
             }
         } else {
             state.snapJoints
         }
         _uiState.update { it.copy(snapJoints = joints, snapLipWallMm = millimetres, snapFailure = null) }
+        // The readout is the built joint, and the strain line is what the user
+        // judges the setting by, so a size that moved has to be built again - the
+        // debounce in previewSnapJoint is what keeps a drag from stuttering.
+        previewSnapJoint()
     }
 
     /**
@@ -2377,14 +2402,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSnapLipDepth(millimetres: Float?) {
         if (millimetres != null && !millimetres.isFinite()) return
         val state = _uiState.value
-        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
             state.snapJoints.toMutableList().also {
-                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipRecessExtraMm = millimetres)
+                it[target] = it[target].copy(lipRecessExtraMm = millimetres)
             }
         } else {
             state.snapJoints
         }
         _uiState.update { it.copy(snapJoints = joints, snapLipDepthMm = millimetres, snapFailure = null) }
+        // The readout is the built joint, and the strain line is what the user
+        // judges the setting by, so a size that moved has to be built again - the
+        // debounce in previewSnapJoint is what keeps a drag from stuttering.
+        previewSnapJoint()
     }
 
     /**
@@ -2860,8 +2890,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             barbCount = spec.barbs,
             facing = spec.facing,
             socketRamp = state.snapSocketRamp,
-            lipEngagementOverrideMm = spec.lipEngagementMm,
-            lipToothHeightOverrideMm = spec.lipToothHeightMm,
+            // The lip's four sizes, each falling back to the panel's own when the
+            // joint carries none - which is what a joint restored from a record
+            // written before that size existed does. Wall and depth were missing
+            // from this list when they shipped, so their sliders moved, the panel's
+            // readout kept the old joint, and Apply staged the old geometry.
+            lipEngagementOverrideMm = spec.lipEngagementMm ?: state.snapLipEngagementMm,
+            lipToothHeightOverrideMm = spec.lipToothHeightMm ?: state.snapLipToothHeightMm,
+            lipWallOverrideMm = spec.lipWallMm ?: state.snapLipWallMm,
+            lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: state.snapLipDepthMm,
         ).tightenedBy(spec.tightness.stepMm)
 
         // The joint's own place in the list travels with it: a joint that failed is named by
