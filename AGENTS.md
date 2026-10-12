@@ -22,7 +22,8 @@ a sentence nothing on that path could ever change, because the tree it named was
 
 `GcodeNozzlePathParser` (and `PrusaNozzlePathParser`) feed the start-to-finish path view. Their
 move budget exists only to bound memory - the ribbons cost roughly 800 bytes per move - and when it
-bites, a move is **merged into the next kept move**, never dropped.
+bites, a move is **folded into the run it continues**, never dropped: consecutive moves that
+genuinely continue each other are drawn as one straight move.
 
 - Do **not** convert these parsers to a streaming reader that draws what it holds and discards the
   rest.
@@ -31,6 +32,11 @@ bites, a move is **merged into the next kept move**, never dropped.
 - A move may only be folded into a run that genuinely continues it - the same kind of move, in
   the same direction. Folding across a corner cuts the corner, and folding a travel into an
   extrusion draws a straight line across the part that the printer never made.
+- That holds for the move a run **closes** at, not only for the moves folded inside it. A run
+  closed at a move that turns, or that extrudes after a travel, draws a chord across the part:
+  one reported Ghost Dog slice had 513 drawn beads over more than 5 mm of travel each, the
+  longest 97 mm, which is what the slivers across it were. `NozzlePathFoldInvariantTest` fails
+  when a drawn move stands for source moves off its own line.
 - A skipped move is a hole in the middle of a wall. With a third of the moves missing, the preview
   rendered as beads with gaps between them, and as short plates with air where the plastic should
   be when viewed up close. It took four wrong fixes to find, because the geometry that survived was

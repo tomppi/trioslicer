@@ -18,8 +18,16 @@ import kotlin.math.sqrt
  *
  * The budget itself may stay - the ribbons cost roughly 800 bytes a move, and that is a real
  * limit on a phone. What it buys is fewer, longer moves: when it bites, a move is folded into
- * the next one that is kept, so the drawn path still covers exactly the distance the file
- * describes. [NozzlePathDecimationTest] fails if that stops being true.
+ * the run it continues, and that run is drawn as one straight move, so the drawn path still
+ * covers exactly the distance the file describes. [NozzlePathDecimationTest] fails if that
+ * stops being true.
+ *
+ * **A run closes only at a move that continues it.** Folding a move that turned, or that
+ * travelled after extruding, into the straight line drawn for its neighbours puts a chord
+ * across the corner: on a real Ghost Dog slice 513 drawn beads each covered more than 5 mm of
+ * travel, the longest 97 mm, which is what the slivers across the part were. The direction and
+ * kind of the closing move are checked here, together with the drift cap in the parser:
+ * [NozzlePathFoldInvariantTest] fails if a drawn move stands for source moves off its line.
  *
  * Cura's layer view is the reference for this screen, and it draws every line it reads
  * (github.com/Ultimaker/Cura: plugins/GCodeReader, plugins/SimulationView).
@@ -77,6 +85,16 @@ object GcodeNozzlePathParser {
 
     /** How straight a run has to be before a move may be folded into it, as a dot product. */
     private const val FOLD_COLLINEAR_DOT = 0.995
+
+    /**
+     * How far a folded move may sit sideways of the straight line drawn for its run.
+     *
+     * The direction test alone lets a long gentle curve fold into one chord: every move stays
+     * within [FOLD_COLLINEAR_DOT] of the first, and the chord bows away from the path they
+     * describe. A tenth of a millimetre is a tenth of a bead width - invisible - and it is
+     * where a run that is bending instead of continuing is split.
+     */
+    private const val FOLD_DRIFT_MM = 0.10
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
     private const val LAYER_HEIGHT_MAX_MM = 0.500
@@ -123,7 +141,7 @@ object GcodeNozzlePathParser {
         val accumulator = FloatAccumulator(GcodeNozzlePath.VALUES_PER_MOVE * retainedCount)
         val sourceIndices = IntAccumulator(retainedCount)
         val modalState = GcodeModalState()
-        // A move the budget cannot keep is folded into the next one it can, rather than
+        // A move the budget cannot keep is folded into the run it continues, rather than
         // discarded. The budget exists because the ribbons cost roughly 800 bytes a move, but
         // skipping moves to meet it cuts a gap into every wall and curve it decimates - which is
         // what the preview looked like: beads with holes between them, and plates up close.
@@ -135,10 +153,28 @@ object GcodeNozzlePathParser {
         var mergingStartY = 0.0
         var mergingStartZ = 0.0
         var mergingDeltaE = 0.0
+        var mergingSpeed = 0f
+        var mergingLayerHeight = 0f
+        var mergingMoves = 0
+        var mergingSourceIndex = 0
 
-        /** Whether this move continues the run being folded, so it may be folded in too. */
-        fun folds(sx: Double, sy: Double, ex: Double, ey: Double, deltaE: Double): Boolean {
-            if (!merging) return true
+        // The sample spreads the budget over the print: a run may close at a sampled move once
+        // it has stood for its share of the moves, so a capped preview is still drawn all the
+        // way to the end instead of folding the whole file into a handful of long lines.
+        val overBudget = sourceMoveCount > maxMoves
+        val spanTarget = if (overBudget) kotlin.math.max(1.0, sourceMoveCount.toDouble() / maxMoves) else 0.0
+
+        /**
+         * Whether this move genuinely continues the run being folded, so the one straight move
+         * drawn for the run still covers it: the same kind of move, in the same direction, and
+         * no further off the run's line than [FOLD_DRIFT_MM].
+         *
+         * A move that answers false may not be folded in, whatever the budget says. Folding
+         * across a corner cuts the corner, and folding a travel into an extrusion draws a
+         * straight line across the part that the printer never made.
+         */
+        fun continuesSpan(sx: Double, sy: Double, ex: Double, ey: Double, deltaE: Double): Boolean {
+            if (!merging) return false
             val kind = if (deltaE > EXTRUSION_EPSILON) {
                 GcodeNozzlePath.Kind.EXTRUSION.code
             } else {
@@ -148,9 +184,13 @@ object GcodeNozzlePathParser {
             val dx = ex - sx
             val dy = ey - sy
             val length = sqrt(dx * dx + dy * dy)
-            if (length <= 0.0) return true
-            return (dx / length) * mergingDirX + (dy / length) * mergingDirY >= FOLD_COLLINEAR_DOT
+            if (length > 0.0 && (dx / length) * mergingDirX + (dy / length) * mergingDirY < FOLD_COLLINEAR_DOT) {
+                return false
+            }
+            val drift = kotlin.math.abs((ex - mergingStartX) * -mergingDirY + (ey - mergingStartY) * mergingDirX)
+            return drift <= FOLD_DRIFT_MM
         }
+
         var x = 0.0
         var y = 0.0
         var z = 0.0
@@ -172,6 +212,32 @@ object GcodeNozzlePathParser {
         var maxY = Float.NEGATIVE_INFINITY
         var maxZ = Float.NEGATIVE_INFINITY
         var linesRead = 0
+
+        /** Hands one drawn straight move to the preview, and says what kind it was. */
+        fun emitSpan(
+            fromX: Double, fromY: Double, fromZ: Double,
+            toX: Double, toY: Double, toZ: Double,
+            spanKind: Float,
+            spanDeltaE: Double,
+            spanSpeed: Float,
+            spanLayerHeight: Float,
+            spanSourceIndex: Int,
+        ) {
+            accumulator.add(
+                fromX.toFloat(), fromY.toFloat(), fromZ.toFloat(),
+                toX.toFloat(), toY.toFloat(), toZ.toFloat(),
+                spanSpeed,
+                spanKind,
+                spanDeltaE.toFloat(),
+                spanLayerHeight,
+            )
+            sourceIndices.add(spanSourceIndex)
+            if (spanKind == GcodeNozzlePath.Kind.EXTRUSION.code) {
+                extrusionMoves++
+            } else {
+                travelMoves++
+            }
+        }
 
         progressReader(file) { bytes ->
             progress((0.5 + bytes.toDouble() / totalBytes * 0.5).toFloat().coerceIn(0f, 1f))
@@ -230,14 +296,7 @@ object GcodeNozzlePathParser {
                         e = nextE
 
                         if (!isSpatialMove(startX, startY, startZ, nextX, nextY, nextZ)) return@forEach
-                        val retainedSourceIndex = sourceIndex
-                        val requested = shouldRetain(retainedSourceIndex, sourceMoveCount, maxMoves)
-                        // The budget is a memory guard, not a sampling policy: a move is folded
-                        // into the previous one only when it genuinely continues it - the same kind
-                        // of move, in the same direction. Folding across a corner cuts the corner,
-                        // and folding a travel into an extrusion draws a straight line across the
-                        // part that the printer never made. Anything else is kept, budget or not.
-                        val keep = requested || !folds(startX, startY, nextX, nextY, deltaE)
+                        val sourceIndexOfMove = sourceIndex
                         sourceIndex++
                         val sx = startX.toFloat()
                         val sy = startY.toFloat()
@@ -251,35 +310,10 @@ object GcodeNozzlePathParser {
                         maxX = maxOf(maxX, sx, ex)
                         maxY = maxOf(maxY, sy, ey)
                         maxZ = maxOf(maxZ, sz, ez)
-                        if (!keep) {
-                            if (!merging) {
-                                merging = true
-                                mergingKind = if (deltaE > EXTRUSION_EPSILON) {
-                                    GcodeNozzlePath.Kind.EXTRUSION.code
-                                } else {
-                                    GcodeNozzlePath.Kind.TRAVEL.code
-                                }
-                                val foldX = nextX - startX
-                                val foldY = nextY - startY
-                                val foldLength = sqrt(foldX * foldX + foldY * foldY)
-                                if (foldLength > 0.0) {
-                                    mergingDirX = foldX / foldLength
-                                    mergingDirY = foldY / foldLength
-                                }
-                                mergingStartX = startX
-                                mergingStartY = startY
-                                mergingStartZ = startZ
-                                mergingDeltaE = 0.0
-                            }
-                            mergingDeltaE += deltaE
-                            return@forEach
-                        }
 
                         val kind = if (deltaE > EXTRUSION_EPSILON) {
-                            extrusionMoves++
                             GcodeNozzlePath.Kind.EXTRUSION
                         } else {
-                            travelMoves++
                             GcodeNozzlePath.Kind.TRAVEL
                         }
                         // Layer height for this move: the z rise of the current
@@ -315,27 +349,89 @@ object GcodeNozzlePathParser {
                             }
                             else -> currentLayerHeight.coerceAtLeast(LAYER_HEIGHT_MIN_MM)
                         }
+                        val moveSpeed = (feedRateMmPerMinute / 60.0 * speedFactor).coerceAtLeast(0.0).toFloat()
                         retainedPreviousZ = nextZ
                         hasRetainedZ = true
                         if (kind == GcodeNozzlePath.Kind.EXTRUSION) {
                             retainedPreviousExtrusionZ = nextZ
                         }
-                        // The merged move runs from where the last kept move ended - the start of
-                        // the first dropped one - to where this one ends.
-                        val emitStartX = if (merging) mergingStartX else startX
-                        val emitStartY = if (merging) mergingStartY else startY
-                        val emitStartZ = if (merging) mergingStartZ else startZ
-                        val emitDeltaE = deltaE + mergingDeltaE
-                        merging = false
-                        mergingDeltaE = 0.0
-                        accumulator.add(
-                            emitStartX.toFloat(), emitStartY.toFloat(), emitStartZ.toFloat(), ex, ey, ez,
-                            (feedRateMmPerMinute / 60.0 * speedFactor).coerceAtLeast(0.0).toFloat(),
-                            (if (emitDeltaE > EXTRUSION_EPSILON) GcodeNozzlePath.Kind.EXTRUSION else kind).code,
-                            emitDeltaE.toFloat(),
-                            moveLayerHeight.toFloat(),
-                        )
-                        sourceIndices.add(retainedSourceIndex)
+
+                        val requested = shouldRetain(sourceIndexOfMove, sourceMoveCount, maxMoves)
+                        val continues = continuesSpan(startX, startY, nextX, nextY, deltaE)
+                        // The budget is a memory guard, not a sampling policy: one straight move
+                        // may only stand for moves its own line covers. A span closes where the
+                        // path genuinely continues it - at a sampled move once the span has spent
+                        // its share of the budget, and at the first and last move - and never
+                        // across a corner or a kind change.
+                        val closeHere = !overBudget ||
+                            sourceIndexOfMove == 0 ||
+                            sourceIndexOfMove == sourceMoveCount - 1 ||
+                            (requested && mergingMoves + 1 >= spanTarget)
+
+                        if (continues && !closeHere) {
+                            // Fold this move into the span: it continues the run, so the one
+                            // straight line drawn for the span still covers it.
+                            mergingDeltaE += deltaE
+                            mergingMoves++
+                            mergingSourceIndex = sourceIndexOfMove
+                            mergingSpeed = moveSpeed
+                            mergingLayerHeight = moveLayerHeight.toFloat()
+                            return@forEach
+                        }
+                        if (merging && !continues) {
+                            // This move does not continue the run, so the span may not include
+                            // it: the span ends at the move before it, and the printer's own
+                            // turn is drawn, not a chord across it. The move then starts the
+                            // next span, or is drawn on its own when its own span closes here.
+                            emitSpan(
+                                mergingStartX, mergingStartY, mergingStartZ,
+                                startX, startY, startZ,
+                                mergingKind, mergingDeltaE,
+                                mergingSpeed, mergingLayerHeight, mergingSourceIndex,
+                            )
+                            merging = false
+                            mergingDeltaE = 0.0
+                        }
+                        if (closeHere) {
+                            val spanDeltaE = deltaE + mergingDeltaE
+                            emitSpan(
+                                if (merging) mergingStartX else startX,
+                                if (merging) mergingStartY else startY,
+                                if (merging) mergingStartZ else startZ,
+                                nextX, nextY, nextZ,
+                                if (spanDeltaE > EXTRUSION_EPSILON) {
+                                    GcodeNozzlePath.Kind.EXTRUSION.code
+                                } else {
+                                    GcodeNozzlePath.Kind.TRAVEL.code
+                                },
+                                spanDeltaE,
+                                moveSpeed, moveLayerHeight.toFloat(), sourceIndexOfMove,
+                            )
+                            merging = false
+                            mergingDeltaE = 0.0
+                        } else {
+                            // This move starts the next span.
+                            merging = true
+                            mergingKind = kind.code
+                            val foldX = nextX - startX
+                            val foldY = nextY - startY
+                            val foldLength = sqrt(foldX * foldX + foldY * foldY)
+                            if (foldLength > 0.0) {
+                                mergingDirX = foldX / foldLength
+                                mergingDirY = foldY / foldLength
+                            } else {
+                                mergingDirX = 0.0
+                                mergingDirY = 0.0
+                            }
+                            mergingStartX = startX
+                            mergingStartY = startY
+                            mergingStartZ = startZ
+                            mergingDeltaE = deltaE
+                            mergingSpeed = moveSpeed
+                            mergingLayerHeight = moveLayerHeight.toFloat()
+                            mergingMoves = 1
+                            mergingSourceIndex = sourceIndexOfMove
+                        }
                     }
                 }
             }
