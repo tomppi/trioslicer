@@ -13,6 +13,97 @@ internal interface FloatSink {
 }
 
 /**
+ * Which slice of the path the vertex buffers hold at once.
+ *
+ * A whole print does not fit a phone's GPU memory: the reported 0.08 mm PrusaSlicer print is
+ * 2,398,458 source moves, and once every one of them is drawn honestly (folded into 1,647,389
+ * spans) the ribbon needs 1,617,938 windows, 792 bytes each - 1.2 GB of buffers. The preview
+ * therefore keeps a band of the path around where the nozzle currently is and rebuilds it as
+ * the scrub moves, the way a layer view shows the layers around the one being looked at. Every
+ * move inside the band is drawn; nothing is sampled or skipped to make the band fit.
+ */
+internal object RibbonBand {
+    /**
+     * Windows a band may hold. 200,000 windows are 158 MB of ribbon buffers - big enough for
+     * ~180 layers of the reported print and small enough to sit beside the model viewer.
+     */
+    const val MAX_WINDOWS = 200_000
+
+    /** Travel lines a band may hold: they are 56 bytes each, so this is 11 MB. */
+    const val MAX_TRAVELS = 200_000
+
+    /**
+     * The smallest band worth drawing when a driver refuses larger buffers: 20,000 windows are
+     * 16 MB, small enough for any device that can run the preview at all.
+     */
+    const val MINIMUM_WINDOWS = 20_000
+
+    /**
+     * The move range [first, last) around [anchor] whose windows and travels fit the two
+     * budgets. It expands alternately outwards so the anchor stays in the middle, and always
+     * includes the anchor's own move: a band can only fail to hold a move when one move's
+     * window does not fit the buffer, which cannot happen - one window is one move.
+     */
+    fun plan(moves: FloatArray, moveCount: Int, anchor: Int, capacityWindows: Int, capacityTravels: Int): IntRange {
+        if (moveCount <= 0) return IntRange.EMPTY
+        val safe = anchor.coerceIn(0, moveCount - 1)
+        var first = safe
+        var last = safe + 1
+        var windows = if (isExtrusion(moves, safe)) 1 else 0
+        var travels = if (isExtrusion(moves, safe)) 0 else 1
+        while (true) {
+            val backWindow = if (first > 0 && isExtrusion(moves, first - 1)) 1 else 0
+            val backTravel = if (first > 0 && !isExtrusion(moves, first - 1)) 1 else 0
+            val forwardWindow = if (last < moveCount && isExtrusion(moves, last)) 1 else 0
+            val forwardTravel = if (last < moveCount && !isExtrusion(moves, last)) 1 else 0
+            val canBack = first > 0 &&
+                windows + backWindow <= capacityWindows &&
+                travels + backTravel <= capacityTravels
+            val canForward = last < moveCount &&
+                windows + forwardWindow <= capacityWindows &&
+                travels + forwardTravel <= capacityTravels
+            if (!canBack && !canForward) break
+            if (canBack && (!canForward || safe - first <= last - safe)) {
+                first--
+                windows += backWindow
+                travels += backTravel
+            } else {
+                windows += forwardWindow
+                travels += forwardTravel
+                last++
+            }
+        }
+        return first until last
+    }
+
+    /**
+     * True when [anchor] has left the middle half of the band [first] until [last]: the band is
+     * rebuilt around the new position, which is what keeps the drawn geometry the layers around
+     * the scrub without ever holding the whole path.
+     */
+    fun needsRebuild(first: Int, last: Int, moveCount: Int, anchor: Int): Boolean {
+        if (last <= first) return true
+        // A band that already holds the whole path has nothing to rebuild: it is the answer,
+        // and rebuilding it would cost the whole build again for no change.
+        if (first == 0 && last >= moveCount) return false
+        val margin = (last - first) / 4
+        return anchor < first + margin || anchor >= last - margin
+    }
+
+    /** The extrusion count a range holds, which is the number of ribbon windows it emits. */
+    fun countWindows(moves: FloatArray, range: IntRange): Int {
+        var count = 0
+        for (move in range) {
+            if (isExtrusion(moves, move)) count++
+        }
+        return count
+    }
+
+    private fun isExtrusion(moves: FloatArray, index: Int): Boolean =
+        moves[index * RibbonPathGeometry.VALUES_PER_MOVE + RibbonPathGeometry.KIND] == 1f
+}
+
+/**
  * Shared ribbon geometry for the nozzle-path renderers.
  *
  * Both G-code dialects paint the same 18-vertex window - top face plus two side
@@ -162,14 +253,16 @@ internal object RibbonPathGeometry {
     }
 
     /**
-     * Walks the path in natural runs - consecutive moves of the same kind and
-     * width that stay collinear - and reports windows of up to one move each.
-     * The window callback receives the run's width and height so the caller can
-     * colour and size the strip.
+     * Walks the moves in [firstMove] until [lastMove] in natural runs - consecutive moves of
+     * the same kind and width that stay collinear - and reports windows of up to one move
+     * each. The window callback receives the run's width and height so the caller can colour
+     * and size the strip. The range is the whole path unless a banded preview is only holding
+     * one slice of it.
      */
     fun forEachWindow(
         moves: FloatArray,
-        moveCount: Int,
+        firstMove: Int,
+        lastMove: Int,
         widthAt: (Int) -> Float,
         widthTolerance: Float,
         onProgress: ((Float) -> Unit)? = null,
@@ -183,12 +276,14 @@ internal object RibbonPathGeometry {
             runHeight: Float,
         ) -> Unit,
     ) {
-        var lastReportedMove = 0
-        var moveIndex = 0
-        while (moveIndex < moveCount) {
+        var lastReportedMove = firstMove
+        var moveIndex = firstMove
+        while (moveIndex < lastMove) {
             if (onProgress != null && moveIndex - lastReportedMove >= BUILD_PROGRESS_STRIDE) {
                 lastReportedMove = moveIndex
-                onProgress((moveIndex.toFloat() / max(moveCount, 1)).coerceIn(0f, 1f))
+                onProgress(
+                    ((moveIndex - firstMove).toFloat() / max(lastMove - firstMove, 1)).coerceIn(0f, 1f),
+                )
             }
             val oi = moveIndex * VALUES_PER_MOVE
             val kind = moves[oi + KIND]
@@ -203,7 +298,7 @@ internal object RibbonPathGeometry {
                 fdx /= firstLen
                 fdy /= firstLen
             }
-            while (runEnd < moveCount &&
+            while (runEnd < lastMove &&
                 moves[runEnd * VALUES_PER_MOVE + KIND] == kind &&
                 kotlin.math.abs(widthAt(runEnd) - runWidth) <= widthTolerance
             ) {

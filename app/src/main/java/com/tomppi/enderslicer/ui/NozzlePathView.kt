@@ -41,11 +41,13 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -55,6 +57,12 @@ import com.tomppi.enderslicer.engine.GcodeDialect
 import com.tomppi.enderslicer.engine.GcodeNozzlePath
 import com.tomppi.enderslicer.engine.GcodeNozzlePathParser
 import com.tomppi.enderslicer.viewer.NozzlePathSurfaceView
+import com.tomppi.enderslicer.viewer.PreviewCapacity
+import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
+import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
+import com.tomppi.enderslicer.viewer.label
+import com.tomppi.enderslicer.viewer.next
+import com.tomppi.enderslicer.viewer.probePreviewDeviceMemory
 import com.tomppi.enderslicer.viewer.resolveBeadWidthMm
 import com.tomppi.enderslicer.viewer.ViewerOrientation
 import com.tomppi.enderslicer.viewer.ViewerOrientationMath
@@ -89,16 +97,34 @@ internal fun NozzlePathView(
     beadHeightMm: Double,
     beadLineWidthMm: Double,
     filamentDiameterMm: Double,
+    memoryProfile: PreviewMemoryProfile = PreviewMemoryProfile.AUTO,
+    onMemoryProfileChange: (PreviewMemoryProfile) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    // What this device will let the preview hold, and what that bought. The parse budget is
+    // part of it: a device with RAM to spare folds nothing, a low-memory one keeps the old
+    // conservative budget - and neither ever skips a move.
+    val capacity = remember(gcodePath, memoryProfile) {
+        PreviewMemoryPolicy.resolve(
+            memoryProfile,
+            probePreviewDeviceMemory(context.applicationContext),
+            GcodeNozzlePathParser.DEFAULT_MAX_MOVES,
+        ).also { resolved ->
+            Log.i(
+                "NozzlePathView",
+                "preview capacity: " + resolved.note + " · " + resolved.windows + " windows, parse budget " + resolved.moves,
+            )
+        }
+    }
     var parseProgress by remember(gcodePath) { mutableStateOf(0f) }
-    val loadState by produceState<NozzlePathLoadState>(NozzlePathLoadState.Loading, gcodePath) {
+    val loadState by produceState<NozzlePathLoadState>(NozzlePathLoadState.Loading, gcodePath, capacity) {
         value = NozzlePathLoadState.Loading
         parseProgress = 0f
         value = try {
             val startedAt = SystemClock.uptimeMillis()
             val parsed = runInterruptible(Dispatchers.IO) {
-                GcodeNozzlePathParser.parse(File(gcodePath), dialect) { fraction ->
+                GcodeNozzlePathParser.parse(File(gcodePath), dialect, capacity.moves) { fraction ->
                     parseProgress = fraction
                 }
             }
@@ -138,6 +164,9 @@ internal fun NozzlePathView(
             beadHeightMm,
             beadLineWidthMm,
             filamentDiameterMm,
+            capacity,
+            memoryProfile,
+            onMemoryProfileChange,
             modifier,
         )
     }
@@ -228,6 +257,9 @@ private fun NozzlePathPlayer(
     beadHeightMm: Double,
     beadLineWidthMm: Double,
     filamentDiameterMm: Double,
+    capacity: PreviewCapacity,
+    memoryProfile: PreviewMemoryProfile,
+    onMemoryProfileChange: (PreviewMemoryProfile) -> Unit,
     modifier: Modifier,
 ) {
     var moveIndex by rememberSaveable(artifactKey) { mutableIntStateOf(0) }
@@ -246,6 +278,8 @@ private fun NozzlePathPlayer(
     var buildError by remember(artifactKey) { mutableStateOf<String?>(null) }
     var lastBuildReportAt by remember(artifactKey) { mutableLongStateOf(SystemClock.uptimeMillis()) }
     var buildStallNote by remember(artifactKey) { mutableStateOf<String?>(null) }
+    // What the preview is holding: the whole path, or the band the device granted.
+    var previewStatus by remember(artifactKey) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(surfaceView) {
         surfaceView?.let { orientation = it.currentOrientation() }
@@ -338,6 +372,7 @@ private fun NozzlePathPlayer(
                             beadHeightMm.toFloat(),
                             beadLineWidthMm.toFloat(),
                             filamentDiameterMm.toFloat(),
+                            capacity,
                         )
                         view.onOrientationChanged = { orientation = it }
                         view.onZoomChanged = { zoomLevel = it }
@@ -353,6 +388,7 @@ private fun NozzlePathPlayer(
                             buildDone = true
                             buildError = error
                         }
+                        view.onPreviewStatus = { status -> previewStatus = status }
                         view.showTravels = showTravels
                         view.orthographic = orthographic
                     },
@@ -513,6 +549,16 @@ private fun NozzlePathPlayer(
                             style = MaterialTheme.typography.labelSmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    previewStatus?.let { status ->
+                        Text(
+                            "Preview memory · " + memoryProfile.label + ": " + status + " · tap to change",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { onMemoryProfileChange(memoryProfile.next()) },
                         )
                     }
                 }

@@ -20,6 +20,7 @@ import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.AnnotationOverlay
+import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.GizmoOverlay
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitHalf
@@ -344,6 +345,11 @@ data class MainUiState(
     val importedSceneModelName: String? = null,
     val sliceResultId: String? = null,
     val gcodePath: String? = null,
+    /**
+     * Which memory profile the nozzle-path previews use: AUTO follows the device, the other
+     * two are the user's own choice in either direction.
+     */
+    val previewMemoryProfile: PreviewMemoryProfile = PreviewMemoryProfile.AUTO,
     /**
      * True when the artifact named by [sliceResultId] and [gcodePath] was verified complete
      * when it was stored. The check runs once on the engine's IO path, so the Compose bodies

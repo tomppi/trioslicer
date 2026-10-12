@@ -46,19 +46,26 @@ class PrusaNozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
         // to the main thread so the UI can show where it got to.
         pathRenderer.onBuildProgress = { fraction -> post { onBuildProgress?.invoke(fraction) } }
         pathRenderer.onBuildFinished = { error -> post { onBuildFinished?.invoke(error) } }
+        pathRenderer.onPreviewStatus = { status -> post { onPreviewStatus?.invoke(status) } }
     }
 
     private var lastQueuedPath: PrusaNozzlePath? = null
     private var lastQueuedMove = -1
+    private var lastQueuedCapacity: PreviewCapacity? = null
 
-    fun setPath(path: PrusaNozzlePath, selectedMoveIndex: Int) {
+    fun setPath(path: PrusaNozzlePath, selectedMoveIndex: Int, previewCapacity: PreviewCapacity) {
         // AndroidView.update fires on every recomposition (playback ticks
         // included); skip unchanged calls so the GL queue is not flooded.
-        if (lastQueuedPath === path && lastQueuedMove == selectedMoveIndex) return
+        if (lastQueuedPath === path && lastQueuedMove == selectedMoveIndex &&
+            lastQueuedCapacity == previewCapacity
+        ) {
+            return
+        }
         lastQueuedPath = path
         lastQueuedMove = selectedMoveIndex
+        lastQueuedCapacity = previewCapacity
         queueEvent {
-            pathRenderer.setPath(path)
+            pathRenderer.setPath(path, previewCapacity)
             pathRenderer.setSelectedMove(selectedMoveIndex)
         }
         queueEvent { notifyOrientation() }
@@ -92,6 +99,9 @@ class PrusaNozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
 
     /** Invoked on the main thread when the geometry build settles; null = success. */
     var onBuildFinished: ((String?) -> Unit)? = null
+
+    /** Invoked on the main thread with what the preview is holding: whole path, or a band. */
+    var onPreviewStatus: ((String) -> Unit)? = null
 
     fun currentOrientation(): ViewerOrientation = pathRenderer.orientation
 
@@ -218,8 +228,25 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     private var markerGlowPositions: FloatBuffer? = null
     private var markerVertexCount = 0
     private var markerGlowVertexCount = 0
-    internal var ribbonPrefix = IntArray(1)
-    internal var travelPrefix = IntArray(1)
+    // The band of the path the vertex buffers currently hold; see RibbonBand and the Cura
+    // renderer, which this mirrors.
+    private var bandFirst = 0
+    private var bandLast = 0
+    private var bandWindows = 0
+    private var bandTravels = 0
+    // The band's own prefix up to the scrub: the picture still builds up as the slider moves,
+    // and the part of the band below the anchor is the context around the current layer. The
+    // prefixes come from the build, so moving the scrub inside the band costs nothing.
+    private var bandDrawWindows = 0
+    private var bandDrawTravels = 0
+    private var bandWindowPrefix = IntArray(0)
+    private var bandTravelPrefix = IntArray(0)
+    private var bandPending = false
+    private var bandCapacityWindows = 0
+    private var bandCapacityTravels = 0
+    private var pathWindows = 0
+    private var grantedWindows = 0
+    private var capacity = PreviewCapacity.Default
 
     private var modelMinX = -115f
     private var modelMaxX = 115f
@@ -232,6 +259,8 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     // Live build progress for the UI; reports every BUILD_PROGRESS_STRIDE moves.
     var onBuildProgress: ((Float) -> Unit)? = null
     var onBuildFinished: ((String?) -> Unit)? = null
+    /** What the preview is holding now: the whole path, or the band the device granted. */
+    var onPreviewStatus: ((String) -> Unit)? = null
     private var yaw = PrusaNozzlePathViewDefaults.DEFAULT_YAW
     private var pitch = PrusaNozzlePathViewDefaults.DEFAULT_PITCH
     private var zoom = PrusaNozzlePathViewDefaults.DEFAULT_ZOOM
@@ -248,13 +277,15 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     val zoomLevel: Float
         get() = zoom
 
-    fun setPath(value: PrusaNozzlePath) {
-        if (path === value) return
+    fun setPath(value: PrusaNozzlePath, previewCapacity: PreviewCapacity) {
+        if (path === value && capacity == previewCapacity) return
+        val capacityChanged = capacity != previewCapacity
+        capacity = previewCapacity
         path = value
         selectedMoveIndex = if (value.moveCount <= 0) 0 else selectedMoveIndex.coerceIn(0, value.moveCount - 1)
-        onBuildProgress?.invoke(0f)
+        if (capacityChanged || buildPending) onBuildProgress?.invoke(0f)
         buildPending = true
-        resetCamera()
+        if (capacityChanged) resetCamera()
     }
 
     fun setSelectedMove(value: Int) {
@@ -264,6 +295,17 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         if (safe == selectedMoveIndex) return
         selectedMoveIndex = safe
         buildMarker()
+        if (bandNeedsRebuild(safe, current.moveCount)) bandPending = true else updateBandDraw(safe)
+    }
+
+    private fun bandNeedsRebuild(anchor: Int, moveCount: Int): Boolean =
+        RibbonBand.needsRebuild(bandFirst, bandLast, moveCount, anchor)
+
+    /** Points the draw at the band's prefix up to [anchor], which is what the scrub reveals. */
+    private fun updateBandDraw(anchor: Int) {
+        val move = anchor.coerceIn(bandFirst, (bandLast - 1).coerceAtLeast(bandFirst))
+        bandDrawWindows = bandWindowPrefix.getOrElse(move + 1) { bandWindows }.coerceIn(0, bandWindows)
+        bandDrawTravels = bandTravelPrefix.getOrElse(move + 1) { bandTravels }.coerceIn(0, bandTravels)
     }
 
     fun setShowTravels(value: Boolean) { showTravels = value }
@@ -323,7 +365,8 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
 
     override fun onDrawFrame(gl: GL10?) {
         try {
-            if (buildPending) buildGeometry()
+            if (buildPending) preparePath()
+            if (bandPending) buildBand()
             drawFrame()
         } catch (error: Throwable) {
             Log.e("PrusaNozzlePathView", "frame failed", error)
@@ -335,15 +378,13 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         val current = path ?: return
         val aspect = viewportWidth.toFloat() / viewportHeight
         computeCamera(aspect)
-        val upTo = (selectedMoveIndex + 1).coerceAtMost(ribbonPrefix.size - 1)
-        val ribbonCount = ribbonPrefix[upTo]
         drawSolidLines(gridPositions, gridVertexCount, 1f, 0.24f, 0.30f, 0.40f, 0.48f)
         if (pathGeometry.ready) {
             // Hard clamp: never draw past the geometry that was uploaded. A
             // mismatch here previously produced "model disappears after a
             // certain point" and scrambled speed colors; the clamp degrades to
             // fewer ribbons and logs the mismatch for diagnosis.
-            val requested = ribbonCount * RibbonPathGeometry.WINDOW_VERTICES
+            val requested = bandDrawWindows * RibbonPathGeometry.WINDOW_VERTICES
             val litVerts = if (requested <= pathGeometry.ribbonVertexCount) {
                 requested
             } else {
@@ -355,7 +396,7 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
             }
             drawLitTrianglesVbo(litVerts)
             if (showTravels) {
-                val travelRequested = travelPrefix[upTo] * 2
+                val travelRequested = bandDrawTravels * 2
                 val travelVerts = if (travelRequested <= pathGeometry.travelVertexCount) {
                     travelRequested
                 } else {
@@ -372,64 +413,133 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         drawSolidLines(markerPositions, markerVertexCount, 4.5f, 1f, 1f, 1f, 1f)
     }
     /**
-     * Builds the ribbon strips and uploads them to the GPU buffers, one bounded
-     * chunk at a time.
+     * Prepares a path: the camera bounds, the grid, the marker, and the vertex buffers at the
+     * capacity the device granted. The geometry itself is built a band at a time.
      *
-     * One window per move, always, sized by the marker-driven width of the run it
-     * belongs to. What changed is where the geometry is allowed to exist: it
-     * passes through the CPU a chunk at a time, so a million moves no longer asks
-     * the Java heap for the 792 MB of ribbon they make - Android charges direct
-     * ByteBuffers there, and the Path tab died on a single 160 MB allocation of
-     * exactly this geometry.
+     * One window per move inside the band, always, sized by the marker-driven width of the run
+     * it belongs to. The staging buffers are filled a chunk at a time, copied into VRAM and
+     * reused, so the Java heap never holds the ribbon - and the GPU only ever holds the band in
+     * view.
      */
-    private fun buildGeometry() {
+    private fun preparePath() {
         val value = path ?: return
         buildPending = false
         val startedAt = System.nanoTime()
         try {
-            val ribbonWindows = RibbonPathGeometry.countKind(
+            val totalWindows = RibbonPathGeometry.countKind(
                 value.moves,
                 value.moveCount,
                 PrusaNozzlePath.Kind.EXTRUSION.code,
             )
-            val travelBound = RibbonPathGeometry.countKind(
+            val totalTravels = RibbonPathGeometry.countKind(
                 value.moves,
                 value.moveCount,
                 PrusaNozzlePath.Kind.TRAVEL.code,
             )
-            if (!pathGeometry.allocate(ribbonWindows, travelBound)) {
-                throw IllegalStateException(
-                    "The device refused the preview's vertex buffers for " + value.moveCount + " moves",
-                )
+            pathWindows = totalWindows
+            val askedWindows = min(capacity.windows, totalWindows).coerceAtLeast(1)
+            val askedTravels = min(capacity.travels, totalTravels).coerceAtLeast(1)
+            val granted = allocateAdaptiveWindows(askedWindows, askedTravels, RibbonBand.MINIMUM_WINDOWS)
+            if (granted <= 0) {
+                throw IllegalStateException(BandAllocator.refusal(askedWindows, RibbonBand.MINIMUM_WINDOWS))
             }
-            val builder = PrusaRibbonBuilder(value) { fraction -> onBuildProgress?.invoke(fraction) }
-            val staging = RibbonChunkStaging(pathGeometry)
-            builder.build(staging)
-            staging.finish()
-            ribbonPrefix = builder.ribbonPrefix
-            travelPrefix = builder.travelPrefix
-            // Camera bounds from the printed part only (extrusion moves). A
-            // travel-only path keeps the defaults.
-            if (builder.modelMinX.isFinite()) {
-                modelMinX = builder.modelMinX
-                modelMaxX = builder.modelMaxX
-                modelMinY = builder.modelMinY
-                modelMaxY = builder.modelMaxY
-                modelMinZ = builder.modelMinZ
-                modelMaxZ = builder.modelMaxZ
-            }
+            bandCapacityWindows = granted
+            bandCapacityTravels = scaledTravels(askedTravels, askedWindows, granted)
+            grantedWindows = granted
+            applyPrintedBounds(value)
             buildGrid(value)
             buildMarker()
-            onBuildProgress?.invoke(1f)
-            onBuildFinished?.invoke(null)
+            bandPending = true
             Log.i(
                 "PrusaNozzlePathView",
-                "geometry built: " + value.moveCount + " moves in " +
-                    ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
+                "buffers: asked " + askedWindows + " windows, granted " + granted +
+                    " in " + ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
             )
         } catch (error: Throwable) {
             Log.e("PrusaNozzlePathView", "Unable to build prusa nozzle-path buffers", error)
             pathGeometry.release()
+            onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    /** Camera bounds from the printed part only (extrusion moves). A travel-only path keeps the defaults. */
+    private fun applyPrintedBounds(value: PrusaNozzlePath) {
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var minZ = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        var maxZ = Float.NEGATIVE_INFINITY
+        val source = value.moves
+        for (move in 0 until value.moveCount) {
+            val o = move * PrusaNozzlePath.VALUES_PER_MOVE
+            if (source[o + PrusaNozzlePath.KIND] != PrusaNozzlePath.Kind.EXTRUSION.code) continue
+            minX = min(minX, min(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
+            maxX = max(maxX, max(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
+            minY = min(minY, min(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
+            maxY = max(maxY, max(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
+            minZ = min(minZ, min(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
+            maxZ = max(maxZ, max(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
+        }
+        if (minX.isFinite()) {
+            modelMinX = minX
+            modelMaxX = maxX
+            modelMinY = minY
+            modelMaxY = maxY
+            modelMinZ = minZ
+            modelMaxZ = maxZ
+        }
+    }
+
+    /**
+     * Builds the band of moves around the scrub into the vertex buffers, every move in the band
+     * drawn, and reports what the preview is holding.
+     */
+    private fun buildBand() {
+        val value = path ?: return
+        bandPending = false
+        if (!pathGeometry.ready || value.moveCount <= 0) return
+        val startedAt = System.nanoTime()
+        try {
+            val anchor = selectedMoveIndex.coerceIn(0, value.moveCount - 1)
+            val range = RibbonBand.plan(
+                value.moves,
+                value.moveCount,
+                anchor,
+                bandCapacityWindows,
+                bandCapacityTravels,
+            )
+            pathGeometry.reuse()
+            val builder = PrusaRibbonBuilder(value) { fraction -> onBuildProgress?.invoke(fraction) }
+            val staging = RibbonChunkStaging(pathGeometry)
+            builder.build(staging, range.first, range.last + 1)
+            staging.finish()
+            bandFirst = range.first
+            bandLast = range.last + 1
+            bandWindows = builder.ribbonWindows
+            bandTravels = builder.travelSegments
+            bandWindowPrefix = builder.ribbonPrefix
+            bandTravelPrefix = builder.travelPrefix
+            updateBandDraw(anchor)
+            buildMarker()
+            onBuildProgress?.invoke(1f)
+            onBuildFinished?.invoke(null)
+            onPreviewStatus?.invoke(
+                if (bandFirst == 0 && bandLast == value.moveCount) {
+                    "Whole path · " + bandWindows + " windows in the vertex buffers · " + capacity.note
+                } else {
+                    "Banded · the device granted " + grantedWindows + " windows of the " + pathWindows +
+                        " this path needs · moves " + bandFirst + "–" + (bandLast - 1) + " of " +
+                        value.moveCount + " · " + capacity.note
+                },
+            )
+            Log.i(
+                "PrusaNozzlePathView",
+                "band built: moves " + bandFirst + ".." + bandLast + ", windows " + bandWindows +
+                    ", travels " + bandTravels + " in " + ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
+            )
+        } catch (error: Throwable) {
+            Log.e("PrusaNozzlePathView", "Unable to build the prusa band", error)
             onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
         }
     }

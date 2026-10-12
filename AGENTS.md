@@ -53,6 +53,22 @@ genuinely continue each other are drawn as one straight move.
   parser's `extrusionMoveCount`: a merged move carries the extrusion of the moves folded into it,
   so the stored extrusion count can be higher than the parser's readout - and a buffer sized below
   the windows written overruns it.
+- The buffers no longer hold the whole path by default. A print can need more windows than a
+  phone has graphics memory - the reported 0.08 mm PrusaSlicer print is 1,617,938 of them, 1.2 GB -
+  so the preview holds a **band** of moves around the scrub and rebuilds it when the scrub leaves
+  the middle half (`RibbonBand`). Every move inside the band is drawn; the band is a window, never
+  a sample.
+- How big a band, and how much folding, comes from the **device**, not a constant: AUTO derives it
+  from free RAM and the app's heap class, UNLOCKED and LOW_MEMORY are the user's choice in either
+  direction (`PreviewMemoryPolicy`, `PreviewCapacity`), and the low-memory profile keeps the old
+  conservative figures (400,000 Cura / 1,000,000 Prusa moves, a 200,000-window band). A device
+  with RAM to spare folds nothing and can hold the whole path.
+- Whatever the profile, **no move is ever skipped**: a low-memory profile draws a coarser preview,
+  never a lossier print. The parse budget only decides how much folding happens.
+- A driver may refuse an allocation the RAM figures said was fine, so the preview asks for the
+  whole band first and **halves on refusal** until something fits, remembering what fitted for the
+  session (`BandAllocator`). Only a refused floor ends in the named refusal, and that sentence
+  carries both numbers.
 - Cura's layer view is the reference for this screen, and it draws every line it reads:
   `plugins/GCodeReader` and `plugins/SimulationView` in github.com/Ultimaker/Cura.
 

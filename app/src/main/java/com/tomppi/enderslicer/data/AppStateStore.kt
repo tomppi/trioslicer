@@ -220,6 +220,16 @@ class AppStateStore(context: Context) {
         filamentName = preferences.getString(KEY_PRUSA_PRESET_FILAMENT, null),
     )
 
+    /**
+     * The nozzle-path preview's memory profile: AUTO follows the device, UNLOCKED and
+     * LOW_MEMORY are the user's own choice in either direction.
+     */
+    fun savePreviewMemoryProfile(profile: String): Boolean =
+        preferences.edit().putString(KEY_PREVIEW_MEMORY_PROFILE, profile).commit()
+
+    fun restorePreviewMemoryProfile(): String =
+        preferences.getString(KEY_PREVIEW_MEMORY_PROFILE, null) ?: "AUTO"
+
     /** The Cura machine chain to slice with; the bundled default until the user picks another. */
     fun saveCuraMachine(machineId: String): Boolean =
         preferences.edit().putString(KEY_CURA_MACHINE, machineId).commit()
@@ -436,6 +446,7 @@ class AppStateStore(context: Context) {
         private const val KEY_EXTRA_PRUSA = "extra-prusa-settings-json"
     private const val KEY_ORCA_SETTINGS = "orca-settings-json"
     private const val KEY_CURA_MACHINE = "cura-machine-id"
+    private const val KEY_PREVIEW_MEMORY_PROFILE = "preview-memory-profile"
     private const val KEY_PRUSA_PRESET_PRINTER = "prusa-preset-printer"
     private const val KEY_PRUSA_PRESET_PRINT = "prusa-preset-print"
     private const val KEY_PRUSA_PRESET_FILAMENT = "prusa-preset-filament"

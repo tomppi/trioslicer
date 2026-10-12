@@ -81,10 +81,15 @@ object GcodeNozzlePathParser {
     // A last-resort memory guard, sized so that a real print never reaches it: a Benchy is about
     // 80,000 moves and a dense plate a few hundred thousand. It is not a sampling policy - see
     // the note at the top of this file, and the folding rule below.
-    private const val DEFAULT_MAX_MOVES = 400_000
+    internal const val DEFAULT_MAX_MOVES = 400_000
 
-    /** How straight a run has to be before a move may be folded into it, as a dot product. */
-    private const val FOLD_COLLINEAR_DOT = 0.995
+    /**
+     * How straight a run has to be before a move may be folded into it, as a dot product.
+     *
+     * Shared with [PrusaNozzlePathParser], which folds its own moves by the same rule: the two
+     * previews must close a run at the same places, or the same print would be drawn two ways.
+     */
+    internal const val FOLD_COLLINEAR_DOT = 0.995
 
     /**
      * How far a folded move may sit sideways of the straight line drawn for its run.
@@ -94,7 +99,7 @@ object GcodeNozzlePathParser {
      * describe. A tenth of a millimetre is a tenth of a bead width - invisible - and it is
      * where a run that is bending instead of continuing is split.
      */
-    private const val FOLD_DRIFT_MM = 0.10
+    internal const val FOLD_DRIFT_MM = 0.10
     private const val MOTION_EPSILON = 1e-7
     private const val LAYER_HEIGHT_MIN_MM = 0.010
     private const val LAYER_HEIGHT_MAX_MM = 0.500
@@ -117,6 +122,18 @@ object GcodeNozzlePathParser {
 
     fun parse(file: File, dialect: GcodeDialect, progress: (Float) -> Unit = {}): GcodeNozzlePath =
         parse(file, DEFAULT_MAX_MOVES, dialect, progress)
+
+    /**
+     * Parses with an explicit move budget: the preview passes the budget its device profile
+     * derived, so a phone with RAM to spare folds nothing and a low-memory one keeps the
+     * conservative figure. The budget never drops a move either way - see the note above.
+     */
+    fun parse(
+        file: File,
+        dialect: GcodeDialect,
+        maxMoves: Int,
+        progress: (Float) -> Unit,
+    ): GcodeNozzlePath = parse(file, maxMoves, dialect, progress)
 
     internal fun parse(file: File, maxMoves: Int): GcodeNozzlePath =
         parse(file, maxMoves, GcodeDialect.CURA)

@@ -56,7 +56,7 @@ data class PrusaNozzlePath(
 
 /** Parses a PrusaSlicer gcode file into [PrusaNozzlePath]. */
 object PrusaNozzlePathParser {
-    private const val DEFAULT_MAX_MOVES = 1_000_000
+    internal const val DEFAULT_MAX_MOVES = 1_000_000
     private const val MOTION_EPSILON = 1e-7
     private const val CANCELLATION_INTERVAL = 2_048
 
@@ -67,7 +67,12 @@ object PrusaNozzlePathParser {
 
     internal fun parse(file: File, maxMoves: Int): PrusaNozzlePath = parse(file, maxMoves) {}
 
-    internal fun parse(file: File, maxMoves: Int, progress: (Float) -> Unit): PrusaNozzlePath {
+    /**
+     * Parses with an explicit move budget: the preview passes the budget its device profile
+     * derived, so a phone with RAM to spare folds nothing and a low-memory one keeps the
+     * conservative figure. The budget never drops a move either way - it only merges.
+     */
+    fun parse(file: File, maxMoves: Int, progress: (Float) -> Unit): PrusaNozzlePath {
         require(file.isFile && file.length() > 0L) { "Generated G-code is not available for nozzle-path preview" }
         require(maxMoves > 1) { "Nozzle-path move limit must retain at least the first and final move" }
 
@@ -81,9 +86,13 @@ object PrusaNozzlePathParser {
         // serves both engines this parser is asked to preview.
         val sourceMoveCount = GcodeNozzlePathParser.countSpatialMoves(file, GcodeDialect.ORCA, progress)
         require(sourceMoveCount > 0) { "No nozzle moves were found in the G-code" }
+        // A move the budget cannot keep is folded into the run it continues, never dropped -
+        // the same rule GcodeNozzlePathParser folds by, so one print drawn through either
+        // engine closes its runs in the same places. The budget is a memory guard, not a
+        // sampling policy: it may only make moves longer.
         val retainedCount = if (sourceMoveCount <= maxMoves) sourceMoveCount else maxMoves
 
-        // Collect the sampled moves with their marker-driven width/height.
+        // Collect the folded moves with their marker-driven width/height.
         val accumulator = FloatAccumulator(PrusaNozzlePath.VALUES_PER_MOVE * retainedCount)
         val sourceIndices = ArrayList<Int>(retainedCount)
         val modalState = GcodeModalState()
@@ -107,28 +116,66 @@ object PrusaNozzlePathParser {
         var maxZ = Float.NEGATIVE_INFINITY
         var linesRead = 0
 
-        fun emit(kind: PrusaNozzlePath.Kind, sx: Double, sy: Double, sz: Double, ex: Double, ey: Double, ez: Double) {
-            val retainedIndex = sourceIndex
-            sourceIndex++
-            // The bounds cover every source move, sampled or not, so the preview
-            // still frames the whole print.
-            minX = minOf(minX, sx.toFloat(), ex.toFloat())
-            minY = minOf(minY, sy.toFloat(), ey.toFloat())
-            minZ = minOf(minZ, sz.toFloat(), ez.toFloat())
-            maxX = maxOf(maxX, sx.toFloat(), ex.toFloat())
-            maxY = maxOf(maxY, sy.toFloat(), ey.toFloat())
-            maxZ = maxOf(maxZ, sz.toFloat(), ez.toFloat())
-            if (!GcodeNozzlePathParser.shouldRetain(retainedIndex, sourceMoveCount, maxMoves)) return
-            sourceIndices.add(retainedIndex)
+        // The span being folded: the moves that will become one straight drawn move.
+        var merging = false
+        var mergingKind = PrusaNozzlePath.Kind.TRAVEL.code
+        var mergingDirX = 0.0
+        var mergingDirY = 0.0
+        var mergingStartX = 0.0
+        var mergingStartY = 0.0
+        var mergingStartZ = 0.0
+        var mergingSpeed = 0f
+        var mergingWidth = width
+        var mergingHeight = height
+        var mergingMoves = 0
+        var mergingSourceIndex = 0
+
+        // The sample spreads the budget over the print: a run may close at a sampled move once
+        // it has stood for its share of the moves, so a capped preview is still drawn all the
+        // way to the end instead of folding the whole file into a handful of long lines.
+        val overBudget = sourceMoveCount > maxMoves
+        val spanTarget = if (overBudget) max(1.0, sourceMoveCount.toDouble() / maxMoves) else 0.0
+
+        /**
+         * Whether this move genuinely continues the run being folded, so the one straight move
+         * drawn for the run still covers it: the same kind of move, in the same direction, and
+         * no further off the run's line than [GcodeNozzlePathParser.FOLD_DRIFT_MM].
+         */
+        fun continuesSpan(sx: Double, sy: Double, ex: Double, ey: Double, kind: Float): Boolean {
+            if (!merging) return false
+            if (kind != mergingKind) return false
+            val dx = ex - sx
+            val dy = ey - sy
+            val length = sqrt(dx * dx + dy * dy)
+            if (length > 0.0 &&
+                (dx / length) * mergingDirX + (dy / length) * mergingDirY < GcodeNozzlePathParser.FOLD_COLLINEAR_DOT
+            ) {
+                return false
+            }
+            val drift = kotlin.math.abs((ex - mergingStartX) * -mergingDirY + (ey - mergingStartY) * mergingDirX)
+            return drift <= GcodeNozzlePathParser.FOLD_DRIFT_MM
+        }
+
+        /** Hands one drawn straight move to the preview, and says what kind it was. */
+        fun emitSpan(
+            fromX: Double, fromY: Double, fromZ: Double,
+            toX: Double, toY: Double, toZ: Double,
+            spanKind: Float,
+            spanSpeed: Float,
+            spanWidth: Float,
+            spanHeight: Float,
+            spanSourceIndex: Int,
+        ) {
+            sourceIndices.add(spanSourceIndex)
             accumulator.add(
-                sx.toFloat(), sy.toFloat(), sz.toFloat(),
-                ex.toFloat(), ey.toFloat(), ez.toFloat(),
-                (feedRateMmPerMinute / 60.0).coerceAtLeast(0.0).toFloat(),
-                kind.code,
-                width,
-                height,
+                fromX.toFloat(), fromY.toFloat(), fromZ.toFloat(),
+                toX.toFloat(), toY.toFloat(), toZ.toFloat(),
+                spanSpeed,
+                spanKind,
+                spanWidth,
+                spanHeight,
             )
-            if (kind == PrusaNozzlePath.Kind.EXTRUSION) extrusionMoves++ else travelMoves++
+            if (spanKind == PrusaNozzlePath.Kind.EXTRUSION.code) extrusionMoves++ else travelMoves++
         }
 
         val totalBytes = file.length().coerceAtLeast(1L)
@@ -178,21 +225,103 @@ object PrusaNozzlePathParser {
                     }
                     "G28" -> { x = 0.0; y = 0.0; z = 0.0 }
                     "G0", "G1" -> {
+                        val startX = x
+                        val startY = y
+                        val startZ = z
                         val nextX = modalState.position(x, command.value('X'))
                         val nextY = modalState.position(y, command.value('Y'))
                         val nextZ = modalState.position(z, command.value('Z'))
                         command.value('F')?.let { feedRateMmPerMinute = it }
-                        val dx = nextX - x
-                        val dy = nextY - y
-                        val dz = nextZ - z
-                        val distance = sqrt(dx * dx + dy * dy + dz * dz)
-                        if (distance > MOTION_EPSILON) {
-                            val kind = if (command.value('E') != null) PrusaNozzlePath.Kind.EXTRUSION else PrusaNozzlePath.Kind.TRAVEL
-                            emit(kind, x, y, z, nextX, nextY, nextZ)
-                        }
                         x = nextX
                         y = nextY
                         z = nextZ
+                        val dx = nextX - startX
+                        val dy = nextY - startY
+                        val dz = nextZ - startZ
+                        val distance = sqrt(dx * dx + dy * dy + dz * dz)
+                        if (distance <= MOTION_EPSILON) return@forEach
+
+                        val kind = if (command.value('E') != null) {
+                            PrusaNozzlePath.Kind.EXTRUSION
+                        } else {
+                            PrusaNozzlePath.Kind.TRAVEL
+                        }
+                        val sourceIndexOfMove = sourceIndex
+                        sourceIndex++
+                        // The bounds cover every source move, folded or not, so the preview
+                        // still frames the whole print.
+                        minX = minOf(minX, startX.toFloat(), nextX.toFloat())
+                        minY = minOf(minY, startY.toFloat(), nextY.toFloat())
+                        minZ = minOf(minZ, startZ.toFloat(), nextZ.toFloat())
+                        maxX = maxOf(maxX, startX.toFloat(), nextX.toFloat())
+                        maxY = maxOf(maxY, startY.toFloat(), nextY.toFloat())
+                        maxZ = maxOf(maxZ, startZ.toFloat(), nextZ.toFloat())
+
+                        val speed = (feedRateMmPerMinute / 60.0).coerceAtLeast(0.0).toFloat()
+                        val requested = GcodeNozzlePathParser.shouldRetain(sourceIndexOfMove, sourceMoveCount, maxMoves)
+                        val continues = continuesSpan(startX, startY, nextX, nextY, kind.code)
+                        // The budget may only make a span longer, never fewer: a span closes at a
+                        // sampled move once it has spent its share of the budget, at the first and
+                        // last move, and never across a corner or a kind change.
+                        val closeHere = !overBudget ||
+                            sourceIndexOfMove == 0 ||
+                            sourceIndexOfMove == sourceMoveCount - 1 ||
+                            (requested && mergingMoves + 1 >= spanTarget)
+
+                        if (continues && !closeHere) {
+                            // Fold this move into the span: it continues the run, so the one
+                            // straight line drawn for the span still covers it.
+                            mergingMoves++
+                            mergingSourceIndex = sourceIndexOfMove
+                            mergingSpeed = speed
+                            mergingWidth = width
+                            mergingHeight = height
+                            return@forEach
+                        }
+                        if (merging && !continues) {
+                            // This move does not continue the run: the span ends at the move
+                            // before it, and the printer's own turn is drawn, not a chord
+                            // across it.
+                            emitSpan(
+                                mergingStartX, mergingStartY, mergingStartZ,
+                                startX, startY, startZ,
+                                mergingKind, mergingSpeed, mergingWidth, mergingHeight, mergingSourceIndex,
+                            )
+                            merging = false
+                        }
+                        if (closeHere) {
+                            emitSpan(
+                                if (merging) mergingStartX else startX,
+                                if (merging) mergingStartY else startY,
+                                if (merging) mergingStartZ else startZ,
+                                nextX, nextY, nextZ,
+                                if (merging) mergingKind else kind.code,
+                                speed, width, height, sourceIndexOfMove,
+                            )
+                            merging = false
+                        } else {
+                            // This move starts the next span.
+                            merging = true
+                            mergingKind = kind.code
+                            val foldX = nextX - startX
+                            val foldY = nextY - startY
+                            val foldLength = sqrt(foldX * foldX + foldY * foldY)
+                            if (foldLength > 0.0) {
+                                mergingDirX = foldX / foldLength
+                                mergingDirY = foldY / foldLength
+                            } else {
+                                mergingDirX = 0.0
+                                mergingDirY = 0.0
+                            }
+                            mergingStartX = startX
+                            mergingStartY = startY
+                            mergingStartZ = startZ
+                            mergingSpeed = speed
+                            mergingWidth = width
+                            mergingHeight = height
+                            mergingMoves = 1
+                            mergingSourceIndex = sourceIndexOfMove
+                        }
                     }
                 }
             }

@@ -150,6 +150,7 @@ class NozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
         // to the main thread so the UI can show where it got to.
         pathRenderer.onBuildProgress = { fraction -> post { onBuildProgress?.invoke(fraction) } }
         pathRenderer.onBuildFinished = { error -> post { onBuildFinished?.invoke(error) } }
+        pathRenderer.onPreviewStatus = { status -> post { onPreviewStatus?.invoke(status) } }
     }
 
     fun setPath(
@@ -158,9 +159,10 @@ class NozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
         beadHeightMm: Float,
         beadLineWidthMm: Float,
         filamentDiameterMm: Float,
+        previewCapacity: PreviewCapacity,
     ) {
         queueEvent {
-            pathRenderer.setPath(path, beadHeightMm, beadLineWidthMm, filamentDiameterMm)
+            pathRenderer.setPath(path, beadHeightMm, beadLineWidthMm, filamentDiameterMm, previewCapacity)
             pathRenderer.setSelectedMove(selectedMoveIndex)
         }
         // setPath resets the camera on the GL thread.
@@ -203,6 +205,9 @@ class NozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
 
     /** Invoked on the main thread when the geometry build settles; null = success. */
     var onBuildFinished: ((String?) -> Unit)? = null
+
+    /** Invoked on the main thread with what the preview is holding: whole path, or a band. */
+    var onPreviewStatus: ((String) -> Unit)? = null
 
     fun currentOrientation(): ViewerOrientation = pathRenderer.orientation
 
@@ -321,9 +326,26 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
     private var beadHeight = 0.20f
     private var beadLineWidth = 0.40f
     private var filamentArea = Math.PI.toFloat() * 0.875f * 0.875f
-    // extrusionPrefix[m] = windows emitted for moves with index < m (same for travel).
-    private var extrusionPrefix = IntArray(1)
-    private var travelPrefix = IntArray(1)
+    // The band of the path the vertex buffers currently hold. The buffers are allocated once
+    // per path at the capacity the device granted, and a new band is uploaded when the scrub
+    // leaves the middle of the one in view - see RibbonBand.
+    private var bandFirst = 0
+    private var bandLast = 0
+    private var bandWindows = 0
+    private var bandTravels = 0
+    // The band's own prefix up to the scrub: the picture still builds up as the slider moves,
+    // and the part of the band below the anchor is the context around the current layer. The
+    // prefixes come from the build, so moving the scrub inside the band costs nothing.
+    private var bandDrawWindows = 0
+    private var bandDrawTravels = 0
+    private var bandWindowPrefix = IntArray(0)
+    private var bandTravelPrefix = IntArray(0)
+    private var bandPending = false
+    private var bandCapacityWindows = 0
+    private var bandCapacityTravels = 0
+    private var pathWindows = 0
+    private var grantedWindows = 0
+    private var capacity = PreviewCapacity.Default
     // The geometry is built on the first frame after a path is set: a queued
     // setPath can run before the surface (and so the GL context) exists, and
     // uploading needs one.
@@ -342,6 +364,8 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
     // Live build progress for the UI; reports every BUILD_PROGRESS_STRIDE moves.
     var onBuildProgress: ((Float) -> Unit)? = null
     var onBuildFinished: ((String?) -> Unit)? = null
+    /** What the preview is holding now: the whole path, or the band the device granted. */
+    var onPreviewStatus: ((String) -> Unit)? = null
     // Camera pivot and fit use the EXTRUSION bounds (the printed model), not
     // the whole path: travel moves to the prime line or skirt sit far from the
     // part and would anchor the orbit to the plate instead of the model.
@@ -367,78 +391,130 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         beadHeightMm: Float,
         beadLineWidthMm: Float,
         filamentDiameterMm: Float,
+        previewCapacity: PreviewCapacity,
     ) {
         val area = (Math.PI.toFloat() * (filamentDiameterMm.coerceIn(0.5f, 4.0f) / 2f).let { it * it })
         // Line width and filament diameter change the ribbon as much as the bead height does:
         // comparing only the first two let the geometry and the readout disagree.
         if (path === value && beadHeight == beadHeightMm && beadLineWidth == beadLineWidthMm &&
-            filamentArea == area
+            filamentArea == area && capacity == previewCapacity
         ) {
             return
         }
+        val capacityChanged = capacity != previewCapacity
+        capacity = previewCapacity
         path = value
         beadHeight = beadHeightMm.coerceIn(0.02f, 2.0f)
         beadLineWidth = beadLineWidthMm.coerceIn(0.10f, 2.0f)
         filamentArea = area
         selectedMoveIndex = if (value.moveCount <= 0) 0 else selectedMoveIndex.coerceIn(0, value.moveCount - 1)
-        onBuildProgress?.invoke(0f)
+        if (capacityChanged || buildPending) onBuildProgress?.invoke(0f)
         buildPending = true
-        resetCamera()
+        if (capacityChanged) resetCamera()
     }
 
     /**
-     * Builds the path's ribbon and travel geometry into the GPU's vertex
-     * buffers, one bounded chunk at a time.
+     * Prepares a path: the camera bounds, the grid, the marker, and the vertex buffers at the
+     * capacity the device granted. The geometry itself is built a band at a time.
      *
-     * One window per move, always: the picture is the file. What changed is
-     * only where the geometry is allowed to exist - a chunk of staging buffers
-     * is filled, copied into VRAM and reused - so an 850,000-move file no longer
-     * asks the Java heap for 616 MB of it (Android charges direct ByteBuffers
-     * there, which is what killed the Path tab).
+     * One window per move inside the band, always: the picture is the file. The staging
+     * buffers are filled a chunk at a time, copied into VRAM and reused, so the Java heap
+     * never holds the ribbon - and the GPU only ever holds the band in view.
      */
-    private fun buildGeometry() {
+    private fun preparePath() {
         val value = path ?: return
         buildPending = false
         val startedAt = System.nanoTime()
         try {
-            val ribbonWindows = RibbonPathGeometry.countKind(
+            val totalWindows = RibbonPathGeometry.countKind(
                 value.moves,
                 value.moveCount,
                 GcodeNozzlePath.Kind.EXTRUSION.code,
             )
-            val travelBound = RibbonPathGeometry.countKind(
+            val totalTravels = RibbonPathGeometry.countKind(
                 value.moves,
                 value.moveCount,
                 GcodeNozzlePath.Kind.TRAVEL.code,
             )
-            if (!pathGeometry.allocate(ribbonWindows, travelBound)) {
-                throw IllegalStateException(
-                    "The device refused the preview's vertex buffers for " + value.moveCount + " moves",
-                )
+            pathWindows = totalWindows
+            val askedWindows = min(capacity.windows, totalWindows).coerceAtLeast(1)
+            val askedTravels = min(capacity.travels, totalTravels).coerceAtLeast(1)
+            val granted = allocateAdaptiveWindows(askedWindows, askedTravels, RibbonBand.MINIMUM_WINDOWS)
+            if (granted <= 0) {
+                throw IllegalStateException(BandAllocator.refusal(askedWindows, RibbonBand.MINIMUM_WINDOWS))
             }
-            val builder = CuraRibbonBuilder(value, beadHeight, beadLineWidth, filamentArea) { fraction ->
-                onBuildProgress?.invoke(fraction)
-            }
-            val staging = RibbonChunkStaging(pathGeometry)
-            builder.build(staging)
-            staging.finish()
-            extrusionPrefix = builder.extrusionPrefix
-            travelPrefix = builder.travelPrefix
-            applyCameraBounds(builder.boundsVertices.toFloatArray(), value)
+            bandCapacityWindows = granted
+            bandCapacityTravels = scaledTravels(askedTravels, askedWindows, granted)
+            grantedWindows = granted
+            applyCameraBounds(extrusionBoundsVertices(value), value)
             buildGrid(value)
             buildMarker()
-            onBuildProgress?.invoke(1f)
-            onBuildFinished?.invoke(null)
+            bandPending = true
             Log.i(
                 TAG,
-                "nozzle-path geometry built: " + value.moveCount + " moves in " +
-                    ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
+                "nozzle-path buffers: asked " + askedWindows + " windows, granted " + granted +
+                    " in " + ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
             )
         } catch (error: Throwable) {
             // Keep the render thread alive and surface the cause in logcat
             // instead of taking the app down.
             Log.e(TAG, "Unable to build nozzle-path buffers", error)
             pathGeometry.release()
+            onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    /**
+     * Builds the band of moves around the scrub into the vertex buffers, every move in the band
+     * drawn, and reports what the preview is holding.
+     */
+    private fun buildBand() {
+        val value = path ?: return
+        bandPending = false
+        if (!pathGeometry.ready || value.moveCount <= 0) return
+        val startedAt = System.nanoTime()
+        try {
+            val anchor = selectedMoveIndex.coerceIn(0, value.moveCount - 1)
+            val range = RibbonBand.plan(
+                value.moves,
+                value.moveCount,
+                anchor,
+                bandCapacityWindows,
+                bandCapacityTravels,
+            )
+            pathGeometry.reuse()
+            val builder = CuraRibbonBuilder(value, beadHeight, beadLineWidth, filamentArea) { fraction ->
+                onBuildProgress?.invoke(fraction)
+            }
+            val staging = RibbonChunkStaging(pathGeometry)
+            builder.build(staging, range.first, range.last + 1)
+            staging.finish()
+            bandFirst = range.first
+            bandLast = range.last + 1
+            bandWindows = builder.extrusionWindows
+            bandTravels = builder.travelSegments
+            bandWindowPrefix = builder.extrusionPrefix
+            bandTravelPrefix = builder.travelPrefix
+            updateBandDraw(anchor)
+            buildMarker()
+            onBuildProgress?.invoke(1f)
+            onBuildFinished?.invoke(null)
+            onPreviewStatus?.invoke(
+                if (bandFirst == 0 && bandLast == value.moveCount) {
+                    "Whole path · " + bandWindows + " windows in the vertex buffers · " + capacity.note
+                } else {
+                    "Banded · the device granted " + grantedWindows + " windows of the " + pathWindows +
+                        " this path needs · moves " + bandFirst + "–" + (bandLast - 1) + " of " +
+                        value.moveCount + " · " + capacity.note
+                },
+            )
+            Log.i(
+                TAG,
+                "nozzle-path band built: moves " + bandFirst + ".." + bandLast + ", windows " + bandWindows +
+                    ", travels " + bandTravels + " in " + ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "Unable to build the nozzle-path band", error)
             onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
         }
     }
@@ -467,6 +543,17 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         if (safe == selectedMoveIndex) return
         selectedMoveIndex = safe
         buildMarker()
+        if (bandNeedsRebuild(safe, current.moveCount)) bandPending = true else updateBandDraw(safe)
+    }
+
+    private fun bandNeedsRebuild(anchor: Int, moveCount: Int): Boolean =
+        RibbonBand.needsRebuild(bandFirst, bandLast, moveCount, anchor)
+
+    /** Points the draw at the band's prefix up to [anchor], which is what the scrub reveals. */
+    private fun updateBandDraw(anchor: Int) {
+        val move = anchor.coerceIn(bandFirst, (bandLast - 1).coerceAtLeast(bandFirst))
+        bandDrawWindows = bandWindowPrefix.getOrElse(move + 1) { bandWindows }.coerceIn(0, bandWindows)
+        bandDrawTravels = bandTravelPrefix.getOrElse(move + 1) { bandTravels }.coerceIn(0, bandTravels)
     }
 
     fun setShowTravels(value: Boolean) {
@@ -568,7 +655,8 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
 
     override fun onDrawFrame(gl: GL10?) {
         try {
-            if (buildPending) buildGeometry()
+            if (buildPending) preparePath()
+            if (bandPending) buildBand()
             drawFrame()
         } catch (error: Throwable) {
             // Render-thread failures must not take the app down.
@@ -581,8 +669,6 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         val current = path ?: return
         val aspect = viewportWidth.toFloat() / viewportHeight
         computeCamera(aspect)
-        val upTo = (selectedMoveIndex + 1).coerceAtMost(extrusionPrefix.size - 1)
-        val ribbonMoveCount = extrusionPrefix[upTo]
 
         drawSolidLines(gridPositions, gridVertexCount, 1f, 0.24f, 0.30f, 0.40f, 0.48f)
         if (pathGeometry.ready) {
@@ -592,12 +678,12 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
             // moire that interpolated normals caused. The clamp is the same
             // guard the Prusa renderer carries: never draw past what was built.
             val litVertices = min(
-                ribbonMoveCount * RibbonPathGeometry.WINDOW_VERTICES,
+                bandDrawWindows * RibbonPathGeometry.WINDOW_VERTICES,
                 pathGeometry.ribbonVertexCount,
             )
             drawLitTrianglesVbo(litVertices)
             if (showTravels) {
-                val travelVertices = min(travelPrefix[upTo] * 2, pathGeometry.travelVertexCount)
+                val travelVertices = min(bandDrawTravels * 2, pathGeometry.travelVertexCount)
                 drawColoredLinesVbo(travelVertices, TRAVEL_WIDTH)
             }
         }

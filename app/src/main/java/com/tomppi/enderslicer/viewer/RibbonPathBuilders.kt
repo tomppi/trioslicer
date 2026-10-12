@@ -47,21 +47,6 @@ internal class CuraRibbonBuilder(
     /** Travel lines emitted up to and including move m. */
     val travelPrefix = IntArray(path.moveCount + 1)
 
-    /**
-     * Two vertices per stored extrusion move, for the percentile-trimmed camera
-     * fit. Sized from the moves themselves, not from the parser's readout: a
-     * merged move can carry the extrusion of the moves folded into it and be
-     * counted as the travel it began as, and a sink that has to grow pays a
-     * doubling copy of its whole contents - on Android, out of the Java heap.
-     */
-    val boundsVertices = DirectFloatSink(
-        RibbonPathGeometry.countKind(
-            path.moves,
-            path.moveCount,
-            GcodeNozzlePath.Kind.EXTRUSION.code,
-        ) * 6,
-    )
-
     /** Windows handed to the staging area; one per retained extrusion move. */
     var extrusionWindows = 0
         private set
@@ -70,7 +55,13 @@ internal class CuraRibbonBuilder(
     var travelSegments = 0
         private set
 
-    fun build(staging: RibbonChunkStaging) {
+    /**
+     * Builds the runs of moves in [firstMove] until [lastMove] - the whole path by default,
+     * or one band of it when the preview only holds the layers around the scrub. The speed
+     * ramp is measured over the WHOLE path either way, so a band's colours do not shift as
+     * the band moves.
+     */
+    fun build(staging: RibbonChunkStaging, firstMove: Int = 0, lastMove: Int = path.moveCount) {
         val source = path.moves
         var minSpeed = Float.POSITIVE_INFINITY
         var maxSpeed = Float.NEGATIVE_INFINITY
@@ -88,11 +79,13 @@ internal class CuraRibbonBuilder(
         var lastReportedMove = 0
         // Paint in contiguous same-kind windows: one window per move, so a long
         // print stays continuous instead of alternating gaps.
-        var moveIndex = 0
-        while (moveIndex < path.moveCount) {
+        var moveIndex = firstMove
+        while (moveIndex < lastMove) {
             if (moveIndex - lastReportedMove >= RibbonPathGeometry.BUILD_PROGRESS_STRIDE) {
                 lastReportedMove = moveIndex
-                onProgress?.invoke((moveIndex.toFloat() / max(path.moveCount, 1)).coerceIn(0f, 1f))
+                onProgress?.invoke(
+                    ((moveIndex - firstMove).toFloat() / max(lastMove - firstMove, 1)).coerceIn(0f, 1f),
+                )
             }
             val windowOffset = moveIndex * GcodeNozzlePath.VALUES_PER_MOVE
             val kind = source[windowOffset + GcodeNozzlePath.KIND]
@@ -109,7 +102,7 @@ internal class CuraRibbonBuilder(
             var firstDy = boundsY2 - boundsY1
             val firstLen = sqrt(firstDx * firstDx + firstDy * firstDy)
             if (firstLen > 1e-7f) { firstDx /= firstLen; firstDy /= firstLen }
-            while (runEnd < path.moveCount &&
+            while (runEnd < lastMove &&
                 source[runEnd * GcodeNozzlePath.VALUES_PER_MOVE + GcodeNozzlePath.KIND] == kind) {
                 val ro = runEnd * GcodeNozzlePath.VALUES_PER_MOVE
                 var ndx = source[ro + GcodeNozzlePath.X2] - source[ro + GcodeNozzlePath.X1]
@@ -119,17 +112,8 @@ internal class CuraRibbonBuilder(
                 runEnd++
             }
             for (m in moveIndex until runEnd) {
-                val o = m * GcodeNozzlePath.VALUES_PER_MOVE
                 extrusionPrefix[m + 1] = extrusionMoves
                 travelPrefix[m + 1] = travelMoves
-                if (kind == GcodeNozzlePath.Kind.EXTRUSION.code) {
-                    boundsVertices += source[o + GcodeNozzlePath.X1]
-                    boundsVertices += source[o + GcodeNozzlePath.Y1]
-                    boundsVertices += source[o + GcodeNozzlePath.Z1]
-                    boundsVertices += source[o + GcodeNozzlePath.X2]
-                    boundsVertices += source[o + GcodeNozzlePath.Y2]
-                    boundsVertices += source[o + GcodeNozzlePath.Z2]
-                }
             }
             val lastOffset = (runEnd - 1) * GcodeNozzlePath.VALUES_PER_MOVE
             val sx = source[windowOffset + GcodeNozzlePath.X1]
@@ -326,15 +310,13 @@ internal class PrusaRibbonBuilder(
     var travelSegments = 0
         private set
 
-    // Camera bounds from the printed part only (extrusion moves).
-    var modelMinX = Float.POSITIVE_INFINITY; private set
-    var modelMaxX = Float.NEGATIVE_INFINITY; private set
-    var modelMinY = Float.POSITIVE_INFINITY; private set
-    var modelMaxY = Float.NEGATIVE_INFINITY; private set
-    var modelMinZ = Float.POSITIVE_INFINITY; private set
-    var modelMaxZ = Float.NEGATIVE_INFINITY; private set
-
-    fun build(staging: RibbonChunkStaging) {
+    /**
+     * Builds the runs of moves in [firstMove] until [lastMove] - the whole path by default, or
+     * one band of it when the preview only holds the layers around the scrub. The speed ramp
+     * is measured over the WHOLE path either way, so a band's colours do not shift as the band
+     * moves.
+     */
+    fun build(staging: RibbonChunkStaging, firstMove: Int = 0, lastMove: Int = path.moveCount) {
         val source = path.moves
         val n = path.moveCount
         var windowCount = 0
@@ -343,7 +325,8 @@ internal class PrusaRibbonBuilder(
         val speedSpan = maxSpeed - minSpeed
         RibbonPathGeometry.forEachWindow(
             source,
-            n,
+            firstMove,
+            lastMove,
             { index -> source[index * PrusaNozzlePath.VALUES_PER_MOVE + PrusaNozzlePath.WIDTH] },
             0f,
             onProgress,
@@ -402,17 +385,6 @@ internal class PrusaRibbonBuilder(
         }
         ribbonWindows = windowCount
         travelSegments = travelCount
-        for (m in 0 until n) {
-            val o = m * PrusaNozzlePath.VALUES_PER_MOVE
-            if (source[o + PrusaNozzlePath.KIND] == PrusaNozzlePath.Kind.EXTRUSION.code) {
-                modelMinX = min(modelMinX, min(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
-                modelMaxX = max(modelMaxX, max(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
-                modelMinY = min(modelMinY, min(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
-                modelMaxY = max(modelMaxY, max(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
-                modelMinZ = min(modelMinZ, min(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
-                modelMaxZ = max(modelMaxZ, max(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
-            }
-        }
     }
 
     /**
@@ -432,4 +404,30 @@ internal class PrusaRibbonBuilder(
             { index -> source[index * PrusaNozzlePath.VALUES_PER_MOVE + PrusaNozzlePath.WIDTH] },
             0f,
         )
+}
+
+/**
+ * Two vertices per stored extrusion move, for the percentile-trimmed camera fit. Computed over
+ * the WHOLE path once per path, so a banded preview still frames the printed part and not the
+ * band it happens to be holding.
+ */
+internal fun extrusionBoundsVertices(path: GcodeNozzlePath): FloatArray {
+    val source = path.moves
+    val count = RibbonPathGeometry.countKind(
+        source,
+        path.moveCount,
+        GcodeNozzlePath.Kind.EXTRUSION.code,
+    )
+    val sink = DirectFloatSink(max(count * 6, 16))
+    for (move in 0 until path.moveCount) {
+        val o = move * GcodeNozzlePath.VALUES_PER_MOVE
+        if (source[o + GcodeNozzlePath.KIND] != GcodeNozzlePath.Kind.EXTRUSION.code) continue
+        sink += source[o + GcodeNozzlePath.X1]
+        sink += source[o + GcodeNozzlePath.Y1]
+        sink += source[o + GcodeNozzlePath.Z1]
+        sink += source[o + GcodeNozzlePath.X2]
+        sink += source[o + GcodeNozzlePath.Y2]
+        sink += source[o + GcodeNozzlePath.Z2]
+    }
+    return sink.toFloatArray()
 }

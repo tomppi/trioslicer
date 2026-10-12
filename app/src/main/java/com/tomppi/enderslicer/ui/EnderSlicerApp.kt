@@ -126,6 +126,7 @@ import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelCutPlane
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapFitParameters
@@ -1823,6 +1824,7 @@ fun EnderSlicerApp(
                         ViewerPanel(
                             state = state,
                             viewerMode = viewerMode,
+                            onPreviewMemoryProfileChange = viewModel::setPreviewMemoryProfile,
                             expandedLayout = expandedLayout,
                             selectedLayerIndex = selectedLayerIndex,
                             modelOrientation = modelOrientation,
@@ -3245,6 +3247,8 @@ private fun MenuSectionLabel(label: String) {
 private fun ViewerPanel(
     state: MainUiState,
     viewerMode: ViewerMode,
+    /** A tap on the path view's memory readout: the next preview memory profile. */
+    onPreviewMemoryProfileChange: (PreviewMemoryProfile) -> Unit,
     /** True on the app's expanded (unfolded) layout; the snap panel splits on it. */
     expandedLayout: Boolean,
     selectedLayerIndex: Int,
@@ -3339,6 +3343,8 @@ private fun ViewerPanel(
                         ?.takeIf { it > 0.0 }
                         ?: state.prusaSettings.firstLayerExtrusionWidthMm?.takeIf { it > 0.0 }
                         ?: state.settings.lineWidthMm,
+                    memoryProfile = state.previewMemoryProfile,
+                    onMemoryProfileChange = onPreviewMemoryProfileChange,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -3347,6 +3353,8 @@ private fun ViewerPanel(
                     beadHeightMm = state.settings.layerHeightMm,
                     beadLineWidthMm = state.settings.lineWidthMm,
                     filamentDiameterMm = state.settings.filamentDiameterMm,
+                    memoryProfile = state.previewMemoryProfile,
+                    onMemoryProfileChange = onPreviewMemoryProfileChange,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

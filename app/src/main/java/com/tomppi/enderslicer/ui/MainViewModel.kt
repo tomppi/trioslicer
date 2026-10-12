@@ -87,6 +87,7 @@ import java.util.Locale
 import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.BedClipper
+import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.MeshBoolean
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.MeshSolidBuilder
@@ -359,6 +360,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prusaEndGcode = stateStore.restorePrusaGcode().second,
             extraCuraSettings = stateStore.restoreExtraCuraSettings(),
             curaMachineId = stateStore.restoreCuraMachine(),
+            previewMemoryProfile = runCatching {
+                PreviewMemoryProfile.valueOf(stateStore.restorePreviewMemoryProfile())
+            }.getOrDefault(PreviewMemoryProfile.AUTO),
             statusMessage = "Restoring saved configuration…",
             isBusy = true,
         ),
@@ -1315,6 +1319,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Switches the Cura definition chain and clears the previous slice, which no longer matches
      * the machine the G-code was built for. The choice is stored, so it survives a restart.
      */
+    /** Chooses the nozzle-path preview's memory profile; stored so it survives a restart. */
+    fun setPreviewMemoryProfile(profile: PreviewMemoryProfile) {
+        if (_uiState.value.previewMemoryProfile == profile) return
+        _uiState.update { it.copy(previewMemoryProfile = profile) }
+        viewModelScope.launch(Dispatchers.IO) { stateStore.savePreviewMemoryProfile(profile.name) }
+    }
+
     fun selectCuraMachine(machineId: String) {
         val current = _uiState.value
         if (current.isBusy || current.curaMachineId == machineId) return

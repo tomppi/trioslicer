@@ -205,6 +205,18 @@ internal class RibbonVboStore : RibbonChunkSink {
         travelSegments += segments
     }
 
+    /**
+     * Empties the counters so the buffers can take another band.
+     *
+     * Banded previews keep the buffers allocated at their capacity and overwrite them from
+     * offset zero for each new band; the GPU allocation happens once per path, not per scrub.
+     */
+    fun reuse() {
+        offsets = IntArray(VBO_COUNT)
+        ribbonWindows = 0
+        travelSegments = 0
+    }
+
     /** Drops the ids of a context that is gone, without touching the new one. */
     fun forget() {
         ids = IntArray(0)
@@ -270,6 +282,31 @@ internal abstract class NozzlePathRendererBase : GLSurfaceView.Renderer {
     protected val FILL_LIGHT = normalize3(-0.62f, 0.30f, 0.55f)
     protected val VIEW_EYE_Y = -0.85f
     protected val VIEW_EYE_Z = 0.53f
+
+    /** The largest band this process has managed to put in the GPU, remembered for the session. */
+    private var sessionCeiling = Int.MAX_VALUE
+
+    /**
+     * Allocates the six vertex buffers at [windows] windows, halving down to [floor] when the
+     * driver refuses. Graphics memory is not free RAM and a driver may refuse a large
+     * allocation, so the number asked for is a hope and the number granted is the fact; what
+     * fitted is remembered so the next path starts there.
+     *
+     * Returns the number of windows granted, or 0 when even the floor was refused.
+     */
+    protected fun allocateAdaptiveWindows(windows: Int, travels: Int, floor: Int): Int {
+        for (attempt in BandAllocator.attempts(windows, floor, sessionCeiling)) {
+            if (pathGeometry.allocate(attempt, BandAllocator.travels(travels, windows, attempt))) {
+                sessionCeiling = kotlin.math.min(sessionCeiling, attempt)
+                return attempt
+            }
+        }
+        return 0
+    }
+
+    /** The travel lines that come with [granted] of the [asked] windows, never none. */
+    protected fun scaledTravels(travels: Int, asked: Int, granted: Int): Int =
+        BandAllocator.travels(travels, asked, granted)
 
     protected fun lineWidth(width: Float) {
         GLES20.glLineWidth(width.coerceAtMost(maxLineWidth))
