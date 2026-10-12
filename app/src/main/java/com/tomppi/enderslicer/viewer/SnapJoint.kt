@@ -212,8 +212,8 @@ object SnapJoint {
                 "is a library shape, and none is loaded: pick one of the eight shapes in the " +
                     "panel, and the app will read it out of its own assets.",
             )
-            return Attempt.Built(
-                SnapLibrary.build(
+            return when (
+                val placed = SnapLibrary.build(
                     pair = pair,
                     axisDirection = axisDirection,
                     anchorMm = anchorMm,
@@ -221,8 +221,14 @@ object SnapJoint {
                     hookHalf = if (forward) lowHalf else highHalf,
                     mateHalf = if (forward) highHalf else lowHalf,
                     hookOnLowHalf = forward,
-                ),
-            )
+                )
+            ) {
+                is SnapLibrary.Outcome.Built -> Attempt.Built(placed.joint)
+                // The place is too short or too shallow for the piece: refused
+                // here, in the build, so the preview, the ghost, the row and
+                // Apply all answer with the same sentence and the same numbers.
+                is SnapLibrary.Outcome.Refused -> Attempt.Refused(placed.reason)
+            }
         }
         return when (style) {
             SnapJointStyle.CANTILEVER -> SnapFit.generate(

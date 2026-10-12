@@ -144,6 +144,50 @@ class SnapLibraryWiringContractTest {
     }
 
     /**
+     * The fit is decided IN the build, with the numbers the build acts on.
+     *
+     * A shape that does not fit the place it is in has to be refused with both
+     * sets of numbers and the lever that fixes it - and the place's room and the
+     * piece's footprint must be read by the same function the build asks before
+     * it places a triangle, or the panel's number is decoration. The room itself
+     * comes off the same cap outline every other feature of the seam is read
+     * from, and the piece measured is the hook, which is the one that has to sit
+     * on the part; the catch is grafted local and takes no room of its own.
+     */
+    @Test
+    fun theFitIsDecidedInsideTheBuildWithTheSameNumbers() {
+        assertTrue(
+            "the build asks the fit before it places a triangle",
+            library.contains("val fit = fitAt(pair, axisDirection, anchorMm, scale, hookHalf, hookOnLowHalf)") &&
+                library.contains("if (fit != null && !fit.fits) return Outcome.Refused(fit.refusal())"),
+        )
+        assertTrue(
+            "and it is the build's own outcome that refuses, so the row, the ghost, " +
+                "the preview and Apply all answer with the one sentence",
+            joint.contains("is SnapLibrary.Outcome.Refused -> Attempt.Refused(placed.reason)"),
+        )
+        assertTrue(
+            "the room is read off the seam's own cap outline, in the halves' own coordinates",
+            library.contains("SnapSeam.room(hookHalf, axisDirection, anchorMm)"),
+        )
+        assertTrue(
+            "the footprint measured is the hook piece's own",
+            library.contains("pair.hookSizeMm"),
+        )
+        assertTrue(
+            "a fit with almost nothing to spare is said out loud, on the joint's own warnings",
+            library.contains("fit?.tightWarning()") &&
+                app.contains("for (warning in one.joint.warnings)"),
+        )
+        assertTrue(
+            "and the refusal names the lever: the largest scale that fits, and the kind of place that would",
+            library.contains("scale it to %.2f") && library.contains("at most, or %s") &&
+                library.contains("place it on a longer run") &&
+                library.contains("place it where the face is deeper"),
+        )
+    }
+
+    /**
      * The catch is grafted local, and the engine is what says the clip produced
      * a closed solid rather than the code assuming it.
      */

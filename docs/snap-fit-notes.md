@@ -280,6 +280,33 @@ mate's own material below the anchor is the ceiling, and a ceiling that bites is
 reported as a clamp with the numbers rather than left to jam. The socket's ramp
 helps the hook along; it does not replace this.
 
+## A library shape is placed, and now measured against the room it is placed in
+
+The bundled shapes are placed, not fitted: their register is the author's, so
+the hook goes where the user puts it and the material has no say. That left one
+failure no other check can see - a hook wider than the face it stands on unions
+a closed solid, grafts a closed catch, closes on its mate, and hangs in the air.
+
+The build now measures the place before it places a triangle. The room is the
+seam's own straight run through the anchor - corner to corner - and the face's
+depth across it, inboard of the rim until the part's own edge or a feature ends
+it; the shape's footprint is the hook piece's own size at the scale being built,
+read against those two directions. Both come off the same cap outline the
+contour, the wall lip's ring and every other feature of the seam are read from,
+and the check runs inside SnapLibrary.build before its first triangle, so the
+row, the ghost, the preview and Apply all answer with the one sentence: both
+sets of numbers, and both levers - the largest scale that would fit and the kind
+of place that would.
+
+The run is measured corner to corner rather than halved at the shorter side: the
+anchor is where the user put the joint, and a face exactly the size of the shape
+has to be placeable on it by hand rather than by a bullseye. The footprint may
+overrun the room by a tenth of a millimetre - a quarter of a nozzle, inside what
+the print itself holds - and a fit that is inside that, or within a millimetre of
+it, is said out loud on the joint's own warning line rather than found out in
+plastic: "the cantilever01 hook fits this place with only 0.1 mm to spare along
+the seam."
+
 ## Still to settle
 
 - The small hook at the upper right of the sketch: the beam's anchor, or a second catch?

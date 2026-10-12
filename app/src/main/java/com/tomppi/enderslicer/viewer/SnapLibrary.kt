@@ -161,6 +161,146 @@ data class SnapLibraryPair(
     val note: String?,
 )
 
+/**
+ * Whether the library's own piece fits the place it has been put in.
+ *
+ * The hook piece is the one that has to sit on the part - the catch is grafted
+ * local to the hook's own reach and takes no room of its own - so the two
+ * numbers that matter are its footprint along the seam and across it, at the
+ * scale it is being built at, against the room the seam gives at the anchor:
+ * how far the edge runs straight either side of it, and how deep the face is
+ * inboard of the rim. Both are read off the same cap outline the joint is built
+ * on, so a number here is a number the build used and not a second opinion.
+ *
+ * A shape that does not fit is REFUSED by name, with both sets of numbers and
+ * the largest scale that would fit, because a hook that hangs off the part is
+ * the one failure the meshes cannot see: the union is closed, the graft is
+ * closed and the pair still closes on itself.
+ */
+data class LibraryFit(
+    /** The shape's own name, for the sentence. */
+    val shapeLabel: String,
+    /** The widest footprint the seam's straight run can hold, centred on the anchor. */
+    val alongMm: Float,
+    /** The face's own depth across the seam, inboard of the rim. */
+    val acrossMm: Float,
+    /** The hook's own footprint at this scale, along the seam. */
+    val needsAlongMm: Float,
+    /** ... and across it. */
+    val needsAcrossMm: Float,
+    /** The scale both of those were read at. */
+    val scale: Float,
+) {
+    /** How much of the run is left over once the hook's own half is on it, along the seam. */
+    private val slackAlongMm: Float get() = alongMm + FIT_TOLERANCE_MM - needsAlongMm
+
+    /** The same across it. */
+    private val slackAcrossMm: Float get() = acrossMm + FIT_TOLERANCE_MM - needsAcrossMm
+
+    /** True when the piece's footprint is inside the room the place gives it. */
+    val fits: Boolean get() = slackAlongMm >= 0f && slackAcrossMm >= 0f
+
+    /** How much room is left over on the tighter of the two sides. */
+    val marginMm: Float get() = minOf(slackAlongMm, slackAcrossMm)
+
+    /** True when it fits, but with less room to spare than a millimetre. */
+    val tight: Boolean get() = fits && marginMm < TIGHT_MARGIN_MM
+
+    /**
+     * The largest scale this place would take the piece at, from the scale it is
+     * on now.
+     *
+     * The room is read with the same tolerance the fit is: a footprint that
+     * overruns its run by a fifth of a millimetre is inside the print's own
+     * resolution, and a suggestion that refused would be worse than no
+     * suggestion at all.
+     */
+    val maxScale: Float
+        get() {
+            val ratios = ArrayList<Float>(2)
+            if (needsAlongMm > FIT_TOLERANCE_MM) {
+                ratios += (alongMm + FIT_TOLERANCE_MM) / needsAlongMm
+            }
+            if (needsAcrossMm > FIT_TOLERANCE_MM) {
+                ratios += (acrossMm + FIT_TOLERANCE_MM) / needsAcrossMm
+            }
+            return scale * (ratios.minOrNull() ?: 1f)
+        }
+
+    /** [maxScale] as the panel prints it: the step it can actually be set to. */
+    val maxScaleLabel: Float get() = kotlin.math.floor(maxScale * 100f) / 100f
+
+    /**
+     * The panel's sentence when the piece does not fit here: what the shape is,
+     * what the place gives, and the two levers - the scale that would fit and
+     * the kind of place that would.
+     */
+    fun refusal(): String {
+        val alongShort = needsAlongMm > alongMm + FIT_TOLERANCE_MM
+        val acrossShort = needsAcrossMm > acrossMm + FIT_TOLERANCE_MM
+        val lever = when {
+            alongShort && acrossShort -> "place it where the seam runs longer and the face is deeper"
+            alongShort -> "place it on a longer run"
+            else -> "place it where the face is deeper"
+        }
+        return String.format(
+            Locale.ROOT,
+            "cannot take the %s hook: it is %.1f mm along the seam and %.1f mm across it, and this " +
+                "face gives %.1f mm along and %.1f mm across: scale it to %.2f\u00d7 at most, or %s.",
+            shapeLabel,
+            needsAlongMm,
+            needsAcrossMm,
+            alongMm,
+            acrossMm,
+            maxScaleLabel,
+            lever,
+        )
+    }
+
+    /** The panel's sentence when it fits, but only just; null when there is room to spare. */
+    fun tightWarning(): String? {
+        if (!tight) return null
+        val along = slackAlongMm <= slackAcrossMm
+        val slack = if (along) slackAlongMm else slackAcrossMm
+        val need = if (along) needsAlongMm else needsAcrossMm
+        val room = if (along) alongMm else acrossMm
+        val side = if (along) "along the seam" else "across it"
+        // At or past the room, the tolerance is the only thing holding it: say
+        // what the two numbers are rather than report "0.0 mm to spare".
+        if (slack < 0.05f) {
+            return String.format(
+                Locale.ROOT,
+                "the %s hook just fits this place %s: %.1f mm of hook against %.1f mm of room",
+                shapeLabel,
+                side,
+                need,
+                room,
+            )
+        }
+        return String.format(
+            Locale.ROOT,
+            "the %s hook fits this place with only %.1f mm to spare %s",
+            shapeLabel,
+            slack,
+            side,
+        )
+    }
+}
+
+/**
+ * How much over the room still counts as fitting.
+ *
+ * A tenth of a millimetre: a quarter of a 0.4 mm nozzle, and inside the
+ * tolerance the print itself comes out to. A hook whose footprint overruns its
+ * run by that much is on the part in every sense that matters; without it the
+ * check would refuse a fit the user cannot tell from a good one, and the
+ * smallest scale the panel can be set to would refuse too.
+ */
+private const val FIT_TOLERANCE_MM = 0.1f
+
+/** Under this much room left over, the fit is said out loud. */
+private const val TIGHT_MARGIN_MM = 1f
+
 /** An axis-aligned box in library millimetres. */
 data class Box3(val minX: Float, val minY: Float, val minZ: Float, val maxX: Float, val maxY: Float, val maxZ: Float) {
     val sizeX: Float get() = maxX - minX
@@ -330,6 +470,64 @@ object SnapLibrary {
      * mating plane goes on the seam's own plane, and every dimension - the
      * clearances included - follows the one scale.
      */
+    /** What placing one library pair came out as. */
+    sealed interface Outcome {
+        data class Built(val joint: SnapFitJoint) : Outcome
+
+        /**
+         * The piece does not fit the place it was put in. [reason] carries both
+         * sets of numbers and the lever, so the panel says what to change rather
+         * than only that it will not build.
+         */
+        data class Refused(val reason: String) : Outcome
+    }
+
+    /**
+     * The fit of [pair]'s hook at [anchorMm] on [hookHalf], read at [scale].
+     *
+     * The build itself asks this before it builds anything, and the panel and
+     * the tests ask the same function, so the numbers cannot drift from the ones
+     * the build acts on. Null when the half has no cap at the seam to measure,
+     * which leaves the build to its own refusal rather than inventing a room.
+     */
+    internal fun fitAt(
+        pair: SnapLibraryPair,
+        /** The split's own assembly direction; the cap is the same cross-section either way. */
+        axisDirection: Vec3,
+        anchorMm: Vec3,
+        scale: Float,
+        hookHalf: SnapFitHalf,
+        hookOnLowHalf: Boolean,
+    ): LibraryFit? {
+        if (!scale.isFinite() || scale <= 0f) return null
+        // The hook's own two axes in the seam's plane: the library's x runs along
+        // the frame's side and its y along the rise, so its footprint is a
+        // rectangle in those directions and its extent along any other is that
+        // rectangle's own support function.
+        val up = if (hookOnLowHalf) axisDirection * -1f else axisDirection
+        val side = SnapFit.perpendicularTo(up)
+        val rise = up.cross(side)
+        val room = SnapSeam.room(hookHalf, axisDirection, anchorMm) ?: return null
+        if (!room.isUsable) return null
+        val size = pair.hookSizeMm
+        val needsAlong = (
+            abs(room.alongDirection.dot(side)) * size.x +
+                abs(room.alongDirection.dot(rise)) * size.y
+            ) * scale
+        val needsAcross = (
+            abs(room.inboardDirection.dot(side)) * size.x +
+                abs(room.inboardDirection.dot(rise)) * size.y
+            ) * scale
+        return LibraryFit(
+            shapeLabel = pair.shape.label,
+            alongMm = room.alongMm,
+            acrossMm = room.acrossMm,
+            needsAlongMm = needsAlong,
+            needsAcrossMm = needsAcross,
+            scale = scale,
+        )
+    }
+
     fun build(
         pair: SnapLibraryPair,
         /** The split's own assembly direction, from the low half towards the high one. */
@@ -339,7 +537,7 @@ object SnapLibrary {
         hookHalf: SnapFitHalf,
         mateHalf: SnapFitHalf,
         hookOnLowHalf: Boolean,
-    ): SnapFitJoint {
+    ): Outcome {
         // The library's own up: from the mate towards the half carrying the hook.
         val up = if (hookOnLowHalf) axisDirection * -1f else axisDirection
         val side = SnapFit.perpendicularTo(up)
@@ -350,6 +548,12 @@ object SnapLibrary {
         val plane = if (hookOnLowHalf) -hookHalf.faceMm else hookHalf.faceMm
         val origin = anchorMm - up * (anchorMm.dot(up) - plane)
         val frame = SnapFitFrame(origin, up, side, rise, origin.dot(up))
+        // The fit, before a single triangle is placed: the hook is the piece that
+        // has to sit on the part, and a place too short or too shallow for it is
+        // refused by name with both sets of numbers rather than built into thin
+        // air - which no closedness, seat or pair check anywhere would see.
+        val fit = fitAt(pair, axisDirection, anchorMm, scale, hookHalf, hookOnLowHalf)
+        if (fit != null && !fit.fits) return Outcome.Refused(fit.refusal())
         val centre = pair.hookCentreMm
         val placeZ = pair.shape.matingPlaneMm
         fun place(mesh: StlMesh, half: SnapFitHalf, name: String): StlMesh =
@@ -358,7 +562,7 @@ object SnapLibrary {
         val catchSolid = place(pair.catchGraft, mateHalf, CATCH_NAME)
         val catchVoid = place(pair.catchVoid, mateHalf, CATCH_VOID_NAME)
         val size = pair.hookSizeMm
-        return SnapFitJoint(
+        return Outcome.Built(SnapFitJoint(
             unionSolid = hookSolid,
             // The library takes nothing out of the hook's half: its plate is
             // unioned on and that is the whole of that half's graft.
@@ -418,8 +622,11 @@ object SnapLibrary {
                 pair.shape.takeIf { it == SnapLibraryShape.TORSION03 }?.let {
                     "The author's own note on this shape is that it needs much improvement."
                 },
+                // It fits, but only just: said here rather than found out in
+                // plastic, because the next smaller face refuses it outright.
+                fit?.tightWarning(),
             ),
-        )
+        ))
     }
 
     /** The shape a joint was built from, or null when it is not a library joint. */
