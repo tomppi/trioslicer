@@ -1806,11 +1806,21 @@ data class SnapFitDimensions(
     val lipDepthExtraMm: Float = 0f,
     /** How wide the user's cuts took their slits out of the ring. */
     val lipCutWidthMm: Float = 0f,
-    /** How far past the mating face those slits' floors ran, into the insert. */
+    /**
+     * How far past the mating face those slits' floors ran, into the insert:
+     * zero when the part's own surface stopped them, which is where they stop.
+     */
     val lipCutDepthMm: Float = 0f,
     /** How many cuts the ring carries, and how many arcs that leaves it in. */
     val lipCuts: Int = 0,
     val lipArcs: Int = 1,
+    /**
+     * True when every cut reached past the ring's root and severed it. False
+     * means the part's own surface stopped the slits short of the root: the ring
+     * is grooved and still one piece, and [lipArcs] says one rather than the
+     * number of cuts.
+     */
+    val lipCutParted: Boolean = true,
     /** The shortest and longest run of wall left between two cuts. */
     val lipShortestRunMm: Float = 0f,
     val lipLongestRunMm: Float = 0f,
@@ -1996,10 +2006,24 @@ data class SnapFitJoint(
      * what tells the user his 45% closed ring is a different spring now.
      */
     val lipCutSummary: String
-        get() = if (dimensions.lipCuts == 0) {
-            "one closed ring - no cuts, and the ledge has no end to bend from"
-        } else {
-            String.format(
+        get() = when {
+            dimensions.lipCuts == 0 ->
+                "one closed ring - no cuts, and the ledge has no end to bend from"
+            // The part's own surface stopped the slits short of the ring's root:
+            // the emboss is interrupted above it while the root below stays
+            // joined, and that is one ring, not one arc per groove.
+            !dimensions.lipCutParted -> String.format(
+                java.util.Locale.ROOT,
+                "%d %s, and the ring is still one piece: every slit stops at the part's own " +
+                    "surface, so the emboss is grooved above it and its root below stays joined - " +
+                    "the grooves run %.1f mm to %.1f mm apart, each %.2f mm wide",
+                dimensions.lipCuts,
+                if (dimensions.lipCuts == 1) "cut" else "cuts",
+                dimensions.lipShortestRunMm,
+                dimensions.lipLongestRunMm,
+                dimensions.lipCutWidthMm,
+            )
+            else -> String.format(
                 java.util.Locale.ROOT,
                 "%d %s, so the ring is %d %s; it runs %.1f mm to %.1f mm between them, " +
                     "each %.2f mm wide and %.2f mm into the insert",
@@ -2149,11 +2173,12 @@ data class SnapFitParameters(
     /** The cut width the user typed, in millimetres, or null for the scaled parameter. */
     val lipCutWidthOverrideMm: Float? = null,
     /**
-     * The wall lip: how deep into the insert's face a cut's slit floor runs,
+     * The wall lip: how deep into the insert's face a cut's slit floor would run,
      * measured above the mating plane. Null means past the ledge's own root and a
-     * little further, which is the shallowest slit that severs the ring; a
-     * number is how deep the user asked for instead, and how much of the insert
-     * the cut frees is what he is buying.
+     * little further, which is the slit that would sever the ring; a number is
+     * how deep the user asked for instead. Either way the geometry stops the
+     * floor at the part's own surface - the roof the emboss stands on - because a
+     * cut past it grooves the model's own face.
      */
     val lipCutDepthMm: Float? = null,
 ) {

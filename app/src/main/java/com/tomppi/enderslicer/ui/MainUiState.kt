@@ -222,7 +222,11 @@ data class MainUiState(
     /** The wall the lip's ring leaves, and how far its recess goes past the step. */
     val snapLipWallMm: Float? = null,
     val snapLipDepthMm: Float? = null,
-    /** How wide and how deep a cut takes the insert's ledge ring, and whether one is armed. */
+    /**
+     * How wide a slit a cut takes and how deep it would run into the insert, and
+     * whether one is armed. The geometry stops every slit at the part's own
+     * surface whatever the depth asks for.
+     */
     val snapLipCutWidthMm: Float? = null,
     val snapLipCutDepthMm: Float? = null,
     val snapCuttingWall: Boolean = false,

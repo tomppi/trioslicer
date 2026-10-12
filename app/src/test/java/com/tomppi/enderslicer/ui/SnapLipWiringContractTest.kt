@@ -224,6 +224,18 @@ class SnapLipWiringContractTest {
                 store.contains("\"lipCutDirections\""),
         )
         assertTrue(
+            "the readout tells the truth about a ring the part's own surface left joined",
+            source("viewer/SnapFit.kt").contains("!dimensions.lipCutParted") &&
+                source("viewer/SnapFit.kt").contains("still one piece") &&
+                source("viewer/SnapLip.kt").contains("lipCutParted = allParted") &&
+                source("viewer/SnapLip.kt").contains("ROOF_STANDOFF_MM") &&
+                source("viewer/SnapLip.kt").contains("private fun roofAt("),
+        )
+        assertTrue(
+            "and the depth clamp says the slit stops at the part's own surface",
+            source("viewer/SnapLip.kt").contains("would run past the roof the emboss stands on"),
+        )
+        assertTrue(
             "the workspace descriptor keeps every one of the lip's choices, not just the first two",
             viewModel.contains("lipCuts = joint.lipCuts") &&
                 viewModel.contains("lipCutDirections = joint.lipCutDirections") &&

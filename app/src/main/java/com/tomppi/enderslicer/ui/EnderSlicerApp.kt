@@ -4236,11 +4236,11 @@ private val LIP_DEPTH_RANGE = 0f..8f
 private val LIP_CUT_RANGE = 0.3f..2f
 
 /**
- * How deep a cut's slit runs below the mating face. Through the whole band is the
- * default and the top end is generous: how much of the wall is freed is what the
- * user is buying, and the part's own material is the real ceiling.
+ * How deep into the insert a cut's slit would run. Zero is at the part's own
+ * surface, which is where every slit stops whatever is asked - the top end is
+ * only how far past it the ask goes before the geometry refuses to follow.
  */
-private val LIP_CUT_DEPTH_RANGE = 0.5f..8f
+private val LIP_CUT_DEPTH_RANGE = 0f..8f
 
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f
@@ -4380,8 +4380,9 @@ private fun SnapToolbar(
     val lipCutWidth = state.snapSelectedSpec?.lipCutWidthMm
         ?: state.snapLipCutWidthMm
         ?: (defaults.lipCutWidthMm * state.snapScale)
-    // The depth has no scaled default: null is the ring's own band, so what the
-    // row shows when nothing is set is the depth the shown joint was built with.
+    // The depth has no scaled default: null is the part's own surface, so what
+    // the row shows when nothing is set is the depth the shown joint built with -
+    // zero when the surface stopped the slits there, which is the usual case.
     val lipCutDepth = state.snapSelectedSpec?.lipCutDepthMm
         ?: state.snapLipCutDepthMm
         ?: shown?.joint?.dimensions?.lipCutDepthMm
@@ -5086,9 +5087,10 @@ private fun SnapHookGroup(
             valueText = "%.2f mm".format(lipCutWidth),
             onValueChangeFinished = actions.onCommit,
         )
-        // How deep into the insert's face the slits' floors run. Past the ledge's
-        // root is the default and the shallowest that severs the ring; a deeper
-        // one frees more of the insert, which is what the user is buying.
+        // How deep into the insert's face the slits would run. Past the ledge's
+        // root is what severs the ring, but the part's own surface - the roof the
+        // emboss stands on - stops every slit there whatever this says, and the
+        // clamp line below tells the user when it did.
         CompactSliderRow(
             label = "Cut depth",
             value = lipCutDepth,

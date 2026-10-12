@@ -47,9 +47,9 @@ data class SnapJointSpec(
     /** How wide a slit a cut takes out of the lip's ring, or null for the scale's own. */
     val lipCutWidthMm: Float? = null,
     /**
-     * How deep into the insert's face a cut's slit floor runs, or null for past
-     * the ledge's own root. How much of the insert's ring the cut frees is what
-     * the user is buying with it.
+     * How deep into the insert's face a cut's slit floor would run, or null for
+     * the ledge's own root. The part's own surface caps it either way, because a
+     * cut past the roof the emboss stands on would groove the model's own face.
      */
     val lipCutDepthMm: Float? = null,
     /** Where the user cut the lip's ring, in the pair's own coordinates. */

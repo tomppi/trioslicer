@@ -446,33 +446,21 @@ object SnapLip {
         // The ledge is a protrusion on solid material, so the ring can be opened
         // there without cutting anybody's skin. A closed ring is the stiffest
         // shape there is; each cut gives the ledge a free end.
+        //
+        // Where the slit STOPS is the part's own surface: the roof the emboss
+        // protrudes from. A cut that runs past it grooves the model's own face,
+        // which is what the user sees, so the floor is capped there whatever
+        // depth is asked for - and where that leaves the ring's root buried, the
+        // ring is grooved rather than parted, and the readout says so.
         val cutWidth = parameters.lipCutWidthOverrideMm ?: parameters.lipCutWidthMm * scale
         if (!cutWidth.isFinite() || cutWidth <= 0f) {
             return Outcome.Refused("cannot be built: the cut's width must be a positive number.")
         }
-        // How deep into the insert the slits' floors go, measured above the
-        // mating face: past the ledge's root by default, and never less than a
-        // slit that severs the ring. The root is ROOT_MM into the mate's face, so
-        // a shallower ask would leave the ledge joined to the insert.
+        // What the user asked the slit's floor to do: past the ring's root by
+        // default, which is the deepest slit the ring itself needs. The part's
+        // own surface caps it below.
         val depthFloor = ROOT_MM + CUT_MARGIN_MM
-        val cutDepth = if (cutDepthAsked == null || !cutDepthAsked.isFinite()) {
-            depthFloor
-        } else {
-            max(cutDepthAsked, depthFloor)
-        }
-        if (cutDepthAsked != null && cutDepthAsked.isFinite() &&
-            cutDepthAsked < depthFloor - CLAMP_EPSILON_MM
-        ) {
-            clamps += SnapFitClamp(
-                label = "cut depth",
-                askedMm = cutDepthAsked,
-                actualMm = cutDepth,
-                reason = "a cut shallower than " + millimetres(depthFloor) +
-                    " mm would leave the ledge ring joined to the insert, so the slits run " +
-                    millimetres(cutDepth) + " mm into it rather than the " + millimetres(cutDepthAsked) +
-                    " mm asked for",
-            )
-        }
+        val depthAsked = cutDepthAsked?.takeIf { it.isFinite() } ?: depthFloor
         val ringLength = perimeterOf(wallFace)
         // The ring's own centre in the seam plane: the point the automatic
         // bisector is chosen to face, and the sign a bend's two bisectors are
@@ -481,6 +469,13 @@ object SnapLip {
         val placed = ArrayList<CutPlacement>()
         val cutFaces = ArrayList<Array<Vec3>>()
         var cutCount = 0
+        // Whether every cut reached past the ring's root and severed it: where the
+        // part's own surface stops a slit short of the root, the ring is grooved
+        // rather than parted and the arc count has to say one ring, not N.
+        var allParted = true
+        // The deepest floor any slit reached, for the readout: the part's own
+        // surface when it capped them, and zero while there are no cuts.
+        var deepestFloor = 0f
         if (cuts.isNotEmpty()) {
             for ((index, cut) in cuts.withIndex()) {
                 if (!cut.isFinite()) {
@@ -531,6 +526,45 @@ object SnapLip {
                     )
                 }
             }
+            for (at in placed.indices) {
+                val placement = placed[at]
+                // The roof the emboss stands on, read at this cut's own footprint:
+                // the slit may reach it and go no further, so the model's own
+                // surface keeps the shape it had and only the emboss above it is
+                // opened.
+                val roofMm = roofAt(
+                    mateHalf = mateHalf,
+                    direction = direction,
+                    side = side,
+                    rise = rise,
+                    origin = origin,
+                    point = placement.point,
+                    reachMm = (plugOuter + CUT_MARGIN_MM) * placement.stretch + cutWidth,
+                )
+                val floor = min(depthAsked, roofMm - ROOF_STANDOFF_MM)
+                val parted = floor >= ROOT_MM - CLAMP_EPSILON_MM
+                if (!parted) allParted = false
+                deepestFloor = max(deepestFloor, floor)
+                placed[at] = placement.copy(floorMm = floor, parted = parted)
+            }
+            if (cutDepthAsked != null && cutDepthAsked.isFinite() &&
+                cutDepthAsked > deepestFloor + CLAMP_EPSILON_MM
+            ) {
+                clamps += SnapFitClamp(
+                    label = "cut depth",
+                    askedMm = cutDepthAsked,
+                    actualMm = max(0f, deepestFloor),
+                    reason = "a cut " + millimetres(cutDepthAsked) +
+                        " mm into the insert would run past the roof the emboss stands on, so the " +
+                        "slit stops at the part's own surface" +
+                        (if (allParted) {
+                            " and the ring is severed there"
+                        } else {
+                            " and the ring is grooved there rather than parted, because its root " +
+                                "sits below that surface"
+                        }) + ".",
+                )
+            }
             for (placement in placed) {
                 addCutSlit(
                     faces = cutFaces,
@@ -543,16 +577,17 @@ object SnapLip {
                     // The slit spans the ledge's whole cross-section and no more:
                     // outward it stops short of the wall the mate's skin is, inward
                     // it passes the ring's plug, and along the axis it reaches from
-                    // below the ledge's own bottom up to its floor in the insert.
+                    // below the ledge's own bottom up to its floor - at the part's
+                    // own surface rather than past it.
                     fromMm = clearance - CUT_MARGIN_MM,
                     toMm = (plugOuter + CUT_MARGIN_MM) * placement.stretch,
                     bottomMm = rampBack - CUT_MARGIN_MM,
-                    topMm = cutDepth,
+                    topMm = placement.floorMm,
                 )
             }
             cutCount = placed.size
         }
-        val arcs = if (cutCount == 0) 1 else cutCount
+        val arcs = if (cutCount == 0) 1 else if (allParted) cutCount else 1
         var shortestRun = ringLength
         var longestRun = 0f
         if (cutCount == 0) {
@@ -627,9 +662,12 @@ object SnapLip {
             lipSamples = samples.size,
             lipWorstAtMm = reading.maxStrainAtMm,
             lipCutWidthMm = cutWidth,
-            lipCutDepthMm = cutDepth,
+            // How deep the slits' floors went past the mating face: zero when they
+            // stopped at the part's own surface, which is where they stop.
+            lipCutDepthMm = max(0f, deepestFloor),
             lipCuts = cutCount,
             lipArcs = arcs,
+            lipCutParted = allParted,
             lipShortestRunMm = shortestRun,
             lipLongestRunMm = longestRun,
         )
@@ -954,7 +992,7 @@ object SnapLip {
     }
 
     /** Where a cut landed on the ring: how far along it, and the direction there. */
-    private class CutPlacement(
+    private data class CutPlacement(
         /** Millimetres along the closed contour from its first point. */
         val distanceMm: Float,
         val point: P2,
@@ -967,6 +1005,13 @@ object SnapLip {
          * to reach that much further in to sever the ring there.
          */
         val stretch: Float,
+        /**
+         * Where the slit's floor stopped along the axis, from the joint's plane:
+         * the part's own surface, never past it.
+         */
+        val floorMm: Float = 0f,
+        /** True when the slit reached past the ring's root and severed it there. */
+        val parted: Boolean = false,
     )
 
     /** The direction a slit is taken in at a bend, with the corner's own stretch. */
@@ -1179,6 +1224,49 @@ object SnapLip {
             faces += arrayOf(quad[0], quad[1], quad[2])
             faces += arrayOf(quad[0], quad[2], quad[3])
         }
+    }
+
+    /**
+     * The mate's own surface along the axis at one cut: where the material the
+     * emboss protrudes from begins, read from the mate's own mesh within the
+     * slit's footprint, so a step or a sunken face is respected rather than
+     * assumed away. The two halves meet on that surface, so where the mesh is
+     * too coarse to say - a plain block has no vertex anywhere near the middle
+     * of its face - the joint's own plane is the answer, and it is the right one
+     * there. The result is never deeper than that plane: the part's surface is
+     * where its material starts.
+     */
+    private fun roofAt(
+        mateHalf: SnapFitHalf,
+        direction: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        point: P2,
+        reachMm: Float,
+    ): Float {
+        val along = mateHalf.probe(direction) ?: return 0f
+        val across = mateHalf.probe(side) ?: return 0f
+        val through = mateHalf.probe(rise) ?: return 0f
+        val plane = origin.dot(direction)
+        val centreSide = origin.dot(side) + point.x
+        val centreRise = origin.dot(rise) + point.y
+        val reachSquared = reachMm * reachMm
+        val vertices = mateHalf.mesh.interleavedVertices
+        val stride = MeshSolidBuilder.FLOATS_PER_VERTEX
+        var roof = Float.MAX_VALUE
+        for (vertex in 0 until mateHalf.mesh.triangleCount * 3) {
+            val at = vertex * stride
+            val x = vertices[at]
+            val y = vertices[at + 1]
+            val z = vertices[at + 2]
+            val dx = across(x, y, z) - centreSide
+            val dy = through(x, y, z) - centreRise
+            if (dx * dx + dy * dy > reachSquared) continue
+            roof = min(roof, along(x, y, z) - plane)
+        }
+        if (roof == Float.MAX_VALUE) return 0f
+        return min(roof, 0f)
     }
 
     /**
@@ -1790,6 +1878,14 @@ object SnapLip {
 
     /** How far past the wall and the recess floor a slit reaches, so it cuts clean through. */
     private const val CUT_MARGIN_MM = 0.3f
+
+    /**
+     * How far above the part's own surface a slit's floor stops: a hair, so the
+     * surface face itself is never cut into and the roof keeps the shape it had,
+     * while the emboss above it comes apart. Twenty microns is under any
+     * printer's resolution and under the boolean engine's own tolerance.
+     */
+    private const val ROOF_STANDOFF_MM = 0.02f
 
     /** How near a bend the slit takes its direction from the bend's own bisector. */
     private const val BEND_REACH_MM = 1.2f

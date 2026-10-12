@@ -2628,11 +2628,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * How deep into the insert's face the cuts' slit floors run, in millimetres;
-     * null hands it to the ring's own root, which is the shallowest slit that
-     * severs the ledge. How much of the insert's ring a cut frees is what the
-     * user is buying here, and the geometry never takes less than a slit through
-     * the root however shallow the ask.
+     * How deep into the insert's face the cuts' slit floors would run, in
+     * millimetres; null hands it to the ring's own root, which is the slit that
+     * would sever the ledge. The part's own surface is the limit either way: a
+     * cut past the roof the emboss stands on would groove the model's own face,
+     * so the geometry stops there and the readout says whether that left the
+     * ring grooved or parted.
      */
     fun setSnapLipCutDepth(millimetres: Float?) {
         if (millimetres != null && !millimetres.isFinite()) return
