@@ -4,6 +4,113 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-10-12
+
+### Added
+
+- **A library of ready-made snap joints, placed by tapping.** The snap panel's Setup column gains a
+  third style beside the cantilever and the wall lip: **Library hook**. Eight shapes ship with the
+  app - cantilever01/02, cantileverRidgid, separable, separable02, annular, annularContinuous and
+  torsion03 - from kaje's *Snap-Fit Joint Test Prints* (Public Domain), the prints that came out of
+  MIT's *Snap-Fit Joints for Plastics* design guide. Pick a shape, tap the model, and the pair lands
+  with its own mating plane on the seam's; the half you choose takes the hook and the mate takes the
+  catch, grafted **locally** - the housing clipped to the hook's own reach, the mate's material
+  inside that box replaced rather than buried. One **Scale** slider moves both pieces together, so
+  the library's register survives every size; the pair's own smallest clearance is measured at load
+  and reported at the scale in force, with a warning under 0.15 mm where no FDM printer will hold
+  it; and the panel says plainly that the spring is the author's, so no strain figure is invented
+  for a shape the app did not design.
+- **Wall cuts: the ring can be opened at the bends.** A cut is a slit through the lip half's ring at
+  one place - the wall's material and the tooth on it - **placed by tapping** ("Cut wall" arms it,
+  the tap drops the point onto the nearest place on the seam, a bend taken across its own bisector)
+  or **with one swipe**, whose own direction orients the slit. **Cut every bend** puts one cut on
+  every corner in one go, sharpest first; a contour with no real bends gets exactly two, half the
+  ring apart. A **Cut depth** row says how deep the slit runs, and a slit stops at the part's own
+  surface - twenty microns above it - whatever depth is asked, so the roof the emboss stands on is
+  never cut into. The readout says what the ring is now: the cuts, the arcs, the runs between them,
+  and, when the root below the surface keeps the ring joined, that it is **grooved rather than
+  parted** instead of counting arcs the mesh does not have.
+- **The joint move is a gizmo, one axis at a time.** Pressing **Move** raises the same axis arrows
+  the plate's own move draws on the selected joint; pressing it again puts them away. A drag counts
+  only if it began on an arrow, and then **only that axis moves** - X in X, Y in Y, Z in Z - with
+  the held arrow lit and the others stepped back, driven by the state rather than the drawing. **Z
+  is the joint's depth along the seam's axis**: a value of the joint's record, read by the build
+  through the same per-joint parameters as every other value, named in the panel, and clamped to
+  the material so a plane cannot be carried out of the part.
+- **The ring's own wall and depth are yours to set.** For the wall lip, **Wall** is the thickness
+  the ring leaves where the part is solid - thin bends more easily, thick is stiffer, and the strain
+  line is computed over whatever it ends up being - and **Depth** is how far the recess floor is cut
+  past the step the tooth and its ramp need. Both are per joint and both round-trip in the record.
+
+### Changed
+
+- **Every G-code reader that draws now draws everything it read.** The app reads G-code for display
+  in four places and none of them samples any more: the Path tab's Cura parser, the Path tab's
+  PrusaSlicer and OrcaSlicer parser, and the Layers tab's parser for all three dialects. A budget
+  may only **fold** a move into the run it genuinely continues - the same kind of move, the same
+  direction, within a tenth of a millimetre of the run's line - and every source move is covered
+  exactly once. A skipped move is a hole in a wall, which is what this rule exists to prevent; it
+  now holds for the move a run *closes* at as well as for the ones folded inside it.
+- **The previews hold what the device grants, not a constant.** **Auto**, the default, is unlocked:
+  capacity is derived from the device's free RAM and heap class, so a phone with memory to spare
+  folds nothing and can hold the whole path - the reported 0.08 mm PrusaSlicer print is 2,398,458
+  moves and 2,353,134 paths, held whole on an 8 GB phone. **Low memory** keeps the old conservative
+  figures (400,000/1,000,000 moves, a 200,000-window band, an 800,000-segment cap) and is chosen
+  automatically on a low-RAM device. The readout names the profile in force and what it bought, and
+  a tap changes it. A driver that refuses an allocation halves the band or the window until
+  something fits, remembering what fitted; only a refused floor ends in a named refusal, and that
+  sentence carries both numbers. Whatever the profile, no move is ever skipped: a low-memory phone
+  gets a coarser preview, never a lossier print.
+- **The whole-path buffers are gone.** The ribbon is built a chunk at a time into small direct
+  buffers and uploaded to the GPU as it is built, so the Java heap no longer carries a print's
+  geometry. The Path tab used to die on a single 168 MB allocation for a 586-layer print; the
+  graphics memory that replaces it is what the profile is sized against.
+- **A PrusaSlicer or OrcaSlicer slice publishes from this app.** Object labels are text: a quoted
+  name is no longer scanned for parameters, and **M486** accepts Marlin's whole set - so the engine's
+  own firmware labelling passes the published-G-code policy, the labels reach the file, and that
+  setting no longer has to be changed by hand before slicing.
+
+### Fixed
+
+- The wall lip's **Wall** and **Depth** were wired everywhere except the parameters the build reads,
+  so the sliders moved, the readout kept the old joint, and Apply staged geometry nobody asked for.
+- The wall lip's step line printed its format string instead of its numbers.
+- A cut ran **along** the wall instead of across it at most bends, leaving the ring joined exactly
+  where it was meant to be opened.
+- A cut landed on the half whose ring is the part's own outer skin; cuts now sever only the ring that
+  is a protrusion on the embossed insert, and the other half comes out of the tool untouched.
+- A library hook could be placed where it could not fit - a 10.2 mm hook on a 10.0 mm face, hanging
+  five millimetres into air. It is now refused by name with the shape's numbers, the place's numbers
+  and the scale that would fit.
+- The Path tab drew slivers across the part and a fan of chords at one place: folded runs closed at
+  moves that did not continue them, so beads spanned travels and chords cut corners.
+- The Layers tab drew one path in three spread across the whole print past its cap, so a single
+  layer came out sparse - the reported print's densest layer showed 1,700 of its 5,001 paths - and
+  the renderer sampled a second time on top of it. Every count the tab shows is now the source count.
+- **Build-up collapsed to one layer.** The layer window was remembered between selections as a
+  session ceiling, and the window near the start of a print is small because the print ends there -
+  that small number then capped every later selection while gigabytes were free. The window is
+  re-planned for every selection, only a refused allocation halves it, and a reduced window says so
+  with both numbers.
+- The workspace descriptor dropped the wall lip's sizes, cuts and directions, so a relaunch silently
+  re-tuned a joint.
+
+### Notes
+
+- **No printed pair has been clicked together yet.** All three joint styles - the cantilever placed
+  at a tap, the wall lip's ring and its cuts, and the library hooks - are verified in the app, in the
+  geometry they build and in the meshes they produce, not in plastic. Treat the first print as a
+  test: **Engage**, **Wall** and **Depth** are the numbers to move, and a drooping undercut prints
+  deeper than drawn.
+- **The library hooks are scaled.** They are designed at about 20 mm with deliberately tight fits
+  (0.003 to 0.067 mm between the pieces at 1:1); scaling them down scales those clearances with them,
+  and below 1:1 they stop being the joint the author tested. The panel warns under 0.15 mm. The two
+  round shapes need a round seam of about their own size - the app refuses them on a solid one, by
+  name and with the volume it measured.
+- **A preview costs about 792 bytes of graphics memory per drawn move.** The app asks the device what
+  it can afford and says which profile it is in: a phone with RAM to spare holds the whole path, and
+  one without draws a band or a window around the scrub.
+
 ## [1.9.1] - 2026-10-11
 
 ### Added
