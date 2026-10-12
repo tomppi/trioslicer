@@ -131,12 +131,21 @@ object SnapLip {
         /**
          * Where the user cut the ring, in the two halves' own coordinates: each
          * is dropped onto the nearest point of the seam's contour and a slit the
-         * cut width wide is taken out of the LIP half there, through the wall and
-         * the tooth that stands on it. The ring stops being a closed O and
-         * becomes that many arcs, which is what gives the wall an end to bend
-         * from. Empty is the joint exactly as it was.
+         * cut width wide is taken out of the MATE's ledge ring there - the
+         * embossed protrusion on the insert - and never out of the half whose
+         * tooth stands on its own wall, because that wall is the part's skin. The
+         * ledge stops being a closed O and becomes that many arcs, which is what
+         * gives it the free ends the joint is after. Empty is the joint exactly
+         * as it was.
          */
         cuts: List<Vec3> = emptyList(),
+        /**
+         * The direction each cut's slit runs in, in the same frame as [cuts] and
+         * lined up with it: a stroke across the wall gives its own slit a
+         * direction, and an entry that is absent, zero, or points along the
+         * assembly axis leaves that cut the automatic inward bisector.
+         */
+        cutDirections: List<Vec3> = emptyList(),
     ): Outcome {
         if (!axis.isFinite() || !anchorMm.isFinite() || !scale.isFinite() || scale <= 0f) {
             return Outcome.Refused("cannot be built: the split's axis or the tap is not a real place.")
@@ -353,10 +362,11 @@ object SnapLip {
         )
         if (reading.hollowSamples * 10 >= samples.size * 9) {
             return Outcome.Refused(
-                "cannot be built: the other half is hollow just inboard of the wall the whole way " +
-                    "round the seam (its material ends " + millimetres(reading.hollowEndMm) +
-                    " mm in at its best), and the ring's ledge has nothing solid to stand on. Use the " +
-                    "cantilever here.",
+                "cannot be built: the half chosen as the insert is hollow just inboard of the wall " +
+                    "the whole way round the seam (its material ends " + millimetres(reading.hollowEndMm) +
+                    " mm in at its best), so its ledge ring has nothing solid to stand on and a cut " +
+                    "there would have only the part's own skin to open. Choose the other half as the " +
+                    "insert, or use the cantilever here.",
             )
         }
         val warnings = ArrayList<String>()
@@ -428,34 +438,64 @@ object SnapLip {
             ?: return Outcome.Refused("cannot be built: the ledge ring folds through itself on this edge.")
 
         // ------------------------------------------------------------- the cuts
-        // A cut is a slit straight through the lip half's ring: the wall's own
-        // material and the tooth standing on it, from the mating face down to the
-        // recess floor and through the wall's whole thickness. The mate is not
-        // touched - its ledge is on solid material and is not what flexes. A
-        // closed ring is the stiffest shape there is; each cut gives the wall a
-        // free end, and that is the whole point of them.
+        // A cut is a slit through the LEDGE ring - the embossed ring standing
+        // proud of the insert's mating face - and the insert is the MATE, never
+        // the half the tooth stands on. The tooth is rooted in its half's own
+        // wall, and that wall is the part's outer skin: slitting it would open
+        // the visible outside of the part, which must stay one unbroken wall.
+        // The ledge is a protrusion on solid material, so the ring can be opened
+        // there without cutting anybody's skin. A closed ring is the stiffest
+        // shape there is; each cut gives the ledge a free end.
         val cutWidth = parameters.lipCutWidthOverrideMm ?: parameters.lipCutWidthMm * scale
         if (!cutWidth.isFinite() || cutWidth <= 0f) {
             return Outcome.Refused("cannot be built: the cut's width must be a positive number.")
         }
-        // How far below the mating face the slits run: through the whole band by
-        // default, and never less than a slit that severs the wall.
+        // How deep into the insert the slits' floors go, measured above the
+        // mating face: past the ledge's root by default, and never less than a
+        // slit that severs the ring. The root is ROOT_MM into the mate's face, so
+        // a shallower ask would leave the ledge joined to the insert.
+        val depthFloor = ROOT_MM + CUT_MARGIN_MM
         val cutDepth = if (cutDepthAsked == null || !cutDepthAsked.isFinite()) {
-            recessDepth + CUT_MARGIN_MM
+            depthFloor
         } else {
-            max(cutDepthAsked, wall + CUT_MARGIN_MM)
+            max(cutDepthAsked, depthFloor)
+        }
+        if (cutDepthAsked != null && cutDepthAsked.isFinite() &&
+            cutDepthAsked < depthFloor - CLAMP_EPSILON_MM
+        ) {
+            clamps += SnapFitClamp(
+                label = "cut depth",
+                askedMm = cutDepthAsked,
+                actualMm = cutDepth,
+                reason = "a cut shallower than " + millimetres(depthFloor) +
+                    " mm would leave the ledge ring joined to the insert, so the slits run " +
+                    millimetres(cutDepth) + " mm into it rather than the " + millimetres(cutDepthAsked) +
+                    " mm asked for",
+            )
         }
         val ringLength = perimeterOf(wallFace)
+        // The ring's own centre in the seam plane: the point the automatic
+        // bisector is chosen to face, and the sign a bend's two bisectors are
+        // told apart by.
+        val ringCentre = contourCentre(wallFace)
         val placed = ArrayList<CutPlacement>()
         val cutFaces = ArrayList<Array<Vec3>>()
         var cutCount = 0
         if (cuts.isNotEmpty()) {
-            for (cut in cuts) {
+            for ((index, cut) in cuts.withIndex()) {
                 if (!cut.isFinite()) {
                     return Outcome.Refused("cannot be built: one of the cuts is not a real place.")
                 }
                 val local = P2((cut - origin).dot(side), (cut - origin).dot(rise))
-                val placement = nearestOnRing(wallFace, local, cutWidth * 0.5f)
+                // A stroke's own direction, flattened into the seam plane: the
+                // slit runs across the stroke, so this is the direction its
+                // narrow width follows. A stroke straight along the assembly
+                // axis has no direction in this plane and leaves the cut the
+                // automatic inward bisector.
+                val asked = cutDirections.getOrNull(index)
+                    ?.takeIf { it.isFinite() }
+                    ?.let { P2(it.dot(side), it.dot(rise)).unit() }
+                val placement = nearestOnRing(wallFace, local, cutWidth * 0.5f, ringCentre, asked)
                     ?: return Outcome.Refused(
                         "cannot be built: a cut is not on the seam's own edge, so there is nothing " +
                             "there to cut.",
@@ -483,9 +523,9 @@ object SnapLip {
                 }
                 if (gap - cutWidth < 2f * MIN_WALL_RUN_MM) {
                     return Outcome.Refused(
-                        "cannot be built: the stretch of wall between two cuts is " + millimetres(gap) +
+                        "cannot be built: the stretch of ring between two cuts is " + millimetres(gap) +
                             " mm, and a " + millimetres(cutWidth) + " mm slit leaves only " +
-                            millimetres(max(0f, gap - cutWidth)) + " mm of wall there - under the " +
+                            millimetres(max(0f, gap - cutWidth)) + " mm of ring there - under the " +
                             millimetres(2f * MIN_WALL_RUN_MM) + " mm two ends need to stand. Move a " +
                             "cut, or make the cut narrower.",
                     )
@@ -500,12 +540,14 @@ object SnapLip {
                     side = side,
                     rise = rise,
                     origin = origin,
-                    cutDepth = cutDepth,
-                    // The slit reaches the tooth's own tip and no further inboard:
-                    // it cuts the wall and what stands on it, never the material
-                    // behind them. The mate is a different half and is never cut.
-                    innerMm = tip + clearance + CUT_MARGIN_MM,
-                    wall = wall,
+                    // The slit spans the ledge's whole cross-section and no more:
+                    // outward it stops short of the wall the mate's skin is, inward
+                    // it passes the ring's plug, and along the axis it reaches from
+                    // below the ledge's own bottom up to its floor in the insert.
+                    fromMm = clearance - CUT_MARGIN_MM,
+                    toMm = (plugOuter + CUT_MARGIN_MM) * placement.stretch,
+                    bottomMm = rampBack - CUT_MARGIN_MM,
+                    topMm = cutDepth,
                 )
             }
             cutCount = placed.size
@@ -598,15 +640,16 @@ object SnapLip {
                 subtractSolid = SnapFit.placeOnPlate(recess, lipHalf, RECESS_NAME),
                 registrationSolid = SnapFit.placeOnPlate(ledge, mateHalf, LEDGE_NAME),
                 registrationRecess = MeshSolidBuilder(LEDGE_NAME).build(),
-                // The slits are cut after the tooth is unioned on: a cut taken
-                // before it would be bridged by the tooth standing over it.
+                // The slits are the MATE's: they are taken out of the insert after
+                // its ledge is unioned on, and the tooth's own half is never cut.
+                // A slit taken before the ledge stood there would be bridged by it.
                 cutSolid = if (cutCount == 0) {
                     null
                 } else {
                     SnapFit.placeOnPlate(cutSolidOf(cutFaces) ?: return Outcome.Refused(
                         "cannot be built: the cuts came out inside-out and would add material " +
                             "instead of taking it away.",
-                    ), lipHalf, CUT_NAME)
+                    ), mateHalf, CUT_NAME)
                 },
                 frame = SnapFit.placeFrame(lipHalf, frame),
                 socketFrame = SnapFit.placeFrame(mateHalf, frame),
@@ -807,10 +850,16 @@ object SnapLip {
     }
 
     /**
-     * The seam contour's own corners, in the halves' own coordinates: what the
-     * every-bend action cuts. They are the outer edge's corners, and each one
-     * lands on the wall's face at the same bend when the cut is dropped onto the
-     * ring.
+     * Where the every-bend action cuts, in the halves' own coordinates.
+     *
+     * A bend is a corner whose two edges TURN by more than a sliver's worth. The
+     * list is ordered by how sharp the turn is, sharpest first, because the rule
+     * is to cut at the big angles: when the ring carries fewer slits than the
+     * contour has bends - two slits need their own width plus the wall two ends
+     * stand on between them - the sharpest are the ones that are cut, and a
+     * contour that has no real bends at all gets the two cuts half the ring apart
+     * that such a ring can carry instead of one cut at every polyline vertex of
+     * the curve the engine tessellated.
      */
     fun bendPoints(
         axis: Vec3,
@@ -834,7 +883,59 @@ object SnapLip {
             .filter { it.size >= 3 }
             .maxByOrNull { abs(polygonArea(it)) }
             ?: return emptyList()
-        return contour.map { origin + side * it.x + rise * it.y }
+        val perimeter = perimeterOf(contour)
+        if (perimeter <= 0f) return emptyList()
+        val bends = ArrayList<Bend>()
+        var travelled = 0f
+        for (at in contour.indices) {
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            val previous = contour[(at + contour.size - 1) % contour.size]
+            val edge = next - here
+            val length = edge.length
+            if (length > WELD_MM) {
+                val inEdge = (here - previous).unit()
+                val outEdge = edge * (1f / length)
+                if (inEdge != null) {
+                    val turn = abs(
+                        kotlin.math.atan2(
+                            inEdge.cross(outEdge).toDouble(),
+                            inEdge.dot(outEdge).toDouble(),
+                        ),
+                    ).toFloat()
+                    if (turn >= BEND_MIN_RADIANS) bends += Bend(turn, travelled, here)
+                }
+            }
+            travelled += length
+        }
+        // No real bends: a circle, an ellipse, a rounded seam. The polyline is a
+        // stand-in for a curve, and its vertices are not corners - one cut at each
+        // would shred the ring. Two cuts half the ring apart are what a ring with
+        // no feature on it can carry, and they give the wall the two ends to bend
+        // from that a cut is for.
+        if (bends.isEmpty()) {
+            val half = perimeter * 0.5f
+            return listOf(0f, half).map { at ->
+                val point = pointAt(contour, at)
+                origin + side * point.x + rise * point.y
+            }
+        }
+        // Sharpest first, and only the bends that fit. The gap a cut needs on the
+        // ring is its own width plus the wall two free ends stand on; the ring's
+        // own face is inset by the wall, which is what the wall's own share of the
+        // margin covers, so a set chosen here is a set the builder takes.
+        val cutWidth = parameters.lipCutWidthOverrideMm ?: parameters.lipCutWidthMm * scale
+        val wall = parameters.lipWallOverrideMm ?: parameters.lipWallMm * scale
+        val minimumGap = if (cutWidth.isFinite() && cutWidth > 0f && wall.isFinite()) {
+            cutWidth + 2f * MIN_WALL_RUN_MM + max(0f, 2f * wall)
+        } else {
+            0f
+        }
+        val chosen = ArrayList<Bend>(bends.size)
+        for (bend in bends.sortedByDescending { it.turn }) {
+            if (chosen.all { circularGap(it.atMm, bend.atMm, perimeter) >= minimumGap }) chosen += bend
+        }
+        return chosen.map { origin + side * it.point.x + rise * it.point.y }
     }
 
     /** The slits as one mesh of separate closed boxes, wound outward. */
@@ -859,15 +960,61 @@ object SnapLip {
         val point: P2,
         /** The contour's direction where the slit is taken, corner bisector included. */
         val along: P2,
+        /**
+         * How far the ring's own radius is stretched at this place: 1 on a
+         * straight run, and 1/cos(half the turn) on a mitred corner, where a
+         * profile radius r stands r times that far from the vertex. The slit has
+         * to reach that much further in to sever the ring there.
+         */
+        val stretch: Float,
     )
+
+    /** The direction a slit is taken in at a bend, with the corner's own stretch. */
+    private class SlitDirection(val along: P2, val stretch: Float)
+
+    /** One real bend of the seam's outline: how sharp, how far along, and where. */
+    private class Bend(val turn: Float, val atMm: Float, val point: P2)
+
+    /** The point [distanceMm] along the closed contour, measured from its first corner. */
+    private fun pointAt(contour: List<P2>, distanceMm: Float): P2 {
+        val perimeter = perimeterOf(contour)
+        if (perimeter <= 0f) return contour.first()
+        var wanted = distanceMm % perimeter
+        if (wanted < 0f) wanted += perimeter
+        var travelled = 0f
+        for (at in contour.indices) {
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            val length = (next - here).length
+            if (length > 0f && travelled + length >= wanted) {
+                return here + (next - here) * ((wanted - travelled) / length)
+            }
+            travelled += length
+        }
+        return contour.first()
+    }
+
+    /** The shorter way round the ring between two places on it. */
+    private fun circularGap(aMm: Float, bMm: Float, perimeter: Float): Float {
+        val direct = abs(aMm - bMm)
+        return min(direct, perimeter - direct)
+    }
 
     /**
      * The nearest point of the closed contour to [local], with the direction the
      * slit is taken in there. A cut dropped on a bend is taken across the bend's
      * own bisector rather than along one of its sides, so it cuts the corner and
-     * not the wall beside it.
+     * not the wall beside it. [asked] is the direction a stroke gave the slit and
+     * overrides that guess, and [centre] is the ring's own centre, which the
+     * automatic bisector is the one pointing at.
      */
-    private fun nearestOnRing(contour: List<P2>, local: P2, bisectorMm: Float): CutPlacement? {
+    private fun nearestOnRing(
+        contour: List<P2>,
+        local: P2,
+        bisectorMm: Float,
+        centre: P2,
+        asked: P2?,
+    ): CutPlacement? {
         var best: CutPlacement? = null
         var bestDistance = Float.MAX_VALUE
         var travelled = 0f
@@ -883,7 +1030,18 @@ object SnapLip {
             val distance = (local - point).length
             if (distance < bestDistance) {
                 bestDistance = distance
-                best = CutPlacement(travelled + t, point, bendDirection(contour, at, unit, point, bisectorMm))
+                val slit = if (asked != null) {
+                    // A stroke's direction has two ways and they are the same
+                    // slit; the inboard one is the one whose run faces the ring's
+                    // centre, the same choice the automatic bisector makes. A
+                    // stroke drawn the other way would otherwise aim the slit out
+                    // through the part's own skin.
+                    val run = P2(-asked.y, asked.x)
+                    SlitDirection(if (run.dot(centre - point) < 0f) asked * -1f else asked, 1f)
+                } else {
+                    bendDirection(contour, at, unit, point, bisectorMm, centre)
+                }
+                best = CutPlacement(travelled + t, point, slit.along, slit.stretch)
             }
             travelled += length
         }
@@ -901,6 +1059,15 @@ object SnapLip {
      * carries slivers - an extra vertex halfway along a straight run - and a
      * corner test by distance alone takes the slit's direction from the sliver's
      * own tangent, which lies along the wall and leaves the ring joined.
+     *
+     * The rule is the user's own and he can predict it: cut at the BIG angle, and
+     * towards the centre of the part. What the slit RUNS along is the way across
+     * the band; the direction returned here is the slit's own narrow width, which
+     * is perpendicular to that run. Two opposite bisectors meet at a corner - one
+     * bisects the material's angle, the other the air's - and the run must be the
+     * one whose dot with the way to the ring's centre is positive. The other
+     * points away from the part, and a slit run along it grooves the band's
+     * length and leaves the ring joined, which is the photograph this fixes.
      */
     private fun bendDirection(
         contour: List<P2>,
@@ -908,7 +1075,8 @@ object SnapLip {
         unit: P2,
         point: P2,
         reachMm: Float,
-    ): P2 {
+        centre: P2,
+    ): SlitDirection {
         for (vertex in intArrayOf(at, (at + 1) % contour.size)) {
             val here = contour[vertex]
             if ((point - here).length > BEND_REACH_MM) continue
@@ -919,17 +1087,55 @@ object SnapLip {
             val turn = kotlin.math.abs(kotlin.math.atan2(inEdge.cross(outEdge).toDouble(), inEdge.dot(outEdge).toDouble()))
             if (turn < BEND_MIN_RADIANS) continue
             val bisector = (inEdge + outEdge).unit() ?: continue
-            return bisector
+            val run = P2(-bisector.y, bisector.x)
+            val along = if (run.dot(centre - point) < 0f) bisector * -1f else bisector
+            // The ring's profile is mitred at a corner: a radius r stands
+            // r / cos(turn/2) from the vertex along the bisector, so the slit has
+            // to reach at least that far in to sever the ring there.
+            val stretch = (1f / kotlin.math.cos(turn / 2.0).toFloat()).coerceIn(1f, MAX_MITER_STRETCH)
+            return SlitDirection(along, stretch)
         }
-        return unit
+        return SlitDirection(unit, 1f)
     }
 
     /**
-     * One slit, as a box in the cut's own frame: [width] across the contour,
-     * through the wall and past the tooth's tip, and from a hair above the mating
-     * face down past the recess floor. Several cuts in one builder are separate
-     * closed boxes - the refusals keep them apart - which the engine subtracts in
-     * one go.
+     * The ring's own centre in the seam plane: the area-weighted centroid of the
+     * contour the slits are placed on. It is only ever read to choose which of
+     * two opposite bisectors is the inward one, so a contour with no area worth
+     * reading falls back to the average of its corners.
+     */
+    private fun contourCentre(contour: List<P2>): P2 {
+        var twiceArea = 0f
+        var weightedX = 0f
+        var weightedY = 0f
+        for (at in contour.indices) {
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            val cross = here.cross(next)
+            twiceArea += cross
+            weightedX += (here.x + next.x) * cross
+            weightedY += (here.y + next.y) * cross
+        }
+        if (abs(twiceArea) < 1e-6f) {
+            var x = 0f
+            var y = 0f
+            for (point in contour) {
+                x += point.x
+                y += point.y
+            }
+            return P2(x / contour.size, y / contour.size)
+        }
+        return P2(weightedX / (3f * twiceArea), weightedY / (3f * twiceArea))
+    }
+
+    /**
+     * One slit, as a box in the cut's own frame: [width] across the contour and
+     * from [fromMm] to [toMm] inboard of the ring's face, and from [bottomMm] to
+     * [topMm] along the assembly axis with zero on the mating plane. The box
+     * spans the ledge's whole cross-section, so the ring comes apart at it, and
+     * its outboard bound stops short of the wall the half's own skin is. Several
+     * cuts in one builder are separate closed boxes - the refusals keep them
+     * apart - which the engine subtracts in one go.
      */
     private fun addCutSlit(
         faces: MutableList<Array<Vec3>>,
@@ -939,18 +1145,19 @@ object SnapLip {
         side: Vec3,
         rise: Vec3,
         origin: Vec3,
-        cutDepth: Float,
-        innerMm: Float,
-        wall: Float,
+        fromMm: Float,
+        toMm: Float,
+        bottomMm: Float,
+        topMm: Float,
     ) {
         val along = side * placement.along.x + rise * placement.along.y
         val inward = side * (-placement.along.y) + rise * placement.along.x
         val centre = origin + side * placement.point.x + rise * placement.point.y
         val half = width * 0.5f
-        val outer = -(wall + CUT_MARGIN_MM)
-        val inner = innerMm
-        val top = RECESS_OVER_MM
-        val bottom = -cutDepth
+        val outer = fromMm
+        val inner = toMm
+        val top = topMm
+        val bottom = bottomMm
         val corners = ArrayList<Vec3>(8)
         for (z in listOf(bottom, top)) {
             for (y in listOf(outer, inner)) {
@@ -1578,7 +1785,7 @@ object SnapLip {
     /** Edges shorter than this are cut slivers, not walls, and carry no samples. */
     private const val MIN_RING_EDGE_MM = 1f
 
-    /** How much wall a cut has to leave standing either side of itself. */
+    /** How much of the ring a cut has to leave standing either side of itself. */
     private const val MIN_WALL_RUN_MM = 0.5f
 
     /** How far past the wall and the recess floor a slit reaches, so it cuts clean through. */
@@ -1586,6 +1793,13 @@ object SnapLip {
 
     /** How near a bend the slit takes its direction from the bend's own bisector. */
     private const val BEND_REACH_MM = 1.2f
+
+    /**
+     * The most a corner's mitre may stretch the slit's reach: a corner sharper
+     * than this is a spike, and the ring itself folds there rather than standing
+     * further out.
+     */
+    private const val MAX_MITER_STRETCH = 4f
 
     /** How sharp a turn has to be to be a bend and not a boolean's sliver. */
     private const val BEND_MIN_RADIANS = 0.26f

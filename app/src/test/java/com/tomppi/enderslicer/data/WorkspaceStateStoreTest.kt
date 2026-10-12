@@ -458,7 +458,9 @@ class WorkspaceStateStoreTest {
                             lipWallMm = 1.4f,
                             lipRecessExtraMm = 3.3f,
                             lipCutWidthMm = 0.9f,
+                            lipCutDepthMm = 2.7f,
                             lipCuts = listOf(Vec3(1f, 2f, 3f), Vec3(4f, 5f, 6f)),
+                            lipCutDirections = listOf(Vec3(0f, 0f, 0f), Vec3(0.6f, 0.8f, 0f)),
                         ),
                     ),
                 ),
@@ -481,11 +483,17 @@ class WorkspaceStateStoreTest {
         assertFalse("a cantilever joint writes no wall either", joints.getJSONObject(0).has("lipWallMm"))
         assertFalse("nor a depth", joints.getJSONObject(0).has("lipRecessExtraMm"))
         assertEquals("the width of a cut", 0.9f, pair.joints[1].lipCutWidthMm!!, 1e-4f)
+        assertEquals("how deep the slits run", 2.7f, pair.joints[1].lipCutDepthMm!!, 1e-4f)
         assertEquals("and the cuts themselves", 2, pair.joints[1].lipCuts.size)
         assertEquals(1f, pair.joints[1].lipCuts[0].x, 1e-4f)
         assertEquals(6f, pair.joints[1].lipCuts[1].z, 1e-4f)
+        assertEquals("a stroke's own directions come back with them", 2, pair.joints[1].lipCutDirections.size)
+        assertEquals(0f, pair.joints[1].lipCutDirections[0].x, 1e-4f)
+        assertEquals(0.8f, pair.joints[1].lipCutDirections[1].y, 1e-4f)
         assertFalse("a cantilever writes no cut width", joints.getJSONObject(0).has("lipCutWidthMm"))
+        assertFalse("nor a cut depth", joints.getJSONObject(0).has("lipCutDepthMm"))
         assertFalse("and no cuts", joints.getJSONObject(0).has("lipCuts"))
+        assertFalse("nor cut directions", joints.getJSONObject(0).has("lipCutDirections"))
 
         // A build that wrote a style this one does not know must not cost the joint.
         joints.getJSONObject(1).put("style", "SOMETHING_ELSE")

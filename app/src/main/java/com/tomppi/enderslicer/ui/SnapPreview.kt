@@ -46,8 +46,21 @@ data class SnapJointSpec(
     val lipRecessExtraMm: Float? = null,
     /** How wide a slit a cut takes out of the lip's ring, or null for the scale's own. */
     val lipCutWidthMm: Float? = null,
+    /**
+     * How deep into the insert's face a cut's slit floor runs, or null for past
+     * the ledge's own root. How much of the insert's ring the cut frees is what
+     * the user is buying with it.
+     */
+    val lipCutDepthMm: Float? = null,
     /** Where the user cut the lip's ring, in the pair's own coordinates. */
     val lipCuts: List<Vec3> = emptyList(),
+    /**
+     * The direction each cut's slit runs in, on the plate and lined up with
+     * [lipCuts]: a stroke across the wall gives its own cut a direction, and a
+     * zero entry leaves that cut the automatic inward bisector. Empty means no
+     * cut carries one.
+     */
+    val lipCutDirections: List<Vec3> = emptyList(),
 )
 
 /**
@@ -80,8 +93,11 @@ data class SnapJointRecord(
     val lipWallMm: Float? = null,
     val lipRecessExtraMm: Float? = null,
     val lipCutWidthMm: Float? = null,
+    val lipCutDepthMm: Float? = null,
     /** The cuts in the pair's own assembled frame, which the plate cannot move. */
     val lipCuts: List<Vec3> = emptyList(),
+    /** The direction each slit runs in, in the pair's own frame, lined up with [lipCuts]. */
+    val lipCutDirections: List<Vec3> = emptyList(),
 )
 
 /**

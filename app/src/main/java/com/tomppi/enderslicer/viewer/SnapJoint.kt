@@ -89,6 +89,12 @@ object SnapJoint {
          * lip half's ring where the user tapped. Empty for every other joint.
          */
         cuts: List<Vec3> = emptyList(),
+        /**
+         * The direction each cut's slit runs in, lined up with [cuts]: a stroke
+         * across the wall hands its own slit a direction, and anything absent or
+         * degenerate leaves that cut the automatic inward bisector.
+         */
+        cutDirections: List<Vec3> = emptyList(),
     ): Either {
         val axisDirection = SnapFit.axisDirection(axis)
         // The two halves meet when their own mating faces agree: each carries
@@ -104,12 +110,18 @@ object SnapJoint {
                 ),
             )
         }
-        val chosen = join(axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style, cuts)
+        val chosen = join(
+            axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style,
+            cuts, cutDirections,
+        )
         if (chosen is Attempt.Built) {
             return Either.Placed(placementOf(chosen.joint, lowHalf, highHalf, beamHalf, true))
         }
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
-        val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style, cuts)
+        val flipped = join(
+            axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style,
+            cuts, cutDirections,
+        )
         if (flipped is Attempt.Built) {
             // Which half the sentence names. The chosen round roots the beam in the chosen
             // half and reaches into the mate, so the material can refuse it in two places:
@@ -173,6 +185,7 @@ object SnapJoint {
         requested: SnapFitRung?,
         style: SnapJointStyle,
         cuts: List<Vec3>,
+        cutDirections: List<Vec3>,
     ): Attempt {
         val forward = beamHalf == JointHalf.LOW
         val sign = if (forward) 1f else -1f
@@ -201,6 +214,7 @@ object SnapJoint {
                     mateHalf = socketFit,
                     parameters = parameters,
                     cuts = cuts,
+                    cutDirections = cutDirections,
                 )
             ) {
                 is SnapLip.Outcome.Built -> Attempt.Built(lip.joint)

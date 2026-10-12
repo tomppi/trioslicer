@@ -174,7 +174,7 @@ class SnapLipWiringContractTest {
             "the cuts reach the build through the pipeline's own parameters",
             viewModel.contains("cuts = if (spec.style == SnapJointStyle.WALL_LIP)") &&
                 viewModel.contains("lipCutWidthOverrideMm = spec.lipCutWidthMm ?: state.snapLipCutWidthMm") &&
-                viewModel.contains("engine.subtract(toothed.mesh, cut)"),
+                viewModel.contains("engine.subtract(ledged.mesh, cut)"),
         )
         assertTrue(
             "a tap while armed cuts instead of placing a joint",
@@ -187,6 +187,50 @@ class SnapLipWiringContractTest {
         assertTrue(
             "and the record keeps them",
             store.contains("\"lipCuts\"") && store.contains("\"lipCutWidthMm\""),
+        )
+        assertTrue(
+            "the cut depth has its own row beside the width",
+            hook.contains("label = \"Cut depth\""),
+        )
+        assertTrue("with its own range", hook.contains("LIP_CUT_DEPTH_RANGE"))
+        assertTrue(
+            "which reaches the view model and writes the selected joint and the next default",
+            app.contains("onLipCutDepth = viewModel::setSnapLipCutDepth") &&
+                viewModel.contains("lipCutDepthMm = millimetres") &&
+                viewModel.contains("snapLipCutDepthMm = millimetres"),
+        )
+        assertTrue(
+            "the depth reaches the build through both parameters lists",
+            viewModel.contains("lipCutDepthMm = spec.lipCutDepthMm ?: state.snapLipCutDepthMm") &&
+                state.contains("lipCutDepthMm = spec.lipCutDepthMm ?: snapLipCutDepthMm"),
+        )
+        assertTrue(
+            "and the record keeps it, so a printed lip comes back at its own depth",
+            viewModel.contains("lipCutDepthMm = spec.lipCutDepthMm") &&
+                store.contains("\"lipCutDepthMm\""),
+        )
+        assertTrue(
+            "a drag while cutting is a stroke: the slit lies across the finger's travel",
+            app.contains("placeSnapCutStroke(") &&
+                app.contains("view.jointStrokeActive = state.snapActive && state.snapCuttingWall") &&
+                viewModel.contains("fun placeSnapCutStroke(") &&
+                viewModel.contains("cutDirections = if (spec.style == SnapJointStyle.WALL_LIP)") &&
+                source("viewer/ModelSurfaceView.kt").contains("onJointStroke") &&
+                source("viewer/SnapLip.kt").contains("cutDirections"),
+        )
+        assertTrue(
+            "and the stroke's direction travels with its cut in the record",
+            viewModel.contains("lipCutDirections = spec.lipCutDirections") &&
+                store.contains("\"lipCutDirections\""),
+        )
+        assertTrue(
+            "the workspace descriptor keeps every one of the lip's choices, not just the first two",
+            viewModel.contains("lipCuts = joint.lipCuts") &&
+                viewModel.contains("lipCutDirections = joint.lipCutDirections") &&
+                viewModel.contains("lipCutDepthMm = joint.lipCutDepthMm") &&
+                viewModel.contains("lipWallMm = joint.lipWallMm") &&
+                viewModel.contains("lipRecessExtraMm = joint.lipRecessExtraMm") &&
+                viewModel.contains("lipCutWidthMm = joint.lipCutWidthMm"),
         )
     }
 
@@ -325,9 +369,24 @@ class SnapLipWiringContractTest {
             placement.contains("engine.union(contoured.socketMesh, joint.registrationSolid)"),
         )
         assertTrue(
-            "a lip whose tooth or ledge could not be made is that joint's own refusal",
+            "the cuts are taken out of the LEDGE on the insert, never out of the tooth's own wall",
+            placement.contains("engine.subtract(ledged.mesh, cut)") &&
+                !placement.contains("engine.subtract(toothed.mesh, cut)"),
+        )
+        assertTrue(
+            "a lip whose tooth, ledge or ring could not be made is that joint's own refusal",
             placement.contains("has no wall where it was placed for its tooth to root in") &&
-                placement.contains("the wall lip's ledge would stand in the open"),
+                placement.contains("the wall lip's ring would stand in the open") &&
+                placement.contains("the cuts would take nothing out of the insert's ring"),
+        )
+        assertTrue(
+            "the panel says which half the cuts land on, by name, and lets the user choose it",
+            app.contains("actions.onLipInsertHalf") &&
+                app.contains("Cuts on ") &&
+                app.contains("cuts on ") &&
+                viewModel.contains("fun setSnapLipInsertHalf(") &&
+                viewModel.contains("never the split's own low/high naming") &&
+                viewModel.contains("private fun lipDefaultBeamHalf("),
         )
     }
 

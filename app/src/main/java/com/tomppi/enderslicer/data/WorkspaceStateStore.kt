@@ -99,8 +99,11 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             val lipWallMm: Float? = null,
             val lipRecessExtraMm: Float? = null,
             val lipCutWidthMm: Float? = null,
+            val lipCutDepthMm: Float? = null,
             /** The cuts in the pair's own assembled frame, which the plate cannot move. */
             val lipCuts: List<Vec3> = emptyList(),
+            /** The direction each slit runs in, in the pair's own frame, lined up with [lipCuts]. */
+            val lipCutDirections: List<Vec3> = emptyList(),
         )
     }
 
@@ -302,22 +305,17 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                                 joint.lipWallMm?.let { put("lipWallMm", it.toDouble()) }
                                                 joint.lipRecessExtraMm?.let { put("lipRecessExtraMm", it.toDouble()) }
                                                 joint.lipCutWidthMm?.let { put("lipCutWidthMm", it.toDouble()) }
+                                                joint.lipCutDepthMm?.let { put("lipCutDepthMm", it.toDouble()) }
                                                 // Only when there are cuts, so a lip that
                                                 // has none keeps the byte shape it had.
                                                 if (joint.lipCuts.isNotEmpty()) {
-                                                    put(
-                                                        "lipCuts",
-                                                        JSONArray().apply {
-                                                            for (cut in joint.lipCuts) {
-                                                                put(
-                                                                    JSONObject()
-                                                                        .put("x", cut.x.toDouble())
-                                                                        .put("y", cut.y.toDouble())
-                                                                        .put("z", cut.z.toDouble()),
-                                                                )
-                                                            }
-                                                        },
-                                                    )
+                                                    put("lipCuts", vectorArray(joint.lipCuts))
+                                                }
+                                                // A stroke's own directions, only for the
+                                                // cuts that carry one and only when there
+                                                // are any: an automatic cut writes nothing.
+                                                if (joint.lipCutDirections.any { it.isFinite() && it.length() > 0f }) {
+                                                    put("lipCutDirections", vectorArray(joint.lipCutDirections))
                                                 }
                                             },
                                     )
@@ -465,19 +463,36 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         // was.
         lipWallMm = json.optDouble("lipWallMm").takeIf { it.isFinite() }?.toFloat(),
         lipRecessExtraMm = json.optDouble("lipRecessExtraMm").takeIf { it.isFinite() }?.toFloat(),
-        // The cuts and their width: a record written before they existed simply
-        // has none, which is the uncut ring it was.
+        // The cuts, their width and their depth: a record written before they
+        // existed simply has none, which is the uncut ring it was.
         lipCutWidthMm = json.optDouble("lipCutWidthMm").takeIf { it.isFinite() }?.toFloat(),
-        lipCuts = json.optJSONArray("lipCuts")?.let { array ->
-            (0 until array.length()).mapNotNull { at ->
-                val cut = array.optJSONObject(at) ?: return@mapNotNull null
-                val x = cut.optDouble("x").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
-                val y = cut.optDouble("y").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
-                val z = cut.optDouble("z").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
-                Vec3(x, y, z)
-            }
-        }.orEmpty(),
+        lipCutDepthMm = json.optDouble("lipCutDepthMm").takeIf { it.isFinite() }?.toFloat(),
+        lipCuts = decodeVectors(json.optJSONArray("lipCuts")),
+        lipCutDirections = decodeVectors(json.optJSONArray("lipCutDirections")),
     )
+
+    /** A list of points or directions as the record writes them; empty when unreadable. */
+    private fun decodeVectors(array: JSONArray?): List<Vec3> = array?.let { list ->
+        (0 until list.length()).mapNotNull { at ->
+            val entry = list.optJSONObject(at) ?: return@mapNotNull null
+            val x = entry.optDouble("x").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+            val y = entry.optDouble("y").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+            val z = entry.optDouble("z").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+            Vec3(x, y, z)
+        }
+    }.orEmpty()
+
+    /** The same list the other way: an array of {x, y, z} objects. */
+    private fun vectorArray(vectors: List<Vec3>): JSONArray = JSONArray().apply {
+        for (vector in vectors) {
+            put(
+                JSONObject()
+                    .put("x", vector.x.toDouble())
+                    .put("y", vector.y.toDouble())
+                    .put("z", vector.z.toDouble()),
+            )
+        }
+    }
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()
         .put("linear", JSONArray(placement.linear))

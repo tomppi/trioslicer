@@ -222,8 +222,9 @@ data class MainUiState(
     /** The wall the lip's ring leaves, and how far its recess goes past the step. */
     val snapLipWallMm: Float? = null,
     val snapLipDepthMm: Float? = null,
-    /** How wide a slit a cut takes out of the lip's ring, and whether one is armed. */
+    /** How wide and how deep a cut takes the insert's ledge ring, and whether one is armed. */
     val snapLipCutWidthMm: Float? = null,
+    val snapLipCutDepthMm: Float? = null,
     val snapCuttingWall: Boolean = false,
     /** True when every joint's socket mouth is chamfered: the lead-in in the hole. */
     val snapSocketRamp: Boolean = false,
@@ -646,10 +647,17 @@ data class MainUiState(
                 lipWallMm = joint.lipWallMm,
                 lipRecessExtraMm = joint.lipRecessExtraMm,
                 lipCutWidthMm = joint.lipCutWidthMm,
-                // The cuts live on the half the tooth is in, and the record keeps
-                // them in the pair's own frame: they come back on the plate.
+                lipCutDepthMm = joint.lipCutDepthMm,
+                // The cuts live on the INSERT - the mate, the half opposite the
+                // tooth - and the record keeps them in the pair's own frame: they
+                // come back on that half's plate copy, and each stroke's own
+                // direction with them.
                 lipCuts = joint.lipCuts.map { cut ->
-                    (if (joint.beamHalf == SnapJoint.JointHalf.LOW) lowFit else highFit).toPlate(cut)
+                    (if (joint.beamHalf == SnapJoint.JointHalf.LOW) highFit else lowFit).toPlate(cut)
+                },
+                lipCutDirections = joint.lipCutDirections.map { direction ->
+                    val fit = if (joint.beamHalf == SnapJoint.JointHalf.LOW) highFit else lowFit
+                    if (direction.length() > 0f) fit.toPlateDirection(direction) else direction
                 },
             )
         }
@@ -667,7 +675,7 @@ data class MainUiState(
         barbCount = spec.barbs,
         facing = spec.facing,
         socketRamp = snapSocketRamp,
-        // The lip's four sizes fall back to the panel's own values. A joint that
+        // The lip's own sizes fall back to the panel's values. A joint that
         // carries its own keeps it, but a joint saved before a size existed - or
         // one restored from a record written without them - has none, and then the
         // slider the user is holding is the number the build must use. Without
@@ -677,6 +685,10 @@ data class MainUiState(
         lipToothHeightOverrideMm = spec.lipToothHeightMm ?: snapLipToothHeightMm,
         lipWallOverrideMm = spec.lipWallMm ?: snapLipWallMm,
         lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: snapLipDepthMm,
+        lipCutWidthOverrideMm = spec.lipCutWidthMm ?: snapLipCutWidthMm,
+        // The depth is the one nullable size with no scaled default: null is the
+        // band's own depth, which is what the build reads as "through".
+        lipCutDepthMm = spec.lipCutDepthMm ?: snapLipCutDepthMm,
     ).tightenedBy(spec.tightness.stepMm)
 
     /**

@@ -1910,6 +1910,17 @@ fun EnderSlicerApp(
                                     state.models.getOrNull(hit.objectIndex)?.id,
                                 )
                             },
+                            onJointStroke = { hit, direction ->
+                                // One drag, one cut: the point is where the
+                                // finger went down and the direction is its own
+                                // travel, so the slit runs across the stroke
+                                // rather than along the automatic guess.
+                                viewModel.placeSnapCutStroke(
+                                    Vec3(hit.x, hit.y, hit.z),
+                                    direction,
+                                    state.models.getOrNull(hit.objectIndex)?.id,
+                                )
+                            },
                             cutActions = CutActions(
                                 onAxis = viewModel::setCutAxis,
                                 onOffset = viewModel::setCutOffset,
@@ -1921,6 +1932,7 @@ fun EnderSlicerApp(
                                 onCancelPlacement = viewModel::cancelSnapPlacement,
                                 onScale = viewModel::setSnapScale,
                                 onBeamHalf = viewModel::setSnapBeamHalf,
+                                onLipInsertHalf = viewModel::setSnapLipInsertHalf,
                                 onFullJoint = viewModel::setSnapFullJoint,
                                 onHookLength = viewModel::setSnapHookLength,
                                 onHookThickness = viewModel::setSnapHookThickness,
@@ -1932,6 +1944,7 @@ fun EnderSlicerApp(
                                 onLipWall = viewModel::setSnapLipWall,
                                 onLipDepth = viewModel::setSnapLipDepth,
                                 onLipCutWidth = viewModel::setSnapLipCutWidth,
+                                onLipCutDepth = viewModel::setSnapLipCutDepth,
                                 onCutWall = viewModel::cutWall,
                                 onCutEveryBend = viewModel::cutEveryBend,
                                 onCancelCut = viewModel::cancelCutWall,
@@ -3245,6 +3258,8 @@ private fun ViewerPanel(
     onModelPicked: (Int) -> Unit,
     /** A tap while the Snap fit tool is open: the model point the ray hit. */
     onJointPick: (MeshPicker.Hit) -> Unit,
+    /** A drag while "Cut wall" is armed: the point the stroke began on, and its plate direction. */
+    onJointStroke: (MeshPicker.Hit, Vec3) -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -3403,6 +3418,10 @@ private fun ViewerPanel(
                         view.setPreviewObjects(previewIndices)
                         view.jointPickActive = state.snapActive
                         view.onJointPick = onJointPick
+                        // A stroke is only a cut stroke while one is armed: with
+                        // the panel merely open a drag still turns the model.
+                        view.jointStrokeActive = state.snapActive && state.snapCuttingWall
+                        view.onJointStroke = onJointStroke
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
@@ -4216,6 +4235,13 @@ private val LIP_DEPTH_RANGE = 0f..8f
 /** How wide a cut's slit is: enough to part the wall, narrow enough to keep it whole. */
 private val LIP_CUT_RANGE = 0.3f..2f
 
+/**
+ * How deep a cut's slit runs below the mating face. Through the whole band is the
+ * default and the top end is generous: how much of the wall is freed is what the
+ * user is buying, and the part's own material is the real ceiling.
+ */
+private val LIP_CUT_DEPTH_RANGE = 0.5f..8f
+
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f
 
@@ -4224,6 +4250,8 @@ private const val ROOT_STRAIN_HINT_PERCENT = 2f
 private class SnapActions(
     val onScale: (Float) -> Unit,
     val onBeamHalf: (SnapJoint.JointHalf) -> Unit,
+    /** The lip's own choice: which half is the embossed insert whose ring is cut. */
+    val onLipInsertHalf: (SnapJoint.JointHalf) -> Unit,
     val onFullJoint: (Boolean) -> Unit,
     val onHookLength: (Float) -> Unit,
     val onHookThickness: (Float) -> Unit,
@@ -4238,6 +4266,8 @@ private class SnapActions(
     val onLipWall: (Float?) -> Unit,
     val onLipDepth: (Float?) -> Unit,
     val onLipCutWidth: (Float?) -> Unit,
+    /** How deep a cut's slit runs below the mating face, or null for the whole band. */
+    val onLipCutDepth: (Float?) -> Unit,
     /** Arms the next tap on the model to cut the lip's ring where it lands. */
     val onCutWall: () -> Unit,
     /** Cuts every bend of the seam's contour in one go. */
@@ -4350,6 +4380,12 @@ private fun SnapToolbar(
     val lipCutWidth = state.snapSelectedSpec?.lipCutWidthMm
         ?: state.snapLipCutWidthMm
         ?: (defaults.lipCutWidthMm * state.snapScale)
+    // The depth has no scaled default: null is the ring's own band, so what the
+    // row shows when nothing is set is the depth the shown joint was built with.
+    val lipCutDepth = state.snapSelectedSpec?.lipCutDepthMm
+        ?: state.snapLipCutDepthMm
+        ?: shown?.joint?.dimensions?.lipCutDepthMm
+        ?: 0f
     // One call per group, so the three-column panel and the single-column one
     // cannot drift apart: both are these three, in this order.
     val setup: @Composable () -> Unit = {
@@ -4376,6 +4412,7 @@ private fun SnapToolbar(
             lipWall = lipWall,
             lipDepth = lipDepth,
             lipCutWidth = lipCutWidth,
+            lipCutDepth = lipCutDepth,
         )
     }
     val fits: @Composable () -> Unit = {
@@ -4707,9 +4744,9 @@ private fun SnapSetupGroup(
         SnapChoiceRow(
             label = null,
             caption = if (state.snapCuttingWall) {
-                "tap the wall to cut it"
+                "tap the ring to cut it, or drag across it to aim the slit"
             } else {
-                "a cut parts the ring; each one gives the wall an end to bend from"
+                "a cut parts the insert's ring; each one gives it an end to bend from"
             },
             stacked = stacked,
         ) {
@@ -4854,6 +4891,16 @@ private fun SnapLipReadout(one: SnapPlacedJoint) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Text(
+        "   " + if (one.joint.dimensions.lipCuts == 0) {
+            "no cuts yet: they land on " + one.socketHalfName + ", the embossed insert"
+        } else {
+            "cuts on " + one.socketHalfName + ", the embossed insert - " + one.beamHalfName +
+                "'s own wall stays whole"
+        },
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
         "   " + one.joint.lipCutSummary,
         style = MaterialTheme.typography.labelSmall,
         color = if (one.joint.dimensions.lipCuts == 0) {
@@ -4985,6 +5032,7 @@ private fun SnapHookGroup(
     lipWall: Float,
     lipDepth: Float,
     lipCutWidth: Float,
+    lipCutDepth: Float,
 ) {
     if (style == SnapJointStyle.WALL_LIP) {
         // The engagement is the hold: how far the tooth and the ledge overlap.
@@ -5036,6 +5084,17 @@ private fun SnapHookGroup(
             range = LIP_CUT_RANGE,
             onValueChange = { actions.onLipCutWidth(it) },
             valueText = "%.2f mm".format(lipCutWidth),
+            onValueChangeFinished = actions.onCommit,
+        )
+        // How deep into the insert's face the slits' floors run. Past the ledge's
+        // root is the default and the shallowest that severs the ring; a deeper
+        // one frees more of the insert, which is what the user is buying.
+        CompactSliderRow(
+            label = "Cut depth",
+            value = lipCutDepth,
+            range = LIP_CUT_DEPTH_RANGE,
+            onValueChange = { actions.onLipCutDepth(it) },
+            valueText = "%.2f mm".format(lipCutDepth),
             onValueChangeFinished = actions.onCommit,
         )
         shown?.takeIf { it.joint.style == SnapJointStyle.WALL_LIP }?.let { preview ->
@@ -5216,19 +5275,40 @@ private fun SnapFitsGroup(
             }
         }
     }
+    // Which half the ring is built around. For the cantilever that is which half
+    // the beam goes in; for the lip it is which half carries the embossed LEDGE
+    // ring - the insert whose ring the cuts open - and the tooth goes in the
+    // other one, because the tooth is rooted in its half's own wall and that wall
+    // is the part's visible skin. Two plain solid halves cannot be told apart by
+    // the material, so this row is where the user says which is the insert, and
+    // the readout names the half the cuts land on.
+    val lipInsert = if (beamHalf == SnapJoint.JointHalf.LOW) SnapJoint.JointHalf.HIGH else SnapJoint.JointHalf.LOW
+    if (style == SnapJointStyle.WALL_LIP) {
+        Text(
+            "Cuts on " + (if (lipInsert == SnapJoint.JointHalf.LOW) {
+                state.snapLowHalf?.name ?: "the lower half"
+            } else {
+                state.snapHighHalf?.name ?: "the upper half"
+            }) + ": the insert's embossed ring may be opened, and the other half's own wall is never cut",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
         BeamHalfButton(
-            "Beam in " + (state.snapLowHalf?.name ?: "lower"),
+            (if (style == SnapJointStyle.WALL_LIP) "Insert " else "Beam in ") +
+                (state.snapLowHalf?.name ?: "lower"),
             SnapJoint.JointHalf.LOW,
-            beamHalf,
-            actions.onBeamHalf,
+            if (style == SnapJointStyle.WALL_LIP) lipInsert else beamHalf,
+            if (style == SnapJointStyle.WALL_LIP) actions.onLipInsertHalf else actions.onBeamHalf,
             Modifier.weight(1f),
         )
         BeamHalfButton(
-            "Beam in " + (state.snapHighHalf?.name ?: "upper"),
+            (if (style == SnapJointStyle.WALL_LIP) "Insert " else "Beam in ") +
+                (state.snapHighHalf?.name ?: "upper"),
             SnapJoint.JointHalf.HIGH,
-            beamHalf,
-            actions.onBeamHalf,
+            if (style == SnapJointStyle.WALL_LIP) lipInsert else beamHalf,
+            if (style == SnapJointStyle.WALL_LIP) actions.onLipInsertHalf else actions.onBeamHalf,
             Modifier.weight(1f),
         )
     }

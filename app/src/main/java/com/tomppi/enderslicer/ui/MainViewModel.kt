@@ -1990,13 +1990,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 lipWallMm = spec.lipWallMm,
                 lipRecessExtraMm = spec.lipRecessExtraMm,
                 lipCutWidthMm = spec.lipCutWidthMm,
+                lipCutDepthMm = spec.lipCutDepthMm,
+                // The cuts are read through the INSERT - the mate - which is the
+                // half whose ledge ring they open, whether or not the tap landed
+                // on it.
                 lipCuts = spec.lipCuts.mapNotNull { cut ->
                     val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) {
-                        state.snapLowFitHalf
-                    } else {
                         state.snapHighFitHalf
+                    } else {
+                        state.snapLowFitHalf
                     }
                     face?.toLocal(cut)
+                },
+                lipCutDirections = spec.lipCutDirections.map { direction ->
+                    val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) {
+                        state.snapHighFitHalf
+                    } else {
+                        state.snapLowFitHalf
+                    }
+                    if (direction.length() > 0f) face?.toLocalDirection(direction) ?: direction else direction
                 },
             )
         },
@@ -2072,6 +2084,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 snapLipWallMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }?.lipWallMm,
                 snapLipDepthMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
                     ?.lipRecessExtraMm,
+                snapLipCutDepthMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
+                    ?.lipCutDepthMm,
                 snapSocketRamp = record?.socketRamp ?: false,
                 snapScale = record?.scale ?: 1f,
                 snapFullJoint = record?.fullJoint ?: false,
@@ -2106,6 +2120,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * A new joint takes the next clearance step by placement order - the first
      * loose, the next a step tighter - so a two-joint seam holds without having
      * to be told which one is which.
+     *
+     * A DRAG while "Cut wall" is armed is not this: it is one stroke, one cut,
+     * and [placeSnapCutStroke] below is where it lands.
      */
     fun placeSnapJoint(point: Vec3, tappedHalfId: String? = null) {
         val state = _uiState.value
@@ -2120,7 +2137,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val spec = state.snapJoints[at]
                 val joints = state.snapJoints.toMutableList().also {
-                    it[at] = spec.copy(lipCuts = spec.lipCuts + point)
+                    it[at] = spec.withCut(cutPlace(state, spec, point, tappedHalfId), null)
                 }
                 _uiState.update {
                     it.copy(snapJoints = joints, snapCuttingWall = false, snapFailure = null)
@@ -2172,6 +2189,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * A stroke across the wall with "Cut wall" armed: one cut where the stroke
+     * began, whose slit runs ACROSS the stroke. The finger draws the line the
+     * slit lies perpendicular to, so the direction is the user's own rather than
+     * the solver's inward bisector; it is read on the plate like the tap is and
+     * carried into the pair's frame with the cut it belongs to.
+     *
+     * One stroke is one cut: it disarms like the tap, it is previewed at once,
+     * and it is listed with a Remove beside it like any other cut.
+     */
+    fun placeSnapCutStroke(point: Vec3, direction: Vec3, tappedHalfId: String? = null) {
+        val state = _uiState.value
+        if (!state.snapActive || !state.snapCuttingWall) return
+        if (!point.isFinite() || !direction.isFinite() || direction.length() <= 0f) return
+        val at = state.snapJoints.indexOfFirst { it.style == SnapJointStyle.WALL_LIP }
+        if (at < 0) {
+            _uiState.update { it.copy(snapCuttingWall = false) }
+            return
+        }
+        val spec = state.snapJoints[at]
+        val joints = state.snapJoints.toMutableList().also {
+            it[at] = spec.withCut(cutPlace(state, spec, point, tappedHalfId), direction)
+        }
+        _uiState.update {
+            it.copy(snapJoints = joints, snapCuttingWall = false, snapFailure = null)
+        }
+        previewSnapJoint()
     }
 
     /**
@@ -2329,19 +2375,138 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return SnapJointSpec(
             anchorPointMm = anchor,
             anchorHalfId = state.snapLowHalfId,
-            beamHalf = SnapJoint.JointHalf.LOW,
             // The lip has one clearance, so the two tightness steps do not apply
             // to it: a single seated click is the whole joint.
             tightness = SnapTightness.LOOSE,
             barbs = 1,
             facing = SnapFacing.SAME,
             style = SnapJointStyle.WALL_LIP,
+            // Which half carries the tooth - and so which one carries the
+            // embossed ledge the cuts open - is the material's answer first and
+            // the panel's choice second, never the split's own low/high naming.
+            beamHalf = lipDefaultBeamHalf(state),
             lipEngagementMm = state.snapLipEngagementMm,
             lipToothHeightMm = state.snapLipToothHeightMm,
             lipWallMm = state.snapLipWallMm,
             lipRecessExtraMm = state.snapLipDepthMm,
             lipCutWidthMm = state.snapLipCutWidthMm,
+            lipCutDepthMm = state.snapLipCutDepthMm,
         )
+    }
+
+    /**
+     * Which half the lip's tooth goes in when the ring is first put on the seam:
+     * the material's own answer. The ledge has to stand on solid material, so the
+     * insert is a half a probe joint can build with the tooth in the OTHER one,
+     * and a tray whose wall is its own skin cannot be the insert at all. Two
+     * plain solid halves build either way - the case where only the user can say
+     * which one is the insert - and there the panel's own choice is kept, with
+     * the row and the readout naming the half the cuts will land on.
+     */
+    private fun lipDefaultBeamHalf(state: MainUiState): SnapJoint.JointHalf {
+        val low = state.snapLowFitHalf
+        val high = state.snapHighFitHalf
+        val fallback = state.snapBeamHalf
+        if (low == null || high == null || !state.snapAvailable) return fallback
+        val anchor = Vec3(low.mesh.bounds.centerX, low.mesh.bounds.centerY, low.faceMm)
+        val probe = SnapJointSpec(
+            anchorPointMm = anchor,
+            anchorHalfId = state.snapLowHalfId,
+            beamHalf = SnapJoint.JointHalf.LOW,
+            tightness = SnapTightness.LOOSE,
+            barbs = 1,
+            facing = SnapFacing.SAME,
+            style = SnapJointStyle.WALL_LIP,
+        )
+        val parameters = state.snapParametersFor(probe)
+        fun buildsWithToothIn(half: SnapJoint.JointHalf): Boolean =
+            SnapJoint.build(
+                axis = state.snapAxis,
+                anchorMm = anchor,
+                scale = state.snapScale,
+                lowHalf = low,
+                highHalf = high,
+                beamHalf = half,
+                parameters = parameters,
+                style = SnapJointStyle.WALL_LIP,
+            ) is SnapJoint.Either.Placed
+        val lowWorks = buildsWithToothIn(SnapJoint.JointHalf.LOW)
+        val highWorks = buildsWithToothIn(SnapJoint.JointHalf.HIGH)
+        return when {
+            lowWorks && !highWorks -> SnapJoint.JointHalf.LOW
+            highWorks && !lowWorks -> SnapJoint.JointHalf.HIGH
+            else -> fallback
+        }
+    }
+
+    /**
+     * Which half the lip's embossed insert is: the one whose ledge ring the cuts
+     * open, and so the one the tooth does NOT go in. Choosing it is the user's
+     * where the two halves cannot be told apart - a plain solid pair - and where
+     * the chosen half cannot carry the ledge the build refuses with a sentence
+     * rather than opening a ring that is the part's own skin.
+     */
+    fun setSnapLipInsertHalf(half: SnapJoint.JointHalf) {
+        val state = _uiState.value
+        val tooth = if (half == SnapJoint.JointHalf.LOW) SnapJoint.JointHalf.HIGH else SnapJoint.JointHalf.LOW
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also { moved ->
+                val spec = moved[target]
+                // The cuts are kept on the insert's plate copy, so a flip of
+                // which half that is carries every one of them across: their
+                // place on the seam does not move with the choice.
+                val from = if (spec.beamHalf == SnapJoint.JointHalf.LOW) state.snapHighFitHalf
+                else state.snapLowFitHalf
+                val to = if (half == SnapJoint.JointHalf.LOW) state.snapLowFitHalf else state.snapHighFitHalf
+                moved[target] = spec.copy(
+                    beamHalf = tooth,
+                    lipCuts = reanchorCuts(spec.lipCuts, from, to),
+                    lipCutDirections = reanchorDirections(spec.lipCutDirections, from, to),
+                )
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapBeamHalf = tooth, snapFailure = null) }
+        previewSnapJoint()
+    }
+
+    /** [points], moved from one half's plate copy to the other's, through the pair's own frame. */
+    private fun reanchorCuts(points: List<Vec3>, from: SnapFitHalf?, to: SnapFitHalf?): List<Vec3> {
+        if (from == null || to == null || from === to) return points
+        return points.map { point -> from.toLocal(point)?.let { to.toPlate(it) } ?: point }
+    }
+
+    /** The same for the stroke directions, which a half's placement may also turn. */
+    private fun reanchorDirections(directions: List<Vec3>, from: SnapFitHalf?, to: SnapFitHalf?): List<Vec3> {
+        if (from == null || to == null || from === to) return directions
+        return directions.map { direction ->
+            if (direction.length() <= 0f) direction else to.toPlateDirection(from.toLocalDirection(direction))
+        }
+    }
+
+    /**
+     * A cut's own place, read in the half the insert is. The cut is taken out of
+     * the INSERT's ledge ring, so a point tapped on the other half - or on the
+     * plate where that half stands - is carried into the insert's frame first.
+     * Without this the cut would land somewhere else along the seam, and two
+     * taps on the same spot of the ring would not be the same cut.
+     */
+    private fun cutPlace(
+        state: MainUiState,
+        spec: SnapJointSpec,
+        point: Vec3,
+        tappedHalfId: String?,
+    ): Vec3 {
+        val insert = spec.cutHalf(state) ?: return point
+        val tapped = when (tappedHalfId) {
+            state.snapLowHalfId -> state.snapLowFitHalf
+            state.snapHighHalfId -> state.snapHighFitHalf
+            else -> null
+        }
+        if (tapped == null || tapped === insert) return point
+        return tapped.toLocal(point)?.let { insert.toPlate(it) } ?: point
     }
 
     /**
@@ -2462,6 +2627,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         previewSnapJoint()
     }
 
+    /**
+     * How deep into the insert's face the cuts' slit floors run, in millimetres;
+     * null hands it to the ring's own root, which is the shallowest slit that
+     * severs the ledge. How much of the insert's ring a cut frees is what the
+     * user is buying here, and the geometry never takes less than a slit through
+     * the root however shallow the ask.
+     */
+    fun setSnapLipCutDepth(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val target = snapSizeTargetIndex(state)
+        val joints = if (target in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[target] = it[target].copy(lipCutDepthMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipCutDepthMm = millimetres, snapFailure = null) }
+        previewSnapJoint()
+    }
+
     /** Arms the next tap on the model to cut the lip's ring where it lands. */
     fun cutWall() {
         if (!_uiState.value.snapActive) return
@@ -2480,8 +2667,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (at < 0) return
         val spec = state.snapJoints[at]
         if (index !in spec.lipCuts.indices) return
-        val cuts = spec.lipCuts.toMutableList().also { it.removeAt(index) }
-        val joints = state.snapJoints.toMutableList().also { it[at] = spec.copy(lipCuts = cuts) }
+        val joints = state.snapJoints.toMutableList().also { it[at] = spec.withoutCut(index) }
         _uiState.update { it.copy(snapJoints = joints, snapFailure = null) }
         previewSnapJoint()
     }
@@ -2499,15 +2685,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val low = state.snapLowFitHalf
         val high = state.snapHighFitHalf
         if (low == null || high == null) return
-        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) low else high
-        val mate = if (spec.beamHalf == SnapJoint.JointHalf.LOW) high else low
+        val forward = spec.beamHalf == SnapJoint.JointHalf.LOW
+        val tooth = if (forward) low else high
+        val mate = if (forward) high else low
         val axis = SnapFit.axisDirection(state.snapAxis) ?: return
+        // The tooth's half is walked the way the builder walks it: when the lip
+        // is built with the tooth in the far half the axis is reversed and that
+        // half's face is negated with it, and the anchor is a point on ITS own
+        // mating plane rather than the low half's - otherwise a lip whose tooth
+        // is in the upper half has no cap to read and no bends to cut.
+        val sign = if (forward) 1f else -1f
+        val lipFit = tooth.copy(faceMm = tooth.faceMm * sign)
+        val mateFit = mate.copy(faceMm = mate.faceMm * sign)
+        val centre = tooth.toLocal(
+            Vec3(tooth.mesh.bounds.centerX, tooth.mesh.bounds.centerY, tooth.mesh.bounds.centerZ),
+        ) ?: return
         val bends = SnapLip.bendPoints(
-            axis = if (spec.beamHalf == SnapJoint.JointHalf.LOW) axis else axis * -1f,
-            anchorMm = face.toPlate(Vec3(low.mesh.bounds.centerX, low.mesh.bounds.centerY, low.faceMm)),
+            axis = if (forward) axis else axis * -1f,
+            anchorMm = Vec3(centre.x, centre.y, lipFit.faceMm),
             scale = state.snapScale,
-            lipHalf = face,
-            mateHalf = mate,
+            lipHalf = lipFit,
+            mateHalf = mateFit,
             parameters = state.snapParametersFor(spec),
         )
         if (bends.isEmpty()) {
@@ -2516,8 +2714,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        val cuts = spec.lipCuts + bends.map { face.toPlate(it) }
-        val joints = state.snapJoints.toMutableList().also { it[at] = spec.copy(lipCuts = cuts) }
+        // The bend points are the seam's own, in the pair's shared frame; the
+        // cuts are kept on the INSERT's plate copy, so each one is carried there
+        // through the mate half.
+        val points = bends.map { mate.toPlate(it) }
+        val joints = state.snapJoints.toMutableList().also { it[at] = spec.withCuts(points) }
         _uiState.update { it.copy(snapJoints = joints, snapCuttingWall = false, snapFailure = null) }
         previewSnapJoint()
     }
@@ -2534,8 +2735,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         high: SnapFitHalf,
     ): List<Vec3> {
         if (spec.lipCuts.isEmpty()) return emptyList()
-        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) low else high
+        // The cuts live on the INSERT - the mate, the half opposite the tooth -
+        // because that is whose ledge ring they open.
+        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) high else low
         return spec.lipCuts.mapNotNull { face.toLocal(it) }
+    }
+
+    /**
+     * The direction each cut's slit runs in, in the pair's own frame the halves
+     * are handed to the builder in, lined up with [cutsFor]. A zero entry is the
+     * automatic inward bisector; a stroke's direction is carried through the half
+     * the tooth is in, exactly as its own cut point is.
+     */
+    private fun cutDirectionsFor(
+        spec: SnapJointSpec,
+        state: MainUiState,
+        low: SnapFitHalf,
+        high: SnapFitHalf,
+    ): List<Vec3> {
+        if (spec.lipCutDirections.size != spec.lipCuts.size) return emptyList()
+        if (spec.lipCutDirections.isEmpty()) return emptyList()
+        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) high else low
+        return spec.lipCutDirections.map { direction ->
+            if (direction.length() <= 0f) direction else face.toLocalDirection(direction)
+        }
+    }
+
+    /**
+     * One more cut on the lip's ring: a tap adds the point and leaves the slit to
+     * the automatic inward bisector, a stroke adds its own direction beside it.
+     * Once any cut carries a direction the two lists are kept the same length, a
+     * zero vector standing for the automatic one, so a cut and its direction
+     * cannot drift apart.
+     */
+    private fun SnapJointSpec.withCut(point: Vec3, direction: Vec3?): SnapJointSpec {
+        val directions = if (direction == null && lipCutDirections.isEmpty()) {
+            emptyList()
+        } else {
+            ArrayList<Vec3>(lipCuts.size + 1).apply {
+                addAll(lipCutDirections)
+                repeat(lipCuts.size - lipCutDirections.size) { add(Vec3(0f, 0f, 0f)) }
+                add(direction ?: Vec3(0f, 0f, 0f))
+            }
+        }
+        return copy(lipCuts = lipCuts + point, lipCutDirections = directions)
+    }
+
+    /** The cuts the every-bend action adds: all of them take the automatic direction. */
+    private fun SnapJointSpec.withCuts(points: List<Vec3>): SnapJointSpec {
+        if (points.isEmpty()) return this
+        val directions = if (lipCutDirections.isEmpty()) {
+            emptyList()
+        } else {
+            ArrayList<Vec3>(lipCutDirections.size + points.size).apply {
+                addAll(lipCutDirections)
+                repeat(points.size) { add(Vec3(0f, 0f, 0f)) }
+            }
+        }
+        return copy(lipCuts = lipCuts + points, lipCutDirections = directions)
+    }
+
+    /** The half a lip's cuts are taken from: the mate, the embossed insert. */
+    private fun SnapJointSpec.cutHalf(state: MainUiState): SnapFitHalf? =
+        if (beamHalf == SnapJoint.JointHalf.LOW) state.snapHighFitHalf else state.snapLowFitHalf
+
+    /** One cut off the list, and its direction with it while the lists are lined up. */
+    private fun SnapJointSpec.withoutCut(index: Int): SnapJointSpec {
+        if (index !in lipCuts.indices) return this
+        val cuts = lipCuts.toMutableList().also { it.removeAt(index) }
+        val directions = if (lipCutDirections.size == lipCuts.size) {
+            lipCutDirections.toMutableList().also { it.removeAt(index) }
+        } else {
+            lipCutDirections
+        }
+        return copy(lipCuts = cuts, lipCutDirections = directions)
     }
 
     /**
@@ -3021,6 +3294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lipWallOverrideMm = spec.lipWallMm ?: state.snapLipWallMm,
             lipCutWidthOverrideMm = spec.lipCutWidthMm ?: state.snapLipCutWidthMm,
             lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: state.snapLipDepthMm,
+            lipCutDepthMm = spec.lipCutDepthMm ?: state.snapLipCutDepthMm,
         ).tightenedBy(spec.tightness.stepMm)
 
         // The joint's own place in the list travels with it: a joint that failed is named by
@@ -3064,6 +3338,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         emptyList()
                     },
+                    cutDirections = if (spec.style == SnapJointStyle.WALL_LIP) {
+                        cutDirectionsFor(spec, state, ready.lowHalf, ready.highHalf)
+                    } else {
+                        emptyList()
+                    },
                 )
             ) {
                 is SnapJoint.Either.Placed -> result.placement
@@ -3094,14 +3373,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // unions its beam and pad into ONE half and cuts its pocket and recess
             // from the other, while the wall lip cuts its recess from the half its
             // TOOTH goes into and unions its LEDGE into the mate - two unions on two
-            // different halves. Each style keeps its own path below, so the
-            // cantilever's four calls stay exactly what they were.
+            // different halves - and then takes the cuts out of the MATE's ledge
+            // ring, because that ring is a protrusion on the insert while the
+            // tooth's own wall is the part's visible skin. Each style keeps its own
+            // path below, so the cantilever's four calls stay exactly what they were.
             if (joint.style == SnapJointStyle.WALL_LIP) {
                 var beamGain = 0.0
                 var failure: String? = null
                 // The recess first, then the tooth inside it: the recess is what
                 // frees the wall the tooth stands on, so a tooth unioned before it
-                // would be cut away with everything else in its way.
+                // would be cut away with everything else in its way. This half is
+                // never cut: its ring is rooted in its own wall, which is the
+                // part's outer skin.
                 val hollowed = engine.subtract(contoured.beamMesh, joint.subtractSolid)
                 if (hollowed !is MeshBoolean.Result.Success) {
                     failed += SnapJointFailure(
@@ -3119,23 +3402,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     continue
                 }
-                // The cuts come last: a slit taken before the tooth was unioned on
-                // would be bridged by the tooth standing over it, and the wall
-                // would go on being one piece.
-                val cut = joint.cutSolid
-                val slitted: MeshBoolean.Result = if (cut == null || cut.triangleCount == 0) {
-                    toothed
-                } else {
-                    engine.subtract(toothed.mesh, cut)
-                }
-                if (slitted !is MeshBoolean.Result.Success) {
-                    failed += SnapJointFailure(
-                        index,
-                        "could not have its cuts taken out: " +
-                            (slitted as MeshBoolean.Result.Failure).reason,
-                    )
-                    continue
-                }
+                // The ledge goes on the mate, and the cuts come out of the LEDGE:
+                // the insert's embossed ring is a protrusion on solid material, so
+                // it can be opened, while the tooth's own wall is the part's skin
+                // and must stay one unbroken surface. The cuts come after the ledge
+                // is unioned on, or a slit taken before it would be bridged by the
+                // ledge standing over it.
                 val ledged = engine.union(contoured.socketMesh, joint.registrationSolid)
                 if (ledged !is MeshBoolean.Result.Success) {
                     failed += SnapJointFailure(
@@ -3145,22 +3417,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     continue
                 }
-                beamGain = slitted.volumeMm3 - hollowed.volumeMm3
-                // How much of the mate the ledge really holds on to, and how much of
-                // it stands out in the open: a ledge unioned into thin air is a
-                // floating block, and one that shares nothing with the mate is worse.
+                val cut = joint.cutSolid
+                val slitted: MeshBoolean.Result = if (cut == null || cut.triangleCount == 0) {
+                    ledged
+                } else {
+                    engine.subtract(ledged.mesh, cut)
+                }
+                if (slitted !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its cuts taken out of the insert's ring: " +
+                            (slitted as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                beamGain = toothed.volumeMm3 - hollowed.volumeMm3
+                // How much of the insert the ledge really holds on to, and how much
+                // of it stands out in the open: a ledge unioned into thin air is a
+                // floating block, and one that shares nothing with the insert is
+                // worse.
                 val ledgeGain = ledged.volumeMm3 - MeshVolume.of(contoured.socketMesh)
                 val ledgeSeat = seatVolume(contoured.socketMesh, joint.registrationSolid)
+                val cutLoss = if (cut == null || cut.triangleCount == 0) {
+                    0.0
+                } else {
+                    ledged.volumeMm3 - slitted.volumeMm3
+                }
                 failure = when {
                     beamGain < MIN_FEATURE_MM3 ->
                         "has no wall where it was placed for its tooth to root in; " +
                             "tap another spot on the seam, or move it."
                     ledgeGain < MIN_FEATURE_MM3 ->
-                        "the wall lip's ledge would stand in the open: the other half has no " +
-                            "material inboard of the wall there."
+                        "the wall lip's ring would stand in the open: the half chosen as the " +
+                            "insert has no material inboard of the seam there. The cuts land on " +
+                            "the insert's embossed ring and never on the half whose own wall is " +
+                            "the part's skin, so choose the other half, or place the joint where " +
+                            "the insert is solid."
                     ledgeSeat < MIN_FEATURE_MM3 ->
-                        "the wall lip's ledge has nothing of the other half to hold on to; " +
-                            "move the joint where the mate is solid."
+                        "the wall lip's ring has nothing of the insert to hold on to; " +
+                            "move the joint where the insert is solid."
+                    cut != null && cut.triangleCount != 0 && cutLoss < MIN_FEATURE_MM3 ->
+                        "the cuts would take nothing out of the insert's ring; " +
+                            "the ring they are aimed at is not there."
                     else -> null
                 }
                 if (Diagnostics.isEnabled()) {
@@ -3171,6 +3469,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ": tooth +" + millimetres(beamGain) +
                             " mm3, ledge +" + millimetres(ledgeGain) +
                             " mm3 (seat " + millimetres(ledgeSeat) +
+                            " mm3, cuts -" + millimetres(cutLoss) +
                             " mm3), wall " + millimetres(joint.dimensions.wallThicknessMm.toDouble()) +
                             " mm free " + millimetres(joint.dimensions.wallFreeLengthMm.toDouble()) +
                             " mm, engagement " + millimetres(joint.dimensions.lipEngagementMm.toDouble()) +
@@ -3182,17 +3481,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     failed += SnapJointFailure(index, failure)
                     continue
                 }
-                // Which half carries the tooth decides which running mesh takes what.
-                // The tooth's half is the one the lip was built into; the mate takes
-                // the ledge, and both carry the joints before them forward.
+                // Which half carries the tooth decides which running mesh takes
+                // what: the tooth's half is never cut, and the mate carries the
+                // ledge with the cuts taken out of it. Both carry the joints
+                // before them forward.
                 val toothIsLow = contoured.beamMesh === lowRunning.mesh
                 built += index to contoured
                 if (toothIsLow) {
-                    lowMesh = slitted.mesh
-                    highMesh = ledged.mesh
-                } else {
-                    lowMesh = ledged.mesh
+                    lowMesh = toothed.mesh
                     highMesh = slitted.mesh
+                } else {
+                    lowMesh = slitted.mesh
+                    highMesh = toothed.mesh
                 }
                 placed += SnapPlacedJoint(
                     spec = spec,
@@ -5445,8 +5745,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     barbs = joint.barbs,
                     facing = joint.facing,
                     style = joint.style,
+                    // Every one of the lip's own choices, not just the first two:
+                    // the wall, the depth, the cut width and depth and the cuts
+                    // themselves are what the next session rebuilds the ring from,
+                    // and a workspace that drops them silently re-tunes the joint.
                     lipEngagementMm = joint.lipEngagementMm,
                     lipToothHeightMm = joint.lipToothHeightMm,
+                    lipWallMm = joint.lipWallMm,
+                    lipRecessExtraMm = joint.lipRecessExtraMm,
+                    lipCutWidthMm = joint.lipCutWidthMm,
+                    lipCutDepthMm = joint.lipCutDepthMm,
+                    lipCuts = joint.lipCuts,
+                    lipCutDirections = joint.lipCutDirections,
                 )
             }.orEmpty(),
         )

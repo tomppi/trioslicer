@@ -52,11 +52,48 @@ class SnapLipTest {
         return (cut as MeshBoolean.Result.Success).mesh
     }
 
+    /**
+     * A solid prism from a CONVEX polygon's corners wound counter-clockwise seen
+     * from +Z: the cap at [top] is the seam and the polygon is the wall's own
+     * outline. It is what lets a fixture be a circle's stand-in, a rhombus, or
+     * whatever shape a claim needs.
+     */
+    private fun prism(corners: List<Pair<Float, Float>>, top: Float = seam): StlMesh {
+        require(corners.size >= 3) { "a prism needs a polygon" }
+        val soup = ArrayList<Float>()
+        fun add(a: FloatArray, b: FloatArray, c: FloatArray) {
+            soup.addAll(a.toList())
+            soup.addAll(b.toList())
+            soup.addAll(c.toList())
+        }
+        fun point(at: Int, z: Float) = floatArrayOf(corners[at].first, corners[at].second, z)
+        // The top cap is the seam, and the bottom cap faces the other way.
+        for (at in 1 until corners.size - 1) add(point(0, top), point(at, top), point(at + 1, top))
+        for (at in 1 until corners.size - 1) add(point(0, 0f), point(at + 1, 0f), point(at, 0f))
+        for (at in corners.indices) {
+            val next = (at + 1) % corners.size
+            add(point(at, 0f), point(next, 0f), point(next, top))
+            add(point(at, 0f), point(next, top), point(at, top))
+        }
+        return MeshFixtures.fromSoup("prism", soup.toFloatArray())
+    }
+
+    /** A round half: a many-sided prism whose polyline stands in for a circle. */
+    private fun roundHalf(radius: Float = 15f, sides: Int = 36): StlMesh {
+        val corners = (0 until sides).map { at ->
+            val angle = 2.0 * Math.PI * at / sides
+            (radius + radius * Math.cos(angle)).toFloat() to
+                (radius + radius * Math.sin(angle)).toFloat()
+        }
+        return prism(corners)
+    }
+
     private fun build(
         lip: StlMesh,
         mate: StlMesh,
         parameters: SnapFitParameters = SnapFitParameters(),
         cuts: List<Vec3> = emptyList(),
+        cutDirections: List<Vec3> = emptyList(),
     ): SnapLip.Outcome = SnapLip.buildRing(
         axis = Vec3(0f, 0f, 1f),
         anchorMm = Vec3(20f, 20f, seam),
@@ -65,6 +102,7 @@ class SnapLipTest {
         mateHalf = SnapFitHalf.inPlace(mate, seam),
         parameters = parameters,
         cuts = cuts,
+        cutDirections = cutDirections,
     )
 
     private fun built(
@@ -213,6 +251,8 @@ class SnapLipTest {
         val reason = (outcome as SnapLip.Outcome.Refused).reason
         check(reason.contains("hollow just inboard of the wall")) { reason }
         check(reason.contains(" mm")) { "the refusal has no number in it: " + reason }
+        check(reason.contains("skin")) { "the refusal does not say the cut would open the skin: " + reason }
+        check(reason.contains("insert")) { "the refusal does not name the insert: " + reason }
     }
 
     @Test
@@ -374,13 +414,14 @@ class SnapLipTest {
     }
 
     @Test
-    fun aCutReallyPartsTheRingAndTheGapIsTheCutWidth() {
+    fun aCutPartsTheInsertsRingAndTheGapIsTheCutWidth() {
         assumeTrue(MeshBoolean.ensureLoaded())
-        // The ring's flat holding face runs the whole way round, so a cut takes
-        // exactly one slit's worth of it out, and the ring is in two pieces after.
+        // The cut severs the LEDGE ring on the insert, and only that ring: the
+        // box is the slit, one cut leaves the closed ledge in one arc, and the
+        // slit's floor is inside the insert's face rather than out on the skin.
         val whole = built()
         check(whole.cutSolid == null) { "an uncut ring carries a cut" }
-        check(pieces(whole.unionSolid) == 1) { "an uncut ring came out in pieces" }
+        check(pieces(whole.registrationSolid) == 1) { "an uncut ledge came out in pieces" }
         val width = 0.8f
         val outcome = build(
             block(),
@@ -391,20 +432,87 @@ class SnapLipTest {
         check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
         val joint = (outcome as SnapLip.Outcome.Built).joint
         check(joint.dimensions.lipCuts == 1) { "the cut was not counted" }
-        // One cut opens a closed ring into one arc: the ring is no longer closed,
-        // which is the whole point - the wall has an end to bend from.
+        // One cut opens the closed ledge into one arc: the ring is no longer
+        // closed, which is the whole point - it has an end to bend from.
         check(joint.dimensions.lipArcs == 1) { "one cut left " + joint.dimensions.lipArcs + " arcs" }
         val cut = requireNotNull(joint.cutSolid) { "the cut solid went missing" }
-        // One slit is one box: twelve triangles, as wide as the cut, and through
-        // the wall and past the recess floor.
+        // One slit is one box: twelve triangles, as wide as the cut.
         check(cut.triangleCount == 12) { "one cut came out as " + cut.triangleCount + " triangles" }
         val across = cut.bounds.maxX - cut.bounds.minX
         check(abs(across - width) < 0.02f) { "a " + width + " mm cut measured " + across + " mm wide" }
-        check(cut.bounds.maxZ - cut.bounds.minZ > joint.dimensions.lipRecessMm) {
-            "the slit does not reach past the recess floor"
+        val slitted = MeshBoolean.subtract(joint.registrationSolid, cut)
+        check(slitted is MeshBoolean.Result.Success) { "the cut would not come out of the ledge: " + slitted }
+        val arcs = pieces((slitted as MeshBoolean.Result.Success).mesh)
+        check(arcs == 1) { "one cut left the ledge in " + arcs + " arcs" }
+        check(joint.dimensions.lipArcs == arcs) {
+            "the readout says " + joint.dimensions.lipArcs + " arcs and the mesh has " + arcs
         }
-        check(cut.bounds.maxY - cut.bounds.minY > joint.dimensions.wallThicknessMm) {
-            "the slit does not reach through the wall"
+        // The floor is above the mating plane, in the insert, and past the root
+        // the ledge stands on.
+        check(cut.bounds.maxZ - seam > 0.6f) {
+            "the slit's floor is only " + (cut.bounds.maxZ - seam) + " mm into the insert"
+        }
+        check(cut.bounds.minZ < seam) { "the slit does not reach below the ledge's own bottom" }
+        // And its outboard bound stops short of the part's outer skin: the cut is
+        // at y = 20 on the block's edge at y = 0, and the slit starts 1.9 mm in.
+        check(cut.bounds.minY > 1.5f) {
+            "the slit reaches to y = " + cut.bounds.minY + ", out at the part's own skin"
+        }
+    }
+
+    /**
+     * The rule the user set: a cut may open only the ring that is a protrusion on
+     * the embossed insert, never the half whose ring is its own outer wall. Here
+     * the tooth's half is a hollow tray whose 2 mm wall is its own skin and the
+     * insert is solid, and the app's own booleans are run: the tray comes out of
+     * them byte for byte what it was without any cuts, while the insert's ledge
+     * ring is the ring that comes apart.
+     */
+    @Test
+    fun theCutsLandOnTheInsertAndNeverOnTheSkinHalf() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        val tray = hollowHalf()
+        val insert = solidHalf()
+        val parameters = SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = 0.6f)
+        fun lipOf(cuts: List<Vec3>): SnapFitJoint {
+            val outcome = build(tray, insert, parameters, cuts = cuts)
+            check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+            return (outcome as SnapLip.Outcome.Built).joint
+        }
+        val plain = lipOf(emptyList())
+        val cut = lipOf(listOf(Vec3(20f, 0f, seam), Vec3(0f, 20f, seam)))
+        // The app's own lip path for the tooth's half: the recess comes out of it,
+        // the tooth goes on, and no cut is ever taken from it.
+        fun toothed(joint: SnapFitJoint): StlMesh {
+            val hollowed = MeshBoolean.subtract(tray, joint.subtractSolid)
+            check(hollowed is MeshBoolean.Result.Success) { "the recess would not come out: " + hollowed }
+            val tooth = MeshBoolean.union((hollowed as MeshBoolean.Result.Success).mesh, joint.unionSolid)
+            check(tooth is MeshBoolean.Result.Success) { "the tooth would not go on: " + tooth }
+            return (tooth as MeshBoolean.Result.Success).mesh
+        }
+        val trayPlain = toothed(plain)
+        val trayCut = toothed(cut)
+        check(trayCut.triangleCount == trayPlain.triangleCount) {
+            "the skin half changed shape when the cuts were added: " + trayPlain.triangleCount +
+                " triangles became " + trayCut.triangleCount
+        }
+        check(abs(volumeOf(trayCut) - volumeOf(trayPlain)) < 1e-3f) {
+            "the skin half lost " + (volumeOf(trayPlain) - volumeOf(trayCut)) + " mm3 to the cuts"
+        }
+        // The ring that does come apart is the insert's ledge, and every slit is
+        // on it.
+        val severed = MeshBoolean.subtract(cut.registrationSolid, requireNotNull(cut.cutSolid))
+        check(severed is MeshBoolean.Result.Success) { "the cuts would not come out of the ledge: " + severed }
+        val arcs = pieces((severed as MeshBoolean.Result.Success).mesh)
+        check(arcs == 2) { "two cuts left the insert's ledge in " + arcs + " arcs" }
+        check(cut.dimensions.lipArcs == arcs) {
+            "the readout says " + cut.dimensions.lipArcs + " arcs and the mesh has " + arcs
+        }
+        // The slit stops short of the part's own skin: the tray's outer edges are
+        // x = 0 and y = 0, and the cuts reach no further out than 1.9 mm in.
+        val box = requireNotNull(cut.cutSolid)
+        check(box.bounds.minX > 1f && box.bounds.minY > 1f) {
+            "a slit reaches out to (" + box.bounds.minX + ", " + box.bounds.minY + "), at the skin"
         }
     }
 
@@ -477,19 +585,19 @@ class SnapLipTest {
             cuts = bends,
         ) as SnapLip.Outcome.Built
         // Four cuts on a closed ring leave four arcs, each with both ends free:
-        // take the cuts out of the ring itself and count what is left.
-        val severed = MeshBoolean.subtract(all.joint.unionSolid, requireNotNull(all.joint.cutSolid))
+        // take the cuts out of the LEDGE ring itself and count what is left.
+        val severed = MeshBoolean.subtract(all.joint.registrationSolid, requireNotNull(all.joint.cutSolid))
         check(severed is MeshBoolean.Result.Success) { "the cuts would not come out of the ring: " + severed }
         val arcs = pieces((severed as MeshBoolean.Result.Success).mesh)
         check(arcs == 4) { "four cuts left the ring in " + arcs + " arcs" }
         check(all.joint.dimensions.lipArcs == arcs) {
             "the readout says " + all.joint.dimensions.lipArcs + " arcs and the mesh has " + arcs
         }
-        // Every bend on its own: the slit meets the tooth as a slice whose length
-        // ALONG the bend's bisector is the cut's width, and whose depth ACROSS the
-        // wall spans the tooth. A slit taken along the contour instead - which is
-        // what taking the direction from a sliver's tangent does - comes out the
-        // other way round and fails both.
+        // Every bend on its own: the slit meets the ledge as a slice whose length
+        // ALONG the bend's bisector is the cut's width, and whose reach ACROSS it
+        // spans the ledge's whole cross-section. A slit taken along the contour
+        // instead - which is what taking the direction from a sliver's tangent
+        // does - comes out the other way round and fails both.
         for (index in bends.indices) {
             val one = build(
                 block(size = size),
@@ -498,8 +606,8 @@ class SnapLipTest {
                 cuts = listOf(bends[index]),
             ) as SnapLip.Outcome.Built
             val box = requireNotNull(one.joint.cutSolid)
-            val hit = MeshBoolean.intersect(one.joint.unionSolid, box)
-            check(hit is MeshBoolean.Result.Success) { "bend " + (index + 1) + " misses the ring" }
+            val hit = MeshBoolean.intersect(one.joint.registrationSolid, box)
+            check(hit is MeshBoolean.Result.Success) { "bend " + (index + 1) + " misses the ledge ring" }
             val slice = (hit as MeshBoolean.Result.Success).mesh
             check(volumeOf(slice) > 0.02f) { "bend " + (index + 1) + " takes nothing out of the ring" }
             val here = bends[index]
@@ -520,11 +628,296 @@ class SnapLipTest {
         }
     }
 
+    /**
+     * The rule the user stated and can predict: cut at the big angle, towards the
+     * centre of the part. At a rectangle's four bends the slit RUNS at the ring's
+     * centre - the way across the band is the way to the centre - so its whole
+     * depth is measured along that way and its narrow width across it. A slit
+     * run along the other bisector, or along the wall, leaves the ring joined.
+     */
     @Test
-    fun aCutOnAnEdgeSeversTheWallAcrossIt() {
+    fun everyAutomaticCutPointsAtTheRingCentre() {
         assumeTrue(MeshBoolean.ensureLoaded())
-        // A tap-placed cut on a straight edge: its slit lies across the wall, one
-        // cut width along the edge and the whole tooth deep.
+        val size = 30f
+        val bends = SnapLip.bendPoints(
+            axis = Vec3(0f, 0f, 1f),
+            anchorMm = Vec3(15f, 15f, seam),
+            scale = 1f,
+            lipHalf = SnapFitHalf.inPlace(block(size = size), seam),
+            mateHalf = SnapFitHalf.inPlace(solidHalf(size = size), seam),
+        )
+        check(bends.size == 4) { "a square contour has " + bends.size + " bends" }
+        // The ring's own centre: on a rectangle the four bends average to it.
+        val centre = bends.fold(Vec3(0f, 0f, 0f)) { sum, bend -> sum + bend } * (1f / bends.size)
+        val width = 0.6f
+        val all = build(
+            block(size = size),
+            solidHalf(size = size),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = bends,
+        )
+        check(all is SnapLip.Outcome.Built) { "refused: " + (all as? SnapLip.Outcome.Refused)?.reason }
+        val whole = (all as SnapLip.Outcome.Built).joint
+        // Each automatic cut severs the ring: the insert's ledge minus its cuts
+        // comes apart into four arcs, and the readout's arc count is the mesh's own.
+        val severed = MeshBoolean.subtract(whole.registrationSolid, requireNotNull(whole.cutSolid))
+        check(severed is MeshBoolean.Result.Success) { "the cuts would not come out of the ring: " + severed }
+        val arcs = pieces((severed as MeshBoolean.Result.Success).mesh)
+        check(arcs == 4) { "four cuts left the ring in " + arcs + " arcs" }
+        check(whole.dimensions.lipArcs == arcs) {
+            "the readout says " + whole.dimensions.lipArcs + " arcs and the mesh has " + arcs
+        }
+        for (index in bends.indices) {
+            val one = build(
+                block(size = size),
+                solidHalf(size = size),
+                SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+                cuts = listOf(bends[index]),
+            )
+            check(one is SnapLip.Outcome.Built) { "refused: " + (one as? SnapLip.Outcome.Refused)?.reason }
+            val box = requireNotNull((one as SnapLip.Outcome.Built).joint.cutSolid)
+            val hit = MeshBoolean.intersect(one.joint.registrationSolid, box)
+            check(hit is MeshBoolean.Result.Success) { "bend " + (index + 1) + " misses the ring" }
+            val slice = (hit as MeshBoolean.Result.Success).mesh
+            check(volumeOf(slice) > 0.02f) { "bend " + (index + 1) + " takes nothing out of the ring" }
+            val radial = (bends[index] - centre).normalized()!!
+            val across = Vec3(-radial.y, radial.x, 0f)
+            val run = extentAlong(slice, radial)
+            val narrow = extentAlong(slice, across)
+            check(run > 1f) {
+                "bend " + (index + 1) + " runs only " + run +
+                    " mm towards the centre, so the slit does not cross the band"
+            }
+            check(abs(narrow - width) < 0.2f) {
+                "bend " + (index + 1) + " is " + narrow + " mm across the way to the centre, and the " +
+                    "slit is " + width + " mm wide"
+            }
+        }
+    }
+
+    /**
+     * A contour with no real bends - a circle, an ellipse, a rounded seam - is a
+     * curve the boolean engine tessellated, and its polyline vertices are not
+     * corners. It gets two cuts half the ring apart rather than one at every
+     * vertex, and the two runs left are the halves of the ring.
+     */
+    @Test
+    fun aRoundSeamGetsTwoCutsHalfTheRingApart() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        val half = roundHalf()
+        val mate = solidHalf(size = 40f)
+        val bends = SnapLip.bendPoints(
+            axis = Vec3(0f, 0f, 1f),
+            anchorMm = Vec3(15f, 15f, seam),
+            scale = 1f,
+            lipHalf = SnapFitHalf.inPlace(half, seam),
+            mateHalf = SnapFitHalf.inPlace(mate, seam),
+        )
+        check(bends.size == 2) { "a round seam with no real bends has " + bends.size + " cuts" }
+        val width = 0.6f
+        val outcome = build(
+            half,
+            mate,
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = bends,
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        val joint = (outcome as SnapLip.Outcome.Built).joint
+        check(joint.dimensions.lipCuts == 2) { joint.dimensions.lipCuts.toString() + " cuts on a round ring" }
+        val severed = MeshBoolean.subtract(joint.registrationSolid, requireNotNull(joint.cutSolid))
+        check(severed is MeshBoolean.Result.Success) { "the cuts would not come out of the ring: " + severed }
+        val arcs = pieces((severed as MeshBoolean.Result.Success).mesh)
+        check(arcs == 2) { "two cuts left the round ring in " + arcs + " arcs" }
+        check(joint.dimensions.lipArcs == arcs) {
+            "the readout says " + joint.dimensions.lipArcs + " arcs and the mesh has " + arcs
+        }
+        val expected = joint.dimensions.lipRingMm * 0.5f - width
+        check(abs(joint.dimensions.lipShortestRunMm - expected) < 1f) {
+            "the shortest run is " + joint.dimensions.lipShortestRunMm + " mm and half the ring less a " +
+                "slit is " + expected + " mm"
+        }
+        check(abs(joint.dimensions.lipShortestRunMm - joint.dimensions.lipLongestRunMm) < 0.5f) {
+            "the two runs are " + joint.dimensions.lipShortestRunMm + " and " +
+                joint.dimensions.lipLongestRunMm + " mm, so the cuts are not half the ring apart"
+        }
+    }
+
+    /**
+     * More bends than the ring carries slits: a rhombus turns 120 degrees at two
+     * of its corners and 60 at the other two, and a cut wide enough that only two
+     * fit must take the two sharp ones. The user's rule is to cut at the big
+     * angles, so the order the bends come in is the order that decides.
+     */
+    @Test
+    fun theSharpestBendsAreCutWhenTheRingCannotTakeThemAll() {
+        val side = 30f
+        val rise = (side * Math.sin(Math.toRadians(60.0))).toFloat()
+        val run = (side * Math.cos(Math.toRadians(60.0))).toFloat()
+        val corners = listOf(0f to 0f, side to 0f, (side + run) to rise, run to rise)
+        val rhombus = prism(corners)
+        val cornersMm = corners.map { Vec3(it.first, it.second, seam) }
+        // Two 40 mm slits on a 120 mm ring: the gap a cut needs is its width plus
+        // the wall two ends stand on, so the two sharp corners are all that fit.
+        val width = 40f
+        val bends = SnapLip.bendPoints(
+            axis = Vec3(0f, 0f, 1f),
+            anchorMm = Vec3(20f, 13f, seam),
+            scale = 1f,
+            lipHalf = SnapFitHalf.inPlace(rhombus, seam),
+            mateHalf = SnapFitHalf.inPlace(solidHalf(size = 60f), seam),
+            parameters = SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+        )
+        check(bends.size == 2) { "a rhombus with four real bends has " + bends.size + " cuts" }
+        val sharp = listOf(cornersMm[0], cornersMm[2])
+        val blunt = listOf(cornersMm[1], cornersMm[3])
+        for (bend in bends) {
+            val toSharp = sharp.minOf { (it - bend).length() }
+            check(toSharp < 0.01f) {
+                "a returned bend is not on a sharp corner (it is " + toSharp + " mm from one)"
+            }
+            check(blunt.minOf { (it - bend).length() } > toSharp) {
+                "a blunt corner was cut before a sharp one"
+            }
+        }
+        // And the two it chose really build.
+        val outcome = build(
+            rhombus,
+            solidHalf(size = 60f),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = bends,
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        check((outcome as SnapLip.Outcome.Built).joint.dimensions.lipCuts == 2) {
+            "the sharp corners did not build as two cuts"
+        }
+    }
+
+    /**
+     * A stroke across the wall hands its cut the stroke's own direction: the slit
+     * lies perpendicular to the stroke wherever it was drawn, so its narrow width
+     * is measured along the stroke and its whole depth across it. The same cut
+     * without the stroke takes the automatic direction and comes out the other way
+     * round - which is what the swipe overrides.
+     */
+    @Test
+    fun aSwipedCutLiesPerpendicularToTheStroke() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        val width = 0.8f
+        val stroke = requireNotNull(Vec3(1f, 1f, 0f).normalized())
+        val across = Vec3(-stroke.y, stroke.x, 0f)
+        val at = Vec3(20f, 0f, seam)
+        val swiped = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = listOf(at),
+            cutDirections = listOf(stroke),
+        )
+        check(swiped is SnapLip.Outcome.Built) { "refused: " + (swiped as? SnapLip.Outcome.Refused)?.reason }
+        val strokeJoint = (swiped as SnapLip.Outcome.Built).joint
+        val strokeHit = MeshBoolean.intersect(strokeJoint.registrationSolid, requireNotNull(strokeJoint.cutSolid))
+        check(strokeHit is MeshBoolean.Result.Success) { "the swiped cut misses the ring" }
+        val swipedSlice = (strokeHit as MeshBoolean.Result.Success).mesh
+        check(abs(extentAlong(swipedSlice, stroke) - width) < 0.2f) {
+            "the swiped slit is " + extentAlong(swipedSlice, stroke) + " mm along the stroke, and the " +
+                "slit is " + width + " mm wide"
+        }
+        check(extentAlong(swipedSlice, across) > 1f) {
+            "the swiped slit does not reach across the stroke"
+        }
+        // The same stroke drawn the other way is the same slit: its two ways are
+        // one line, and the inboard one is chosen, so neither reaches the skin.
+        val reversed = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = listOf(at),
+            cutDirections = listOf(stroke * -1f),
+        )
+        check(reversed is SnapLip.Outcome.Built) { "refused: " + (reversed as? SnapLip.Outcome.Refused)?.reason }
+        val reversedCut = requireNotNull((reversed as SnapLip.Outcome.Built).joint.cutSolid)
+        check(abs(reversedCut.bounds.minY - requireNotNull(strokeJoint.cutSolid).bounds.minY) < 0.01f) {
+            "the reversed stroke aims the slit the other way: " + reversedCut.bounds.minY +
+                " against " + strokeJoint.cutSolid!!.bounds.minY
+        }
+        check(reversedCut.bounds.minY > 1.5f) {
+            "the reversed stroke reaches the part's own skin at y = " + reversedCut.bounds.minY
+        }
+        val automatic = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = listOf(at),
+        )
+        check(automatic is SnapLip.Outcome.Built) {
+            "refused: " + (automatic as? SnapLip.Outcome.Refused)?.reason
+        }
+        val automaticJoint = (automatic as SnapLip.Outcome.Built).joint
+        val automaticHit =
+            MeshBoolean.intersect(automaticJoint.registrationSolid, requireNotNull(automaticJoint.cutSolid))
+        check(automaticHit is MeshBoolean.Result.Success) { "the automatic cut misses the ring" }
+        val automaticSlice = (automaticHit as MeshBoolean.Result.Success).mesh
+        check(extentAlong(automaticSlice, stroke) > 1f) {
+            "the automatic cut already ran perpendicular to the stroke, so the swipe changed nothing"
+        }
+    }
+
+    /**
+     * The depth asked for is the depth built: the slit's own floor is the face of
+     * the cut solid that many millimetres above the mating plane, inside the
+     * insert, and a depth too shallow to sever the ledge's root is held up to one
+     * that does - with the clamp said out loud.
+     */
+    @Test
+    fun theCutDepthControlReallyMovesTheSlitsFloor() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        fun cutAt(asked: Float?): Pair<SnapFitJoint, StlMesh> {
+            val outcome = build(
+                block(),
+                solidHalf(),
+                SnapFitParameters(
+                    lipWallOverrideMm = 2f,
+                    lipCutWidthOverrideMm = 0.6f,
+                    lipCutDepthMm = asked,
+                ),
+                cuts = listOf(Vec3(20f, 0f, seam)),
+            )
+            check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+            val joint = (outcome as SnapLip.Outcome.Built).joint
+            return joint to requireNotNull(joint.cutSolid)
+        }
+        val (defaultJoint, defaultCut) = cutAt(null)
+        val through = defaultCut.bounds.maxZ - seam
+        check(through > 0.6f) {
+            "the default cut has its floor at " + through + " mm, not past the ledge's root"
+        }
+        check(abs(defaultJoint.dimensions.lipCutDepthMm - through) < 0.02f) {
+            "the readout says " + defaultJoint.dimensions.lipCutDepthMm + " mm and the floor is " + through
+        }
+        val asked = 2.6f
+        val (askedJoint, askedCut) = cutAt(asked)
+        val floor = askedCut.bounds.maxZ - seam
+        check(abs(floor - asked) < 0.02f) { "a " + asked + " mm cut has its floor at " + floor + " mm" }
+        val face = flatFaces(askedCut).firstOrNull { it.up && abs(it.z - (seam + asked)) < 0.01f }
+        checkNotNull(face) { "the slit's floor is not a face of the cut: " + flatFaces(askedCut) }
+        check(abs(askedJoint.dimensions.lipCutDepthMm - asked) < 0.02f) {
+            "the readout says " + askedJoint.dimensions.lipCutDepthMm + " mm and the cut is " + floor + " mm"
+        }
+        val (shallowJoint, shallowCut) = cutAt(0.5f)
+        val shallow = shallowCut.bounds.maxZ - seam
+        check(abs(shallow - 0.9f) < 0.02f) {
+            "a 0.50 mm ask cut " + shallow + " mm deep, and a slit that severs the 0.60 mm root is 0.90"
+        }
+        val clamp = shallowJoint.clamps.firstOrNull { it.label == "cut depth" }
+        checkNotNull(clamp) { "the depth clamp went unsaid: " + shallowJoint.clamps }
+        check(clamp.reason.contains("joined to the insert")) { clamp.reason }
+    }
+
+    @Test
+    fun aCutOnAnEdgeSeversTheLedgeAcrossIt() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        // A tap-placed cut on a straight edge: its slit lies across the ledge, one
+        // cut width along the edge and the ring's whole depth through it.
         val width = 0.8f
         val one = build(
             block(),
@@ -533,14 +926,14 @@ class SnapLipTest {
             cuts = listOf(Vec3(20f, 0f, seam)),
         ) as SnapLip.Outcome.Built
         val box = requireNotNull(one.joint.cutSolid)
-        val hit = MeshBoolean.intersect(one.joint.unionSolid, box)
-        check(hit is MeshBoolean.Result.Success) { "the cut misses the ring" }
+        val hit = MeshBoolean.intersect(one.joint.registrationSolid, box)
+        check(hit is MeshBoolean.Result.Success) { "the cut misses the ledge ring" }
         val slice = (hit as MeshBoolean.Result.Success).mesh
         check(abs(extentAlong(slice, Vec3(1f, 0f, 0f)) - width) < 0.1f) {
             "the slit is " + extentAlong(slice, Vec3(1f, 0f, 0f)) + " mm along the edge"
         }
         check(extentAlong(slice, Vec3(0f, 1f, 0f)) > width + 0.5f) {
-            "the slit does not reach across the wall"
+            "the slit does not reach across the ledge"
         }
     }
 
@@ -582,7 +975,7 @@ class SnapLipTest {
         )
         check(outcome is SnapLip.Outcome.Refused) { "cuts that leave no wall were built" }
         val reason = (outcome as SnapLip.Outcome.Refused).reason
-        check(reason.contains("stretch of wall between two cuts")) { reason }
+        check(reason.contains("stretch of ring between two cuts")) { reason }
         check(reason.contains(" mm")) { reason }
     }
 

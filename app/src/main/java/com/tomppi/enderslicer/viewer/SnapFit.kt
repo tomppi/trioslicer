@@ -1629,6 +1629,16 @@ data class SnapFitHalf(
         ).normalized() ?: direction
     }
 
+    /** [direction], given in this half's own coordinates, as it sits on the plate. */
+    fun toPlateDirection(direction: Vec3): Vec3 {
+        val m = transform.linear
+        return Vec3(
+            (m[0] * direction.x + m[1] * direction.y + m[2] * direction.z).toFloat(),
+            (m[3] * direction.x + m[4] * direction.y + m[5] * direction.z).toFloat(),
+            (m[6] * direction.x + m[7] * direction.y + m[8] * direction.z).toFloat(),
+        ).normalized() ?: direction
+    }
+
     /** The inverse of the linear part, row-major, or null when there is none. */
     private fun inverse(): DoubleArray? {
         val m = transform.linear
@@ -1796,7 +1806,7 @@ data class SnapFitDimensions(
     val lipDepthExtraMm: Float = 0f,
     /** How wide the user's cuts took their slits out of the ring. */
     val lipCutWidthMm: Float = 0f,
-    /** How far below the mating face those slits ran. */
+    /** How far past the mating face those slits' floors ran, into the insert. */
     val lipCutDepthMm: Float = 0f,
     /** How many cuts the ring carries, and how many arcs that leaves it in. */
     val lipCuts: Int = 0,
@@ -1987,12 +1997,12 @@ data class SnapFitJoint(
      */
     val lipCutSummary: String
         get() = if (dimensions.lipCuts == 0) {
-            "one closed ring - no cuts, and the wall has no end to bend from"
+            "one closed ring - no cuts, and the ledge has no end to bend from"
         } else {
             String.format(
                 java.util.Locale.ROOT,
-                "%d %s, so the ring is %d %s; the wall runs %.1f mm to %.1f mm between them, " +
-                    "each %.2f mm wide and %.2f mm deep",
+                "%d %s, so the ring is %d %s; it runs %.1f mm to %.1f mm between them, " +
+                    "each %.2f mm wide and %.2f mm into the insert",
                 dimensions.lipCuts,
                 if (dimensions.lipCuts == 1) "cut" else "cuts",
                 dimensions.lipArcs,
@@ -2139,11 +2149,11 @@ data class SnapFitParameters(
     /** The cut width the user typed, in millimetres, or null for the scaled parameter. */
     val lipCutWidthOverrideMm: Float? = null,
     /**
-     * The wall lip: how far below the mating face a cut's slit runs. Null means
-     * the ring's own band - through the wall, the tooth and a little past the
-     * recess floor, which is what frees the wall completely; a number is how deep
-     * the user asked for instead, and how much of the wall is freed is what he is
-     * buying.
+     * The wall lip: how deep into the insert's face a cut's slit floor runs,
+     * measured above the mating plane. Null means past the ledge's own root and a
+     * little further, which is the shallowest slit that severs the ring; a
+     * number is how deep the user asked for instead, and how much of the insert
+     * the cut frees is what he is buying.
      */
     val lipCutDepthMm: Float? = null,
 ) {

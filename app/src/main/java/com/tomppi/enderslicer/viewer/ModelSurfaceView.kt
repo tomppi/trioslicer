@@ -205,6 +205,33 @@ class ModelSurfaceView(
     var onJointPick: ((MeshPicker.Hit) -> Unit)? = null
 
     /**
+     * When true, a DRAG that begins on the model is a cut stroke: one cut where
+     * the finger went down, whose slit is perpendicular to the finger's own
+     * travel, and a tap still cuts where it lands.
+     *
+     * Set beside [jointPickActive] and only while the panel has "Cut wall" armed.
+     * The direction of the stroke is read on lift; the point is the pick the
+     * touch went down with, so a stroke that began beside the model is handed
+     * back to the camera rather than cutting anything.
+     */
+    var jointStrokeActive: Boolean = false
+
+    /** Invoked on the UI thread with a cut stroke: the model point it began on and its direction. */
+    var onJointStroke: ((MeshPicker.Hit, Vec3) -> Unit)? = null
+
+    /** True between a cut stroke's touch-down and the picker's answer. */
+    private var strokeActive = false
+    private var strokeMoved = false
+    private var strokeFirstHit: MeshPicker.Hit? = null
+    private var strokePendingUp = false
+    private var strokeDownX = 0f
+    private var strokeDownY = 0f
+    private var strokeUpX = 0f
+    private var strokeUpY = 0f
+    private var strokeAccumDx = 0f
+    private var strokeAccumDy = 0f
+
+    /**
      * When true, the finger paints the surface: a sample lands where it goes
      * down and another at every move, until it lifts. This is filaSim's brush,
      * and the same shape the support-paint brush already has.
@@ -446,6 +473,22 @@ class ModelSurfaceView(
                     // the coordinates are copied, not the event.
                     pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
                     schedulePaintPick()
+                    if (jointStrokeActive) {
+                        // A cut stroke: whether this is the tap that cuts one
+                        // place or the drag that draws a direction is only known
+                        // when it ends, so hold the movement until the pick has
+                        // answered whether the gesture began on the model.
+                        strokeActive = true
+                        strokeMoved = false
+                        strokeFirstHit = null
+                        strokePendingUp = false
+                        strokeDownX = event.x
+                        strokeDownY = event.y
+                        strokeUpX = event.x
+                        strokeUpY = event.y
+                        strokeAccumDx = 0f
+                        strokeAccumDy = 0f
+                    }
                 }
                 if (surfacePickActive) {
                     // Ask whether this gesture began on the model. Until the answer
@@ -510,6 +553,9 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
+                    // Two fingers are a pan, not a cut stroke.
+                    if (strokeFirstHit == null) replayStrokeAsOrbit()
+                    resetJointStroke()
                     previousFocusX = pointerFocusX(event)
                     previousFocusY = pointerFocusY(event)
                     panning = true
@@ -531,7 +577,25 @@ class ModelSurfaceView(
                     panning = true
                     requestRender()
                 } else if (!scaleDetector.isInProgress) {
-                    if (painting || brushDragging) {
+                    if (jointStrokeActive && strokeActive) {
+                        // A cut stroke owns the movement: the camera does not turn
+                        // while the finger is drawing the slit's direction. Until
+                        // the pick answers, hold what moved in case the gesture
+                        // began beside the model and is the camera's after all.
+                        strokeUpX = event.x
+                        strokeUpY = event.y
+                        if (kotlin.math.abs(event.x - strokeDownX) > touchSlopPx ||
+                            kotlin.math.abs(event.y - strokeDownY) > touchSlopPx
+                        ) {
+                            strokeMoved = true
+                        }
+                        if (strokeFirstHit == null) {
+                            strokeAccumDx += event.x - previousX
+                            strokeAccumDy += event.y - previousY
+                        }
+                        previousX = event.x
+                        previousY = event.y
+                    } else if (painting || brushDragging) {
                         // A stroke sample. One slot, overwritten: the picker runs
                         // off the UI thread and a slow sample must not queue up a
                         // backlog of stale positions behind it.
@@ -626,6 +690,17 @@ class ModelSurfaceView(
             MotionEvent.ACTION_UP -> {
                 performClick()
                 panning = false
+                if (jointStrokeActive && strokeActive) {
+                    // A tap cuts where it landed; a drag cuts one place with the
+                    // slit across the finger's travel. The pick may still be in
+                    // flight, so the answer settles it.
+                    val hit = strokeFirstHit
+                    if (hit != null) {
+                        settleJointStroke(hit)
+                    } else {
+                        strokePendingUp = true
+                    }
+                }
                 if (annotationActive && !painting && !annotationMoved && annotationGrabbed == null) {
                     val coordinates = floatArrayOf(event.x, event.y)
                     if (annotationDeciding) {
@@ -687,6 +762,8 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_CANCEL -> {
                 panning = false
+                if (strokeFirstHit == null) replayStrokeAsOrbit()
+                resetJointStroke()
                 if (draggingRotate) {
                     draggingRotate = false
                     rotateDegrees = 0f
@@ -806,6 +883,69 @@ class ModelSurfaceView(
         }
     }
 
+    /**
+     * The picker's answer for a cut stroke's first sample: on the model it is the
+     * cut's own place, and beside it the gesture was the camera's, so the
+     * movement held while the probe ran becomes the orbit it would have been.
+     *
+     * The answer may arrive after the finger has lifted - the picker runs off the
+     * UI thread - so [strokePendingUp] says the lift is waiting for it.
+     */
+    private fun acceptJointStroke(hit: MeshPicker.Hit?) {
+        if (!jointStrokeActive || !strokeActive) return
+        if (hit == null) {
+            replayStrokeAsOrbit()
+            resetJointStroke()
+            return
+        }
+        strokeFirstHit = hit
+        if (strokePendingUp) settleJointStroke(hit)
+    }
+
+    /** The stroke is over: one cut whose slit runs across the finger's travel, or one tap. */
+    private fun settleJointStroke(hit: MeshPicker.Hit) {
+        val direction = if (strokeMoved) jointStrokeDirection() else null
+        if (direction != null) {
+            onJointStroke?.invoke(hit, direction)
+        } else {
+            // A stroke with no direction left in it, or a tap: the cut lands at
+            // the point, with the ring's own automatic direction.
+            onJointPick?.invoke(hit)
+        }
+        resetJointStroke()
+    }
+
+    /**
+     * The direction of the finger's own travel on the plate, in millimetres. The
+     * bed-plane mapping the model drag already reads turns the screen's pixels
+     * into plate millimetres, and only the direction of that is used: a slit is
+     * perpendicular to the stroke, so its length does not matter.
+     */
+    private fun jointStrokeDirection(): Vec3? {
+        val delta = modelRenderer.dragDeltaMm(strokeUpX - strokeDownX, strokeUpY - strokeDownY)
+        val direction = Vec3(delta[0], delta[1], 0f)
+        return direction.takeIf { it.isFinite() && it.length() > 1e-4f }
+    }
+
+    /** The movement a cut stroke held while the pick was in flight, as the camera's own. */
+    private fun replayStrokeAsOrbit() {
+        if (strokeAccumDx == 0f && strokeAccumDy == 0f) return
+        modelRenderer.rotate(strokeAccumDx * 0.35f, strokeAccumDy * 0.35f)
+        strokeAccumDx = 0f
+        strokeAccumDy = 0f
+        notifyOrientation()
+        requestRender()
+    }
+
+    private fun resetJointStroke() {
+        strokeActive = false
+        strokeMoved = false
+        strokeFirstHit = null
+        strokePendingUp = false
+        strokeAccumDx = 0f
+        strokeAccumDy = 0f
+    }
+
     private fun schedulePaintPick() {
         synchronized(paintPickLock) {
             if (paintPickScheduled) return
@@ -821,10 +961,17 @@ class ModelSurfaceView(
                     // pick. Without it the probe answered with a point on the
                     // half standing behind the visible one.
                     val jointPick = jointPickActive
+                    val jointStroke = jointStrokeActive
                     // The stroke's first sample answers a question rather than
                     // painting: a miss is an answer here, not a reason to skip.
                     if (brushProbePending.getAndSet(false)) {
                         post { applyBrushProbe(hit) }
+                        continue
+                    }
+                    if (jointPick && jointStroke) {
+                        // A cut stroke reads a miss as well as a hit: beside the
+                        // model the gesture is the camera's.
+                        post { acceptJointStroke(hit) }
                         continue
                     }
                     if (hit == null) continue
