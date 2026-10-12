@@ -95,6 +95,12 @@ object SnapJoint {
          * degenerate leaves that cut the automatic inward bisector.
          */
         cutDirections: List<Vec3> = emptyList(),
+        /**
+         * The bundled library shape's loaded pair, for [SnapJointStyle.LIBRARY_HOOK].
+         * The caller loads it - the pieces are megabytes from the app's assets -
+         * and hands it here, so the builder itself stays arithmetic over meshes.
+         */
+        library: SnapLibraryPair? = null,
     ): Either {
         val axisDirection = SnapFit.axisDirection(axis)
         // The two halves meet when their own mating faces agree: each carries
@@ -112,7 +118,7 @@ object SnapJoint {
         }
         val chosen = join(
             axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style,
-            cuts, cutDirections,
+            cuts, cutDirections, library,
         )
         if (chosen is Attempt.Built) {
             return Either.Placed(placementOf(chosen.joint, lowHalf, highHalf, beamHalf, true))
@@ -120,7 +126,7 @@ object SnapJoint {
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
         val flipped = join(
             axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style,
-            cuts, cutDirections,
+            cuts, cutDirections, library,
         )
         if (flipped is Attempt.Built) {
             // Which half the sentence names. The chosen round roots the beam in the chosen
@@ -186,6 +192,7 @@ object SnapJoint {
         style: SnapJointStyle,
         cuts: List<Vec3>,
         cutDirections: List<Vec3>,
+        library: SnapLibraryPair?,
     ): Attempt {
         val forward = beamHalf == JointHalf.LOW
         val sign = if (forward) 1f else -1f
@@ -194,6 +201,29 @@ object SnapJoint {
         val directedAxis = if (forward) axisDirection else axisDirection * -1f
         val beamFit = beam.copy(faceMm = beam.faceMm * sign)
         val socketFit = socket.copy(faceMm = socket.faceMm * sign)
+        if (style == SnapJointStyle.LIBRARY_HOOK) {
+            // The library pair is placed, not fitted: its hook and its catch are
+            // one author's assembly, in register already, so the chosen half
+            // always takes the hook and the material has no say. The RAW halves
+            // go over - this style reads each half's own mating face the way the
+            // split recorded it, not the direction-negated copy the two designed
+            // styles walk.
+            val pair = library ?: return Attempt.Refused(
+                "is a library shape, and none is loaded: pick one of the eight shapes in the " +
+                    "panel, and the app will read it out of its own assets.",
+            )
+            return Attempt.Built(
+                SnapLibrary.build(
+                    pair = pair,
+                    axisDirection = axisDirection,
+                    anchorMm = anchorMm,
+                    scale = scale,
+                    hookHalf = if (forward) lowHalf else highHalf,
+                    mateHalf = if (forward) highHalf else lowHalf,
+                    hookOnLowHalf = forward,
+                ),
+            )
+        }
         return when (style) {
             SnapJointStyle.CANTILEVER -> SnapFit.generate(
                 axis = directedAxis,

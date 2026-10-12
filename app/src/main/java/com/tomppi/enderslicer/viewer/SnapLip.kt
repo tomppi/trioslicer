@@ -21,6 +21,15 @@ import kotlin.math.tan
 enum class SnapJointStyle(val label: String) {
     CANTILEVER("Cantilever"),
     WALL_LIP("Wall lip"),
+
+    /**
+     * A ready-made pair grafted from the bundled library: the user picks one of
+     * the eight shapes, taps the seam, and the pair lands with its own mating
+     * plane on the seam's plane, already in register - see [SnapLibrary]. One
+     * scale sizes both pieces together, so the register the author built into
+     * them survives every size.
+     */
+    LIBRARY_HOOK("Library hook"),
 }
 
 /**

@@ -5,6 +5,7 @@ import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
@@ -34,8 +35,14 @@ data class SnapJointSpec(
     val barbs: Int,
     /** Which way this joint's hook faces. */
     val facing: SnapFacing,
-    /** Which joint this is: the cantilever's beam, or the wall lip's tooth and ledge. */
+    /** Which joint this is: the cantilever's beam, the wall lip's tooth and ledge, or a library pair. */
     val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    /**
+     * Which bundled shape this joint is grafted from, for
+     * [SnapJointStyle.LIBRARY_HOOK]: one control picks it per joint, so a seam
+     * can carry a cantilever01 hook beside a round one.
+     */
+    val libraryShape: SnapLibraryShape = SnapLibraryShape.CANTILEVER01,
     /** The lip's engagement in millimetres, or null for the scale's own. */
     val lipEngagementMm: Float? = null,
     /** The lip's tooth height in millimetres, or null for the scale's own. */
@@ -88,6 +95,8 @@ data class SnapJointRecord(
      * a cantilever and a lip side by side.
      */
     val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    /** Which bundled library shape, for the library hook style. */
+    val libraryShape: SnapLibraryShape = SnapLibraryShape.CANTILEVER01,
     val lipEngagementMm: Float? = null,
     val lipToothHeightMm: Float? = null,
     val lipWallMm: Float? = null,

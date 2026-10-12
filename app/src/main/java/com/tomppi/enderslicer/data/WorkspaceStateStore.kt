@@ -7,6 +7,7 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.Vec3
 import org.json.JSONArray
@@ -94,6 +95,13 @@ class WorkspaceStateStore(private val filesDirectory: File) {
              * existed carries none of them and decodes as the cantilever it was.
              */
             val style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+            /**
+             * Which bundled library shape a library hook joint was grafted from.
+             * A joint recorded before the style existed carries none and decodes
+             * as the shape the picker starts on, which is what a cantilever or a
+             * lip joint ignores anyway.
+             */
+            val libraryShape: SnapLibraryShape = SnapLibraryShape.CANTILEVER01,
             val lipEngagementMm: Float? = null,
             val lipToothHeightMm: Float? = null,
             val lipWallMm: Float? = null,
@@ -300,6 +308,12 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                             .apply {
                                                 if (joint.style == SnapJointStyle.CANTILEVER) return@apply
                                                 put("style", joint.style.name)
+                                                // Written only for a library hook, so the two
+                                                // styles that came before keep the byte shape
+                                                // their own builds wrote.
+                                                if (joint.style == SnapJointStyle.LIBRARY_HOOK) {
+                                                    put("libraryShape", joint.libraryShape.name)
+                                                }
                                                 joint.lipEngagementMm?.let { put("lipEngagementMm", it.toDouble()) }
                                                 joint.lipToothHeightMm?.let { put("lipToothHeightMm", it.toDouble()) }
                                                 joint.lipWallMm?.let { put("lipWallMm", it.toDouble()) }
@@ -456,6 +470,11 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         // style rather than the joint - the cantilever is what it must have been.
         style = runCatching { SnapJointStyle.valueOf(json.optString("style")) }
             .getOrDefault(SnapJointStyle.CANTILEVER),
+        // The bundled shape, read the same way: a joint recorded before the
+        // library existed has no key, and an unreadable one costs the shape
+        // rather than the joint.
+        libraryShape = runCatching { SnapLibraryShape.valueOf(json.optString("libraryShape")) }
+            .getOrDefault(SnapLibraryShape.CANTILEVER01),
         lipEngagementMm = json.optDouble("lipEngagementMm").takeIf { it.isFinite() }?.toFloat(),
         lipToothHeightMm = json.optDouble("lipToothHeightMm").takeIf { it.isFinite() }?.toFloat(),
         // The two the ring is sized by: absent in a record written before they

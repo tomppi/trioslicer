@@ -131,6 +131,8 @@ import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLibrary
+import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.SnapLip
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
@@ -1939,6 +1941,7 @@ fun EnderSlicerApp(
                                 onHookLip = viewModel::setSnapHookLip,
                                 onBarbs = viewModel::setSnapBarbs,
                                 onStyle = viewModel::setSnapStyle,
+                                onLibraryShape = viewModel::setSnapLibraryShape,
                                 onLipEngagement = viewModel::setSnapLipEngagement,
                                 onLipToothHeight = viewModel::setSnapLipToothHeight,
                                 onLipWall = viewModel::setSnapLipWall,
@@ -4260,6 +4263,8 @@ private class SnapActions(
     val onBarbs: (Int) -> Unit,
     /** Which joint the selected one is, and what the next one will be. */
     val onStyle: (SnapJointStyle) -> Unit,
+    /** Which bundled library shape the selected (and the next) library joint is grafted from. */
+    val onLibraryShape: (SnapLibraryShape) -> Unit,
     /** The wall lip's engagement and tooth height, in millimetres, or null for the scale's own. */
     val onLipEngagement: (Float?) -> Unit,
     val onLipToothHeight: (Float?) -> Unit,
@@ -4365,6 +4370,13 @@ private fun SnapToolbar(
     // socket ramp belong to the cantilever, and the wall lip's own two sizes -
     // and the wall they are measured against - belong to the lip.
     val style = state.snapSelectedSpec?.style ?: state.snapStyle
+    // The bundled shape the controls act on: the selected library joint's, or the
+    // one the next tapped joint is grafted from. One picker both places it and
+    // re-cuts the selected one, the way the style control does.
+    val libraryShape = state.snapSelectedSpec
+        ?.takeIf { it.style == SnapJointStyle.LIBRARY_HOOK }
+        ?.libraryShape
+        ?: state.snapLibraryShape
     val lipEngagement = state.snapSelectedSpec?.lipEngagementMm
         ?: state.snapLipEngagementMm
         ?: (defaults.lipEngagementMm * state.snapScale)
@@ -4398,6 +4410,7 @@ private fun SnapToolbar(
             selected = selected,
             stacked = expandedLayout,
             style = style,
+            libraryShape = libraryShape,
         )
     }
     val hook: @Composable () -> Unit = {
@@ -4405,6 +4418,7 @@ private fun SnapToolbar(
             actions = actions,
             shown = shown,
             style = style,
+            libraryShape = libraryShape,
             hookLength = hookLength,
             hookThickness = hookThickness,
             hookLip = hookLip,
@@ -4483,6 +4497,11 @@ private fun SnapToolbar(
                         // plate still carries the joints, and Apply is what takes them off.
                         state.snapPlainHalvesInstead ->
                             "No joints left on the list; Apply puts the pair's plain halves back."
+                        specs.isEmpty() && state.snapStyle == SnapJointStyle.LIBRARY_HOOK ->
+                            "A library shape is a ready-made pair: pick one of the eight, press " +
+                                "Add joint, and tap the model. Both pieces land with the author's " +
+                                "own mating plane on the seam - nothing to line up - and the one " +
+                                "Scale slider sizes them together."
                         specs.isEmpty() ->
                             "Add joint, then tap the model where a joint should sit."
                         else ->
@@ -4656,6 +4675,7 @@ private fun SnapSetupGroup(
     selected: Int,
     stacked: Boolean,
     style: SnapJointStyle,
+    libraryShape: SnapLibraryShape,
 ) {
     // Every joint, and which one the controls act on. Its own scroll: a seam
     // can carry four, and each one carries its own style, its own sizes and its
@@ -4687,7 +4707,11 @@ private fun SnapSetupGroup(
     // longer than that and is drawn here, under the list, where nothing clips it.
     if (stacked) {
         shown?.joints?.getOrNull(selected)?.let { one ->
+            // The wide panel draws the selected joint's whole readout here,
+            // under the list, because the list's own height cap is sized for
+            // rows and would clip the last line of either of these.
             if (one.joint.style == SnapJointStyle.WALL_LIP) SnapLipReadout(one)
+            else if (one.joint.style == SnapJointStyle.LIBRARY_HOOK) SnapLibraryReadout(one)
         }
     }
     // Placing is deliberate: this arms the next tap, and the line under the title says so
@@ -4715,22 +4739,34 @@ private fun SnapSetupGroup(
             ) { Text("Add joint") }
         }
     }
-    SnapChoiceRow(
-        label = null,
-        // The wide panel keeps its captions to one line: a column is narrow
-        // enough that a long one wraps and eats the height the split saved.
-        caption = if (stacked) {
-            "2-4 joints, along the seam's own rim"
-        } else {
-            "2-4 joints, even along the rim of the seam's own material"
-        },
-        stacked = stacked,
-    ) {
-        OutlinedButton(
-            onClick = actions.onAuto,
-            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-        ) { Text("Auto spread") }
-        if (specs.isNotEmpty()) {
+    // The spread is the cantilever's own rim solver: it places beams along the
+    // seam's outline. The library's joints go where they are tapped - the whole
+    // point of the style - so it is not offered for them. Clear is, either way.
+    if (style != SnapJointStyle.LIBRARY_HOOK) {
+        SnapChoiceRow(
+            label = null,
+            // The wide panel keeps its captions to one line: a column is narrow
+            // enough that a long one wraps and eats the height the split saved.
+            caption = if (stacked) {
+                "2-4 joints, along the seam's own rim"
+            } else {
+                "2-4 joints, even along the rim of the seam's own material"
+            },
+            stacked = stacked,
+        ) {
+            OutlinedButton(
+                onClick = actions.onAuto,
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Auto spread") }
+            if (specs.isNotEmpty()) {
+                TextButton(
+                    onClick = actions.onClear,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Clear") }
+            }
+        }
+    } else if (specs.isNotEmpty()) {
+        SnapChoiceRow(label = null, caption = null, stacked = stacked) {
             TextButton(
                 onClick = actions.onClear,
                 contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
@@ -4805,9 +4841,11 @@ private fun SnapSetupGroup(
     SnapChoiceRow(
         label = "Style:",
         caption = when {
-            stacked -> "cantilever, or a tooth on the wall"
+            stacked -> "cantilever, wall lip, or a shape from the library"
             style == SnapJointStyle.WALL_LIP ->
                 "one tooth ring on the lip half, one ledge ring on the mate - the whole seam"
+            style == SnapJointStyle.LIBRARY_HOOK ->
+                "a ready-made pair from the bundled library, tapped into place"
             else -> "a beam across the seam with a barb on it"
         },
         stacked = stacked,
@@ -4825,6 +4863,19 @@ private fun SnapSetupGroup(
                     contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
                 ) { Text(wanted.label) }
             }
+        }
+    }
+    // The library's own picker: eight names from the bundled assets, each with
+    // the README's line about what it is. Eight buttons do not fit a column and
+    // barely fit a phone, so it is a dropdown - and the shape it is on is what a
+    // tapped joint is grafted from.
+    if (style == SnapJointStyle.LIBRARY_HOOK) {
+        SnapChoiceRow(
+            label = "Shape:",
+            caption = libraryShape.label + " · " + libraryShape.summary,
+            stacked = stacked,
+        ) {
+            SnapLibraryPicker(libraryShape, actions.onLibraryShape)
         }
     }
     // The ladder's switch, and the ladder belongs to the cantilever: the lip has
@@ -4860,6 +4911,92 @@ private fun SnapSetupGroup(
         valueText = "%.2f×".format(state.snapScale),
         onValueChangeFinished = actions.onCommit,
     )
+}
+
+/**
+ * The library hook's whole readout: which shape it is, how big it was built,
+ * the clearance its author drew into it at the scale it is being printed at,
+ * and the one line this app will not invent.
+ *
+ * The strain of a beam we did not design is not computed - the panel says so
+ * rather than printing a number that would be made up - and the clearance is
+ * the pair's own, measured from the files when the shape was loaded, so it
+ * scales with the pair and warns when the scale takes it under what FDM
+ * resolves.
+ */
+@Composable
+private fun SnapLibraryReadout(one: SnapPlacedJoint) {
+    val dimensions = one.joint.dimensions
+    Text(
+        "   " + SnapLibrary.describe(dimensions),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "   hook in " + one.beamHalfName + ", catch in " + one.socketHalfName + " \u00b7 " +
+            SnapLibrary.sizeSummary(dimensions),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "   " + SnapLibrary.gapSummary(dimensions),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    SnapLibrary.gapWarning(dimensions)?.let { warning ->
+        Text("   " + warning, style = MaterialTheme.typography.labelSmall, color = WarnAmber)
+    }
+    Text(
+        "   " + SnapLibrary.STRAIN_NOTE,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    for (warning in one.joint.warnings) {
+        Text(
+            "   " + warning,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+/**
+ * The eight bundled shapes, one dropdown: the README's own name for the shape,
+ * and its own line about what the shape is, under it in the menu.
+ */
+@Composable
+private fun SnapLibraryPicker(current: SnapLibraryShape, onPick: (SnapLibraryShape) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+        ) { Text(current.label) }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(min = 260.dp, max = 340.dp),
+        ) {
+            SnapLibraryShape.entries.forEach { shape ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(shape.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                shape.summary,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onPick(shape)
+                    },
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -4944,6 +5081,9 @@ private fun SnapJointRow(
                 if (spec.style == SnapJointStyle.WALL_LIP) {
                     // The lip is not one joint among several: it is the seam.
                     (if (selected) "▸ " else "") + SnapJointStyle.WALL_LIP.label + " · the whole seam"
+                } else if (spec.style == SnapJointStyle.LIBRARY_HOOK) {
+                    (if (selected) "▸ " else "") + "Joint " + (index + 1) + " · " +
+                        spec.libraryShape.label
                 } else {
                     (if (selected) "▸ " else "") + "Joint " + (index + 1) + " · " + spec.tightness.label +
                         if (compact) {
@@ -4977,6 +5117,8 @@ private fun SnapJointRow(
             // the list instead, because this readout is longer than a row and the
             // list's own height cap was clipping its last line.
             if (!compact) SnapLipReadout(one)
+        } else if (one.joint.style == SnapJointStyle.LIBRARY_HOOK) {
+            if (!compact) SnapLibraryReadout(one)
         } else {
             Text(
                 "   " + one.joint.rung.label + " · " + one.joint.clickSummary + " · " +
@@ -5025,6 +5167,7 @@ private fun SnapHookGroup(
     actions: SnapActions,
     shown: SnapPreview?,
     style: SnapJointStyle,
+    libraryShape: SnapLibraryShape,
     hookLength: Float,
     hookThickness: Float,
     hookLip: Float,
@@ -5035,6 +5178,57 @@ private fun SnapHookGroup(
     lipCutWidth: Float,
     lipCutDepth: Float,
 ) {
+    if (style == SnapJointStyle.LIBRARY_HOOK) {
+        // The library hook has no hook, thickness or lip of its own to set: the
+        // shape is exactly the shape its author drew. One slider - the Scale in
+        // Setup - sizes the pair, uniformly and together, because the register
+        // between the hook and its catch is the whole reason the pair can be
+        // tapped into place at all.
+        Text(
+            "Both pieces follow the one Scale slider together, so their register - the fit the " +
+                "author designed into them - is the same at every size.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (shown?.joint?.style != SnapJointStyle.LIBRARY_HOOK) {
+            Text(
+                libraryShape.label + " · " + libraryShape.summary +
+                    " - Add joint, then tap the model where it should sit.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        shown?.takeIf { it.joint.style == SnapJointStyle.LIBRARY_HOOK }?.let { preview ->
+            val dimensions = preview.joint.dimensions
+            Text(
+                SnapLibrary.describe(dimensions) + " · " + SnapLibrary.sizeSummary(dimensions),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                SnapLibrary.gapSummary(dimensions),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SnapLibrary.gapWarning(dimensions)?.let { warning ->
+                Text(warning, style = MaterialTheme.typography.labelSmall, color = WarnAmber)
+            }
+            // The honest line: this joint's spring is not this app's design.
+            Text(
+                SnapLibrary.STRAIN_NOTE,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            preview.repairNote?.let { note ->
+                Text(
+                    "Repaired before joining: " + note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = WarnAmber,
+                )
+            }
+        }
+        return
+    }
     if (style == SnapJointStyle.WALL_LIP) {
         // The engagement is the hold: how far the tooth and the ledge overlap.
         CompactSliderRow(
@@ -5223,8 +5417,10 @@ private fun SnapFitsGroup(
     // column, and the fit is where that clearance is decided anyway.
     val click = placed?.joint?.clickSummary
     // The Loose/Tight stepping: clearance only, 0.06 mm apart, assigned by
-    // placement order and changeable one joint at a time.
-    SnapChoiceRow(
+    // placement order and changeable one joint at a time. It shapes the joint
+    // this app builds; a library shape brings its own clearances with it, so the
+    // step would be a control that changes nothing.
+    if (style != SnapJointStyle.LIBRARY_HOOK) SnapChoiceRow(
         label = "Fit:",
         caption = when {
             !stacked -> "0.06 mm of clearance apart, nothing else"
@@ -5285,6 +5481,28 @@ private fun SnapFitsGroup(
     // the material, so this row is where the user says which is the insert, and
     // the readout names the half the cuts land on.
     val lipInsert = if (beamHalf == SnapJoint.JointHalf.LOW) SnapJoint.JointHalf.HIGH else SnapJoint.JointHalf.LOW
+    // The library's own version of the same choice: the chosen half takes the
+    // hook, and the mate takes the catch. The pair is one author's assembly, so
+    // there is nothing else to decide about where either piece goes.
+    if (style == SnapJointStyle.LIBRARY_HOOK) {
+        val hookHalfName = if (beamHalf == SnapJoint.JointHalf.LOW) {
+            state.snapLowHalf?.name ?: "the lower half"
+        } else {
+            state.snapHighHalf?.name ?: "the upper half"
+        }
+        val catchHalfName = if (beamHalf == SnapJoint.JointHalf.LOW) {
+            state.snapHighHalf?.name ?: "the upper half"
+        } else {
+            state.snapLowHalf?.name ?: "the lower half"
+        }
+        Text(
+            "Hook in " + hookHalfName + ", catch in " + catchHalfName +
+                ": the pair lands with its own mating plane on the seam, so the hook and the " +
+                "catch stay in register.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     if (style == SnapJointStyle.WALL_LIP) {
         Text(
             "Cuts on " + (if (lipInsert == SnapJoint.JointHalf.LOW) {
@@ -5298,16 +5516,26 @@ private fun SnapFitsGroup(
     }
     Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6)) {
         BeamHalfButton(
-            (if (style == SnapJointStyle.WALL_LIP) "Insert " else "Beam in ") +
-                (state.snapLowHalf?.name ?: "lower"),
+            (if (style == SnapJointStyle.WALL_LIP) {
+                "Insert "
+            } else if (style == SnapJointStyle.LIBRARY_HOOK) {
+                "Hook in "
+            } else {
+                "Beam in "
+            }) + (state.snapLowHalf?.name ?: "lower"),
             SnapJoint.JointHalf.LOW,
             if (style == SnapJointStyle.WALL_LIP) lipInsert else beamHalf,
             if (style == SnapJointStyle.WALL_LIP) actions.onLipInsertHalf else actions.onBeamHalf,
             Modifier.weight(1f),
         )
         BeamHalfButton(
-            (if (style == SnapJointStyle.WALL_LIP) "Insert " else "Beam in ") +
-                (state.snapHighHalf?.name ?: "upper"),
+            (if (style == SnapJointStyle.WALL_LIP) {
+                "Insert "
+            } else if (style == SnapJointStyle.LIBRARY_HOOK) {
+                "Hook in "
+            } else {
+                "Beam in "
+            }) + (state.snapHighHalf?.name ?: "upper"),
             SnapJoint.JointHalf.HIGH,
             if (style == SnapJointStyle.WALL_LIP) lipInsert else beamHalf,
             if (style == SnapJointStyle.WALL_LIP) actions.onLipInsertHalf else actions.onBeamHalf,

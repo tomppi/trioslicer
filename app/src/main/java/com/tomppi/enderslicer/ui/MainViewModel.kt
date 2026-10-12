@@ -89,6 +89,7 @@ import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.BedClipper
 import com.tomppi.enderslicer.viewer.MeshBoolean
 import com.tomppi.enderslicer.viewer.MeshPicker
+import com.tomppi.enderslicer.viewer.MeshSolidBuilder
 import com.tomppi.enderslicer.viewer.MeshVolume
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
@@ -103,6 +104,9 @@ import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapLip
 import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLibrary
+import com.tomppi.enderslicer.viewer.SnapLibraryPair
+import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.SnapLayout
 import com.tomppi.enderslicer.viewer.SnapPad
 import com.tomppi.enderslicer.viewer.SnapSpread
@@ -1909,6 +1913,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * The bundled library shapes, read through the app's own assets.
+     *
+     * A shape is read, made watertight, clipped to its graft box and measured
+     * once and then kept in the state, because everything downstream - the
+     * preview, the ghost, the readout - is arithmetic over the meshes it
+     * returns. A shape the engine cannot prepare throws with the shape named,
+     * which is the panel's own sentence rather than a joint that is not there.
+     */
+    private suspend fun libraryPairsFor(
+        shapes: Collection<SnapLibraryShape>,
+        known: Map<SnapLibraryShape, SnapLibraryPair>,
+    ): Map<SnapLibraryShape, SnapLibraryPair> {
+        val missing = shapes.filterNot { known.containsKey(it) }
+        if (missing.isEmpty()) return known
+        return withContext(Dispatchers.IO) {
+            val loaded = LinkedHashMap(known)
+            for (shape in missing) loaded[shape] = SnapLibrary.load(shape, ::libraryMesh)
+            loaded
+        }
+    }
+
+    /**
+     * One library STL: the app's asset, copied into the app's own files
+     * directory the first time it is asked for, because [StlParser] reads files
+     * and the packaged assets are compressed. The copy is the library's own
+     * bytes and belongs to the install, not to any model: nothing deletes it.
+     */
+    private fun libraryMesh(file: String): StlMesh {
+        val directory = File(app.filesDir, SnapLibrary.DIRECTORY).apply { mkdirs() }
+        val target = File(directory, file)
+        if (!target.isFile || target.length() == 0L) {
+            val scratch = File(directory, file + ".part")
+            app.assets.open(SnapLibrary.DIRECTORY + "/" + file).use { input ->
+                scratch.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (!scratch.renameTo(target)) {
+                scratch.copyTo(target, overwrite = true)
+                scratch.delete()
+            }
+        }
+        return StlParser.parse(
+            file = target,
+            displayName = file,
+            maxTriangles = MeshTriangleLimits.current(),
+        )
+    }
+
     /** One recorded source half, or null when it cannot be read. */
     private fun readPairSource(path: String, displayName: String): StlMesh? = runCatching {
         StlParser.parse(
@@ -1985,6 +2037,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 barbs = spec.barbs,
                 facing = spec.facing,
                 style = spec.style,
+                libraryShape = spec.libraryShape,
                 lipEngagementMm = spec.lipEngagementMm,
                 lipToothHeightMm = spec.lipToothHeightMm,
                 lipWallMm = spec.lipWallMm,
@@ -2076,7 +2129,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // The style and the lip's sizes come back as the panel's defaults too,
                 // so the control the pair was built with is the one the panel shows.
                 snapStyle = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }?.style
+                    ?: restored.firstOrNull { it.style == SnapJointStyle.LIBRARY_HOOK }?.style
                     ?: SnapJointStyle.CANTILEVER,
+                // The picker comes back on the shape the pair was built with, so
+                // the control the user set is the one the panel shows.
+                snapLibraryShape = restored.firstOrNull { it.style == SnapJointStyle.LIBRARY_HOOK }
+                    ?.libraryShape ?: it.snapLibraryShape,
                 snapLipEngagementMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
                     ?.lipEngagementMm,
                 snapLipToothHeightMm = restored.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
@@ -2163,6 +2221,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     barbs = state.snapBarbs,
                     facing = state.snapFacing,
                     style = state.snapStyle,
+                    libraryShape = state.snapLibraryShape,
                     lipEngagementMm = state.snapLipEngagementMm,
                     lipToothHeightMm = state.snapLipToothHeightMm,
                     lipWallMm = state.snapLipWallMm,
@@ -2332,6 +2391,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setSnapStyle(style: SnapJointStyle) {
         val state = _uiState.value
+        if (style == SnapJointStyle.LIBRARY_HOOK) {
+            // The library hook is placed by tapping like the cantilever, so the
+            // cantilever's own joints stay out of the way rather than being
+            // deleted - switching back brings them out again - and the library's
+            // are kept when the style moves on.
+            val joints = state.snapJoints.filter { it.style == SnapJointStyle.LIBRARY_HOOK }
+            _uiState.update {
+                it.copy(
+                    snapJoints = joints,
+                    snapStyle = style,
+                    snapSelectedJoint = if (joints.isEmpty()) -1 else 0,
+                    snapFailure = null,
+                )
+            }
+            previewSnapJoint()
+            return
+        }
         if (style == SnapJointStyle.WALL_LIP) {
             // The lip is the whole seam: one feature around the contour, so it is
             // one joint on the list and no tap places it. The cantilever's tapped
@@ -2353,6 +2429,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        previewSnapJoint()
+    }
+
+    /**
+     * Which bundled shape the picker is on: what the next tapped joint is
+     * grafted from, and what the selected library joint is re-cut to, the way
+     * the style and the teeth steppers work.
+     *
+     * The shape's files are read, clipped to the graft box and measured here -
+     * once per shape per process - because everything downstream, the ghost
+     * included, is then arithmetic over meshes.
+     */
+    fun setSnapLibraryShape(shape: SnapLibraryShape) {
+        if (!_uiState.value.snapActive) return
+        val state = _uiState.value
+        val target = state.snapSelectedJoint.takeIf { it in state.snapJoints.indices }
+            ?.takeIf { state.snapJoints[it].style == SnapJointStyle.LIBRARY_HOOK }
+        val joints = if (target != null) {
+            state.snapJoints.toMutableList().also { it[target] = it[target].copy(libraryShape = shape) }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLibraryShape = shape, snapFailure = null) }
         previewSnapJoint()
     }
 
@@ -3190,6 +3289,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             beamThicknessOverrideMm = state.snapHookThicknessMm,
             lipDepthOverrideMm = state.snapHookLipMm,
         )
+        // The bundled shapes this build needs, read through the app's own assets
+        // and clipped here - once per shape per process. Everything after this is
+        // arithmetic over meshes, which is what lets the ghost be a lazy value.
+        val libraryShapes = specs.filter { it.style == SnapJointStyle.LIBRARY_HOOK }
+            .map { it.libraryShape }.toSet()
+        val libraries = if (libraryShapes.isEmpty()) {
+            state.snapLibraryPairs
+        } else {
+            libraryPairsFor(libraryShapes, state.snapLibraryPairs)
+        }
+        if (libraries.size != state.snapLibraryPairs.size) {
+            _uiState.update { it.copy(snapLibraryPairs = libraries) }
+        }
         val outcome = withContext(Dispatchers.Default) {
             placeEveryJoint(
                 state = state,
@@ -3202,6 +3314,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fullJoint = fullJoint,
                 hookParameters = hookParameters,
                 axis = axis,
+                libraries = libraries,
             )
         }
         when (outcome) {
@@ -3276,6 +3389,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fullJoint: Boolean,
         hookParameters: SnapFitParameters,
         axis: ModelPlacement.Axis,
+        /** The bundled shapes this build needs, by shape; see [libraryPairsFor]. */
+        libraries: Map<SnapLibraryShape, SnapLibraryPair>,
     ): SnapPlacement {
         val engine = SnapFitGate.NativeEngine
         // A joint's own parameters: the hook controls the user has typed, and
@@ -3344,6 +3459,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         emptyList()
                     },
+                    library = libraries[spec.libraryShape],
                 )
             ) {
                 is SnapJoint.Either.Placed -> result.placement
@@ -3370,13 +3486,140 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     continue
                 }
             val joint = contoured.joint
+            // The library pair's booleans are a third shape again. The hook is a
+            // union into the half the user chose. The mate's own material inside
+            // the graft box is REPLACED by the catch's own shape there: the box
+            // minus the catch comes out first - that is the space the author's
+            // hooks run in, so a solid mate is opened exactly where the hooks need
+            // it - and the catch is unioned in after it, because the catch's walls
+            // and its ledge stand inside that very space. Unioning the housing
+            // without freeing the space would bury the hooks; freeing it without
+            // the housing would leave the ledge off.
+            if (joint.style == SnapJointStyle.LIBRARY_HOOK) {
+                val hookHalfMesh = contoured.beamMesh
+                val mateMesh = contoured.socketMesh
+                val hooked = engine.union(hookHalfMesh, joint.unionSolid)
+                if (hooked !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have the library hook joined on: " +
+                            (hooked as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                val catchVoid = joint.registrationRecess
+                val freed: MeshBoolean.Result = if (catchVoid.triangleCount == 0) {
+                    // No void for this shape - the round catch is a solid, not a
+                    // housing - so the mate keeps its own material and the catch
+                    // is unioned straight on.
+                    held(mateMesh)
+                } else {
+                    engine.subtract(mateMesh, catchVoid)
+                }
+                if (freed !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have the library catch's own room cut into it: " +
+                            (freed as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                val caught = engine.union(freed.mesh, joint.registrationSolid)
+                if (caught !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have the library catch joined on: " +
+                            (caught as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
+                val hookSeat = seatVolume(hookHalfMesh, joint.unionSolid)
+                val catchSeat = seatVolume(freed.mesh, joint.registrationSolid)
+                // The two applied halves have to close on each other. A housing
+                // catch's own void is what makes room for the hooks, so the
+                // rectangular shapes are checked rather than assumed; a round
+                // catch is a bead unioned on as it stands, and on a seam whose
+                // own material is where the bead goes the two printed halves
+                // would intersect - which no closedness check anywhere would
+                // notice.
+                // The two applied halves have to close on each other, and the
+                // question is asked in the pair's OWN assembled frame: on the
+                // plate the packer has already moved the halves apart, so the
+                // same two meshes side by side intersect in nothing whatever
+                // their real shapes are. Each half's graft is carried across
+                // through the two fits' own transforms, and the clash is
+                // measured as what the other half takes OUT of it - not as an
+                // intersection, because the two are seated on one coplanar face,
+                // which is exactly the case the engine cannot read an
+                // intersection back from. A boolean that fails is its own
+                // refusal rather than a silent pass.
+                val hookIsLowHalf = contoured.beamMesh === lowRunning.mesh
+                val hookFit = if (hookIsLowHalf) ready.lowHalf else ready.highHalf
+                val mateFit = if (hookIsLowHalf) ready.highHalf else ready.lowHalf
+                val catchInHookPlace = remap(
+                    joint.registrationSolid, mateFit, hookFit, SnapLibrary.CATCH_NAME,
+                )
+                val hookInMatePlace = remap(joint.unionSolid, hookFit, mateFit, SnapLibrary.HOOK_NAME)
+                val clash = clashVolume(contoured.beamMesh, catchInHookPlace, engine)
+                    ?: clashVolume(contoured.socketMesh, hookInMatePlace, engine)
+                val clashReason = clashFailure
+                val failure = when {
+                    clash == null ->
+                        "could not be checked for the two halves closing on each other: " +
+                            clashReason
+                    clash > MIN_FEATURE_MM3 ->
+                        "would leave the two halves overlapping by " + millimetres(clash) +
+                            " mm3: the library's " +
+                            (SnapLibrary.shapeOf(joint.dimensions)?.label ?: "shape") +
+                            " pair needs room where it lands - a hollow or open half - and this " +
+                            "one has its own material there. Tap a spot where the seam's two " +
+                            "halves are open, or use a shape that stands proud of the seam."
+                    hookSeat < MIN_FEATURE_MM3 ->
+                        "has no material of its own half under the library hook's plate, so the " +
+                            "hook would stand in the open; tap where the seam's own surface is, " +
+                            "or move the joint."
+                    catchSeat < MIN_FEATURE_MM3 ->
+                        "has no material of the mate under the library catch, so the catch would " +
+                            "stand in the open; tap where the other half's own surface is, or " +
+                            "move the joint."
+                    else -> null
+                }
+                if (failure != null) {
+                    failed += SnapJointFailure(index, failure)
+                    continue
+                }
+                if (Diagnostics.isEnabled()) {
+                    Diagnostics.info(
+                        "snap fit",
+                        "joint " + (index + 1) + "/" + specs.size + " library " +
+                            (SnapLibrary.shapeOf(joint.dimensions)?.label ?: "") +
+                            " at " + millimetres(joint.dimensions.scale.toDouble()) + "x" +
+                            ": hook +" + millimetres((hooked.volumeMm3 - MeshVolume.of(hookHalfMesh))) +
+                            " mm3 (seat " + millimetres(hookSeat) + " mm3), catch " +
+                            millimetres(caught.volumeMm3 - MeshVolume.of(mateMesh)) +
+                            " mm3 (seat " + millimetres(catchSeat) + " mm3), clearance " +
+                            millimetres(joint.dimensions.libraryGapMm.toDouble()) + " mm",
+                    )
+                }
+                val hookIsLow = contoured.beamMesh === lowRunning.mesh
+                built += index to contoured
+                if (hookIsLow) {
+                    lowMesh = hooked.mesh
+                    highMesh = caught.mesh
+                } else {
+                    lowMesh = caught.mesh
+                    highMesh = hooked.mesh
+                }
+                placed += SnapPlacedJoint(
+                    spec = spec,
+                    joint = joint,
+                    beamInChosenHalf = placement.chosenHalfCarriesBeam,
+                    beamHalfName = if (hookIsLow) lowName else highName,
+                    socketHalfName = if (hookIsLow) highName else lowName,
+                )
+                continue
+            }
             // The two styles' booleans are not the same shape: the cantilever
-            // unions its beam and pad into ONE half and cuts its pocket and recess
-            // from the other, while the wall lip cuts its recess from the half its
-            // TOOTH goes into and unions its LEDGE into the mate - two unions on two
-            // different halves - and then takes the cuts out of the MATE's ledge
-            // ring, because that ring is a protrusion on the insert while the
-            // tooth's own wall is the part's visible skin. Each style keeps its own
             // path below, so the cantilever's four calls stay exactly what they were.
             if (joint.style == SnapJointStyle.WALL_LIP) {
                 var beamGain = 0.0
@@ -3746,6 +3989,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** The material two solids share, or 0 when the engine would not answer. */
+
+    /** The engine's reason for the last failed clash measurement, for the refusal's sentence. */
+    private var clashFailure: String = "the engine refused the measurement"
+
+    /**
+     * How much of [mesh] the other half's own material would take away, or null
+     * when the engine would not answer.
+     */
+    private fun clashVolume(mesh: StlMesh, other: StlMesh, engine: SnapFitGate.Engine): Double? {
+        if (other.triangleCount == 0) return 0.0
+        return when (val cut = engine.subtract(mesh, other)) {
+            is MeshBoolean.Result.Success -> MeshVolume.of(mesh) - cut.volumeMm3
+            is MeshBoolean.Result.Failure -> {
+                clashFailure = cut.reason
+                null
+            }
+        }
+    }
+
+    /**
+     * [mesh], given where [from] stands on the plate, as it would stand in [to]'s
+     * place: the two halves' own coordinates are ONE frame - the pair's own
+     * assembled one - which is what makes the two grafts comparable at all.
+     */
+    private fun remap(mesh: StlMesh, from: SnapFitHalf, to: SnapFitHalf, name: String): StlMesh {
+        if (from.isInPlace && to.isInPlace) return mesh
+        val builder = MeshSolidBuilder(name)
+        val vertices = mesh.interleavedVertices
+        val points = FloatArray(9)
+        for (triangle in 0 until mesh.triangleCount) {
+            val base = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            for (corner in 0 until 3) {
+                val at = base + corner * MeshSolidBuilder.FLOATS_PER_VERTEX
+                val own = from.toLocal(Vec3(vertices[at], vertices[at + 1], vertices[at + 2]))
+                val placed = if (own == null) {
+                    Vec3(vertices[at], vertices[at + 1], vertices[at + 2])
+                } else {
+                    to.toPlate(own)
+                }
+                points[corner * 3] = placed.x
+                points[corner * 3 + 1] = placed.y
+                points[corner * 3 + 2] = placed.z
+            }
+            builder.addTriangle(
+                points[0], points[1], points[2],
+                points[3], points[4], points[5],
+                points[6], points[7], points[8],
+            )
+        }
+        return builder.build()
+    }
+
+    /** A running mesh as a successful no-op: what a boolean that changed nothing would have said. */
+    private fun held(mesh: StlMesh): MeshBoolean.Result.Success = MeshBoolean.Result.Success(
+        mesh = mesh,
+        status = SnapFitGate.NO_ERROR,
+        closed = true,
+        volumeMm3 = MeshVolume.of(mesh),
+        millis = 0.0,
+    )
+
     private fun seatVolume(first: StlMesh, second: StlMesh): Double =
         when (val shared = MeshBoolean.intersect(first, second)) {
             is MeshBoolean.Result.Success -> shared.volumeMm3

@@ -1092,7 +1092,7 @@ object SnapFit {
     }
 
     /** Any unit vector perpendicular to [direction]. */
-    private fun perpendicularTo(direction: Vec3): Vec3 {
+    internal fun perpendicularTo(direction: Vec3): Vec3 {
         val reference = when {
             abs(direction.x) <= abs(direction.y) && abs(direction.x) <= abs(direction.z) -> Vec3(1f, 0f, 0f)
             abs(direction.y) <= abs(direction.z) -> Vec3(0f, 1f, 0f)
@@ -1828,6 +1828,21 @@ data class SnapFitDimensions(
     val lipSamples: Int = 0,
     /** Where on the ring its worst reading was: millimetres along the contour. */
     val lipWorstAtMm: Float = 0f,
+    /**
+     * The library hook: which bundled shape this is, by its enum name, and the
+     * hook piece's own outer size at the scale it was built at. Zero for every
+     * joint this app designs itself.
+     */
+    val libraryShape: String = "",
+    val librarySizeMm: Vec3 = Vec3(0f, 0f, 0f),
+    /**
+     * The library's own smallest running clearance - the pair's gap at 1:1, and
+     * the same gap at the scale this joint is built at. Measured from the
+     * author's own files when the shape is loaded, never assumed: the app did
+     * not design this fit and does not get to claim a number for it.
+     */
+    val libraryGapOneToOneMm: Float = 0f,
+    val libraryGapMm: Float = 0f,
 )
 
 /** One dimension the material clamped short of what the user asked for. */

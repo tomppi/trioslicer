@@ -27,6 +27,8 @@ import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapGhost
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
+import com.tomppi.enderslicer.viewer.SnapLibraryPair
+import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.spanAlong
@@ -212,6 +214,19 @@ data class MainUiState(
      * sets the selected joint's, so one control places and re-tunes.
      */
     val snapStyle: SnapJointStyle = SnapJointStyle.CANTILEVER,
+    /**
+     * Which bundled library shape a new joint is grafted from, and - through the
+     * same picker - which shape the selected library joint is re-cut to. One
+     * control places and re-tunes, the way the style control does.
+     */
+    val snapLibraryShape: SnapLibraryShape = SnapLibraryShape.CANTILEVER01,
+    /**
+     * The bundled shapes read so far, by shape: the two pieces, the catch's
+     * graft, and the pair's own measured gap. A shape's files are megabytes out
+     * of the app's assets, so each is read, clipped and measured once and then
+     * kept - the preview and the ghost both read the pair from here.
+     */
+    val snapLibraryPairs: Map<SnapLibraryShape, SnapLibraryPair> = emptyMap(),
     /**
      * The wall lip's two sizes for a new joint, in millimetres, or null for the
      * scale's own share. The sliders also set the selected lip joint's, the way
@@ -646,6 +661,7 @@ data class MainUiState(
                 barbs = joint.barbs,
                 facing = joint.facing,
                 style = joint.style,
+                libraryShape = joint.libraryShape,
                 lipEngagementMm = joint.lipEngagementMm,
                 lipToothHeightMm = joint.lipToothHeightMm,
                 lipWallMm = joint.lipWallMm,
@@ -782,6 +798,14 @@ data class MainUiState(
                     beamHalf = spec.beamHalf,
                     parameters = snapParametersFor(spec),
                     requested = if (snapFullJoint) SnapFitRung.FULL else null,
+                    style = spec.style,
+                    cuts = if (spec.style == SnapJointStyle.WALL_LIP) spec.lipCuts else emptyList(),
+                    cutDirections = if (spec.style == SnapJointStyle.WALL_LIP) {
+                        spec.lipCutDirections
+                    } else {
+                        emptyList()
+                    },
+                    library = snapLibraryPairs[spec.libraryShape],
                 )
             ) {
                 is SnapJoint.Either.Placed -> built.placement.joint
