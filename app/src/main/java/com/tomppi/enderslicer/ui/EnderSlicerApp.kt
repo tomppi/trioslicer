@@ -1923,16 +1923,9 @@ fun EnderSlicerApp(
                                     state.models.getOrNull(hit.objectIndex)?.id,
                                 )
                             },
-                            onJointDrag = { hit ->
-                                // The half the finger is over travels with the point: the
-                                // plate has moved the two apart since the split, and each
-                                // half's own placement is what says where the finger is on
-                                // the seam the joint belongs to.
-                                viewModel.dragSnapJoint(
-                                    Vec3(hit.x, hit.y, hit.z),
-                                    state.models.getOrNull(hit.objectIndex)?.id,
-                                )
-                            },
+                            onJointAxisGrab = viewModel::beginSnapJointAxis,
+                            onJointAxisDrag = viewModel::dragSnapJointAxis,
+                            onJointAxisRelease = viewModel::endSnapJointAxis,
                             cutActions = CutActions(
                                 onAxis = viewModel::setCutAxis,
                                 onOffset = viewModel::setCutOffset,
@@ -3273,8 +3266,12 @@ private fun ViewerPanel(
     onJointPick: (MeshPicker.Hit) -> Unit,
     /** A drag while "Cut wall" is armed: the point the stroke began on, and its plate direction. */
     onJointStroke: (MeshPicker.Hit, Vec3) -> Unit,
-    /** A drag while the selected joint is being moved: the plate point under the finger. */
-    onJointDrag: (MeshPicker.Hit) -> Unit,
+    /** An arrow of the joint's own gizmo went down: that axis is live from here. */
+    onJointAxisGrab: (ModelPlacement.Axis) -> Unit,
+    /** The same arrow, held: millimetres along it since the grab. */
+    onJointAxisDrag: (ModelPlacement.Axis, Float) -> Unit,
+    /** The arrow came up: the axis goes dark. */
+    onJointAxisRelease: () -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
@@ -3443,7 +3440,9 @@ private fun ViewerPanel(
                         // joint under them.
                         view.jointGizmo = state.snapMoveGizmo
                         view.jointMoveActive = state.snapActive && state.snapMovingJoint
-                        view.onJointDrag = onJointDrag
+                        view.onJointAxisGrab = onJointAxisGrab
+                        view.onJointAxisDrag = onJointAxisDrag
+                        view.onJointAxisRelease = onJointAxisRelease
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
                         view.surfacePickActive = state.smartInfillPicking
@@ -4509,8 +4508,8 @@ private fun SnapToolbar(
                         // The move is the live mode, so what it asks for comes first:
                         // every style is moved the same way, the lip's ring included.
                         state.snapMovingJoint ->
-                            "Joint " + (selected + 1) + ": drag the model and it slides along the " +
-                                "seam; press Move again when it is where you want it."
+                            "Joint " + (selected + 1) + ": drag one of its arrows and it moves along " +
+                                "that axis only; press Move again when it is where you want it."
                         state.snapStyle == SnapJointStyle.WALL_LIP ->
                             "The wall lip is the whole seam: one tooth ring on the lip half and one " +
                                 "ledge ring on the mate, following the seam's own edge. The two sizes " +
@@ -4729,6 +4728,33 @@ private fun SnapSetupGroup(
             }
         }
     }
+    // The joint's own depth, and which arrow drives it: it is a number of the
+    // joint rather than of the style, and a style that HAS a depth of its own
+    // says so here, so the user is never guessing which depth the arrow moved.
+    state.snapDepthOf(state.snapSelectedSpec)?.let { depth ->
+        val own = when (style) {
+            SnapJointStyle.WALL_LIP ->
+                " The ring's own recess depth is the Depth row in Hook - not this one."
+            SnapJointStyle.LIBRARY_HOOK ->
+                " The shape's own depth is its size at the Scale, not this one."
+            SnapJointStyle.CANTILEVER -> ""
+        }
+        Text(
+            // The whole sentence is formatted, not just its last fragment: the
+            // concatenation used to take the .format on the tail alone, and the
+            // panel printed the format string where its numbers belong.
+            (
+                "   Depth %.2f mm along the seam's axis: the %s arrow moves it, 0 is the seam's own " +
+                    "plane, below is deeper into the part.%s"
+                ).format(depth, state.snapAxis.name, own),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (state.snapMoveAxis == state.snapAxis) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
     // The wide panel's list is capped at a row's height: the lip's readout is
     // longer than that and is drawn here, under the list, where nothing clips it.
     if (stacked) {
@@ -4749,7 +4775,7 @@ private fun SnapSetupGroup(
         caption = when {
             state.snapAddingJoint -> "tap the model to place it"
             state.snapMovingJoint ->
-                "moving joint " + (selected + 1) + ": drag it along the seam, Move again to stop"
+                "moving joint " + (selected + 1) + ": drag one of its arrows, Move again to stop"
             else -> "place a joint, or tap one to select it"
         },
         stacked = stacked,

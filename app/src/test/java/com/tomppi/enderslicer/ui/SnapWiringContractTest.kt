@@ -445,20 +445,16 @@ class SnapWiringContractTest {
      * the joint, so they cannot be left standing over nothing.
      */
     @Test
-    fun theJointMoveIsAToggleThatTakesItsArrowsWithIt() {
-        val move = body("fun moveSnapJoint(", "fun dragSnapJoint(")
+    fun theJointMoveIsAnArrowAtATimeAndTheModeTakesThemAway() {
+        val move = body("fun moveSnapJoint(", "fun beginSnapJointAxis(")
         assertTrue("Move is a mode, not a one-shot: the same press puts it away", move.contains("stopSnapMove()"))
         assertTrue("and pressing it on raises it", move.contains("snapMovingJoint = true,"))
         assertTrue("with Add's arming taken down", move.contains("snapAddingJoint = false,"))
-        assertTrue("and the seam's own edge read for the drag", move.contains("readSnapMoveContour(index)"))
+        assertTrue("and no arrow left held from before", move.contains("snapMoveAxis = null,"))
 
         assertTrue(
             "picking another joint ends the move with the selection",
             body("fun selectSnapJoint(", "fun moveSnapJoint(").contains("stopSnapMove()"),
-        )
-        assertTrue(
-            "closing the panel drops the contour's read",
-            body("fun setSnapActive(", "fun placeSnapJoint(").contains("snapContourJob?.cancel()"),
         )
         assertTrue(
             "arming a placement ends it",
@@ -473,35 +469,83 @@ class SnapWiringContractTest {
             body("fun setSnapStyle(", "fun setSnapLibraryShape(").contains("stopSnapMove()"),
         )
         assertFalse(
-            "a tap is not a place any more: the move is the drag's",
+            "a tap is not a place any more: the move is the arrows'",
             body("fun placeSnapJoint(", "fun placeSnapCutStroke(")
                 .contains("copy(anchorPointMm = point, anchorHalfId = tappedHalfId)"),
         )
 
-        val drag = body("fun dragSnapJoint(", "private fun readSnapMoveContour(")
-        assertTrue(
-            "the drag is read in the half the finger is over",
-            drag.contains("snapJointSlidTo(point, contour, fingerHalfId)"),
-        )
-        assertTrue("and re-arms the preview so the geometry follows", drag.contains("previewSnapJoint()"))
+        // The grab: the axis under the finger goes live and the joint's own
+        // place - and its own depth - are what every sample is measured from.
+        val grab = body("fun beginSnapJointAxis(", "fun dragSnapJointAxis(")
+        assertTrue("an arrow going down is the axis that goes live", grab.contains("copy(snapMoveAxis = axis"))
+        assertTrue("and the joint's place at the grab is the baseline", grab.contains("snapAxisBaseline = spec.anchorPointMm"))
+        assertTrue("with the depth's own baseline beside it", grab.contains("snapDepthBaseline = spec.depthMm"))
 
-        val contour = body("private fun readSnapMoveContour(", "private fun stopSnapMove(")
-        assertTrue("the contour is read off the pair's own halves", contour.contains("pairOwnHalves(state)"))
-        assertTrue("in the joint's own half", contour.contains("SnapSeam.contour("))
+        // The drag: one axis, and the arrow along the seam's own is the depth.
+        val drag = body("fun dragSnapJointAxis(", "fun endSnapJointAxis(")
+        assertTrue("only the arrow that is held moves the joint", drag.contains("if (before.snapMoveAxis != axis) return"))
+        assertTrue(
+            "and the other two axes are the baseline's own, exactly",
+            drag.contains("before.snapJointAt(baseline + SnapFit.axisDirection(axis) * millimetres)"),
+        )
+        assertTrue(
+            "while the arrow along the seam's own axis is the depth",
+            drag.contains("if (axis == before.snapAxis)") && drag.contains("before.snapJointSunkTo("),
+        )
+        assertTrue("and the geometry follows through the preview", drag.contains("previewSnapJoint()"))
+
+        val release = body("fun endSnapJointAxis(", "private fun stopSnapMove(")
+        assertTrue("the arrow coming up puts the axis away", release.contains("copy(snapMoveAxis = null)"))
 
         val state = source("ui/MainUiState.kt")
+        assertTrue("the held axis is the state's, not a drawing's", state.contains("val snapMoveAxis: ModelPlacement.Axis? = null"))
         assertTrue("the arrows stand on the joint, where it stands now", state.contains("val snapMoveGizmo: GizmoOverlay?"))
         assertTrue("and only while the move is live with a joint under it", state.contains("if (!snapActive || !snapMovingJoint) return@lazy null"))
-        assertTrue("the drag is projected onto the seam's own edge", state.contains("contour.nearest(local, here)"))
+        assertTrue("the depth is the joint's own number", state.contains("fun snapDepthOf(spec: SnapJointSpec?): Float?"))
+        assertTrue("and it reaches the build through the parameters it reads", state.contains("depthMm = spec.depthMm"))
+        assertTrue(
+            "including the PER-JOINT ones the preview builds every joint with - the list the wall " +
+                "and depth sliders were once missing from, which left Apply staging the old geometry",
+            viewModel.contains("depthMm = spec.depthMm,") &&
+                viewModel.contains("fun parametersFor(spec: SnapJointSpec): SnapFitParameters"),
+        )
+        assertTrue(
+            "and the arrow stops at the material rather than carrying the joint's plane out of the part",
+            viewModel.contains("clampedSnapDepth(") && viewModel.contains("SnapFit.spanAlongAxis(low, state.snapAxis)"),
+        )
+        assertTrue(
+            "with the arrows standing on the plane the depth puts the joint at",
+            state.contains("half.toPlate(local - axis * spec.depthMm)"),
+        )
+
+        val view = source("viewer/ModelSurfaceView.kt")
+        assertTrue("only a handle starts a joint move", view.contains("handle?.kind == GizmoHandleKind.ARROW"))
+        assertTrue("the held arrow is lit", view.contains("modelRenderer.setGizmoActiveAxis(handle.axis)"))
+        assertTrue("and goes dark when it comes up", view.contains("modelRenderer.setGizmoActiveAxis(null)"))
+        assertTrue(
+            "measured along the arrow's own shaft, not the selected model's",
+            view.contains("modelRenderer.gizmoArrowSamples(handle.axis)"),
+        )
+        assertTrue("and the rest step back while it is held", view.contains("GIZMO_IDLE_DIM"))
 
         val app = source("ui/EnderSlicerApp.kt")
         assertTrue("the plate view is given the joint's own gizmo", app.contains("view.jointGizmo = state.snapMoveGizmo"))
         assertTrue("and the mode that owns a drag", app.contains("view.jointMoveActive = state.snapActive && state.snapMovingJoint"))
-        assertTrue("the drag goes to the view model", app.contains("viewModel.dragSnapJoint("))
+        assertTrue(
+            "per axis, through the view model's own three calls",
+            app.contains("view.onJointAxisGrab = onJointAxisGrab") &&
+                app.contains("view.onJointAxisDrag = onJointAxisDrag") &&
+                app.contains("view.onJointAxisRelease = onJointAxisRelease") &&
+                app.contains("onJointAxisGrab = viewModel::beginSnapJointAxis"),
+        )
         assertTrue("the row's Move shows that it is on", app.contains("if (moving) {"))
         assertTrue(
             "and the panel says what to do, in its own voice",
-            app.contains("\"seam; press Move again when it is where you want it.\""),
+            app.contains("\"that axis only; press Move again when it is where you want it.\""),
+        )
+        assertTrue(
+            "with the depth row naming the arrow that moves it",
+            app.contains("Depth %.2f mm along the seam's axis: the %s arrow moves it"),
         )
     }
 

@@ -67,10 +67,6 @@ class ModelSurfaceView(
     private val pendingPaintCoordinates = java.util.concurrent.atomic.AtomicReference<FloatArray?>(null)
     private val paintPickLock = Any()
     private var paintPickScheduled = false
-    // One slot, overwritten: a slow pick must not queue a backlog of stale drag
-    // positions behind it, exactly like the paint brush's own samples.
-    private val pendingJointDrag = java.util.concurrent.atomic.AtomicReference<FloatArray?>(null)
-    private var jointDragScheduled = false
 
     /** When not [SupportPaintMode.NONE], a single-finger drag paints instead of rotating. */
     var paintMode: SupportPaintMode = SupportPaintMode.NONE
@@ -132,29 +128,41 @@ class ModelSurfaceView(
         }
 
     /**
-     * True while the snap panel's Move is live: a finger drag on the model
-     * slides the selected joint along the seam instead of orbiting the camera.
+     * True while the snap panel's Move is live: the arrows stand on the selected
+     * joint and a finger that lands ON one of them moves the joint along that
+     * axis alone.
      *
-     * The mode is deliberate - the panel's Move puts it up and takes it down -
-     * so a single finger belongs to the joint for as long as it is on, exactly
-     * as a cut stroke owns it while "Cut wall" is armed. Two fingers still
-     * orbit, pan and zoom.
+     * Exactly the model's own move gizmo: only a handle starts a move, so a drag
+     * that began on the model or the plate is still the camera's and the part
+     * never moves by accident. Two fingers orbit, pan and zoom as always.
      */
     var jointMoveActive: Boolean = false
         set(value) {
             if (field == value) return
             field = value
             if (!value) {
-                draggingJoint = false
-                pendingJointDrag.set(null)
+                draggingJointAxis = null
+                jointAxisMillimetres = 0f
+                modelRenderer.setGizmoActiveAxis(null)
             }
         }
 
-    /** Invoked on the UI thread with a drag sample: the plate point the pick hit. */
-    var onJointDrag: ((MeshPicker.Hit) -> Unit)? = null
+    /** An arrow of the joint's own gizmo went down: that axis is live from here. */
+    var onJointAxisGrab: ((ModelPlacement.Axis) -> Unit)? = null
 
-    /** True between a joint drag's touch-down and the finger lifting. */
-    private var draggingJoint = false
+    /** The same arrow, held: millimetres along it since the grab. */
+    var onJointAxisDrag: ((ModelPlacement.Axis, Float) -> Unit)? = null
+
+    /** The arrow came up: the axis goes dark and the move is over. */
+    var onJointAxisRelease: (() -> Unit)? = null
+
+    /** The arrow being held, and how far its own axis has carried it. */
+    private var draggingJointAxis: ModelPlacement.Axis? = null
+    private var jointAxisMillimetres = 0f
+    private var jointAxisPivotX = 0f
+    private var jointAxisPivotY = 0f
+    private var jointAxisPivotZ = 0f
+    private var jointAxisLengthMm = 0f
 
     /** A long press that landed on the model: the app puts the three modes up. */
     var onTransformRequested: ((Float, Float) -> Unit)? = null
@@ -509,14 +517,35 @@ class ModelSurfaceView(
                 previousY = event.y
                 panning = false
                 if (jointMoveActive) {
-                    // The joint's own mode: a finger down on the model begins a
-                    // slide, and the first pick is where it starts from. The
-                    // tap a placement reads is not scheduled at all, because a
-                    // tap is not what moves a joint any more.
-                    draggingJoint = true
-                    pendingJointDrag.set(floatArrayOf(event.x, event.y))
-                    scheduleJointDrag()
-                } else if (jointPickActive) {
+                    // The joint's own mode: only one of its arrows starts a
+                    // move, and only that axis moves. A grab that lands on no
+                    // arrow is the camera's, exactly as it is under the model's
+                    // own move gizmo - the part never moves by accident.
+                    val handle = modelRenderer.gizmoHitAt(event.x, event.y, GizmoDrag.TOUCH_RADIUS_PX)
+                    if (handle?.kind == GizmoHandleKind.ARROW) {
+                        // The arrow's own shaft: its first sample is the pivot the
+                        // drag is measured from and its last is the tip, so the
+                        // finger's pixels turn into millimetres along THAT arrow.
+                        val points = modelRenderer.gizmoArrowSamples(handle.axis)
+                        val count = points?.size?.div(3) ?: 0
+                        if (points != null && count >= 2) {
+                            draggingJointAxis = handle.axis
+                            jointAxisMillimetres = 0f
+                            jointAxisPivotX = points[0]
+                            jointAxisPivotY = points[1]
+                            jointAxisPivotZ = points[2]
+                            val last = (count - 1) * 3
+                            jointAxisLengthMm = kotlin.math.sqrt(
+                                (points[last] - points[0]) * (points[last] - points[0]) +
+                                    (points[last + 1] - points[1]) * (points[last + 1] - points[1]) +
+                                    (points[last + 2] - points[2]) * (points[last + 2] - points[2]),
+                            )
+                            modelRenderer.setGizmoActiveAxis(handle.axis)
+                            onJointAxisGrab?.invoke(handle.axis)
+                        }
+                    }
+                }
+                if (draggingJointAxis == null && jointPickActive) {
                     // Where the joint goes is the point the tap lands on, and the
                     // picker runs off the UI thread like every other probe here:
                     // the coordinates are copied, not the event.
@@ -626,11 +655,23 @@ class ModelSurfaceView(
                     panning = true
                     requestRender()
                 } else if (!scaleDetector.isInProgress) {
-                    if (draggingJoint) {
-                        // The joint is being slid: every sample is a new place
-                        // for it, and the camera stays where it is.
-                        pendingJointDrag.set(floatArrayOf(event.x, event.y))
-                        scheduleJointDrag()
+                    if (draggingJointAxis != null) {
+                        // The joint is being moved along the arrow it was
+                        // grabbed by: the axis is the whole of the gesture, and
+                        // the camera stays exactly where it is.
+                        val axis = draggingJointAxis!!
+                        jointAxisMillimetres += modelRenderer.axisDragMillimetres(
+                            axis = axis,
+                            deltaXPx = event.x - previousX,
+                            deltaYPx = event.y - previousY,
+                            pivotX = jointAxisPivotX,
+                            pivotY = jointAxisPivotY,
+                            pivotZ = jointAxisPivotZ,
+                            lengthMm = jointAxisLengthMm,
+                        )
+                        previousX = event.x
+                        previousY = event.y
+                        onJointAxisDrag?.invoke(axis, jointAxisMillimetres)
                     } else if (jointStrokeActive && strokeActive) {
                         // A cut stroke owns the movement: the camera does not turn
                         // while the finger is drawing the slit's direction. Until
@@ -744,11 +785,13 @@ class ModelSurfaceView(
             MotionEvent.ACTION_UP -> {
                 performClick()
                 panning = false
-                if (draggingJoint) {
-                    // The slide is over; the mode stays up until the panel's
-                    // Move takes it down, so another drag can follow at once.
-                    draggingJoint = false
-                    pendingJointDrag.set(null)
+                if (draggingJointAxis != null) {
+                    // The arrow is up; the mode stays live until the panel's
+                    // Move takes it down, so another axis can be grabbed at once.
+                    draggingJointAxis = null
+                    jointAxisMillimetres = 0f
+                    modelRenderer.setGizmoActiveAxis(null)
+                    onJointAxisRelease?.invoke()
                 }
                 if (jointStrokeActive && strokeActive) {
                     // A tap cuts where it landed; a drag cuts one place with the
@@ -822,9 +865,11 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_CANCEL -> {
                 panning = false
-                if (draggingJoint) {
-                    draggingJoint = false
-                    pendingJointDrag.set(null)
+                if (draggingJointAxis != null) {
+                    draggingJointAxis = null
+                    jointAxisMillimetres = 0f
+                    modelRenderer.setGizmoActiveAxis(null)
+                    onJointAxisRelease?.invoke()
                 }
                 if (strokeFirstHit == null) replayStrokeAsOrbit()
                 resetJointStroke()
@@ -1020,39 +1065,6 @@ class ModelSurfaceView(
         strokePendingUp = false
         strokeAccumDx = 0f
         strokeAccumDy = 0f
-    }
-
-    /**
-     * Resolves one drag sample of a joint being moved, off the UI thread.
-     *
-     * Same shape as [schedulePaintPick]: at most one run is in flight, and the
-     * coordinates that arrive during a run are picked up by the drain loop
-     * rather than queued as separate tasks. This is the seam's own pick - the
-     * clip and the preview objects are part of it - so what comes back is the
-     * point the user can see under the finger.
-     */
-    private fun scheduleJointDrag() {
-        synchronized(paintPickLock) {
-            if (jointDragScheduled) return
-            jointDragScheduled = true
-        }
-        paintPickExecutor.execute {
-            try {
-                while (true) {
-                    val coordinates = pendingJointDrag.getAndSet(null) ?: break
-                    if (!jointMoveActive) break
-                    val hit = modelRenderer.pickTriangle(coordinates[0], coordinates[1]) ?: continue
-                    post {
-                        // The finger may have lifted while the pick ran: a
-                        // sample that lands after it must not move anything.
-                        if (draggingJoint) onJointDrag?.invoke(hit)
-                    }
-                }
-            } finally {
-                synchronized(paintPickLock) { jointDragScheduled = false }
-                if (pendingJointDrag.get() != null) scheduleJointDrag()
-            }
-        }
     }
 
     private fun schedulePaintPick() {
@@ -2054,18 +2066,48 @@ private class ModelRenderer(
         return if (chosen >= 0) hits[chosen] else null
     }
 
+    /** The shaft samples of one arrow of the gizmo on screen, or null when it is not up. */
+    fun gizmoArrowSamples(axis: ModelPlacement.Axis): FloatArray? =
+        gizmoOverlay?.handles?.firstOrNull { it.axis == axis && it.kind == GizmoHandleKind.ARROW }?.points
+
     /** Millimetres along [axis] for a screen drag on its arrow. */
     fun axisDragMillimetres(axis: ModelPlacement.Axis, deltaXPx: Float, deltaYPx: Float): Float {
         // The arrows are sized from the object they move, not from the plate.
         val bounds = selectedMesh()?.bounds ?: return 0f
         val pivot = Point3(bounds.centerX, bounds.centerY, bounds.centerZ)
-        val length = TransformGizmo.arrowLengthMm(bounds)
+        return axisDragMillimetres(
+            axis = axis,
+            deltaXPx = deltaXPx,
+            deltaYPx = deltaYPx,
+            pivotX = pivot.x,
+            pivotY = pivot.y,
+            pivotZ = pivot.z,
+            lengthMm = TransformGizmo.arrowLengthMm(bounds),
+        )
+    }
+
+    /**
+     * The same, for an arrow whose own pivot and length are known: the joint's
+     * gizmo stands on a hook rather than on the selected model, so it is that
+     * arrow which has to be projected to turn the finger's pixels into
+     * millimetres along the axis it holds.
+     */
+    fun axisDragMillimetres(
+        axis: ModelPlacement.Axis,
+        deltaXPx: Float,
+        deltaYPx: Float,
+        pivotX: Float,
+        pivotY: Float,
+        pivotZ: Float,
+        lengthMm: Float,
+    ): Float {
+        if (!lengthMm.isFinite() || lengthMm <= 0f) return 0f
         val tip = when (axis) {
-            ModelPlacement.Axis.X -> Point3(pivot.x + length, pivot.y, pivot.z)
-            ModelPlacement.Axis.Y -> Point3(pivot.x, pivot.y + length, pivot.z)
-            ModelPlacement.Axis.Z -> Point3(pivot.x, pivot.y, pivot.z + length)
+            ModelPlacement.Axis.X -> Point3(pivotX + lengthMm, pivotY, pivotZ)
+            ModelPlacement.Axis.Y -> Point3(pivotX, pivotY + lengthMm, pivotZ)
+            ModelPlacement.Axis.Z -> Point3(pivotX, pivotY, pivotZ + lengthMm)
         }
-        val from = MeshPicker.project(pivot.x, pivot.y, pivot.z) ?: return 0f
+        val from = MeshPicker.project(pivotX, pivotY, pivotZ) ?: return 0f
         val to = MeshPicker.project(tip.x, tip.y, tip.z) ?: return 0f
         val fallback = BedPlaneDrag.millimetresPerPixel(
             distanceMm = cameraDistance(),
@@ -2080,7 +2122,7 @@ private class ModelRenderer(
             fromY = from[1],
             toX = to[0],
             toY = to[1],
-            lengthMm = length,
+            lengthMm = lengthMm,
             fallbackMillimetresPerPixel = fallback,
         )
     }
@@ -2388,6 +2430,16 @@ private class ModelRenderer(
                     group.color[0] + (1f - group.color[0]) * 0.55f,
                     group.color[1] + (1f - group.color[1]) * 0.55f,
                     group.color[2] + (1f - group.color[2]) * 0.55f,
+                    1f,
+                )
+            } else if (gizmoActiveAxis != null) {
+                // Another arrow is held: this one steps back, so which axis is
+                // live reads at a glance rather than by comparing colours.
+                GLES20.glUniform4f(
+                    color,
+                    group.color[0] * GIZMO_IDLE_DIM,
+                    group.color[1] * GIZMO_IDLE_DIM,
+                    group.color[2] * GIZMO_IDLE_DIM,
                     1f,
                 )
             } else {
@@ -3114,6 +3166,12 @@ private class ModelRenderer(
 
         /** And fatter still while it is the one being dragged. */
         const val GIZMO_ACTIVE_LINE_WIDTH_PX = 13f
+
+        /**
+         * What an arrow's colour is multiplied by while ANOTHER arrow is held:
+         * the held one brightens and widens, and the rest step back.
+         */
+        const val GIZMO_IDLE_DIM = 0.45f
         const val GRID_Z = -0.08f
 
         /** The plate marker: its arm on screen, in dp, and how thick it draws. */

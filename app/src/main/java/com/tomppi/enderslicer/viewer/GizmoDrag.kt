@@ -21,6 +21,13 @@ internal object GizmoDrag {
     /** Slack on the depth test, so a handle sitting on the surface is not judged hidden. */
     const val DEPTH_TOLERANCE_MM = 1.5f
 
+    /**
+     * How long an arrow has to project to be its own ruler. Under this it is
+     * pointing at the viewer, and the drag is read on the vertical screen axis
+     * at the fallback scale instead.
+     */
+    const val MIN_PROJECTION_PX = 12f
+
     /** Two candidates this close on screen are decided by which is nearer instead. */
     private const val SCREEN_TIE_PX = 6f
 
@@ -92,8 +99,13 @@ internal object GizmoDrag {
         val axisX = toX - fromX
         val axisY = toY - fromY
         val pixels = sqrt(axisX * axisX + axisY * axisY)
-        // Under a pixel of travel for the whole arrow: the axis is end-on.
-        if (!pixels.isFinite() || pixels < 1f) {
+        // An arrow drawn this short on screen is pointing at the viewer, and its
+        // own pixels are no use as a ruler: dividing by them turns a finger's
+        // forty pixels into tens of millimetres - the move gizmo's vertical
+        // arrow is unusable that way, and a joint's own axis has to be draggable
+        // at every camera angle. Such a handle is used on the vertical screen
+        // axis instead, at the fallback's own scale.
+        if (!pixels.isFinite() || pixels < MIN_PROJECTION_PX) {
             return -deltaYPx * fallbackMillimetresPerPixel
         }
         val directionX = axisX / pixels

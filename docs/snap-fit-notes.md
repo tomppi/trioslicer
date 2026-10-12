@@ -307,6 +307,48 @@ it, is said out loud on the joint's own warning line rather than found out in
 plastic: "the cantilever01 hook fits this place with only 0.1 mm to spare along
 the seam."
 
+## Moving a placed joint: one arrow, one axis
+
+The joint's Move is a mode with the plate's own arrows on it, and the arrows are the
+whole of it - there is no second menu and no Done button. Pressing Move again is what
+ends it; so is picking another joint, placing one, switching style or closing the panel.
+
+A drag means nothing unless it started ON an arrow, and then only that arrow's own axis
+moves: the joint is written at the place it had when the arrow went down, plus the
+finger's millimetres along that one plate axis, and the other two coordinates are the
+baseline's own. A grab that lands on no arrow is the camera's and never moves a cube.
+The held arrow is lit and the rest step back, from the state's own held axis rather than
+from the drawing.
+
+## The depth is a number the build reads
+
+The arrow along the seam's own axis - the Z arrow on a Z split - is the DEPTH: how far
+the joint sits from the mating plane along the axis the two halves meet on. It is a field
+of the joint's own record, written and read with the pair's other values, and it is read
+by the build through the SAME per-joint parameters every other joint value goes through
+(parametersFor in placeEveryJoint). A number that is not in that list is decoration: the
+depth was missing from it when the arrow first shipped, and the panel showed 3.85 mm
+while Apply staged the joint on the mating plane. The wall lip's wall and recess depth
+were missing from the same list once, which is why the trap is written down here.
+
+The joint is built ON the seam - where the material's own faces are, and where every
+measurement the build makes is meaningful - and then carried along the axis as one piece,
+solids and frames together. Building at the shifted plane instead finds no cap there at
+all, because a cap is a mesh face and not a cross-section, and the ladder quietly drops
+the rungs it cannot see.
+
+The panel names the arrow and the value - "Depth -1.42 mm along the seam's axis: the Z
+arrow moves it, 0 is the seam's own plane, below is deeper into the part" - and says, for
+a style that has a depth of its own, that the other one is the style's (the wall lip's
+recess, the library shape's size at the scale). The drag is clamped to the two halves'
+own material: a plane carried out of the part would leave a piece of the joint standing
+in air, which no closedness or seat check anywhere would see.
+
+An arrow that points at the viewer has no pixels of its own to measure the finger with:
+dividing by a three-pixel projection turned a 70 px drag into 85.94 mm of depth. Under
+GizmoDrag.MIN_PROJECTION_PX such a handle is read on the vertical screen axis at the
+plate's own scale instead, which is how such a handle is used in practice.
+
 ## Still to settle
 
 - The small hook at the upper right of the sketch: the beam's anchor, or a second catch?

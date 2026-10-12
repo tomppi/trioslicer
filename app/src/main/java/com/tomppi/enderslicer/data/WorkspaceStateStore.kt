@@ -85,6 +85,13 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             val anchorYMm: Float,
             val anchorZMm: Float,
             val onLowHalf: Boolean,
+            /**
+             * How deep the joint sits along the seam's own axis. Absent in a
+             * record written before the move gizmo's depth arrow existed, and
+             * then the joint is the one on the mating plane, which is what it
+             * was.
+             */
+            val depthMm: Float = 0f,
             val beamHalf: SnapJoint.JointHalf,
             val tightness: SnapTightness,
             val barbs: Int,
@@ -299,6 +306,15 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                             .put("y", joint.anchorYMm.toDouble())
                                             .put("z", joint.anchorZMm.toDouble())
                                             .put("onLowHalf", joint.onLowHalf)
+                                            // Written only when the joint is off the
+                                            // mating plane, so every record that was
+                                            // on it keeps the byte shape older builds
+                                            // wrote.
+                                            .apply {
+                                                if (joint.depthMm.isFinite() && joint.depthMm != 0f) {
+                                                    put("depthMm", joint.depthMm.toDouble())
+                                                }
+                                            }
                                             .put("beamHalf", joint.beamHalf.name)
                                             .put("tightness", joint.tightness.name)
                                             .put("barbs", joint.barbs)
@@ -461,6 +477,10 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         anchorYMm = json.getDouble("y").toFloat(),
         anchorZMm = json.getDouble("z").toFloat(),
         onLowHalf = json.getBoolean("onLowHalf"),
+        // Read leniently: a joint recorded before the depth arrow existed sits on
+        // the mating plane, and an unreadable number costs the depth rather than
+        // the joint.
+        depthMm = json.optDouble("depthMm").takeIf { it.isFinite() }?.toFloat() ?: 0f,
         beamHalf = SnapJoint.JointHalf.valueOf(json.getString("beamHalf")),
         tightness = SnapTightness.valueOf(json.getString("tightness")),
         barbs = json.getInt("barbs"),

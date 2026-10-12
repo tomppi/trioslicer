@@ -70,6 +70,28 @@ class GizmoDragTest {
         assertEquals(5f, millimetres, 1e-4f)
     }
 
+    /**
+     * An arrow that is ALMOST end-on is the same problem as one that is exactly
+     * end-on: a joint's own depth arrow stands ten millimetres proud and points
+     * at the viewer, so its whole arrow projects to a few pixels. Measuring the
+     * finger against those pixels turned a 70 px drag into 86 mm of depth; under
+     * the threshold the vertical screen axis is the ruler instead.
+     */
+    @Test
+    fun anAlmostEndOnAxisFallsBackTooRatherThanBlowingUp() {
+        val millimetres = GizmoDrag.axisMillimetres(
+            deltaXPx = 0f,
+            deltaYPx = 70f,
+            fromX = 100f,
+            fromY = 100f,
+            toX = 102f,
+            toY = 106f,
+            lengthMm = 10f,
+            fallbackMillimetresPerPixel = 0.06f,
+        )
+        assertEquals("70 px down is 70 px at the plate's own scale", -4.2f, millimetres, 1e-3f)
+    }
+
     @Test
     fun aRingTurnsAlongItsOwnTangent() {
         // Tangent pointing right: dragging right is a positive turn, and a drag the

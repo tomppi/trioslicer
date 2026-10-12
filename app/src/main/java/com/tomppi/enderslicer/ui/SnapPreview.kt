@@ -22,6 +22,13 @@ data class SnapJointSpec(
     /** The tapped point on the plate. */
     val anchorPointMm: Vec3,
     /**
+     * How deep the joint sits along the seam's OWN axis, in millimetres from the
+     * mating plane: 0 is the seam itself, which is where a tap places it, and
+     * the move gizmo's arrow along that axis is what changes it. Positive is
+     * sunk below the plane, away from the mate.
+     */
+    val depthMm: Float = 0f,
+    /**
      * The object the tap landed on: the point is read in that half's own
      * coordinates, because the plate has moved the two halves apart since the
      * split and the same plate point is a different place in each frame.
@@ -82,6 +89,8 @@ data class SnapJointSpec(
 data class SnapJointRecord(
     /** The tap in the pair's own assembled frame - the frame its joints are measured in. */
     val anchorLocalMm: Vec3,
+    /** How deep the joint sits along the seam's own axis, from the mating plane. */
+    val depthMm: Float = 0f,
     /** True when the tap landed on the half on the low side of the assembly axis. */
     val onLowHalf: Boolean,
     val beamHalf: SnapJoint.JointHalf,

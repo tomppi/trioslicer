@@ -1101,6 +1101,25 @@ object SnapFit {
         return reference.cross(direction).normalized() ?: Vec3(1f, 0f, 0f)
     }
 
+    /** [mesh] carried by [delta] millimetres on the plate, triangle for triangle. */
+    internal fun shift(mesh: StlMesh, delta: Vec3): StlMesh {
+        if (mesh.triangleCount <= 0 || !delta.isFinite() || delta.length() <= 0f) return mesh
+        val builder = MeshSolidBuilder(mesh.displayName)
+        val vertices = mesh.interleavedVertices
+        val stride = MeshSolidBuilder.FLOATS_PER_VERTEX
+        for (triangle in 0 until mesh.triangleCount) {
+            val first = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE
+            val second = first + stride
+            val third = second + stride
+            builder.addTriangle(
+                vertices[first] + delta.x, vertices[first + 1] + delta.y, vertices[first + 2] + delta.z,
+                vertices[second] + delta.x, vertices[second + 1] + delta.y, vertices[second + 2] + delta.z,
+                vertices[third] + delta.x, vertices[third + 1] + delta.y, vertices[third + 2] + delta.z,
+            )
+        }
+        return builder.build()
+    }
+
     /** How far a mesh reaches along one of the plate's own axes. */
     fun extentAlongAxis(mesh: StlMesh, axis: ModelPlacement.Axis): ClosedFloatingPointRange<Float>? =
         extent(mesh, axisDirection(axis))
@@ -1869,6 +1888,12 @@ data class SnapFitFrame(
     /** Where the mating plane sits along [axis], in model coordinates. */
     val planeOffsetMm: Float,
 ) {
+    /** The same frame, carried by [delta]: what the depth arrow does to a built joint. */
+    fun shifted(delta: Vec3): SnapFitFrame {
+        val origin = originMm + delta
+        return copy(originMm = origin, planeOffsetMm = origin.dot(axis))
+    }
+
     fun model(local: Vec3): Vec3 = originMm + side * local.x + rise * local.y + axis * local.z
 
     fun local(point: Vec3): Vec3 {
@@ -2077,6 +2102,15 @@ data class SnapFitJoint(
  * joint follows one slider.
  */
 data class SnapFitParameters(
+    /**
+     * How deep the joint sits along the seam's own axis, in millimetres from the
+     * mating plane: 0 is the seam, and positive is sunk below it, away from the
+     * mate. The move gizmo's arrow along the split's axis is what sets it, and
+     * both halves' faces are carried to that plane before anything is built, so
+     * every dimension and every measurement the build makes is taken where the
+     * joint really is.
+     */
+    val depthMm: Float = 0f,
     /** The square key's side. */
     val keySizeMm: Float = 5f,
     /** How far the key stands out of the mating face. */

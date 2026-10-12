@@ -9,8 +9,6 @@ import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapFitJoint
 import com.tomppi.enderslicer.viewer.SnapJoint
-import com.tomppi.enderslicer.viewer.SnapSeam
-import com.tomppi.enderslicer.viewer.SnapSeamContour
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.Vec3
@@ -333,107 +331,135 @@ class SnapStateTest {
             moving.snapJoints,
             moving.endSnapMove().snapJoints,
         )
-        assertNull("and the contour goes with it", moving.endSnapMove().snapMoveContour)
+        assertNull("and the axis that was held goes with it", moving.copy(snapMoveAxis = ModelPlacement.Axis.X).endSnapMove().snapMoveAxis)
     }
 
     /**
-     * The drag itself: the finger's point is read in the joint's own half,
-     * dropped onto the seam's own edge there, and written back through the same
-     * half.
-     *
-     * This is the whole of the drag's arithmetic, so it is measured in the
-     * half's own frame: a drag of N mm along the seam moves the joint N mm along
-     * it, a finger that wanders off the edge comes back to it, and the mating
-     * plane is never left.
+     * Each arrow moves the joint along ITS plate axis and leaves the other two
+     * exactly where they were: the whole of the shift is the arrow's own
+     * direction, component for component, in the half's own frame.
      */
     @Test
-    fun theDragSlidesTheAnchorAlongTheSeamsOwnEdge() {
+    fun anArrowMovesTheJointAlongItsOwnAxisAndNoOther() {
         val state = splitState().copy(snapActive = true, snapMovingJoint = true)
-        val contour = seamContourOf(state)
+        val start = state.snapAnchorLocalMm!!
 
-        val first = requireNotNull(state.snapJointSlidTo(Vec3(6f, 3f, 20f), contour))
-        assertTrue(
-            "the finger's own place on the seam, not the middle of the face",
-            (first.snapAnchorLocalMm!! - Vec3(6f, 0f, 20f)).length() < 0.05f,
-        )
-
-        val moved = requireNotNull(first.snapJointSlidTo(Vec3(16f, 3f, 20f), contour))
-        val from = first.snapAnchorLocalMm!!
-        val to = moved.snapAnchorLocalMm!!
-        assertEquals(
-            "a 10 mm drag along the seam moves the joint 10 mm along it",
-            10f,
-            (to - from).length(),
-            0.1f,
-        )
-        assertEquals("and it never leaves the mating plane", 20f, to.z, 1e-3f)
-
-        val off = requireNotNull(first.snapJointSlidTo(Vec3(60f, 60f, 20f), contour))
-        assertEquals(
-            "a drag off the part comes back to the seam",
-            0f,
-            contour.distanceTo(off.snapAnchorLocalMm!!),
-            1e-3f,
-        )
-        assertEquals("on the mating plane too", 20f, off.snapAnchorLocalMm!!.z, 1e-3f)
+        for (axis in ModelPlacement.Axis.entries) {
+            val direction = SnapFit.axisDirection(axis)
+            val moved = requireNotNull(state.snapJointAt(start + direction * 2.5f))
+            val shift = moved.snapAnchorLocalMm!! - start
+            for (other in ModelPlacement.Axis.entries) {
+                val expected = if (other == axis) 2.5f else 0f
+                assertEquals(
+                    "the X arrow moves X only, and this is " + other.name + " under the " + axis.name + " arrow",
+                    expected,
+                    shift.dot(SnapFit.axisDirection(other)),
+                    0f,
+                )
+            }
+        }
     }
 
     /**
-     * A joint that was dragged is BUILT where the drag left it: the joint's own
-     * solids move with the anchor, measured in the meshes rather than read back
-     * from the state.
+     * The depth is the joint's own number, and the arrow along the seam's axis is
+     * what changes it - the plate's other two arrows are in-plane translations
+     * and leave it alone.
      */
     @Test
-    fun aJointThatWasDraggedIsBuiltWhereTheDragLeftIt() {
+    fun theDepthIsTheJointsOwnNumberAndTheSeamAxisArrowDrivesIt() {
+        val state = splitState().copy(snapActive = true, snapMovingJoint = true)
+        assertEquals("a tap places a joint on the seam's own plane", 0f, state.snapDepthOf(state.snapSelectedSpec)!!, 0f)
+
+        val sunk = requireNotNull(state.snapJointSunkTo(1.4f))
+        assertEquals("the arrow's own millimetres are the depth", 1.4f, sunk.snapDepthOf(sunk.snapSelectedSpec)!!, 1e-5f)
+        assertEquals(
+            "and the anchor does not move with it: the depth is a number of its own",
+            state.snapAnchorLocalMm,
+            sunk.snapAnchorLocalMm,
+        )
+    }
+
+    /**
+     * A joint moved along one arrow is BUILT along that axis and no other,
+     * measured in the joint's own solids rather than read back from the state.
+     */
+    @Test
+    fun aJointMovedAlongOneArrowIsBuiltAlongThatAxisOnly() {
         val state = splitState().copy(snapActive = true, snapMovingJoint = true)
         val before = jointFor(state)
-        val moved = requireNotNull(
-            state.snapJointSlidTo(Vec3(30f, 3f, 20f), seamContourOf(state)),
-        )
-        val after = jointFor(moved)
+        val start = state.snapAnchorLocalMm!!
 
-        // The tap was (20, 20) in the pair's own plane; the drag left the joint
-        // on the front edge of the seam, at (30, 0).
-        val placed = moved.snapAnchorLocalMm!!
-        assertEquals("the anchor is where the finger was", 30f, placed.x, 0.1f)
-        assertEquals("and not where the tap was", 0f, placed.y, 0.1f)
-
-        // The meshes say the same thing: the joint's own solids stand at the new
-        // place - and they are the solids a joint TAPPED there would have been,
-        // the material's own clamps and all.
-        val direct = (SnapJoint.build(
-            axis = moved.snapAxis,
-            anchorMm = Vec3(30f, 0f, 20f),
-            scale = 1f,
-            lowHalf = moved.snapLowFitHalf!!,
-            highHalf = moved.snapHighFitHalf!!,
-            beamHalf = SnapJoint.JointHalf.LOW,
-        ) as SnapJoint.Either.Placed).placement.joint
-        assertEquals(
-            "the dragged joint is the joint that belongs there",
-            direct.unionSolid.bounds,
-            after.unionSolid.bounds,
-        )
-        assertTrue(
-            "which is not the geometry it had",
-            before.unionSolid.bounds != after.unionSolid.bounds,
-        )
-        assertEquals(
-            "and the hook's own body stands at the new anchor, not the old one",
-            0f,
-            (after.unionSolid.bounds.centerX - 30f) + (after.unionSolid.bounds.centerY - 0f),
-            4f,
-        )
+        for (axis in ModelPlacement.Axis.entries) {
+            // The rule the view model follows: the arrow along the seam's own
+            // axis is the depth, and the other two are in-plane translations.
+            val moved = requireNotNull(
+                if (axis == state.snapAxis) {
+                    state.snapJointSunkTo(-2f)
+                } else {
+                    state.snapJointAt(start + SnapFit.axisDirection(axis) * 2f)
+                },
+            )
+            val after = jointFor(moved)
+            for (other in ModelPlacement.Axis.entries) {
+                val shift = when (other) {
+                    ModelPlacement.Axis.X -> after.unionSolid.bounds.centerX - before.unionSolid.bounds.centerX
+                    ModelPlacement.Axis.Y -> after.unionSolid.bounds.centerY - before.unionSolid.bounds.centerY
+                    ModelPlacement.Axis.Z -> after.unionSolid.bounds.centerZ - before.unionSolid.bounds.centerZ
+                }
+                val expected = if (other == axis) 2f else 0f
+                assertEquals(
+                    "the built joint moves along " + axis.name + " only, and this is " + other.name,
+                    expected,
+                    shift,
+                    0.05f,
+                )
+            }
+        }
     }
 
-    /** The seam's own edge for [state]'s selected joint, read the way the move reads it. */
-    private fun seamContourOf(state: MainUiState): SnapSeamContour = requireNotNull(
-        SnapSeam.contour(
-            requireNotNull(state.snapLowFitHalf),
-            SnapFit.axisDirection(state.snapAxis),
-            requireNotNull(state.snapAnchorLocalMm),
-        ),
-    )
+    /**
+     * The depth reaches the BUILD: a joint sunk along the seam's axis is built
+     * at that plane, measured in its own solids, and its record carries the
+     * number back.
+     */
+    @Test
+    fun theDepthReachesTheBuildAndRoundTripsThroughTheRecord() {
+        val state = splitState().copy(snapActive = true, snapMovingJoint = true)
+        val before = jointFor(state)
+        val sunk = requireNotNull(state.snapJointSunkTo(1.5f))
+        val after = jointFor(sunk)
+
+        assertEquals(
+            "the joint's own plane follows the depth, and nothing else moves",
+            1.5f,
+            before.unionSolid.bounds.minZ - after.unionSolid.bounds.minZ,
+            0.05f,
+        )
+        assertEquals(
+            "across the seam it is where it was",
+            before.unionSolid.bounds.centerX,
+            after.unionSolid.bounds.centerX,
+            0.01f,
+        )
+
+        // The record keeps it, and the pair reads it back: a joint is editable
+        // after a print at the depth it was printed at.
+        val record = recordOf(sunk)
+        val restored = sunk.withSnapPair(
+            lowHalfId = "low",
+            highHalfId = "high",
+            axis = ModelPlacement.Axis.Z,
+            lowFaceMm = 20f,
+            highFaceMm = 20f,
+            record = record,
+        )
+        assertEquals(
+            "the depth comes back with the joint",
+            1.5f,
+            restored.snapDepthOf(restored.restoredJoints(record).single())!!,
+            1e-5f,
+        )
+    }
 
     @Test
     fun placingIsArmedAndDisarmedByTheState() {
@@ -748,6 +774,7 @@ class SnapStateTest {
         joints = listOf(
             SnapJointRecord(
                 anchorLocalMm = requireNotNull(state.snapAnchorLocalMm),
+                depthMm = state.snapSelectedSpec?.depthMm ?: 0f,
                 onLowHalf = true,
                 beamHalf = SnapJoint.JointHalf.HIGH,
                 tightness = SnapTightness.TIGHT,
@@ -832,6 +859,9 @@ class SnapStateTest {
             lowHalf = state.snapLowFitHalf!!,
             highHalf = state.snapHighFitHalf!!,
             beamHalf = SnapJoint.JointHalf.LOW,
+            // The same parameters the pipeline hands it: a depth that is not in
+            // these is a depth the build never sees.
+            parameters = state.snapParametersFor(requireNotNull(state.snapSelectedSpec)),
         ) as SnapJoint.Either.Placed).placement.joint
 
     /** The same object with its placed mesh - and so its bounds - moved. */

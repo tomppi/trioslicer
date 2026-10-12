@@ -29,8 +29,8 @@ import com.tomppi.enderslicer.viewer.SnapGhost
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapLibraryPair
+import com.tomppi.enderslicer.viewer.SnapFit
 import com.tomppi.enderslicer.viewer.SnapLibraryShape
-import com.tomppi.enderslicer.viewer.SnapSeamContour
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.TransformGizmo
 import com.tomppi.enderslicer.viewer.Vec3
@@ -193,7 +193,7 @@ data class MainUiState(
     val snapSelectedJoint: Int = -1,
     /**
      * True while the selected joint is being MOVED: the plate's own move arrows
-     * stand on it and a drag slides it along the seam.
+     * stand on it and a drag on one of them moves it along that axis alone.
      *
      * Move in the joint's own row turns this on and, pressed again, turns it
      * off - the mode is its own control, and a tap is no longer part of moving a
@@ -203,15 +203,13 @@ data class MainUiState(
      */
     val snapMovingJoint: Boolean = false,
     /**
-     * The seam's own edge, read once when the move began, for every drag sample
-     * to be dropped onto.
+     * The arrow being HELD right now, or null: which axis is live.
      *
-     * The halves do not move while a finger slides a joint along them, so the
-     * contour is read once - a walk of the half's cap outline is not something
-     * to do per frame - and it is dropped with the mode, so a contour can never
-     * outlive the joint it was read for.
+     * The mode can be up with nothing held, and the arrow under the finger is
+     * the only thing that moves - so this is the state the row, the plate view's
+     * highlight and the tests all read, rather than a drawing detail.
      */
-    val snapMoveContour: SnapSeamContour? = null,
+    val snapMoveAxis: ModelPlacement.Axis? = null,
     /**
      * True while the next tap on the model PLACES a joint, rather than selecting one.
      *
@@ -677,6 +675,7 @@ data class MainUiState(
             val fit = if (joint.onLowHalf) lowFit else highFit
             SnapJointSpec(
                 anchorPointMm = fit.toPlate(joint.anchorLocalMm),
+                depthMm = joint.depthMm,
                 anchorHalfId = if (joint.onLowHalf) low.id else high.id,
                 beamHalf = joint.beamHalf,
                 tightness = joint.tightness,
@@ -711,6 +710,7 @@ data class MainUiState(
      * socket-ramp decision. Nothing else differs between joints on a seam.
      */
     fun snapParametersFor(spec: SnapJointSpec): SnapFitParameters = SnapFitParameters(
+        depthMm = spec.depthMm,
         beamLengthOverrideMm = snapHookLengthMm,
         beamThicknessOverrideMm = snapHookThicknessMm,
         lipDepthOverrideMm = snapHookLipMm,
@@ -856,7 +856,11 @@ data class MainUiState(
         val spec = snapSelectedSpec ?: return@lazy null
         val half = snapAnchorHalfFor(spec) ?: return@lazy null
         val local = half.toLocal(spec.anchorPointMm) ?: return@lazy null
-        val onPlate = half.toPlate(local)
+        // The joint's own plane: the anchor is where it was tapped, and the
+        // depth is how far its features sit from the mating plane along the
+        // split's axis, so the arrows stand on the joint rather than on the tap.
+        val axis = SnapFit.axisDirection(snapAxis)
+        val onPlate = half.toPlate(local - axis * spec.depthMm)
         if (!onPlate.isFinite()) return@lazy null
         TransformGizmo.arrowsOverlay(
             TransformGizmo.arrows(
@@ -945,7 +949,7 @@ data class MainUiState(
         snapJoints = emptyList(),
         snapSelectedJoint = -1,
         snapMovingJoint = false,
-        snapMoveContour = null,
+        snapMoveAxis = null,
         snapAddingJoint = false,
         snapPreview = null,
         snapFailure = null,
@@ -971,7 +975,7 @@ data class MainUiState(
             snapJoints = joints,
             snapSelectedJoint = selected,
             snapMovingJoint = false,
-            snapMoveContour = null,
+            snapMoveAxis = null,
             snapAddingJoint = false,
             snapPreview = null,
             snapFailure = null,
@@ -983,59 +987,56 @@ data class MainUiState(
      * joints themselves are untouched, wherever the drag left them.
      */
     fun endSnapMove(): MainUiState =
-        if (!snapMovingJoint && snapMoveContour == null) {
+        if (!snapMovingJoint && snapMoveAxis == null) {
             this
         } else {
-            copy(snapMovingJoint = false, snapMoveContour = null)
+            copy(snapMovingJoint = false, snapMoveAxis = null)
         }
 
     /**
-     * The selected joint slid to [pointMm] on the plate.
-     *
-     * The point is read in the half the joint's anchor belongs to, dropped onto
-     * the seam's own contour there, and carried back out through the SAME half.
-     * That round trip is what keeps a drag honest after the packer has moved the
-     * pair: the anchor is a plate point, the contour is the half's own edge, and
-     * the half's placement is the only thing that knows how the two meet. It is
-     * also what keeps the joint on the mating plane and on the part, because
-     * every point of the contour is on both.
-     *
-     * [fingerHalfId] is the half the finger is over, which is not always the
-     * joint's own: the two halves of a split share their own coordinates and the
-     * plate has packed them apart, so the point is read in the half that is under
-     * the finger - otherwise a drag that strayed onto the mate would be read
-     * through the wrong placement and jump. The result is written back through
-     * the joint's own half either way, because that is the frame its anchor is
-     * stored in.
-     *
-     * Null when there is no joint to slide, no half to read it through, or no
-     * point the half's placement can carry.
+     * The selected joint put at [depthMm] along the seam's own axis: how deep it
+     * sits from the mating plane, which is the one number the move gizmo's arrow
+     * along that axis changes.
      */
-    fun snapJointSlidTo(
-        pointMm: Vec3,
-        contour: SnapSeamContour,
-        /** The half the finger is over, when the pick named one of the pair. */
-        fingerHalfId: String? = null,
-    ): MainUiState? {
+    fun snapJointSunkTo(depthMm: Float): MainUiState? {
+        if (!depthMm.isFinite()) return null
         val spec = snapSelectedSpec ?: return null
-        val own = snapAnchorHalfFor(spec) ?: return null
-        val read = when (fingerHalfId) {
-            snapLowHalfId -> snapLowFitHalf
-            snapHighHalfId -> snapHighFitHalf
-            else -> null
-        } ?: own
-        val local = read.toLocal(pointMm) ?: return null
-        // Where the joint stands now is what settles which edge a finger that is
-        // nearly as far from two of them is on, so a drag across the middle of a
-        // face cannot throw the hook over to the far edge.
-        val here = read.toLocal(spec.anchorPointMm)
-        val onSeam = contour.nearest(local, here)
-        if (!onSeam.isFinite()) return null
         val joints = snapJoints.toMutableList().also {
-            it[snapSelectedJoint] = spec.copy(anchorPointMm = own.toPlate(onSeam))
+            it[snapSelectedJoint] = spec.copy(depthMm = depthMm)
         }
         return copy(snapJoints = joints, snapFailure = null)
     }
+
+    /**
+     * The selected joint put at [pointMm] on the plate.
+     *
+     * One arrow moves the joint along ONE plate axis, and this is where that
+     * lands: the caller has already added the arrow's own millimetres to the
+     * place the joint was at, in plate space, so what arrives here is the whole
+     * of the new position and nothing else about the joint changes.
+     */
+    fun snapJointAt(pointMm: Vec3): MainUiState? {
+        if (!pointMm.isFinite()) return null
+        val spec = snapSelectedSpec ?: return null
+        val joints = snapJoints.toMutableList().also {
+            it[snapSelectedJoint] = spec.copy(anchorPointMm = pointMm)
+        }
+        return copy(snapJoints = joints, snapFailure = null)
+    }
+
+    /**
+     * How deep the selected joint sits along the seam's OWN axis, in
+     * millimetres, or null when there is no joint to read.
+     *
+     * Zero is the mating plane itself, which is where a tap puts a joint; the
+     * move gizmo's arrow along the seam's axis is what changes it, and the build
+     * reads the very same offset off the anchor to place the joint's own plane.
+     */
+    val snapSelectedDepthMm: Float?
+        get() = snapDepthOf(snapSelectedSpec)
+
+    /** The same for one joint: the depth the build will read for it. */
+    fun snapDepthOf(spec: SnapJointSpec?): Float? = spec?.depthMm?.takeIf { it.isFinite() }
 
     /** The stored result is exportable; completeness is the cached value from when it was stored. */
     fun hasCurrentGcode(): Boolean = sliceResultId != null && gcodePath != null && gcodeComplete

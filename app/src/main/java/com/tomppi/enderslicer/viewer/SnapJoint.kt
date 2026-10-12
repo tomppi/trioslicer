@@ -116,12 +116,25 @@ object SnapJoint {
                 ),
             )
         }
+        // How deep the joint sits along the seam's OWN axis - see
+        // [SnapFitParameters.depthMm] - which the move gizmo's arrow along that
+        // axis drives and a tap leaves at zero.
+        //
+        // The joint is built HERE, on the seam, where the material's own faces
+        // are and where every measurement this build makes is meaningful, and the
+        // depth is applied to what came out: a joint carried along the axis as
+        // one piece. Measuring at the shifted plane instead would find no face
+        // there at all - a cap is a mesh face, not a cross-section - and the
+        // ladder would quietly drop rungs it cannot see.
+        val depthMm = parameters.depthMm
         val chosen = join(
             axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style,
             cuts, cutDirections, library,
         )
         if (chosen is Attempt.Built) {
-            return Either.Placed(placementOf(chosen.joint, lowHalf, highHalf, beamHalf, true))
+            return Either.Placed(
+                placementOf(sunk(chosen.joint, depthMm, axisDirection, beamHalf), lowHalf, highHalf, beamHalf, true),
+            )
         }
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
         val flipped = join(
@@ -146,7 +159,7 @@ object SnapJoint {
                     "was built into it instead"
             }
             return Either.Flipped(
-                placementOf(flipped.joint, lowHalf, highHalf, otherHalf, false),
+                placementOf(sunk(flipped.joint, depthMm, axisDirection, otherHalf), lowHalf, highHalf, otherHalf, false),
                 Failure(short ?: beamHalf, reason),
             )
         }
@@ -159,6 +172,33 @@ object SnapJoint {
                 beamHalf,
                 refused.ifBlank { reasonFor(axis, scale, lowHalf, highHalf, beamHalf, parameters) },
             ),
+        )
+    }
+
+    /**
+     * The built joint carried along the seam's own axis to the depth it was put
+     * at: built on the seam and moved as one piece, solids and frames together.
+     *
+     * Positive depth is sunk AWAY from the mate, so which way it goes follows the
+     * half the joint's beam landed in: the beam's own half is the one it sinks
+     * into.
+     */
+    private fun sunk(
+        joint: SnapFitJoint,
+        depthMm: Float,
+        axisDirection: Vec3,
+        beamHalf: JointHalf,
+    ): SnapFitJoint {
+        if (!depthMm.isFinite() || depthMm == 0f) return joint
+        val away = if (beamHalf == JointHalf.LOW) axisDirection * -1f else axisDirection
+        val delta = away * depthMm
+        return joint.copy(
+            unionSolid = SnapFit.shift(joint.unionSolid, delta),
+            subtractSolid = SnapFit.shift(joint.subtractSolid, delta),
+            registrationSolid = SnapFit.shift(joint.registrationSolid, delta),
+            registrationRecess = SnapFit.shift(joint.registrationRecess, delta),
+            frame = joint.frame.shifted(delta),
+            socketFrame = joint.socketFrame.shifted(delta),
         )
     }
 

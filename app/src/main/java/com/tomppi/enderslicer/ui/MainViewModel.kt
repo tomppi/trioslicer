@@ -109,7 +109,6 @@ import com.tomppi.enderslicer.viewer.SnapLibraryPair
 import com.tomppi.enderslicer.viewer.SnapLibraryShape
 import com.tomppi.enderslicer.viewer.SnapLayout
 import com.tomppi.enderslicer.viewer.SnapPad
-import com.tomppi.enderslicer.viewer.SnapSeam
 import com.tomppi.enderslicer.viewer.SnapSpread
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.SolidSplitter
@@ -314,11 +313,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var snapPreviewJob: Job? = null
 
     /**
-     * The read of the seam's own edge for the joint being moved. One per move:
-     * the contour is fixed while a finger slides a joint along it, and it is
-     * cancelled with the mode.
+     * Where the joint stood when the held arrow went down: every sample of that
+     * grab is measured from here, so the axis carries it and nothing else does.
+     * The depth has a baseline of its own, because it is a number rather than a
+     * point.
      */
-    private var snapContourJob: Job? = null
+    private var snapAxisBaseline: Vec3? = null
+    private var snapDepthBaseline: Float? = null
 
     /**
      * The selected object's untransformed mesh.
@@ -2039,6 +2040,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             SnapJointRecord(
                 anchorLocalMm = local,
+                depthMm = spec.depthMm,
                 onLowHalf = spec.anchorHalfId == state.snapLowHalfId,
                 beamHalf = spec.beamHalf,
                 tightness = spec.tightness,
@@ -2086,7 +2088,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSnapActive(active: Boolean) {
         if (!active) {
             snapPreviewJob?.cancel()
-            snapContourJob?.cancel()
             _uiState.update { it.withoutSnap() }
             return
         }
@@ -2132,7 +2133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 snapJoints = restored,
                 snapSelectedJoint = restored.indices.firstOrNull() ?: -1,
                 snapMovingJoint = false,
-                snapMoveContour = null,
+                snapMoveAxis = null,
                 snapMixedFacing = false,
                 snapFacing = SnapFacing.SAME,
                 snapBarbs = 1,
@@ -2176,7 +2177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * A tap on the model: it PLACES a joint when the panel is armed for one, and
      * otherwise SELECTS the joint nearest the tap. Nothing is added by a tap
      * alone, and a joint is no longer MOVED by one: the move is a mode with the
-     * plate's own arrows on the hook, and [dragSnapJoint] is what slides it.
+     * plate's own arrows on the hook, and [dragSnapJointAxis] is what moves it.
      *
      * The tap is a point on whatever surface the picker hit, which is almost
      * never exactly on the mating plane, so it is stored as tapped and read in
@@ -2244,7 +2245,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // A joint that has just been placed is the one the panel acts on,
                         // so a move that was up belongs to a joint that is no longer it.
                         snapMovingJoint = false,
-                        snapMoveContour = null,
+                        snapMoveAxis = null,
                         snapFailure = null,
                     )
                 }
@@ -2300,16 +2301,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun addSnapJoint() {
         val state = _uiState.value
         if (!state.snapActive) return
-        snapContourJob?.cancel()
         _uiState.update {
-            it.copy(snapAddingJoint = true, snapMovingJoint = false, snapMoveContour = null, snapFailure = null)
+            it.copy(snapAddingJoint = true, snapMovingJoint = false, snapMoveAxis = null, snapFailure = null)
         }
     }
 
     /** Takes back an armed Add or Move without touching the joints. */
     fun cancelSnapPlacement() {
-        snapContourJob?.cancel()
-        _uiState.update { it.copy(snapAddingJoint = false, snapMovingJoint = false, snapMoveContour = null) }
+        _uiState.update { it.copy(snapAddingJoint = false, snapMovingJoint = false, snapMoveAxis = null) }
     }
 
     /**
@@ -2350,87 +2349,111 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Add and Move are one control between them: a tap cannot both place a
                 // joint and move one, so arming either takes the other down.
                 snapAddingJoint = false,
-                snapMoveContour = null,
+                snapMoveAxis = null,
                 snapFailure = null,
             )
         }
-        readSnapMoveContour(index)
     }
 
     /**
-     * One drag sample while a joint is being moved: where the finger is on the
-     * plate.
-     *
-     * The point is read in the half under the finger - the two halves of a
-     * split share their own coordinates and the plate has packed them apart, so
-     * the half that is actually under the finger is the one whose placement says
-     * where he is - then dropped onto the seam's own contour and written back
-     * through the joint's own half. The hook therefore slides along the edge of
-     * the part, never off it and never off the mating plane, and a joint moved
-     * after the packer shifted the halves still lands under the finger. The
-     * geometry follows through the preview's own debounce, which every sample
-     * re-arms so a drag does not boolean the halves per frame.
+     * One of the joint's own arrows went down: that axis is the live one from
+     * here until it comes up, and the joint's place at the grab is the baseline
+     * every sample of the drag is measured from.
      */
-    fun dragSnapJoint(point: Vec3, fingerHalfId: String? = null) {
-        if (!point.isFinite()) return
+    fun beginSnapJointAxis(axis: ModelPlacement.Axis) {
+        val state = _uiState.value
+        if (!state.snapActive || !state.snapMovingJoint) return
+        val spec = state.snapSelectedSpec ?: return
+        snapAxisBaseline = spec.anchorPointMm
+        snapDepthBaseline = spec.depthMm
+        _uiState.update { it.copy(snapMoveAxis = axis, snapFailure = null) }
+    }
+
+    /**
+     * The held arrow's own millimetres: the joint is put at the place the grab
+     * began, plus that many millimetres along THAT plate axis - and nothing else
+     * about it moves. The other two coordinates are the baseline's own, exactly,
+     * so the axis under the finger is the only axis that carries the joint.
+     *
+     * The arrow along the SEAM'S own axis is the depth instead: it moves the
+     * joint along the axis the two halves meet on, which is the one number the
+     * build reads as how deep the joint sits. The panel says which arrow that is.
+     *
+     * The geometry follows through the preview's own debounce, which every
+     * sample re-arms, so a drag does not boolean the halves once a frame.
+     */
+    fun dragSnapJointAxis(axis: ModelPlacement.Axis, millimetres: Float) {
+        if (!millimetres.isFinite()) return
         val before = _uiState.value
         if (!before.snapActive || !before.snapMovingJoint) return
-        val contour = before.snapMoveContour ?: return
-        val slid = before.snapJointSlidTo(point, contour, fingerHalfId) ?: return
-        if (slid.snapJoints == before.snapJoints) return
-        // The finger has moved the joint somewhere new; a state that changed
-        // under this sample - another joint picked, the mode put away - keeps
-        // its own truth rather than being overwritten by a stale drag.
+        if (before.snapMoveAxis != axis) return
+        val moved = if (axis == before.snapAxis) {
+            // Dragging the arrow the two halves meet on lifts the joint out of
+            // the part or sinks it in: along the assembly direction is proud,
+            // against it is deep.
+            before.snapJointSunkTo(
+                clampedSnapDepth(before, (snapDepthBaseline ?: 0f) - millimetres),
+            )
+        } else {
+            val baseline = snapAxisBaseline ?: return
+            before.snapJointAt(baseline + SnapFit.axisDirection(axis) * millimetres)
+        } ?: return
+        if (moved.snapJoints == before.snapJoints) return
+        // A state that changed under this sample - another joint picked, the
+        // mode put away - keeps its own truth rather than being overwritten by
+        // a stale drag.
         _uiState.update { current ->
-            if (current.snapJoints == before.snapJoints) slid else current
+            if (current.snapJoints == before.snapJoints && current.snapMoveAxis == axis) moved else current
         }
         previewSnapJoint()
     }
 
     /**
-     * The seam's own edge for the joint at [index], read off the pair's OWN
-     * halves - the same source every joint on the pair is built from - so a
-     * contour is never bent by a joint that has already been booleaned into the
-     * plate. The result lands in the state the drags read it from, and only
-     * while that joint is still the one being moved.
+     * The depth held inside the two halves' own material.
+     *
+     * Sinking deeper than the joint's own half - or lifting it past the mate's -
+     * carries the joint's own plane out of the part, where its features have
+     * nothing to hold on to and a piece of it is left standing in air. No
+     * closedness, seat or pair check anywhere would see that, so the arrow stops
+     * at the material rather than promising what the part cannot hold.
      */
-    private fun readSnapMoveContour(index: Int) {
-        snapContourJob?.cancel()
-        snapContourJob = viewModelScope.launch {
-            val state = _uiState.value
-            val spec = state.snapJoints.getOrNull(index) ?: return@launch
-            val half = state.snapAnchorHalfFor(spec) ?: return@launch
-            val anchor = half.toLocal(spec.anchorPointMm) ?: return@launch
-            val own = if (state.liveSnapRecord == null) null else pairOwnHalves(state)
-            val basis = if (own == null) {
-                half
-            } else if (spec.anchorHalfId == state.snapLowHalfId) {
-                half.withOwnMesh(own.first, state.snapLowHalf?.name.orEmpty())
-            } else {
-                half.withOwnMesh(own.second, state.snapHighHalf?.name.orEmpty())
-            }
-            val direction = SnapFit.axisDirection(state.snapAxis)
-            val contour = withContext(Dispatchers.Default) { SnapSeam.contour(basis, direction, anchor) }
-            _uiState.update { current ->
-                if (current.snapMovingJoint && current.snapSelectedJoint == index) {
-                    current.copy(snapMoveContour = contour)
-                } else {
-                    current
-                }
-            }
-        }
+    private fun clampedSnapDepth(state: MainUiState, wanted: Float): Float {
+        if (!wanted.isFinite()) return 0f
+        val spec = state.snapSelectedSpec ?: return wanted
+        val low = state.snapLowFitHalf ?: return wanted
+        val high = state.snapHighFitHalf ?: return wanted
+        val lowSpan = SnapFit.spanAlongAxis(low, state.snapAxis) ?: return wanted
+        val highSpan = SnapFit.spanAlongAxis(high, state.snapAxis) ?: return wanted
+        val seam = low.faceMm
+        val beamIsLow = spec.beamHalf == SnapJoint.JointHalf.LOW
+        val own = if (beamIsLow) lowSpan else highSpan
+        val mate = if (beamIsLow) highSpan else lowSpan
+        // Sunk goes away from the mate, into the joint's own half; proud goes the
+        // other way, into the mate's.
+        val deeper = if (beamIsLow) seam - own.start else own.endInclusive - seam
+        val prouder = if (beamIsLow) mate.endInclusive - seam else seam - mate.start
+        return wanted.coerceIn(-maxOf(prouder, 0f), maxOf(deeper, 0f))
     }
 
-    /** Puts the move away: the mode, the arrows, the contour and its read. */
+    /** The arrow came up: the axis goes dark, and where it was left is built. */
+    fun endSnapJointAxis() {
+        snapAxisBaseline = null
+        snapDepthBaseline = null
+        if (_uiState.value.snapMoveAxis == null) return
+        _uiState.update { it.copy(snapMoveAxis = null) }
+        previewSnapJoint()
+    }
+
+    /** Puts the move away: the mode, the arrows and the axis that was held. */
     private fun stopSnapMove() {
-        snapContourJob?.cancel()
+        snapAxisBaseline = null
+        snapDepthBaseline = null
         _uiState.update { it.endSnapMove() }
     }
 
     /** Takes one joint off the pair; the others stay exactly as they are. */
     fun removeSnapJoint(index: Int) {
         if (index !in _uiState.value.snapJoints.indices) return
-        snapContourJob?.cancel()
         _uiState.update { it.withoutSnapJoint(index) }
         previewSnapJoint()
     }
@@ -2438,13 +2461,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Empties the seam: no joints, and nothing previewed. */
     fun clearSnapJoints() {
         snapPreviewJob?.cancel()
-        snapContourJob?.cancel()
         _uiState.update {
             it.copy(
                 snapJoints = emptyList(),
                 snapSelectedJoint = -1,
                 snapMovingJoint = false,
-                snapMoveContour = null,
+                snapMoveAxis = null,
                 snapAddingJoint = false,
                 snapPreview = null,
                 snapFailure = null,
@@ -3513,6 +3535,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // then its own clearance step, its own teeth, its own facing and the
         // pair's socket ramp. Nothing else differs between two joints.
         fun parametersFor(spec: SnapJointSpec): SnapFitParameters = hookParameters.copy(
+            // How deep THIS joint sits along the seam's own axis. Missing from
+            // this list when the depth arrow shipped, it was a number the panel
+            // showed and the build never read: the joint was staged on the
+            // mating plane however far the arrow had carried it.
+            depthMm = spec.depthMm,
             barbCount = spec.barbs,
             facing = spec.facing,
             socketRamp = state.snapSocketRamp,
@@ -6056,6 +6083,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 joints = saved.joints.map { joint ->
                     SnapJointRecord(
                         anchorLocalMm = Vec3(joint.anchorXMm, joint.anchorYMm, joint.anchorZMm),
+                        depthMm = joint.depthMm,
                         onLowHalf = joint.onLowHalf,
                         beamHalf = joint.beamHalf,
                         tightness = joint.tightness,
