@@ -1794,6 +1794,14 @@ data class SnapFitDimensions(
     val lipWallAskedMm: Float = 0f,
     /** How far the recess floor was cut past the step the tooth and its ramp need. */
     val lipDepthExtraMm: Float = 0f,
+    /** How wide the user's cuts took their slits out of the ring. */
+    val lipCutWidthMm: Float = 0f,
+    /** How many cuts the ring carries, and how many arcs that leaves it in. */
+    val lipCuts: Int = 0,
+    val lipArcs: Int = 1,
+    /** The shortest and longest run of wall left between two cuts. */
+    val lipShortestRunMm: Float = 0f,
+    val lipLongestRunMm: Float = 0f,
     /** How many places around that ring the wall was read at. */
     val lipSamples: Int = 0,
     /** Where on the ring its worst reading was: millimetres along the contour. */
@@ -1884,6 +1892,12 @@ data class SnapFitJoint(
      * Empty for every cantilever joint.
      */
     val warnings: List<String> = emptyList(),
+    /**
+     * The wall lip's cuts, subtracted from the lip half AFTER the tooth is
+     * unioned on - a slit taken before it would be bridged by the tooth standing
+     * over it. Null for every joint that has no cuts, the cantilever included.
+     */
+    val cutSolid: StlMesh? = null,
 ) {
     /** The click the joint is designed to be used at: the deepest catch. */
     val seatedClick: SnapClick? get() = clicks.lastOrNull()
@@ -1962,6 +1976,28 @@ data class SnapFitJoint(
             dimensions.lipRecessMm,
             dimensions.lipDepthExtraMm,
         )
+
+    /**
+     * The wall lip's ring as the cuts left it: how many arcs, and the shortest and
+     * longest run of wall between them. A closed ring is the stiffest shape there
+     * is, and each cut is a free end for the wall to bend from, so this line is
+     * what tells the user his 45% closed ring is a different spring now.
+     */
+    val lipCutSummary: String
+        get() = if (dimensions.lipCuts == 0) {
+            "one closed ring - no cuts, and the wall has no end to bend from"
+        } else {
+            String.format(
+                java.util.Locale.ROOT,
+                "%d cuts, so the ring is %d arcs; the wall runs %.1f mm to %.1f mm between them, " +
+                    "cut %.2f mm wide",
+                dimensions.lipCuts,
+                dimensions.lipArcs,
+                dimensions.lipShortestRunMm,
+                dimensions.lipLongestRunMm,
+                dimensions.lipCutWidthMm,
+            )
+        }
 
     /**
      * The fit line the panel shows: the beam's own reach and the clearance the
@@ -2089,6 +2125,14 @@ data class SnapFitParameters(
     val lipWallOverrideMm: Float? = null,
     /** The extra recess depth the user typed, in millimetres, or null for the scaled parameter. */
     val lipRecessExtraOverrideMm: Float? = null,
+    /**
+     * The wall lip: how wide a slit the user's cuts take out of the ring, in
+     * millimetres. A cut is what gives the wall an end to bend from - a closed
+     * ring is the stiffest shape there is - and this is how much of it goes.
+     */
+    val lipCutWidthMm: Float = 0.6f,
+    /** The cut width the user typed, in millimetres, or null for the scaled parameter. */
+    val lipCutWidthOverrideMm: Float? = null,
 ) {
     /**
      * The same joint with every fit clearance tightened by [stepMm] millimetres,
@@ -2109,11 +2153,12 @@ data class SnapFitParameters(
         val lengths = listOf(
             keySizeMm, keyHeightMm, keyClearanceMm, beamLengthMm, beamWidthMm, beamThicknessMm,
             beamRootMm, lipDepthMm, lipClearanceMm, matingClearanceMm, keyGapMm,
-            stepDepthMm, stepRimMm, lipEngagementMm, lipToothHeightMm, lipWallMm,
+            stepDepthMm, stepRimMm, lipEngagementMm, lipToothHeightMm, lipWallMm, lipCutWidthMm,
         )
         val overrides = listOfNotNull(
             beamLengthOverrideMm, beamThicknessOverrideMm, lipDepthOverrideMm,
             lipEngagementOverrideMm, lipToothHeightOverrideMm, lipWallOverrideMm,
+            lipCutWidthOverrideMm,
         )
         return lengths.all { it.isFinite() && it > 0f } &&
             overrides.all { it.isFinite() && it > 0f } &&

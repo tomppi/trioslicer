@@ -149,6 +149,48 @@ class SnapLipWiringContractTest {
     }
 
     /**
+     * The wall's cuts: a tap places one, one action cuts every bend, and the
+     * width reaches the build through the pipeline's own parameter list - which
+     * is where wall and depth were missed once.
+     */
+    @Test
+    fun theCutControlsBelongToTheLipAndReachTheBuild() {
+        val hook = body(app, "private fun SnapHookGroup(", "private fun SnapFitsGroup(")
+        assertTrue("the cut's own row", hook.contains("label = \"Cut\""))
+        assertTrue("with its own range", hook.contains("LIP_CUT_RANGE"))
+        assertTrue("and the ring's own line", app.contains("lipCutSummary"))
+        assertTrue(
+            "the two actions and the arming",
+            app.contains("\"Cut wall\"") && app.contains("\"Cut every bend\"") &&
+                app.contains("state.snapCuttingWall"),
+        )
+        assertTrue(
+            "which reach the view model",
+            app.contains("onCutWall = viewModel::cutWall") &&
+                app.contains("onCutEveryBend = viewModel::cutEveryBend") &&
+                app.contains("onRemoveCut = viewModel::removeLipCut"),
+        )
+        assertTrue(
+            "the cuts reach the build through the pipeline's own parameters",
+            viewModel.contains("cuts = if (spec.style == SnapJointStyle.WALL_LIP)") &&
+                viewModel.contains("lipCutWidthOverrideMm = spec.lipCutWidthMm ?: state.snapLipCutWidthMm") &&
+                viewModel.contains("engine.subtract(toothed.mesh, cut)"),
+        )
+        assertTrue(
+            "a tap while armed cuts instead of placing a joint",
+            viewModel.contains("state.snapCuttingWall ->"),
+        )
+        assertTrue(
+            "the bends come from the seam's own contour",
+            viewModel.contains("SnapLip.bendPoints(") && source("viewer/SnapLip.kt").contains("fun bendPoints("),
+        )
+        assertTrue(
+            "and the record keeps them",
+            store.contains("\"lipCuts\"") && store.contains("\"lipCutWidthMm\""),
+        )
+    }
+
+    /**
      * The ring follows the seam's own outline, and the two halves' step is sized
      * from the ring: not the cantilever's pad depth, and not a tooth at a tap.
      */

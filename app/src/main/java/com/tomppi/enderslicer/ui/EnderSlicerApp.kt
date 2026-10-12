@@ -1931,6 +1931,11 @@ fun EnderSlicerApp(
                                 onLipToothHeight = viewModel::setSnapLipToothHeight,
                                 onLipWall = viewModel::setSnapLipWall,
                                 onLipDepth = viewModel::setSnapLipDepth,
+                                onLipCutWidth = viewModel::setSnapLipCutWidth,
+                                onCutWall = viewModel::cutWall,
+                                onCutEveryBend = viewModel::cutEveryBend,
+                                onCancelCut = viewModel::cancelCutWall,
+                                onRemoveCut = viewModel::removeLipCut,
                                 onTightness = viewModel::setSnapJointTightness,
                                 onFlipAll = viewModel::flipSnapFacing,
                                 onMixedFacing = viewModel::setSnapMixedFacing,
@@ -4208,6 +4213,9 @@ private val LIP_WALL_RANGE = 1f..3f
 /** How far the recess floor may go past the step: deeper is a longer, softer spring. */
 private val LIP_DEPTH_RANGE = 0f..8f
 
+/** How wide a cut's slit is: enough to part the wall, narrow enough to keep it whole. */
+private val LIP_CUT_RANGE = 0.3f..2f
+
 /** Where the strain readout starts warning, in per cent: the usual PLA design limit. */
 private const val ROOT_STRAIN_HINT_PERCENT = 2f
 
@@ -4229,6 +4237,13 @@ private class SnapActions(
     val onLipToothHeight: (Float?) -> Unit,
     val onLipWall: (Float?) -> Unit,
     val onLipDepth: (Float?) -> Unit,
+    val onLipCutWidth: (Float?) -> Unit,
+    /** Arms the next tap on the model to cut the lip's ring where it lands. */
+    val onCutWall: () -> Unit,
+    /** Cuts every bend of the seam's contour in one go. */
+    val onCutEveryBend: () -> Unit,
+    val onCancelCut: () -> Unit,
+    val onRemoveCut: (Int) -> Unit,
     /** Loose or tight for one joint: clearance, and nothing else. */
     val onTightness: (Int, SnapTightness) -> Unit,
     /** The pair-level flip: every joint on the seam turns together. */
@@ -4332,6 +4347,9 @@ private fun SnapToolbar(
     val lipDepth = state.snapSelectedSpec?.lipRecessExtraMm
         ?: state.snapLipDepthMm
         ?: (defaults.lipRecessExtraMm * state.snapScale)
+    val lipCutWidth = state.snapSelectedSpec?.lipCutWidthMm
+        ?: state.snapLipCutWidthMm
+        ?: (defaults.lipCutWidthMm * state.snapScale)
     // One call per group, so the three-column panel and the single-column one
     // cannot drift apart: both are these three, in this order.
     val setup: @Composable () -> Unit = {
@@ -4357,6 +4375,7 @@ private fun SnapToolbar(
             lipToothHeight = lipToothHeight,
             lipWall = lipWall,
             lipDepth = lipDepth,
+            lipCutWidth = lipCutWidth,
         )
     }
     val fits: @Composable () -> Unit = {
@@ -4681,6 +4700,65 @@ private fun SnapSetupGroup(
         }
     }
     }
+    if (state.snapStyle == SnapJointStyle.WALL_LIP) {
+        // Cutting the ring: a tap places one cut, and the bends of the contour can
+        // all be cut at once, which is the shape the user drew - the O opened into
+        // brackets at its own corners.
+        SnapChoiceRow(
+            label = null,
+            caption = if (state.snapCuttingWall) {
+                "tap the wall to cut it"
+            } else {
+                "a cut parts the ring; each one gives the wall an end to bend from"
+            },
+            stacked = stacked,
+        ) {
+            if (state.snapCuttingWall) {
+                Button(
+                    onClick = actions.onCancelCut,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Cancel") }
+            } else {
+                Button(
+                    onClick = actions.onCutWall,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Cut wall") }
+            }
+        }
+        SnapChoiceRow(
+            label = null,
+            caption = if (stacked) "one per corner" else "one cut at every bend of the seam's own edge",
+            stacked = stacked,
+        ) {
+            OutlinedButton(
+                onClick = actions.onCutEveryBend,
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Cut every bend") }
+        }
+        val lipSpec = specs.firstOrNull { it.style == SnapJointStyle.WALL_LIP }
+        val cuts = lipSpec?.lipCuts.orEmpty()
+        if (cuts.isNotEmpty()) {
+            Text(
+                cuts.size.toString() + (if (cuts.size == 1) " cut" else " cuts") + " on the ring",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            cuts.forEachIndexed { index, _ ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Cut " + (index + 1),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = { actions.onRemoveCut(index) },
+                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space6),
+                    ) { Text("Remove") }
+                }
+            }
+        }
+    }
     // The style. The cantilever is the joint the tool has always built - a beam
     // across the seam with a barb on it, fitted by the ladder. The wall lip is
     // the other design: the tooth stands on the half's own wall, the mate is
@@ -4774,6 +4852,15 @@ private fun SnapLipReadout(one: SnapPlacedJoint) {
         "   " + one.joint.lipStepSummary,
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        "   " + one.joint.lipCutSummary,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (one.joint.dimensions.lipCuts == 0) {
+            WarnAmber
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
     )
     for (warning in one.joint.warnings) {
         Text(
@@ -4897,6 +4984,7 @@ private fun SnapHookGroup(
     lipToothHeight: Float,
     lipWall: Float,
     lipDepth: Float,
+    lipCutWidth: Float,
 ) {
     if (style == SnapJointStyle.WALL_LIP) {
         // The engagement is the hold: how far the tooth and the ledge overlap.
@@ -4938,6 +5026,16 @@ private fun SnapHookGroup(
             range = LIP_DEPTH_RANGE,
             onValueChange = { actions.onLipDepth(it) },
             valueText = "%.2f mm".format(lipDepth),
+            onValueChangeFinished = actions.onCommit,
+        )
+        // How wide a cut's slit is. Cutting is what makes the wall bend: a closed
+        // ring is the stiffest shape there is, and every cut gives it an end.
+        CompactSliderRow(
+            label = "Cut",
+            value = lipCutWidth,
+            range = LIP_CUT_RANGE,
+            onValueChange = { actions.onLipCutWidth(it) },
+            valueText = "%.2f mm".format(lipCutWidth),
             onValueChangeFinished = actions.onCommit,
         )
         shown?.takeIf { it.joint.style == SnapJointStyle.WALL_LIP }?.let { preview ->

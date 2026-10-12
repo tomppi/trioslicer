@@ -44,6 +44,10 @@ data class SnapJointSpec(
     val lipWallMm: Float? = null,
     /** How far the lip's recess floor goes past the step, or null for the scale's own. */
     val lipRecessExtraMm: Float? = null,
+    /** How wide a slit a cut takes out of the lip's ring, or null for the scale's own. */
+    val lipCutWidthMm: Float? = null,
+    /** Where the user cut the lip's ring, in the pair's own coordinates. */
+    val lipCuts: List<Vec3> = emptyList(),
 )
 
 /**
@@ -75,6 +79,9 @@ data class SnapJointRecord(
     val lipToothHeightMm: Float? = null,
     val lipWallMm: Float? = null,
     val lipRecessExtraMm: Float? = null,
+    val lipCutWidthMm: Float? = null,
+    /** The cuts in the pair's own assembled frame, which the plate cannot move. */
+    val lipCuts: List<Vec3> = emptyList(),
 )
 
 /**

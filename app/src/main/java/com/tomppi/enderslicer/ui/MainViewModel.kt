@@ -101,6 +101,7 @@ import com.tomppi.enderslicer.viewer.SnapFitRung
 import com.tomppi.enderslicer.viewer.SnapFitHalf
 import com.tomppi.enderslicer.viewer.SnapFitParameters
 import com.tomppi.enderslicer.viewer.SnapJoint
+import com.tomppi.enderslicer.viewer.SnapLip
 import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapLayout
 import com.tomppi.enderslicer.viewer.SnapPad
@@ -1988,6 +1989,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 lipToothHeightMm = spec.lipToothHeightMm,
                 lipWallMm = spec.lipWallMm,
                 lipRecessExtraMm = spec.lipRecessExtraMm,
+                lipCutWidthMm = spec.lipCutWidthMm,
+                lipCuts = spec.lipCuts.mapNotNull { cut ->
+                    val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) {
+                        state.snapLowFitHalf
+                    } else {
+                        state.snapHighFitHalf
+                    }
+                    face?.toLocal(cut)
+                },
             )
         },
     )
@@ -2102,6 +2112,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!state.snapActive) return
         val moving = state.snapMovingJoint && state.snapSelectedSpec != null
         when {
+            state.snapCuttingWall -> {
+                val at = state.snapJoints.indexOfFirst { it.style == SnapJointStyle.WALL_LIP }
+                if (at < 0) {
+                    _uiState.update { it.copy(snapCuttingWall = false) }
+                    return
+                }
+                val spec = state.snapJoints[at]
+                val joints = state.snapJoints.toMutableList().also {
+                    it[at] = spec.copy(lipCuts = spec.lipCuts + point)
+                }
+                _uiState.update {
+                    it.copy(snapJoints = joints, snapCuttingWall = false, snapFailure = null)
+                }
+                previewSnapJoint()
+            }
             moving -> {
                 val index = state.snapSelectedJoint
                 val moved = state.snapJoints[index].copy(anchorPointMm = point, anchorHalfId = tappedHalfId)
@@ -2315,6 +2340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lipToothHeightMm = state.snapLipToothHeightMm,
             lipWallMm = state.snapLipWallMm,
             lipRecessExtraMm = state.snapLipDepthMm,
+            lipCutWidthMm = state.snapLipCutWidthMm,
         )
     }
 
@@ -2415,6 +2441,101 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // judges the setting by, so a size that moved has to be built again - the
         // debounce in previewSnapJoint is what keeps a drag from stuttering.
         previewSnapJoint()
+    }
+
+    /**
+     * How wide a slit a cut takes out of the lip's ring, in millimetres; null
+     * hands it back to the scale. A cut is what gives the wall an end to bend
+     * from, and this is how much of it goes.
+     */
+    fun setSnapLipCutWidth(millimetres: Float?) {
+        if (millimetres != null && !millimetres.isFinite()) return
+        val state = _uiState.value
+        val joints = if (state.snapSelectedJoint in state.snapJoints.indices) {
+            state.snapJoints.toMutableList().also {
+                it[state.snapSelectedJoint] = it[state.snapSelectedJoint].copy(lipCutWidthMm = millimetres)
+            }
+        } else {
+            state.snapJoints
+        }
+        _uiState.update { it.copy(snapJoints = joints, snapLipCutWidthMm = millimetres, snapFailure = null) }
+        previewSnapJoint()
+    }
+
+    /** Arms the next tap on the model to cut the lip's ring where it lands. */
+    fun cutWall() {
+        if (!_uiState.value.snapActive) return
+        _uiState.update { it.copy(snapCuttingWall = true, snapFailure = null) }
+    }
+
+    /** Puts the arming away without cutting anything. */
+    fun cancelCutWall() {
+        _uiState.update { it.copy(snapCuttingWall = false) }
+    }
+
+    /** Takes one of the lip's cuts off the list, by its place in it. */
+    fun removeLipCut(index: Int) {
+        val state = _uiState.value
+        val at = state.snapJoints.indexOfFirst { it.style == SnapJointStyle.WALL_LIP }
+        if (at < 0) return
+        val spec = state.snapJoints[at]
+        if (index !in spec.lipCuts.indices) return
+        val cuts = spec.lipCuts.toMutableList().also { it.removeAt(index) }
+        val joints = state.snapJoints.toMutableList().also { it[at] = spec.copy(lipCuts = cuts) }
+        _uiState.update { it.copy(snapJoints = joints, snapFailure = null) }
+        previewSnapJoint()
+    }
+
+    /**
+     * One cut at every bend of the seam's contour, which is what the user asked
+     * for by name: the ring's corners are where it is stiffest, and a cut at each
+     * of them is what turns the O into the brackets he drew.
+     */
+    fun cutEveryBend() {
+        val state = _uiState.value
+        val at = state.snapJoints.indexOfFirst { it.style == SnapJointStyle.WALL_LIP }
+        if (at < 0) return
+        val spec = state.snapJoints[at]
+        val low = state.snapLowFitHalf
+        val high = state.snapHighFitHalf
+        if (low == null || high == null) return
+        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) low else high
+        val mate = if (spec.beamHalf == SnapJoint.JointHalf.LOW) high else low
+        val axis = SnapFit.axisDirection(state.snapAxis) ?: return
+        val bends = SnapLip.bendPoints(
+            axis = if (spec.beamHalf == SnapJoint.JointHalf.LOW) axis else axis * -1f,
+            anchorMm = face.toPlate(Vec3(low.mesh.bounds.centerX, low.mesh.bounds.centerY, low.faceMm)),
+            scale = state.snapScale,
+            lipHalf = face,
+            mateHalf = mate,
+            parameters = state.snapParametersFor(spec),
+        )
+        if (bends.isEmpty()) {
+            _uiState.update {
+                it.copy(snapFailure = "The seam's own edge has no bends to cut on this pair.")
+            }
+            return
+        }
+        val cuts = spec.lipCuts + bends.map { face.toPlate(it) }
+        val joints = state.snapJoints.toMutableList().also { it[at] = spec.copy(lipCuts = cuts) }
+        _uiState.update { it.copy(snapJoints = joints, snapCuttingWall = false, snapFailure = null) }
+        previewSnapJoint()
+    }
+
+    /**
+     * The cuts one lip joint carries, in the pair's own frame the halves are
+     * handed to the builder in: the spec keeps them on the plate, which the
+     * packer moves, and the build measures in the frame it cannot.
+     */
+    private fun cutsFor(
+        spec: SnapJointSpec,
+        state: MainUiState,
+        low: SnapFitHalf,
+        high: SnapFitHalf,
+    ): List<Vec3> {
+        if (spec.lipCuts.isEmpty()) return emptyList()
+        val face = if (spec.beamHalf == SnapJoint.JointHalf.LOW) low else high
+        return spec.lipCuts.mapNotNull { face.toLocal(it) }
     }
 
     /**
@@ -2898,6 +3019,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lipEngagementOverrideMm = spec.lipEngagementMm ?: state.snapLipEngagementMm,
             lipToothHeightOverrideMm = spec.lipToothHeightMm ?: state.snapLipToothHeightMm,
             lipWallOverrideMm = spec.lipWallMm ?: state.snapLipWallMm,
+            lipCutWidthOverrideMm = spec.lipCutWidthMm ?: state.snapLipCutWidthMm,
             lipRecessExtraOverrideMm = spec.lipRecessExtraMm ?: state.snapLipDepthMm,
         ).tightenedBy(spec.tightness.stepMm)
 
@@ -2937,6 +3059,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     parameters = parameters,
                     requested = if (fullJoint) SnapFitRung.FULL else null,
                     style = spec.style,
+                    cuts = if (spec.style == SnapJointStyle.WALL_LIP) {
+                        cutsFor(spec, state, ready.lowHalf, ready.highHalf)
+                    } else {
+                        emptyList()
+                    },
                 )
             ) {
                 is SnapJoint.Either.Placed -> result.placement
@@ -2992,6 +3119,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     continue
                 }
+                // The cuts come last: a slit taken before the tooth was unioned on
+                // would be bridged by the tooth standing over it, and the wall
+                // would go on being one piece.
+                val cut = joint.cutSolid
+                val slitted: MeshBoolean.Result = if (cut == null || cut.triangleCount == 0) {
+                    toothed
+                } else {
+                    engine.subtract(toothed.mesh, cut)
+                }
+                if (slitted !is MeshBoolean.Result.Success) {
+                    failed += SnapJointFailure(
+                        index,
+                        "could not have its cuts taken out: " +
+                            (slitted as MeshBoolean.Result.Failure).reason,
+                    )
+                    continue
+                }
                 val ledged = engine.union(contoured.socketMesh, joint.registrationSolid)
                 if (ledged !is MeshBoolean.Result.Success) {
                     failed += SnapJointFailure(
@@ -3001,7 +3145,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     continue
                 }
-                beamGain = toothed.volumeMm3 - hollowed.volumeMm3
+                beamGain = slitted.volumeMm3 - hollowed.volumeMm3
                 // How much of the mate the ledge really holds on to, and how much of
                 // it stands out in the open: a ledge unioned into thin air is a
                 // floating block, and one that shares nothing with the mate is worse.
@@ -3044,11 +3188,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val toothIsLow = contoured.beamMesh === lowRunning.mesh
                 built += index to contoured
                 if (toothIsLow) {
-                    lowMesh = toothed.mesh
+                    lowMesh = slitted.mesh
                     highMesh = ledged.mesh
                 } else {
                     lowMesh = ledged.mesh
-                    highMesh = toothed.mesh
+                    highMesh = slitted.mesh
                 }
                 placed += SnapPlacedJoint(
                     spec = spec,

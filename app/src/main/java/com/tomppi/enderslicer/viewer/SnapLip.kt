@@ -128,6 +128,15 @@ object SnapLip {
         lipHalf: SnapFitHalf,
         mateHalf: SnapFitHalf,
         parameters: SnapFitParameters = SnapFitParameters(),
+        /**
+         * Where the user cut the ring, in the two halves' own coordinates: each
+         * is dropped onto the nearest point of the seam's contour and a slit the
+         * cut width wide is taken out of the LIP half there, through the wall and
+         * the tooth that stands on it. The ring stops being a closed O and
+         * becomes that many arcs, which is what gives the wall an end to bend
+         * from. Empty is the joint exactly as it was.
+         */
+        cuts: List<Vec3> = emptyList(),
     ): Outcome {
         if (!axis.isFinite() || !anchorMm.isFinite() || !scale.isFinite() || scale <= 0f) {
             return Outcome.Refused("cannot be built: the split's axis or the tap is not a real place.")
@@ -417,6 +426,100 @@ object SnapLip {
         val ledge = ringMesh(LEDGE_NAME, wallFace, direction, side, rise, origin, ledgeProfile)
             ?: return Outcome.Refused("cannot be built: the ledge ring folds through itself on this edge.")
 
+        // ------------------------------------------------------------- the cuts
+        // A cut is a slit straight through the lip half's ring: the wall's own
+        // material and the tooth standing on it, from the mating face down to the
+        // recess floor and through the wall's whole thickness. The mate is not
+        // touched - its ledge is on solid material and is not what flexes. A
+        // closed ring is the stiffest shape there is; each cut gives the wall a
+        // free end, and that is the whole point of them.
+        val cutWidth = parameters.lipCutWidthOverrideMm ?: parameters.lipCutWidthMm * scale
+        if (!cutWidth.isFinite() || cutWidth <= 0f) {
+            return Outcome.Refused("cannot be built: the cut's width must be a positive number.")
+        }
+        val ringLength = perimeterOf(wallFace)
+        val placed = ArrayList<CutPlacement>()
+        val cutFaces = ArrayList<Array<Vec3>>()
+        var cutCount = 0
+        if (cuts.isNotEmpty()) {
+            for (cut in cuts) {
+                if (!cut.isFinite()) {
+                    return Outcome.Refused("cannot be built: one of the cuts is not a real place.")
+                }
+                val local = P2((cut - origin).dot(side), (cut - origin).dot(rise))
+                val placement = nearestOnRing(wallFace, local, cutWidth * 0.5f)
+                    ?: return Outcome.Refused(
+                        "cannot be built: a cut is not on the seam's own edge, so there is nothing " +
+                            "there to cut.",
+                    )
+                placed += placement
+            }
+            placed.sortBy { it.distanceMm }
+            // A cut that does nothing, or one that leaves nothing: within one slit
+            // width of its neighbour, or on a stretch too short to hold the slit
+            // and a little wall either side of it.
+            for (at in placed.indices) {
+                val here = placed[at]
+                val next = placed[(at + 1) % placed.size]
+                val gap = if (at == placed.size - 1) {
+                    ringLength - here.distanceMm + next.distanceMm
+                } else {
+                    next.distanceMm - here.distanceMm
+                }
+                if (gap < cutWidth - CLAMP_EPSILON_MM) {
+                    return Outcome.Refused(
+                        "cannot be built: two cuts are " + millimetres(gap) + " mm apart along the " +
+                            "seam and a " + millimetres(cutWidth) + " mm slit needs at least that " +
+                            "much room between them. Move one of them, or make the cut narrower.",
+                    )
+                }
+                if (gap - cutWidth < 2f * MIN_WALL_RUN_MM) {
+                    return Outcome.Refused(
+                        "cannot be built: the stretch of wall between two cuts is " + millimetres(gap) +
+                            " mm, and a " + millimetres(cutWidth) + " mm slit leaves only " +
+                            millimetres(max(0f, gap - cutWidth)) + " mm of wall there - under the " +
+                            millimetres(2f * MIN_WALL_RUN_MM) + " mm two ends need to stand. Move a " +
+                            "cut, or make the cut narrower.",
+                    )
+                }
+            }
+            for (placement in placed) {
+                addCutSlit(
+                    faces = cutFaces,
+                    placement = placement,
+                    width = cutWidth,
+                    axis = direction,
+                    side = side,
+                    rise = rise,
+                    origin = origin,
+                    recessDepth = recessDepth,
+                    plugOuter = plugOuter,
+                    wall = wall,
+                )
+            }
+            cutCount = placed.size
+        }
+        val arcs = if (cutCount == 0) 1 else cutCount
+        var shortestRun = ringLength
+        var longestRun = 0f
+        if (cutCount == 0) {
+            shortestRun = ringLength
+            longestRun = ringLength
+        } else {
+            for (at in placed.indices) {
+                val here = placed[at]
+                val next = placed[(at + 1) % placed.size]
+                val gap = if (at == placed.size - 1) {
+                    ringLength - here.distanceMm + next.distanceMm
+                } else {
+                    next.distanceMm - here.distanceMm
+                }
+                val run = max(0f, gap - cutWidth)
+                shortestRun = min(shortestRun, run)
+                longestRun = max(longestRun, run)
+            }
+        }
+
         val dimensions = SnapFitDimensions(
             style = SnapJointStyle.WALL_LIP,
             scale = scale,
@@ -467,9 +570,14 @@ object SnapLip {
             lipDepthExtraMm = extra,
             // The hooks run on the wall's face, not on the part's outer edge: the
             // ring's own length is the contour the tooth stands on.
-            lipRingMm = perimeterOf(wallFace),
+            lipRingMm = ringLength,
             lipSamples = samples.size,
             lipWorstAtMm = reading.maxStrainAtMm,
+            lipCutWidthMm = cutWidth,
+            lipCuts = cutCount,
+            lipArcs = arcs,
+            lipShortestRunMm = shortestRun,
+            lipLongestRunMm = longestRun,
         )
         val frame = SnapFitFrame(origin, direction, side, rise, origin.dot(direction))
         return Outcome.Built(
@@ -478,6 +586,16 @@ object SnapLip {
                 subtractSolid = SnapFit.placeOnPlate(recess, lipHalf, RECESS_NAME),
                 registrationSolid = SnapFit.placeOnPlate(ledge, mateHalf, LEDGE_NAME),
                 registrationRecess = MeshSolidBuilder(LEDGE_NAME).build(),
+                // The slits are cut after the tooth is unioned on: a cut taken
+                // before it would be bridged by the tooth standing over it.
+                cutSolid = if (cutCount == 0) {
+                    null
+                } else {
+                    SnapFit.placeOnPlate(cutSolidOf(cutFaces) ?: return Outcome.Refused(
+                        "cannot be built: the cuts came out inside-out and would add material " +
+                            "instead of taking it away.",
+                    ), lipHalf, CUT_NAME)
+                },
                 frame = SnapFit.placeFrame(lipHalf, frame),
                 socketFrame = SnapFit.placeFrame(mateHalf, frame),
                 dimensions = dimensions,
@@ -674,6 +792,152 @@ object SnapLip {
         val low = edges.last { it < seed }
         val high = edges.firstOrNull { it > seed } ?: return null
         return low..high
+    }
+
+    /**
+     * The seam contour's own corners, in the halves' own coordinates: what the
+     * every-bend action cuts. They are the outer edge's corners, and each one
+     * lands on the wall's face at the same bend when the cut is dropped onto the
+     * ring.
+     */
+    fun bendPoints(
+        axis: Vec3,
+        anchorMm: Vec3,
+        scale: Float,
+        lipHalf: SnapFitHalf,
+        mateHalf: SnapFitHalf,
+        parameters: SnapFitParameters = SnapFitParameters(),
+    ): List<Vec3> {
+        if (!axis.isFinite() || !anchorMm.isFinite() || scale <= 0f) return emptyList()
+        if (lipHalf.mesh.triangleCount <= 0 || mateHalf.mesh.triangleCount <= 0) return emptyList()
+        val direction = axis.normalized() ?: return emptyList()
+        val face = lipHalf.faceMm
+        val side = perpendicularTo(direction)
+        val rise = direction.cross(side)
+        val origin = anchorMm - direction * (anchorMm.dot(direction) - face)
+        val cap = SnapFit.capTriangles(lipHalf, direction, side, rise, face, origin)
+        if (cap.isEmpty()) return emptyList()
+        val contour = SnapFit.capOutlines(cap)
+            .map { counterClockwise(it) }
+            .filter { it.size >= 3 }
+            .maxByOrNull { abs(polygonArea(it)) }
+            ?: return emptyList()
+        return contour.map { origin + side * it.x + rise * it.y }
+    }
+
+    /** The slits as one mesh of separate closed boxes, wound outward. */
+    private fun cutSolidOf(faces: List<Array<Vec3>>): StlMesh? {
+        if (faces.isEmpty()) return null
+        var sixTimesVolume = 0f
+        for (face in faces) sixTimesVolume += face[0].dot(face[1].cross(face[2]))
+        val builder = MeshSolidBuilder(CUT_NAME)
+        for (face in faces) {
+            val a = face[0]
+            val b = if (sixTimesVolume >= 0f) face[1] else face[2]
+            val c = if (sixTimesVolume >= 0f) face[2] else face[1]
+            builder.addTriangle(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z)
+        }
+        return builder.build()
+    }
+
+    /** Where a cut landed on the ring: how far along it, and the direction there. */
+    private class CutPlacement(
+        /** Millimetres along the closed contour from its first point. */
+        val distanceMm: Float,
+        val point: P2,
+        /** The contour's direction where the slit is taken, corner bisector included. */
+        val along: P2,
+    )
+
+    /**
+     * The nearest point of the closed contour to [local], with the direction the
+     * slit is taken in there. A cut dropped on a bend is taken across the bend's
+     * own bisector rather than along one of its sides, so it cuts the corner and
+     * not the wall beside it.
+     */
+    private fun nearestOnRing(contour: List<P2>, local: P2, bisectorMm: Float): CutPlacement? {
+        var best: CutPlacement? = null
+        var bestDistance = Float.MAX_VALUE
+        var travelled = 0f
+        for (at in contour.indices) {
+            val here = contour[at]
+            val next = contour[(at + 1) % contour.size]
+            val edge = next - here
+            val length = edge.length
+            if (length < WELD_MM) continue
+            val unit = edge * (1f / length)
+            val along = if (travelled + length <= WELD_MM) unit else unit
+            val t = ((local - here).dot(unit)).coerceIn(0f, length)
+            val point = here + unit * t
+            val distance = (local - point).length
+            if (distance < bestDistance) {
+                bestDistance = distance
+                val corner = t < bisectorMm || t > length - bisectorMm
+                val direction = if (corner) {
+                    val previous = contour[(at + contour.size - 1) % contour.size]
+                    val inEdge = (here - previous).unit()
+                    val bisector = if (inEdge == null) null else (inEdge + unit).unit()
+                    // Two opposite edges make a straight run: the bisector has no
+                    // length there and the edge's own direction is the cut's.
+                    bisector ?: along
+                } else {
+                    unit
+                }
+                best = CutPlacement(travelled + t, point, direction)
+            }
+            travelled += length
+        }
+        return best
+    }
+
+    /**
+     * One slit, as a box in the cut's own frame: [width] across the contour,
+     * through the wall and past the tooth's tip, and from a hair above the mating
+     * face down past the recess floor. Several cuts in one builder are separate
+     * closed boxes - the refusals keep them apart - which the engine subtracts in
+     * one go.
+     */
+    private fun addCutSlit(
+        faces: MutableList<Array<Vec3>>,
+        placement: CutPlacement,
+        width: Float,
+        axis: Vec3,
+        side: Vec3,
+        rise: Vec3,
+        origin: Vec3,
+        recessDepth: Float,
+        plugOuter: Float,
+        wall: Float,
+    ) {
+        val along = side * placement.along.x + rise * placement.along.y
+        val inward = side * (-placement.along.y) + rise * placement.along.x
+        val centre = origin + side * placement.point.x + rise * placement.point.y
+        val half = width * 0.5f
+        val outer = -(wall + CUT_MARGIN_MM)
+        val inner = plugOuter + CUT_MARGIN_MM
+        val top = RECESS_OVER_MM
+        val bottom = -(recessDepth + CUT_MARGIN_MM)
+        val corners = ArrayList<Vec3>(8)
+        for (z in listOf(bottom, top)) {
+            for (y in listOf(outer, inner)) {
+                for (x in listOf(-half, half)) {
+                    corners += centre + along * x + inward * y + axis * z
+                }
+            }
+        }
+        fun corner(z: Int, y: Int, x: Int): Vec3 = corners[(z * 2 + y) * 2 + x]
+        val quads = listOf(
+            listOf(corner(0, 0, 0), corner(0, 1, 0), corner(0, 1, 1), corner(0, 0, 1)),
+            listOf(corner(1, 0, 0), corner(1, 0, 1), corner(1, 1, 1), corner(1, 1, 0)),
+            listOf(corner(0, 0, 0), corner(0, 0, 1), corner(1, 0, 1), corner(1, 0, 0)),
+            listOf(corner(0, 1, 0), corner(1, 1, 0), corner(1, 1, 1), corner(0, 1, 1)),
+            listOf(corner(0, 0, 0), corner(1, 0, 0), corner(1, 1, 0), corner(0, 1, 0)),
+            listOf(corner(0, 0, 1), corner(0, 1, 1), corner(1, 1, 1), corner(1, 0, 1)),
+        )
+        for (quad in quads) {
+            faces += arrayOf(quad[0], quad[1], quad[2])
+            faces += arrayOf(quad[0], quad[2], quad[3])
+        }
     }
 
     /**
@@ -1211,6 +1475,7 @@ object SnapLip {
         String.format(java.util.Locale.ROOT, "%.1f%%", value)
 
     private const val TOOTH_NAME = "wall lip tooth"
+    private const val CUT_NAME = "wall lip cut"
     private const val RECESS_NAME = "wall lip recess"
     private const val LEDGE_NAME = "wall lip ledge"
     private const val PLANE_TOLERANCE_MM = 1e-3f
@@ -1278,6 +1543,12 @@ object SnapLip {
 
     /** Edges shorter than this are cut slivers, not walls, and carry no samples. */
     private const val MIN_RING_EDGE_MM = 1f
+
+    /** How much wall a cut has to leave standing either side of itself. */
+    private const val MIN_WALL_RUN_MM = 0.5f
+
+    /** How far past the wall and the recess floor a slit reaches, so it cuts clean through. */
+    private const val CUT_MARGIN_MM = 0.3f
 
     /** Two contour corners this close are the same corner. */
     private const val WELD_MM = 5e-3f

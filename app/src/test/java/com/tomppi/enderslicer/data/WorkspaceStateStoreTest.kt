@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.data
 
+import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.viewer.SnapFacing
@@ -456,6 +457,8 @@ class WorkspaceStateStoreTest {
                             lipToothHeightMm = 2.2f,
                             lipWallMm = 1.4f,
                             lipRecessExtraMm = 3.3f,
+                            lipCutWidthMm = 0.9f,
+                            lipCuts = listOf(Vec3(1f, 2f, 3f), Vec3(4f, 5f, 6f)),
                         ),
                     ),
                 ),
@@ -477,6 +480,12 @@ class WorkspaceStateStoreTest {
         assertEquals("and how far its recess goes past the step", 3.3f, pair.joints[1].lipRecessExtraMm!!, 1e-4f)
         assertFalse("a cantilever joint writes no wall either", joints.getJSONObject(0).has("lipWallMm"))
         assertFalse("nor a depth", joints.getJSONObject(0).has("lipRecessExtraMm"))
+        assertEquals("the width of a cut", 0.9f, pair.joints[1].lipCutWidthMm!!, 1e-4f)
+        assertEquals("and the cuts themselves", 2, pair.joints[1].lipCuts.size)
+        assertEquals(1f, pair.joints[1].lipCuts[0].x, 1e-4f)
+        assertEquals(6f, pair.joints[1].lipCuts[1].z, 1e-4f)
+        assertFalse("a cantilever writes no cut width", joints.getJSONObject(0).has("lipCutWidthMm"))
+        assertFalse("and no cuts", joints.getJSONObject(0).has("lipCuts"))
 
         // A build that wrote a style this one does not know must not cost the joint.
         joints.getJSONObject(1).put("style", "SOMETHING_ELSE")

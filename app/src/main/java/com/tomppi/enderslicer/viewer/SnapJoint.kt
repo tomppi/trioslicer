@@ -84,6 +84,11 @@ object SnapJoint {
          * material fails one of them, rather than dropping to another style.
          */
         style: SnapJointStyle = SnapJointStyle.CANTILEVER,
+        /**
+         * The wall lip's cuts, in the halves' own coordinates: slits through the
+         * lip half's ring where the user tapped. Empty for every other joint.
+         */
+        cuts: List<Vec3> = emptyList(),
     ): Either {
         val axisDirection = SnapFit.axisDirection(axis)
         // The two halves meet when their own mating faces agree: each carries
@@ -99,12 +104,12 @@ object SnapJoint {
                 ),
             )
         }
-        val chosen = join(axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style)
+        val chosen = join(axisDirection, beamHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style, cuts)
         if (chosen is Attempt.Built) {
             return Either.Placed(placementOf(chosen.joint, lowHalf, highHalf, beamHalf, true))
         }
         val otherHalf = if (beamHalf == JointHalf.LOW) JointHalf.HIGH else JointHalf.LOW
-        val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style)
+        val flipped = join(axisDirection, otherHalf, anchorMm, scale, lowHalf, highHalf, parameters, requested, style, cuts)
         if (flipped is Attempt.Built) {
             // Which half the sentence names. The chosen round roots the beam in the chosen
             // half and reaches into the mate, so the material can refuse it in two places:
@@ -167,6 +172,7 @@ object SnapJoint {
         parameters: SnapFitParameters,
         requested: SnapFitRung?,
         style: SnapJointStyle,
+        cuts: List<Vec3>,
     ): Attempt {
         val forward = beamHalf == JointHalf.LOW
         val sign = if (forward) 1f else -1f
@@ -194,6 +200,7 @@ object SnapJoint {
                     lipHalf = beamFit,
                     mateHalf = socketFit,
                     parameters = parameters,
+                    cuts = cuts,
                 )
             ) {
                 is SnapLip.Outcome.Built -> Attempt.Built(lip.joint)

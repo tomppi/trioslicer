@@ -8,6 +8,7 @@ import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapJoint
 import com.tomppi.enderslicer.viewer.SnapJointStyle
 import com.tomppi.enderslicer.viewer.SnapTightness
+import com.tomppi.enderslicer.viewer.Vec3
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -97,6 +98,9 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             val lipToothHeightMm: Float? = null,
             val lipWallMm: Float? = null,
             val lipRecessExtraMm: Float? = null,
+            val lipCutWidthMm: Float? = null,
+            /** The cuts in the pair's own assembled frame, which the plate cannot move. */
+            val lipCuts: List<Vec3> = emptyList(),
         )
     }
 
@@ -297,6 +301,24 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                                                 joint.lipToothHeightMm?.let { put("lipToothHeightMm", it.toDouble()) }
                                                 joint.lipWallMm?.let { put("lipWallMm", it.toDouble()) }
                                                 joint.lipRecessExtraMm?.let { put("lipRecessExtraMm", it.toDouble()) }
+                                                joint.lipCutWidthMm?.let { put("lipCutWidthMm", it.toDouble()) }
+                                                // Only when there are cuts, so a lip that
+                                                // has none keeps the byte shape it had.
+                                                if (joint.lipCuts.isNotEmpty()) {
+                                                    put(
+                                                        "lipCuts",
+                                                        JSONArray().apply {
+                                                            for (cut in joint.lipCuts) {
+                                                                put(
+                                                                    JSONObject()
+                                                                        .put("x", cut.x.toDouble())
+                                                                        .put("y", cut.y.toDouble())
+                                                                        .put("z", cut.z.toDouble()),
+                                                                )
+                                                            }
+                                                        },
+                                                    )
+                                                }
                                             },
                                     )
                                 }
@@ -443,6 +465,18 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         // was.
         lipWallMm = json.optDouble("lipWallMm").takeIf { it.isFinite() }?.toFloat(),
         lipRecessExtraMm = json.optDouble("lipRecessExtraMm").takeIf { it.isFinite() }?.toFloat(),
+        // The cuts and their width: a record written before they existed simply
+        // has none, which is the uncut ring it was.
+        lipCutWidthMm = json.optDouble("lipCutWidthMm").takeIf { it.isFinite() }?.toFloat(),
+        lipCuts = json.optJSONArray("lipCuts")?.let { array ->
+            (0 until array.length()).mapNotNull { at ->
+                val cut = array.optJSONObject(at) ?: return@mapNotNull null
+                val x = cut.optDouble("x").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+                val y = cut.optDouble("y").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+                val z = cut.optDouble("z").takeIf { it.isFinite() }?.toFloat() ?: return@mapNotNull null
+                Vec3(x, y, z)
+            }
+        }.orEmpty(),
     )
 
     private fun encodePlacement(placement: ModelPlacement): JSONObject = JSONObject()

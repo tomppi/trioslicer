@@ -222,6 +222,9 @@ data class MainUiState(
     /** The wall the lip's ring leaves, and how far its recess goes past the step. */
     val snapLipWallMm: Float? = null,
     val snapLipDepthMm: Float? = null,
+    /** How wide a slit a cut takes out of the lip's ring, and whether one is armed. */
+    val snapLipCutWidthMm: Float? = null,
+    val snapCuttingWall: Boolean = false,
     /** True when every joint's socket mouth is chamfered: the lead-in in the hole. */
     val snapSocketRamp: Boolean = false,
     /** One control for the whole joint: every dimension and clearance scales with it. */
@@ -642,6 +645,12 @@ data class MainUiState(
                 lipToothHeightMm = joint.lipToothHeightMm,
                 lipWallMm = joint.lipWallMm,
                 lipRecessExtraMm = joint.lipRecessExtraMm,
+                lipCutWidthMm = joint.lipCutWidthMm,
+                // The cuts live on the half the tooth is in, and the record keeps
+                // them in the pair's own frame: they come back on the plate.
+                lipCuts = joint.lipCuts.map { cut ->
+                    (if (joint.beamHalf == SnapJoint.JointHalf.LOW) lowFit else highFit).toPlate(cut)
+                },
             )
         }
     }

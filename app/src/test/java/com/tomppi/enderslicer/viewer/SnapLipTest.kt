@@ -56,6 +56,7 @@ class SnapLipTest {
         lip: StlMesh,
         mate: StlMesh,
         parameters: SnapFitParameters = SnapFitParameters(),
+        cuts: List<Vec3> = emptyList(),
     ): SnapLip.Outcome = SnapLip.buildRing(
         axis = Vec3(0f, 0f, 1f),
         anchorMm = Vec3(20f, 20f, seam),
@@ -63,6 +64,7 @@ class SnapLipTest {
         lipHalf = SnapFitHalf.inPlace(lip, seam),
         mateHalf = SnapFitHalf.inPlace(mate, seam),
         parameters = parameters,
+        cuts = cuts,
     )
 
     private fun built(
@@ -339,6 +341,150 @@ class SnapLipTest {
         check(reason.contains("before a wall is left under the band")) { reason }
     }
 
+    /** The connected pieces of a mesh: how many arcs a cut left the ring in. */
+    private fun pieces(mesh: StlMesh): Int {
+        val parent = HashMap<Int, Int>()
+        fun find(a: Int): Int {
+            var at = a
+            while (parent[at] != at) {
+                parent[at] = parent[parent[at]]!!
+                at = parent[at]!!
+            }
+            return at
+        }
+        fun union(a: Int, b: Int) {
+            val ra = find(a)
+            val rb = find(b)
+            if (ra != rb) parent[ra] = rb
+        }
+        val stride = MeshSolidBuilder.FLOATS_PER_VERTEX
+        val welded = HashMap<String, Int>()
+        val vertices = mesh.interleavedVertices
+        for (triangle in 0 until mesh.triangleCount) {
+            val ids = (0 until 3).map { corner ->
+                val at = triangle * MeshSolidBuilder.FLOATS_PER_TRIANGLE + corner * stride
+                val key = "%.3f,%.3f,%.3f".format(vertices[at], vertices[at + 1], vertices[at + 2])
+                welded.getOrPut(key) { welded.size }
+            }
+            ids.forEach { if (!parent.containsKey(it)) parent[it] = it }
+            union(ids[0], ids[1])
+            union(ids[1], ids[2])
+        }
+        return parent.keys.map { find(it) }.toSet().size
+    }
+
+    @Test
+    fun aCutReallyPartsTheRingAndTheGapIsTheCutWidth() {
+        assumeTrue(MeshBoolean.ensureLoaded())
+        // The ring's flat holding face runs the whole way round, so a cut takes
+        // exactly one slit's worth of it out, and the ring is in two pieces after.
+        val whole = built()
+        check(whole.cutSolid == null) { "an uncut ring carries a cut" }
+        check(pieces(whole.unionSolid) == 1) { "an uncut ring came out in pieces" }
+        val width = 0.8f
+        val outcome = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = width),
+            cuts = listOf(Vec3(20f, 0f, seam)),
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        val joint = (outcome as SnapLip.Outcome.Built).joint
+        check(joint.dimensions.lipCuts == 1) { "the cut was not counted" }
+        // One cut opens a closed ring into one arc: the ring is no longer closed,
+        // which is the whole point - the wall has an end to bend from.
+        check(joint.dimensions.lipArcs == 1) { "one cut left " + joint.dimensions.lipArcs + " arcs" }
+        val cut = requireNotNull(joint.cutSolid) { "the cut solid went missing" }
+        // One slit is one box: twelve triangles, as wide as the cut, and through
+        // the wall and past the recess floor.
+        check(cut.triangleCount == 12) { "one cut came out as " + cut.triangleCount + " triangles" }
+        val across = cut.bounds.maxX - cut.bounds.minX
+        check(abs(across - width) < 0.02f) { "a " + width + " mm cut measured " + across + " mm wide" }
+        check(cut.bounds.maxZ - cut.bounds.minZ > joint.dimensions.lipRecessMm) {
+            "the slit does not reach past the recess floor"
+        }
+        check(cut.bounds.maxY - cut.bounds.minY > joint.dimensions.wallThicknessMm) {
+            "the slit does not reach through the wall"
+        }
+    }
+
+    @Test
+    fun cuttingEveryBendPutsOneCutOnEachCorner() {
+        val bends = SnapLip.bendPoints(
+            axis = Vec3(0f, 0f, 1f),
+            anchorMm = Vec3(15f, 15f, seam),
+            scale = 1f,
+            lipHalf = SnapFitHalf.inPlace(block(size = 30f), seam),
+            mateHalf = SnapFitHalf.inPlace(solidHalf(size = 30f), seam),
+        )
+        check(bends.size == 4) { "a square contour has " + bends.size + " bends" }
+        val outcome = build(
+            block(size = 30f),
+            solidHalf(size = 30f),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = 0.6f),
+            cuts = bends,
+        )
+        check(outcome is SnapLip.Outcome.Built) { "refused: " + (outcome as? SnapLip.Outcome.Refused)?.reason }
+        val joint = (outcome as SnapLip.Outcome.Built).joint
+        check(joint.dimensions.lipCuts == 4) { joint.dimensions.lipCuts.toString() + " cuts for four bends" }
+        check(joint.dimensions.lipArcs == 4) { "four cuts left " + joint.dimensions.lipArcs + " arcs" }
+        val cut = requireNotNull(joint.cutSolid) { "the cuts went missing" }
+        check(cut.triangleCount == 48) { "four cuts came out as " + cut.triangleCount + " triangles" }
+        // One slit per side of the square, each a cut width long, and the wall
+        // that is left runs the side less the slit.
+        // The hooks run on the wall's face, so a side is the block's own side less
+        // the wall at each end, and the wall left on it is that less one slit.
+        val side = joint.dimensions.lipRingMm / 4f
+        check(abs(joint.dimensions.lipShortestRunMm - (side - 0.6f)) < 1f) {
+            "the shortest run is " + joint.dimensions.lipShortestRunMm + " mm on a " + side + " mm side"
+        }
+        check(abs(joint.dimensions.lipShortestRunMm - joint.dimensions.lipLongestRunMm) < 0.5f) {
+            "the runs are " + joint.dimensions.lipShortestRunMm + " to " + joint.dimensions.lipLongestRunMm
+        }
+    }
+
+    @Test
+    fun aCutThatWouldDoNothingIsRefusedWithItsNumbers() {
+        val outcome = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = 0.6f),
+            cuts = listOf(Vec3(20f, 0f, seam), Vec3(20.2f, 0f, seam)),
+        )
+        check(outcome is SnapLip.Outcome.Refused) { "two cuts on top of each other were built" }
+        val reason = (outcome as SnapLip.Outcome.Refused).reason
+        check(reason.contains("0.2 mm apart")) { reason }
+        check(reason.contains("0.6 mm slit")) { reason }
+    }
+
+    @Test
+    fun aCutThatWouldLeaveNoWallIsRefusedWithItsNumbers() {
+        // A 2 mm slit every 3 mm round a 120 mm contour leaves a millimetre of
+        // wall between them, and two ends need a millimetre between them.
+        // Fifty slits 2 mm wide: 2.4 mm apart on the ring, so each leaves 0.4 mm
+        // of wall where two ends need a millimetre between them.
+        val side = 40f - 2f * 2f
+        val cuts = (0 until 50).map { step ->
+            val along = 4f * side * step / 50f
+            when {
+                along < side -> Vec3(2f + along, 2f, seam)
+                along < 2f * side -> Vec3(2f + side, 2f + (along - side), seam)
+                along < 3f * side -> Vec3(2f + side - (along - 2f * side), 2f + side, seam)
+                else -> Vec3(2f, 2f + side - (along - 3f * side), seam)
+            }
+        }
+        val outcome = build(
+            block(),
+            solidHalf(),
+            SnapFitParameters(lipWallOverrideMm = 2f, lipCutWidthOverrideMm = 2f),
+            cuts = cuts,
+        )
+        check(outcome is SnapLip.Outcome.Refused) { "cuts that leave no wall were built" }
+        val reason = (outcome as SnapLip.Outcome.Refused).reason
+        check(reason.contains("stretch of wall between two cuts")) { reason }
+        check(reason.contains(" mm")) { reason }
+    }
+
     @Test
     fun theDefaultsAreTheJointItHasAlwaysBeen() {
         // Wall 2.00 and Depth 0.00 are the joint as it was before either control
@@ -351,6 +497,8 @@ class SnapLipTest {
                 " recessDepth=" + joint.dimensions.lipRecessMm + " wall=" + joint.dimensions.wallThicknessMm,
         )
         check(abs(joint.dimensions.lipDepthExtraMm) < 0.001f) { "the default depth is not zero" }
+        check(joint.dimensions.lipCuts == 0 && joint.dimensions.lipArcs == 1) { "an uncut ring is not one ring" }
+        check(joint.cutSolid == null) { "an uncut joint carries a cut solid" }
         check(abs(joint.dimensions.lipWallAskedMm - 2f) < 0.001f) { "the default wall is not 2.00 mm" }
         // The solids themselves, to the triangle and the cubic millimetre: the
         // numbers the build produced before either control existed.
