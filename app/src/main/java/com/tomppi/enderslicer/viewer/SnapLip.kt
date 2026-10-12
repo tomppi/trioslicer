@@ -195,6 +195,7 @@ object SnapLip {
                     "band. Use the cantilever here.",
             )
         }
+        val cutDepthAsked = parameters.lipCutDepthMm
         val extra = min(extraAsked, maxExtra)
         val recessDepth = stepAndClearance + extra
         if (extraAsked > maxExtra + CLAMP_EPSILON_MM) {
@@ -437,6 +438,13 @@ object SnapLip {
         if (!cutWidth.isFinite() || cutWidth <= 0f) {
             return Outcome.Refused("cannot be built: the cut's width must be a positive number.")
         }
+        // How far below the mating face the slits run: through the whole band by
+        // default, and never less than a slit that severs the wall.
+        val cutDepth = if (cutDepthAsked == null || !cutDepthAsked.isFinite()) {
+            recessDepth + CUT_MARGIN_MM
+        } else {
+            max(cutDepthAsked, wall + CUT_MARGIN_MM)
+        }
         val ringLength = perimeterOf(wallFace)
         val placed = ArrayList<CutPlacement>()
         val cutFaces = ArrayList<Array<Vec3>>()
@@ -492,8 +500,11 @@ object SnapLip {
                     side = side,
                     rise = rise,
                     origin = origin,
-                    recessDepth = recessDepth,
-                    plugOuter = plugOuter,
+                    cutDepth = cutDepth,
+                    // The slit reaches the tooth's own tip and no further inboard:
+                    // it cuts the wall and what stands on it, never the material
+                    // behind them. The mate is a different half and is never cut.
+                    innerMm = tip + clearance + CUT_MARGIN_MM,
                     wall = wall,
                 )
             }
@@ -574,6 +585,7 @@ object SnapLip {
             lipSamples = samples.size,
             lipWorstAtMm = reading.maxStrainAtMm,
             lipCutWidthMm = cutWidth,
+            lipCutDepthMm = cutDepth,
             lipCuts = cutCount,
             lipArcs = arcs,
             lipShortestRunMm = shortestRun,
@@ -866,28 +878,50 @@ object SnapLip {
             val length = edge.length
             if (length < WELD_MM) continue
             val unit = edge * (1f / length)
-            val along = if (travelled + length <= WELD_MM) unit else unit
             val t = ((local - here).dot(unit)).coerceIn(0f, length)
             val point = here + unit * t
             val distance = (local - point).length
             if (distance < bestDistance) {
                 bestDistance = distance
-                val corner = t < bisectorMm || t > length - bisectorMm
-                val direction = if (corner) {
-                    val previous = contour[(at + contour.size - 1) % contour.size]
-                    val inEdge = (here - previous).unit()
-                    val bisector = if (inEdge == null) null else (inEdge + unit).unit()
-                    // Two opposite edges make a straight run: the bisector has no
-                    // length there and the edge's own direction is the cut's.
-                    bisector ?: along
-                } else {
-                    unit
-                }
-                best = CutPlacement(travelled + t, point, direction)
+                best = CutPlacement(travelled + t, point, bendDirection(contour, at, unit, point, bisectorMm))
             }
             travelled += length
         }
         return best
+    }
+
+    /**
+     * The direction the slit is taken in where [point] landed on the edge that
+     * starts at [at]: ALONG the contour on a straight run, and across the bend's
+     * own bisector at a bend, so the slit separates the two segments either side
+     * of it rather than grooving the band's length.
+     *
+     * A bend is found by the TURN between the two edges that meet at a vertex,
+     * not by how close the point is to that vertex: a boolean engine's outline
+     * carries slivers - an extra vertex halfway along a straight run - and a
+     * corner test by distance alone takes the slit's direction from the sliver's
+     * own tangent, which lies along the wall and leaves the ring joined.
+     */
+    private fun bendDirection(
+        contour: List<P2>,
+        at: Int,
+        unit: P2,
+        point: P2,
+        reachMm: Float,
+    ): P2 {
+        for (vertex in intArrayOf(at, (at + 1) % contour.size)) {
+            val here = contour[vertex]
+            if ((point - here).length > BEND_REACH_MM) continue
+            val previous = contour[(vertex + contour.size - 1) % contour.size]
+            val next = contour[(vertex + 1) % contour.size]
+            val inEdge = (here - previous).unit() ?: continue
+            val outEdge = (next - here).unit() ?: continue
+            val turn = kotlin.math.abs(kotlin.math.atan2(inEdge.cross(outEdge).toDouble(), inEdge.dot(outEdge).toDouble()))
+            if (turn < BEND_MIN_RADIANS) continue
+            val bisector = (inEdge + outEdge).unit() ?: continue
+            return bisector
+        }
+        return unit
     }
 
     /**
@@ -905,8 +939,8 @@ object SnapLip {
         side: Vec3,
         rise: Vec3,
         origin: Vec3,
-        recessDepth: Float,
-        plugOuter: Float,
+        cutDepth: Float,
+        innerMm: Float,
         wall: Float,
     ) {
         val along = side * placement.along.x + rise * placement.along.y
@@ -914,9 +948,9 @@ object SnapLip {
         val centre = origin + side * placement.point.x + rise * placement.point.y
         val half = width * 0.5f
         val outer = -(wall + CUT_MARGIN_MM)
-        val inner = plugOuter + CUT_MARGIN_MM
+        val inner = innerMm
         val top = RECESS_OVER_MM
-        val bottom = -(recessDepth + CUT_MARGIN_MM)
+        val bottom = -cutDepth
         val corners = ArrayList<Vec3>(8)
         for (z in listOf(bottom, top)) {
             for (y in listOf(outer, inner)) {
@@ -1549,6 +1583,12 @@ object SnapLip {
 
     /** How far past the wall and the recess floor a slit reaches, so it cuts clean through. */
     private const val CUT_MARGIN_MM = 0.3f
+
+    /** How near a bend the slit takes its direction from the bend's own bisector. */
+    private const val BEND_REACH_MM = 1.2f
+
+    /** How sharp a turn has to be to be a bend and not a boolean's sliver. */
+    private const val BEND_MIN_RADIANS = 0.26f
 
     /** Two contour corners this close are the same corner. */
     private const val WELD_MM = 5e-3f

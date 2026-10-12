@@ -1796,6 +1796,8 @@ data class SnapFitDimensions(
     val lipDepthExtraMm: Float = 0f,
     /** How wide the user's cuts took their slits out of the ring. */
     val lipCutWidthMm: Float = 0f,
+    /** How far below the mating face those slits ran. */
+    val lipCutDepthMm: Float = 0f,
     /** How many cuts the ring carries, and how many arcs that leaves it in. */
     val lipCuts: Int = 0,
     val lipArcs: Int = 1,
@@ -1989,13 +1991,16 @@ data class SnapFitJoint(
         } else {
             String.format(
                 java.util.Locale.ROOT,
-                "%d cuts, so the ring is %d arcs; the wall runs %.1f mm to %.1f mm between them, " +
-                    "cut %.2f mm wide",
+                "%d %s, so the ring is %d %s; the wall runs %.1f mm to %.1f mm between them, " +
+                    "each %.2f mm wide and %.2f mm deep",
                 dimensions.lipCuts,
+                if (dimensions.lipCuts == 1) "cut" else "cuts",
                 dimensions.lipArcs,
+                if (dimensions.lipArcs == 1) "arc" else "arcs",
                 dimensions.lipShortestRunMm,
                 dimensions.lipLongestRunMm,
                 dimensions.lipCutWidthMm,
+                dimensions.lipCutDepthMm,
             )
         }
 
@@ -2133,6 +2138,14 @@ data class SnapFitParameters(
     val lipCutWidthMm: Float = 0.6f,
     /** The cut width the user typed, in millimetres, or null for the scaled parameter. */
     val lipCutWidthOverrideMm: Float? = null,
+    /**
+     * The wall lip: how far below the mating face a cut's slit runs. Null means
+     * the ring's own band - through the wall, the tooth and a little past the
+     * recess floor, which is what frees the wall completely; a number is how deep
+     * the user asked for instead, and how much of the wall is freed is what he is
+     * buying.
+     */
+    val lipCutDepthMm: Float? = null,
 ) {
     /**
      * The same joint with every fit clearance tightened by [stepMm] millimetres,
