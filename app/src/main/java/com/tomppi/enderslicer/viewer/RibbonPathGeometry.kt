@@ -5,6 +5,14 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
+ * Where ribbon geometry floats go: a growable direct buffer, or one chunk of a
+ * bounded staging area.
+ */
+internal interface FloatSink {
+    operator fun plusAssign(value: Float)
+}
+
+/**
  * Shared ribbon geometry for the nozzle-path renderers.
  *
  * Both G-code dialects paint the same 18-vertex window - top face plus two side
@@ -121,6 +129,23 @@ internal object RibbonPathGeometry {
         }
     }
 
+    /**
+     * How many stored moves are of [kind].
+     *
+     * Buffers are sized from this rather than from the parser's own readout: a
+     * merged move carries the extrusion of the moves folded into it, so the
+     * stored extrusion count can be HIGHER than the parser's extrusionMoveCount
+     * (the merged move itself was counted as the travel it began as). Sizing
+     * below the emitted windows would write past the end of a buffer.
+     */
+    fun countKind(moves: FloatArray, moveCount: Int, kind: Float): Int {
+        var count = 0
+        for (m in 0 until moveCount) {
+            if (moves[m * VALUES_PER_MOVE + KIND] == kind) count++
+        }
+        return count
+    }
+
     /** Extrusion speed range of a path, used for the speed-to-hue mapping. */
     fun speedRange(moves: FloatArray, moveCount: Int): Pair<Float, Float> {
         var minSpeed = Float.POSITIVE_INFINITY
@@ -217,10 +242,10 @@ internal object RibbonPathGeometry {
      * shaded continuously instead of banding per window.
      */
     fun addStrip(
-        vertex: DirectFloatSink,
-        normals: DirectFloatSink,
-        colors: DirectFloatSink,
-        ambient: DirectFloatSink,
+        vertex: FloatSink,
+        normals: FloatSink,
+        colors: FloatSink,
+        ambient: FloatSink,
         sx: Float, sy: Float, sz: Float,
         ex: Float, ey: Float, ez: Float,
         width: Float,

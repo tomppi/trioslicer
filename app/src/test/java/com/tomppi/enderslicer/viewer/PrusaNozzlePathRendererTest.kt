@@ -73,12 +73,20 @@ class PrusaNozzlePathRendererTest {
         sx, sy, 0f, ex, ey, 0f, 150f, PrusaNozzlePath.Kind.TRAVEL.code, 0f, 0f,
     )
 
-    private fun positions(renderer: PrusaNozzlePathRenderer): FloatArray {
-        val buffer = renderer.ribbonPositions ?: throw AssertionError("ribbonPositions not built")
-        val result = FloatArray(buffer.limit())
-        buffer.position(0)
-        buffer.get(result)
-        return result
+    /**
+     * Builds [path]'s geometry the way the renderer's GPU sink receives it, and
+     * hands back the collected vertex stream.
+     */
+    private fun built(path: PrusaNozzlePath): RibbonChunkRecorder {
+        val recorder = RibbonChunkRecorder(
+            collect = true,
+            expectedWindows = path.extrusionMoveCount,
+            expectedTravels = path.travelMoveCount,
+        )
+        val staging = RibbonChunkStaging(recorder)
+        PrusaRibbonBuilder(path).build(staging)
+        staging.finish()
+        return recorder
     }
 
     private fun vert(v: FloatArray, window: Int, vertex: Int): FloatArray =
@@ -95,14 +103,12 @@ class PrusaNozzlePathRendererTest {
 
     @Test
     fun straightChainIsPrismaticNotTwisted() {
-        val renderer = PrusaNozzlePathRenderer()
-        renderer.buildPathBuffers(path(
+        val v = built(path(
             extrusionMove(0f, 0f, 1f, 0f),
             extrusionMove(1f, 0f, 2f, 0f),
             extrusionMove(2f, 0f, 3f, 0f),
             extrusionMove(3f, 0f, 4f, 0f),
-        ))
-        val v = positions(renderer)
+        )).ribbonPositionArray()
         // Window 0 covers move 0: from (0,0) to (1,0), width 0.44, height 0.2.
         val aTop = vert(v, 0, 0)
         val bTop = vert(v, 0, 1)
@@ -142,9 +148,7 @@ class PrusaNozzlePathRendererTest {
                 (radius * cos(a1)).toFloat(), (radius * sin(a1)).toFloat(),
             ))
         }
-        val renderer = PrusaNozzlePathRenderer()
-        renderer.buildPathBuffers(path(*moves.toTypedArray()))
-        val v = positions(renderer)
+        val v = built(path(*moves.toTypedArray())).ribbonPositionArray()
         val windows = v.size / (18 * 3)
         assertEquals(count, windows)
         for (i in 0 until windows - 1) {
@@ -171,11 +175,7 @@ class PrusaNozzlePathRendererTest {
                 (radius * cos(a1)).toFloat(), (radius * sin(a1)).toFloat(),
             ))
         }
-        val renderer = PrusaNozzlePathRenderer()
-        renderer.buildPathBuffers(path(*moves.toTypedArray()))
-        val normals = FloatArray(renderer.ribbonNormals!!.limit())
-        renderer.ribbonNormals!!.position(0)
-        renderer.ribbonNormals!!.get(normals)
+        val normals = built(path(*moves.toTypedArray())).ribbonNormalArray()
         val windows = normals.size / (18 * 3)
         assertEquals(count, windows)
         for (i in 0 until windows - 1) {
@@ -191,9 +191,8 @@ class PrusaNozzlePathRendererTest {
 
     @Test
     fun beadEndsCappedByTheirOwnDirectionAcrossTravel() {
-        val renderer = PrusaNozzlePathRenderer()
         // Bead A along +x, travel jump, bead B along +y.
-        renderer.buildPathBuffers(path(
+        val v = built(path(
             extrusionMove(0f, 0f, 1f, 0f),
             extrusionMove(1f, 0f, 2f, 0f),
             extrusionMove(2f, 0f, 3f, 0f),
@@ -201,8 +200,7 @@ class PrusaNozzlePathRendererTest {
             extrusionMove(4f, 3f, 4f, 4f),
             extrusionMove(4f, 4f, 4f, 5f),
             extrusionMove(4f, 5f, 4f, 6f),
-        ))
-        val v = positions(renderer)
+        )).ribbonPositionArray()
         val windowCount = v.size / (18 * 3)
         assertEquals(6, windowCount) // 3 A + 3 B, travel draws no ribbon
         // A's LAST window (index 2): move (2,0)->(3,0); end cap must be

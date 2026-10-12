@@ -111,6 +111,142 @@ internal fun queryMaxLineWidth(): Float {
 }
 
 /**
+ * The nozzle path's geometry, in GPU memory.
+ *
+ * The ribbon costs about 800 bytes a move - 616 MB for the 778,626 extrusion
+ * moves of the print that crashed the Path tab - and it used to be built into one
+ * direct buffer per attribute, which Android charges against the Java heap. The
+ * store is filled one bounded chunk at a time through [RibbonChunkSink] as the
+ * geometry is built, so the CPU only ever holds a chunk and the whole path lives
+ * in VRAM afterwards: where a preview of this size has to live, and what the user
+ * assumed it was doing already.
+ *
+ * Six buffers, the same layout the draw calls always used:
+ * 0/1/2/3 ribbon positions, normals, colors, ambient; 4/5 travel positions, colors.
+ */
+internal class RibbonVboStore : RibbonChunkSink {
+    var ids = IntArray(0)
+        private set
+
+    private var offsets = IntArray(VBO_COUNT)
+
+    /** Ribbon windows uploaded so far. */
+    var ribbonWindows = 0
+        private set
+
+    /** Travel lines uploaded so far. */
+    var travelSegments = 0
+        private set
+
+    val ready: Boolean get() = ids.size == VBO_COUNT && ids[0] != 0
+
+    val ribbonVertexCount: Int get() = ribbonWindows * RibbonPathGeometry.WINDOW_VERTICES
+
+    val travelVertexCount: Int get() = travelSegments * 2
+
+    /**
+     * Allocates the six buffers at their exact final size and empties them. The
+     * parsed path states how many windows and travel lines it will emit, so
+     * nothing here ever has to grow - and a refusal is reported rather than
+     * drawn as a truncated path.
+     */
+    fun allocate(ribbonWindows: Int, travelSegments: Int): Boolean {
+        release()
+        while (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
+            // A stale error from earlier in the frame must not be read as this
+            // allocation's failure.
+        }
+        val generated = IntArray(VBO_COUNT)
+        GLES20.glGenBuffers(VBO_COUNT, generated, 0)
+        for (index in 0 until VBO_COUNT) {
+            if (generated[index] == 0) {
+                GLES20.glDeleteBuffers(VBO_COUNT, generated, 0)
+                return false
+            }
+            val floats = floatsFor(index, ribbonWindows, travelSegments)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, generated[index])
+            GLES20.glBufferData(
+                GLES20.GL_ARRAY_BUFFER,
+                floats * Float.SIZE_BYTES,
+                null,
+                GLES20.GL_STATIC_DRAW,
+            )
+        }
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        if (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
+            GLES20.glDeleteBuffers(VBO_COUNT, generated, 0)
+            return false
+        }
+        ids = generated
+        offsets = IntArray(VBO_COUNT)
+        this.ribbonWindows = 0
+        this.travelSegments = 0
+        return true
+    }
+
+    override fun ribbonChunk(
+        positions: FloatBuffer,
+        normals: FloatBuffer,
+        colors: FloatBuffer,
+        ambient: FloatBuffer,
+        windows: Int,
+    ) {
+        val vertices = windows * RibbonPathGeometry.WINDOW_VERTICES
+        upload(0, positions, vertices * 3)
+        upload(1, normals, vertices * 3)
+        upload(2, colors, vertices * 4)
+        upload(3, ambient, vertices)
+        ribbonWindows += windows
+    }
+
+    override fun travelChunk(positions: FloatBuffer, colors: FloatBuffer, segments: Int) {
+        upload(4, positions, segments * 2 * 3)
+        upload(5, colors, segments * 2 * 4)
+        travelSegments += segments
+    }
+
+    /** Drops the ids of a context that is gone, without touching the new one. */
+    fun forget() {
+        ids = IntArray(0)
+        offsets = IntArray(VBO_COUNT)
+        ribbonWindows = 0
+        travelSegments = 0
+    }
+
+    fun release() {
+        if (ids.isNotEmpty()) GLES20.glDeleteBuffers(ids.size, ids, 0)
+        forget()
+    }
+
+    private fun upload(index: Int, data: FloatBuffer, floats: Int) {
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, ids[index])
+        GLES20.glBufferSubData(
+            GLES20.GL_ARRAY_BUFFER,
+            offsets[index] * Float.SIZE_BYTES,
+            floats * Float.SIZE_BYTES,
+            data,
+        )
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        offsets[index] += floats
+    }
+
+    private fun floatsFor(index: Int, ribbonWindows: Int, travelSegments: Int): Int {
+        val vertices = ribbonWindows * RibbonPathGeometry.WINDOW_VERTICES
+        return when (index) {
+            0, 1 -> vertices * 3
+            2 -> vertices * 4
+            3 -> vertices
+            4 -> travelSegments * 2 * 3
+            else -> travelSegments * 2 * 4
+        }
+    }
+
+    private companion object {
+        const val VBO_COUNT = 6
+    }
+}
+
+/**
  * The drawing half of a nozzle-path preview.
  *
  * CuraEngine's ribbon and the PrusaSlicer/OrcaSlicer one are built differently, but
@@ -123,7 +259,7 @@ internal abstract class NozzlePathRendererBase : GLSurfaceView.Renderer {
     protected var litProgram = 0
     protected var colorProgram = 0
     protected var solidProgram = 0
-    protected var pathVbos = IntArray(0)
+    protected val pathGeometry = RibbonVboStore()
     protected var maxLineWidth = 1f
     protected val scene = FloatArray(16)
     protected val mvp = FloatArray(16)
@@ -159,16 +295,16 @@ internal abstract class NozzlePathRendererBase : GLSurfaceView.Renderer {
         val keyDir = GLES20.glGetUniformLocation(litProgram, "uKeyDir")
         val fillDir = GLES20.glGetUniformLocation(litProgram, "uFillDir")
         val viewDir = GLES20.glGetUniformLocation(litProgram, "uViewDir")
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[0])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[0])
         GLES20.glEnableVertexAttribArray(position)
         GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, 0)
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[1])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[1])
         GLES20.glEnableVertexAttribArray(normal)
         GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 12, 0)
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[2])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[2])
         GLES20.glEnableVertexAttribArray(color)
         GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, 0)
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[3])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[3])
         GLES20.glEnableVertexAttribArray(ambientLoc)
         GLES20.glVertexAttribPointer(ambientLoc, 1, GLES20.GL_FLOAT, false, 4, 0)
         GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
@@ -190,10 +326,10 @@ internal abstract class NozzlePathRendererBase : GLSurfaceView.Renderer {
         val position = GLES20.glGetAttribLocation(colorProgram, "aPosition")
         val color = GLES20.glGetAttribLocation(colorProgram, "aColor")
         val matrix = GLES20.glGetUniformLocation(colorProgram, "uMvpMatrix")
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[4])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[4])
         GLES20.glEnableVertexAttribArray(position)
         GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, 0)
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[5])
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathGeometry.ids[5])
         GLES20.glEnableVertexAttribArray(color)
         GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, 0)
         GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)

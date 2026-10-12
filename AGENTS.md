@@ -36,6 +36,17 @@ bites, a move is **merged into the next kept move**, never dropped.
   be when viewed up close. It took four wrong fixes to find, because the geometry that survived was
   correct - only a third of it was missing.
 - `NozzlePathDecimationTest` fails if a tight budget loses distance or filament. Keep it passing.
+- The ribbon is built a chunk at a time into small direct buffers and uploaded to the GPU as it is
+  built (`RibbonChunkStaging` into `RibbonVboStore`); window i always lands at vertex i * 18, so
+  the draw calls, the scrubbing and the picture are what they were. **Never go back to one buffer
+  per path.** Android charges direct ByteBuffers against the Java heap, and the Path tab died on a
+  single 160 MB one - `extrusionCount * 18 * 3` floats for the 778,626 extrusion moves of a real
+  print, with three more buffers behind it. `NozzlePathMemoryTest` measures this on a
+  900,000-move file and fails if the whole-path allocation pattern comes back.
+- Size those buffers from the moves themselves (`RibbonPathGeometry.countKind`), never from the
+  parser's `extrusionMoveCount`: a merged move carries the extrusion of the moves folded into it,
+  so the stored extrusion count can be higher than the parser's readout - and a buffer sized below
+  the windows written overruns it.
 - Cura's layer view is the reference for this screen, and it draws every line it reads:
   `plugins/GCodeReader` and `plugins/SimulationView` in github.com/Ultimaker/Cura.
 

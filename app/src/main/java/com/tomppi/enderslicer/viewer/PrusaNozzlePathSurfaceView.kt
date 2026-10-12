@@ -208,12 +208,10 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     private var selectedMoveIndex = 0
     private var showTravels = true
 
-    internal var ribbonPositions: FloatBuffer? = null
-    internal var ribbonNormals: FloatBuffer? = null
-    internal var ribbonColors: FloatBuffer? = null
-    internal var ribbonAmbient: FloatBuffer? = null
-    private var travelPositions: FloatBuffer? = null
-    private var travelColors: FloatBuffer? = null
+    // The geometry is built on the first frame after a path is set: a queued
+    // setPath can run before the surface (and so the GL context) exists, and
+    // uploading needs one.
+    private var buildPending = false
     private var gridPositions: FloatBuffer? = null
     private var gridVertexCount = 0
     private var markerPositions: FloatBuffer? = null
@@ -222,8 +220,6 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     private var markerGlowVertexCount = 0
     internal var ribbonPrefix = IntArray(1)
     internal var travelPrefix = IntArray(1)
-
-    private var uploadedPath: PrusaNozzlePath? = null
 
     private var modelMinX = -115f
     private var modelMaxX = 115f
@@ -236,7 +232,6 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     // Live build progress for the UI; reports every BUILD_PROGRESS_STRIDE moves.
     var onBuildProgress: ((Float) -> Unit)? = null
     var onBuildFinished: ((String?) -> Unit)? = null
-    private var lastReportedMove = 0
     private var yaw = PrusaNozzlePathViewDefaults.DEFAULT_YAW
     private var pitch = PrusaNozzlePathViewDefaults.DEFAULT_PITCH
     private var zoom = PrusaNozzlePathViewDefaults.DEFAULT_ZOOM
@@ -257,30 +252,8 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         if (path === value) return
         path = value
         selectedMoveIndex = if (value.moveCount <= 0) 0 else selectedMoveIndex.coerceIn(0, value.moveCount - 1)
-        lastReportedMove = 0
         onBuildProgress?.invoke(0f)
-        val startedAt = System.nanoTime()
-        try {
-            buildPathBuffers(value)
-            buildGrid(value)
-            buildMarker()
-            onBuildProgress?.invoke(1f)
-            onBuildFinished?.invoke(null)
-            Log.i(
-                "PrusaNozzlePathView",
-                "geometry built: " + value.moveCount + " moves in " +
-                    ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
-            )
-        } catch (error: Throwable) {
-            Log.e("PrusaNozzlePathView", "Unable to build prusa nozzle-path buffers", error)
-            ribbonPositions = null
-            ribbonNormals = null
-            ribbonColors = null
-            ribbonAmbient = null
-            travelPositions = null
-            travelColors = null
-            onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
-        }
+        buildPending = true
         resetCamera()
     }
 
@@ -335,8 +308,10 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         litProgram = createGlProgram(LIT_VERTEX_SHADER, LIT_FRAGMENT_SHADER)
         colorProgram = createGlProgram(COLOR_VERTEX_SHADER, COLOR_FRAGMENT_SHADER)
         solidProgram = createGlProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
-        pathVbos = IntArray(0)
-        uploadedPath = null
+        // A new GL context invalidates the old buffer ids: the geometry has to
+        // be built into this one again.
+        pathGeometry.forget()
+        if (path != null) buildPending = true
         maxLineWidth = queryMaxLineWidth()
     }
 
@@ -347,7 +322,12 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        try { drawFrame() } catch (error: Throwable) { Log.e("PrusaNozzlePathView", "frame failed", error) }
+        try {
+            if (buildPending) buildGeometry()
+            drawFrame()
+        } catch (error: Throwable) {
+            Log.e("PrusaNozzlePathView", "frame failed", error)
+        }
     }
 
     private fun drawFrame() {
@@ -358,201 +338,101 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
         val upTo = (selectedMoveIndex + 1).coerceAtMost(ribbonPrefix.size - 1)
         val ribbonCount = ribbonPrefix[upTo]
         drawSolidLines(gridPositions, gridVertexCount, 1f, 0.24f, 0.30f, 0.40f, 0.48f)
-        ensureUploads(current)
-        // Hard clamp: never draw past the emitted vertex data. A mismatch here
-        // previously produced "model disappears after a certain point" and
-        // scrambled speed colors; the clamp degrades to fewer ribbons and
-        // logs the mismatch for diagnosis.
-        val maxRibbonVerts = (ribbonPositions?.limit() ?: 0) / 3
-        val requested = ribbonCount * RibbonPathGeometry.WINDOW_VERTICES
-        val litVerts = if (requested <= maxRibbonVerts) {
-            requested
-        } else {
-            Log.e("PrusaNozzlePathView", "ribbon overdraw: requested " + requested + " vertices, have " + maxRibbonVerts)
-            maxRibbonVerts
-        }
-        if (pathVbos.size == 6 && pathVbos[0] != 0) {
-            drawLitTrianglesVbo(litVerts)
-        } else {
-            drawLitTriangles(litVerts)
-        }
-        if (showTravels) {
-            val maxTravelVerts = (travelPositions?.limit() ?: 0) / 3
-            val travelRequested = travelPrefix[upTo] * 2
-            val travelVerts = if (travelRequested <= maxTravelVerts) {
-                travelRequested
+        if (pathGeometry.ready) {
+            // Hard clamp: never draw past the geometry that was uploaded. A
+            // mismatch here previously produced "model disappears after a
+            // certain point" and scrambled speed colors; the clamp degrades to
+            // fewer ribbons and logs the mismatch for diagnosis.
+            val requested = ribbonCount * RibbonPathGeometry.WINDOW_VERTICES
+            val litVerts = if (requested <= pathGeometry.ribbonVertexCount) {
+                requested
             } else {
-                Log.e("PrusaNozzlePathView", "travel overdraw: requested " + travelRequested + " vertices, have " + maxTravelVerts)
-                maxTravelVerts
+                Log.e(
+                    "PrusaNozzlePathView",
+                    "ribbon overdraw: requested " + requested + " vertices, have " + pathGeometry.ribbonVertexCount,
+                )
+                pathGeometry.ribbonVertexCount
             }
-            if (pathVbos.size == 6 && pathVbos[4] != 0) {
+            drawLitTrianglesVbo(litVerts)
+            if (showTravels) {
+                val travelRequested = travelPrefix[upTo] * 2
+                val travelVerts = if (travelRequested <= pathGeometry.travelVertexCount) {
+                    travelRequested
+                } else {
+                    Log.e(
+                        "PrusaNozzlePathView",
+                        "travel overdraw: requested " + travelRequested + " vertices, have " + pathGeometry.travelVertexCount,
+                    )
+                    pathGeometry.travelVertexCount
+                }
                 drawColoredLinesVbo(travelVerts, PrusaNozzlePathViewDefaults.TRAVEL_WIDTH)
-            } else {
-                drawColoredLines(travelVerts, PrusaNozzlePathViewDefaults.TRAVEL_WIDTH)
             }
         }
         drawSolidLines(markerGlowPositions, markerGlowVertexCount, 8f, 0.85f, 0.55f, 0.30f, 0.20f)
         drawSolidLines(markerPositions, markerVertexCount, 4.5f, 1f, 1f, 1f, 1f)
     }
-    /** Builds continuous ribbon strips from marker-driven runs. */
-    internal fun buildPathBuffers(value: PrusaNozzlePath) {
-        val source = value.moves
-        val n = value.moveCount
-        // Exact pre-size from the parsed path counts: one window per move and
-        // one allocation per sink, so a big path never grows with doubling
-        // copies (the 128 MB grow step is what OOM'd at ~500k+ moves).
-        val extrusionCount = value.extrusionMoveCount
-        val travelRunsUpperBound = value.travelMoveCount
-        val ribbonVertex = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 3)
-        val ribbonNormal = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 3)
-        val ribbonColor = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 4)
-        val ribbonAmbientValues = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 1)
-        val travelVertex = DirectFloatSink(travelRunsUpperBound * 2 * 3)
-        val travelColor = DirectFloatSink(travelRunsUpperBound * 2 * 4)
-        var windowCount = 0
-        var travelCount = 0
-        ribbonPrefix = IntArray(n + 1)
-        travelPrefix = IntArray(n + 1)
-        val (minSpeed, maxSpeed) = speedRange(value)
-        val speedSpan = maxSpeed - minSpeed
-        forEachWindow(value, onProgress = { fraction -> onBuildProgress?.invoke(fraction) }) { kind, winStart, winLast, sx, sy, sz, ex, ey, ez, runWidth, runHeight ->
-            if (kind == PrusaNozzlePath.Kind.EXTRUSION.code) {
-                val wo = winStart * PrusaNozzlePath.VALUES_PER_MOVE
-                val speedRatio = if (speedSpan > 0f) {
-                    ((source[wo + PrusaNozzlePath.SPEED] - minSpeed) / speedSpan).coerceIn(0f, 1f)
-                } else 0f
-                val color = hsv(extrusionHue(speedRatio), RIBBON_SATURATION, RIBBON_VALUE, 1f)
-                // Window boundaries are polyline points of the run: the
-                // shared miter normal is identical for the closing window
-                // and the next opening window, so corner vertices coincide
-                // exactly (continuous strip - no junction slivers).
-                val sN = boundaryNormal(winStart, source)
-                val eN = boundaryNormal(winLast + 1, source)
-                addRibbonMove(
-                    ribbonVertex, ribbonNormal, ribbonColor, ribbonAmbientValues,
-                    sx, sy, sz, ex, ey, ez,
-                    runWidth,
-                    runHeight,
-                    sN.first, sN.second,
-                    eN.first, eN.second,
-                    color,
+    /**
+     * Builds the ribbon strips and uploads them to the GPU buffers, one bounded
+     * chunk at a time.
+     *
+     * One window per move, always, sized by the marker-driven width of the run it
+     * belongs to. What changed is where the geometry is allowed to exist: it
+     * passes through the CPU a chunk at a time, so a million moves no longer asks
+     * the Java heap for the 792 MB of ribbon they make - Android charges direct
+     * ByteBuffers there, and the Path tab died on a single 160 MB allocation of
+     * exactly this geometry.
+     */
+    private fun buildGeometry() {
+        val value = path ?: return
+        buildPending = false
+        val startedAt = System.nanoTime()
+        try {
+            val ribbonWindows = RibbonPathGeometry.countKind(
+                value.moves,
+                value.moveCount,
+                PrusaNozzlePath.Kind.EXTRUSION.code,
+            )
+            val travelBound = RibbonPathGeometry.countKind(
+                value.moves,
+                value.moveCount,
+                PrusaNozzlePath.Kind.TRAVEL.code,
+            )
+            if (!pathGeometry.allocate(ribbonWindows, travelBound)) {
+                throw IllegalStateException(
+                    "The device refused the preview's vertex buffers for " + value.moveCount + " moves",
                 )
-                windowCount++
-            } else {
-                // Skip pure-Z layer transitions (vertical scratches).
-                val travelDx = ex - sx
-                val travelDy = ey - sy
-                val travelDz = ez - sz
-                val travelLen = sqrt(travelDx * travelDx + travelDy * travelDy + travelDz * travelDz)
-                val verticalOnly = travelLen > 1e-7f && sqrt(travelDx * travelDx + travelDy * travelDy) < travelLen * 0.25f
-                if (!verticalOnly) {
-                    travelVertex += sx; travelVertex += sy; travelVertex += sz
-                    travelVertex += ex; travelVertex += ey; travelVertex += ez
-                    repeat(2) { travelColor += 0.50f; travelColor += 0.54f; travelColor += 0.64f; travelColor += 0.20f }
-                    travelCount++
-                }
             }
-            for (m in winStart until winLast) {
-                ribbonPrefix[m + 1] = windowCount
-                travelPrefix[m + 1] = travelCount
+            val builder = PrusaRibbonBuilder(value) { fraction -> onBuildProgress?.invoke(fraction) }
+            val staging = RibbonChunkStaging(pathGeometry)
+            builder.build(staging)
+            staging.finish()
+            ribbonPrefix = builder.ribbonPrefix
+            travelPrefix = builder.travelPrefix
+            // Camera bounds from the printed part only (extrusion moves). A
+            // travel-only path keeps the defaults.
+            if (builder.modelMinX.isFinite()) {
+                modelMinX = builder.modelMinX
+                modelMaxX = builder.modelMaxX
+                modelMinY = builder.modelMinY
+                modelMaxY = builder.modelMaxY
+                modelMinZ = builder.modelMinZ
+                modelMaxZ = builder.modelMaxZ
             }
-            ribbonPrefix[winLast + 1] = windowCount
-            travelPrefix[winLast + 1] = travelCount
+            buildGrid(value)
+            buildMarker()
+            onBuildProgress?.invoke(1f)
+            onBuildFinished?.invoke(null)
+            Log.i(
+                "PrusaNozzlePathView",
+                "geometry built: " + value.moveCount + " moves in " +
+                    ((System.nanoTime() - startedAt) / 1_000_000) + " ms",
+            )
+        } catch (error: Throwable) {
+            Log.e("PrusaNozzlePathView", "Unable to build prusa nozzle-path buffers", error)
+            pathGeometry.release()
+            onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
         }
-        ribbonPositions = ribbonVertex.toFloatBuffer()
-        ribbonNormals = ribbonNormal.toFloatBuffer()
-        ribbonColors = ribbonColor.toFloatBuffer()
-        ribbonAmbient = ribbonAmbientValues.toFloatBuffer()
-        travelPositions = travelVertex.toFloatBuffer()
-        travelColors = travelColor.toFloatBuffer()
-        // Camera bounds from the printed part only (extrusion moves).
-        var pMinX = Float.POSITIVE_INFINITY; var pMaxX = Float.NEGATIVE_INFINITY
-        var pMinY = Float.POSITIVE_INFINITY; var pMaxY = Float.NEGATIVE_INFINITY
-        var pMinZ = Float.POSITIVE_INFINITY; var pMaxZ = Float.NEGATIVE_INFINITY
-        for (m in 0 until n) {
-            val o = m * PrusaNozzlePath.VALUES_PER_MOVE
-            if (source[o + PrusaNozzlePath.KIND] == PrusaNozzlePath.Kind.EXTRUSION.code) {
-                pMinX = min(pMinX, min(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
-                pMaxX = max(pMaxX, max(source[o + PrusaNozzlePath.X1], source[o + PrusaNozzlePath.X2]))
-                pMinY = min(pMinY, min(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
-                pMaxY = max(pMaxY, max(source[o + PrusaNozzlePath.Y1], source[o + PrusaNozzlePath.Y2]))
-                pMinZ = min(pMinZ, min(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
-                pMaxZ = max(pMaxZ, max(source[o + PrusaNozzlePath.Z1], source[o + PrusaNozzlePath.Z2]))
-            }
-        }
-        modelMinX = pMinX; modelMaxX = pMaxX
-        modelMinY = pMinY; modelMaxY = pMaxY
-        modelMinZ = pMinZ; modelMaxZ = pMaxZ
     }
-
-    /**
-     * Walks the natural runs (same kind + collinear + same width marker)
-     * split into one window per move, in emission order. One window per move,
-     * always: full fidelity - ribbon geometry uses the machine's memory; if a
-     * journey truly cannot fit, the system kills the process instead of us
-     * degrading the preview with coarser windows.
-     */
-    private fun forEachWindow(
-        value: PrusaNozzlePath,
-        onProgress: ((Float) -> Unit)? = null,
-        onWindow: (kind: Float, winStart: Int, winLast: Int, sx: Float, sy: Float, sz: Float, ex: Float, ey: Float, ez: Float, runWidth: Float, runHeight: Float) -> Unit,
-    ) = RibbonPathGeometry.forEachWindow(
-        value.moves,
-        value.moveCount,
-        { index -> value.moves[index * PrusaNozzlePath.VALUES_PER_MOVE + PrusaNozzlePath.WIDTH] },
-        0f,
-        onProgress,
-        onWindow,
-    )
-
-    /** Print-speed range over all extrusion moves (for speed-color scaling). */
-    private fun speedRange(value: PrusaNozzlePath): Pair<Float, Float> =
-        RibbonPathGeometry.speedRange(value.moves, value.moveCount)
-    /**
-     * Unit LEFT normal of the sweep at polyline point [k] - the point between
-     * moves k-1 and k - as the miter of the two adjacent segment tangents.
-     * Both the window that ends at this point and the window that starts at it
-     * query the same index, so they receive the exact same normal and their
-     * corner vertices coincide: the strip is continuous even across stride
-     * windows and run boundaries. Degenerate 180-degree reversals fall back to
-     * the incoming tangent so the corner stays a butt joint, not a crossing.
-     */
-    private fun boundaryNormal(k: Int, source: FloatArray): Pair<Float, Float> =
-        RibbonPathGeometry.boundaryNormal(
-            k,
-            source,
-            source.size / PrusaNozzlePath.VALUES_PER_MOVE,
-            { index -> source[index * PrusaNozzlePath.VALUES_PER_MOVE + PrusaNozzlePath.WIDTH] },
-            0f,
-        )
-    /**
-     * One strip segment (window) of a continuous bead: a box from the window
-     * start to its end. [startN] and [endN] are the unit LEFT normals shared
-     * with the neighbouring windows (central-difference average at each run
-     * boundary), so adjacent segments touch exactly - no junction slivers.
-     */
-    private fun addRibbonMove(
-        vertex: DirectFloatSink,
-        normals: DirectFloatSink,
-        colors: DirectFloatSink,
-        ambient: DirectFloatSink,
-        sx: Float, sy: Float, sz: Float,
-        ex: Float, ey: Float, ez: Float,
-        width: Float,
-        height: Float,
-        startNx: Float, startNy: Float,
-        endNx: Float, endNy: Float,
-        color: FloatArray,
-    ) = RibbonPathGeometry.addStrip(
-        vertex, normals, colors, ambient,
-        sx, sy, sz, ex, ey, ez,
-        width, height,
-        startNx, startNy, endNx, endNy,
-        color,
-        PrusaNozzlePathViewDefaults.TOP_AMBIENT,
-        PrusaNozzlePathViewDefaults.SIDE_BASE_AMBIENT,
-        PrusaNozzlePathViewDefaults.SIDE_TOP_AMBIENT,
-    )
     private fun buildGrid(value: PrusaNozzlePath) {
         val width = max(modelMaxX - modelMinX, 1f)
         val depth = max(modelMaxY - modelMinY, 1f)
@@ -649,87 +529,6 @@ internal class PrusaNozzlePathRenderer : NozzlePathRendererBase() {
             }
         }
         return bestIndex
-    }
-
-    private fun ensureUploads(current: PrusaNozzlePath) {
-        if (uploadedPath === current && pathVbos.size == 6) return
-        if (pathVbos.size != 6) {
-            val ids = IntArray(6)
-            GLES20.glGenBuffers(6, ids, 0)
-            pathVbos = ids
-        }
-        val buffers = listOf(ribbonPositions, ribbonNormals, ribbonColors, ribbonAmbient, travelPositions, travelColors)
-        for (index in buffers.indices) {
-            val data = buffers[index] ?: continue
-            data.position(0)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[index])
-            GLES20.glBufferData(
-                GLES20.GL_ARRAY_BUFFER,
-                data.remaining() * Float.SIZE_BYTES,
-                data,
-                GLES20.GL_STATIC_DRAW,
-            )
-        }
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-        uploadedPath = current
-    }
-
-    private fun drawLitTriangles(vertexCount: Int) {
-        val positions = ribbonPositions ?: return
-        val normals = ribbonNormals ?: return
-        val colors = ribbonColors ?: return
-        val ambient = ribbonAmbient ?: return
-        if (vertexCount <= 0) return
-        GLES20.glUseProgram(litProgram)
-        val position = GLES20.glGetAttribLocation(litProgram, "aPosition")
-        val normal = GLES20.glGetAttribLocation(litProgram, "aNormal")
-        val color = GLES20.glGetAttribLocation(litProgram, "aColor")
-        val ambientLoc = GLES20.glGetAttribLocation(litProgram, "aAmbient")
-        val matrix = GLES20.glGetUniformLocation(litProgram, "uMvpMatrix")
-        val sceneMatrix = GLES20.glGetUniformLocation(litProgram, "uSceneMatrix")
-        val keyDir = GLES20.glGetUniformLocation(litProgram, "uKeyDir")
-        val fillDir = GLES20.glGetUniformLocation(litProgram, "uFillDir")
-        val viewDir = GLES20.glGetUniformLocation(litProgram, "uViewDir")
-        positions.position(0); normals.position(0); colors.position(0); ambient.position(0)
-        GLES20.glEnableVertexAttribArray(position)
-        GLES20.glEnableVertexAttribArray(normal)
-        GLES20.glEnableVertexAttribArray(color)
-        GLES20.glEnableVertexAttribArray(ambientLoc)
-        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, positions)
-        GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 12, normals)
-        GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, colors)
-        GLES20.glVertexAttribPointer(ambientLoc, 1, GLES20.GL_FLOAT, false, 4, ambient)
-        GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
-        GLES20.glUniformMatrix4fv(sceneMatrix, 1, false, scene, 0)
-        GLES20.glUniform3f(keyDir, KEY_LIGHT[0], KEY_LIGHT[1], KEY_LIGHT[2])
-        GLES20.glUniform3f(fillDir, FILL_LIGHT[0], FILL_LIGHT[1], FILL_LIGHT[2])
-        GLES20.glUniform3f(viewDir, 0f, -VIEW_EYE_Y, VIEW_EYE_Z)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
-        GLES20.glDisableVertexAttribArray(position)
-        GLES20.glDisableVertexAttribArray(normal)
-        GLES20.glDisableVertexAttribArray(color)
-        GLES20.glDisableVertexAttribArray(ambientLoc)
-    }
-
-    private fun drawColoredLines(vertexCount: Int, width: Float) {
-        val positions = travelPositions ?: return
-        val colors = travelColors ?: return
-        if (vertexCount <= 0) return
-        GLES20.glUseProgram(colorProgram)
-        val position = GLES20.glGetAttribLocation(colorProgram, "aPosition")
-        val color = GLES20.glGetAttribLocation(colorProgram, "aColor")
-        val matrix = GLES20.glGetUniformLocation(colorProgram, "uMvpMatrix")
-        positions.position(0); colors.position(0)
-        GLES20.glEnableVertexAttribArray(position)
-        GLES20.glEnableVertexAttribArray(color)
-        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, positions)
-        GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, colors)
-        GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
-        lineWidth(width)
-        GLES20.glDrawArrays(GLES20.GL_LINES, 0, vertexCount)
-        GLES20.glLineWidth(1f)
-        GLES20.glDisableVertexAttribArray(position)
-        GLES20.glDisableVertexAttribArray(color)
     }
 
     private fun computeCamera(aspect: Float): Float {

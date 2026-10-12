@@ -35,12 +35,13 @@ internal const val RIBBON_MIN_SEGMENT_MM = 0.05f
 internal const val FINE_LAYER_HEIGHT_MM = 0.12f
 
 /**
- * Growable direct FloatBuffer: nozzle-path geometry is built straight into
- * native memory so a long print never OOMs the 512 MB Java heap (the original
- * boxed ArrayList<Float> build did exactly that - see the GLThread
- * OutOfMemoryError in buildPathBuffers/bufferOf).
+ * Growable direct FloatBuffer, for the small buffers the preview needs whole
+ * (the plate grid, the nozzle marker, the camera-fit bounds). The ribbon itself
+ * is staged a chunk at a time through [RibbonChunkStaging]: Android charges
+ * direct ByteBuffers against the Java heap, so one buffer per path is what used
+ * to OOM the Path tab.
  */
-internal class DirectFloatSink(initialCapacity: Int = 4096) {
+internal class DirectFloatSink(initialCapacity: Int = 4096) : FloatSink {
     private var buffer: FloatBuffer = alloc(max(initialCapacity, 16))
     private var count = 0
 
@@ -49,7 +50,7 @@ internal class DirectFloatSink(initialCapacity: Int = 4096) {
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
 
-    operator fun plusAssign(value: Float) {
+    override operator fun plusAssign(value: Float) {
         if (count >= buffer.capacity()) grow()
         buffer.put(count, value)
         count++
@@ -315,28 +316,22 @@ class NozzlePathSurfaceView(context: Context) : GLSurfaceView(context) {
 private class NozzlePathRenderer : NozzlePathRendererBase() {
     private var path: GcodeNozzlePath? = null
     private var selectedMoveIndex = 0
-    private var ribbonPositions: FloatBuffer? = null
-    private var ribbonNormals: FloatBuffer? = null
-    private var ribbonColors: FloatBuffer? = null
-    private var ribbonAmbient: FloatBuffer? = null
-    private var travelPositions: FloatBuffer? = null
-    private var travelColors: FloatBuffer? = null
     // Physical bead parameters from the current slice settings (fallbacks
     // when the parsed per-move flow cannot be trusted).
     private var beadHeight = 0.20f
     private var beadLineWidth = 0.40f
     private var filamentArea = Math.PI.toFloat() * 0.875f * 0.875f
-    // extensionPrefix[m] = extrusion moves stored with index < m (same for travel).
+    // extrusionPrefix[m] = windows emitted for moves with index < m (same for travel).
     private var extrusionPrefix = IntArray(1)
     private var travelPrefix = IntArray(1)
+    // The geometry is built on the first frame after a path is set: a queued
+    // setPath can run before the surface (and so the GL context) exists, and
+    // uploading needs one.
+    private var buildPending = false
     @Volatile private var showTravels = true
     @Volatile var orthographic = false
     private var gridPositions: FloatBuffer? = null
     private var gridVertexCount = 0
-    // GPU-side (VBO) copies of the ribbon/travel geometry: uploaded once per
-    // path, so the path renders from GPU memory like a game renders static
-    // geometry.
-    private var uploadedPath: GcodeNozzlePath? = null
     private var markerPositions: FloatBuffer? = null
     private var markerVertexCount = 0
     private var markerGlowPositions: FloatBuffer? = null
@@ -347,7 +342,6 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
     // Live build progress for the UI; reports every BUILD_PROGRESS_STRIDE moves.
     var onBuildProgress: ((Float) -> Unit)? = null
     var onBuildFinished: ((String?) -> Unit)? = null
-    private var lastReportedMove = 0
     // Camera pivot and fit use the EXTRUSION bounds (the printed model), not
     // the whole path: travel moves to the prime line or skirt sit far from the
     // part and would anchor the orbit to the plate instead of the model.
@@ -387,11 +381,50 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         beadLineWidth = beadLineWidthMm.coerceIn(0.10f, 2.0f)
         filamentArea = area
         selectedMoveIndex = if (value.moveCount <= 0) 0 else selectedMoveIndex.coerceIn(0, value.moveCount - 1)
-        lastReportedMove = 0
         onBuildProgress?.invoke(0f)
+        buildPending = true
+        resetCamera()
+    }
+
+    /**
+     * Builds the path's ribbon and travel geometry into the GPU's vertex
+     * buffers, one bounded chunk at a time.
+     *
+     * One window per move, always: the picture is the file. What changed is
+     * only where the geometry is allowed to exist - a chunk of staging buffers
+     * is filled, copied into VRAM and reused - so an 850,000-move file no longer
+     * asks the Java heap for 616 MB of it (Android charges direct ByteBuffers
+     * there, which is what killed the Path tab).
+     */
+    private fun buildGeometry() {
+        val value = path ?: return
+        buildPending = false
         val startedAt = System.nanoTime()
         try {
-            buildPathBuffers(value)
+            val ribbonWindows = RibbonPathGeometry.countKind(
+                value.moves,
+                value.moveCount,
+                GcodeNozzlePath.Kind.EXTRUSION.code,
+            )
+            val travelBound = RibbonPathGeometry.countKind(
+                value.moves,
+                value.moveCount,
+                GcodeNozzlePath.Kind.TRAVEL.code,
+            )
+            if (!pathGeometry.allocate(ribbonWindows, travelBound)) {
+                throw IllegalStateException(
+                    "The device refused the preview's vertex buffers for " + value.moveCount + " moves",
+                )
+            }
+            val builder = CuraRibbonBuilder(value, beadHeight, beadLineWidth, filamentArea) { fraction ->
+                onBuildProgress?.invoke(fraction)
+            }
+            val staging = RibbonChunkStaging(pathGeometry)
+            builder.build(staging)
+            staging.finish()
+            extrusionPrefix = builder.extrusionPrefix
+            travelPrefix = builder.travelPrefix
+            applyCameraBounds(builder.boundsVertices.toFloatArray(), value)
             buildGrid(value)
             buildMarker()
             onBuildProgress?.invoke(1f)
@@ -405,15 +438,26 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
             // Keep the render thread alive and surface the cause in logcat
             // instead of taking the app down.
             Log.e(TAG, "Unable to build nozzle-path buffers", error)
-            ribbonPositions = null
-            ribbonNormals = null
-            ribbonColors = null
-            ribbonAmbient = null
-            travelPositions = null
-            travelColors = null
+            pathGeometry.release()
             onBuildFinished?.invoke(error.message ?: error.javaClass.simpleName)
         }
-        resetCamera()
+    }
+
+    /**
+     * Camera bounds from the printed part only. Stray extrusion moves (purge
+     * line at the plate corner, distant skirt loops) are trimmed with per-axis
+     * percentiles so the orbit pivots on the model, not the plate; the fallback
+     * keeps the view valid for travel-only paths.
+     */
+    private fun applyCameraBounds(boundsVertices: FloatArray, value: GcodeNozzlePath) {
+        val bounds = NozzlePathBounds.printedBounds(boundsVertices)
+        if (bounds != null) {
+            modelMinX = bounds[0]; modelMinY = bounds[1]; modelMinZ = bounds[2]
+            modelMaxX = bounds[3]; modelMaxY = bounds[4]; modelMaxZ = bounds[5]
+        } else {
+            modelMinX = value.minX; modelMinY = value.minY; modelMinZ = value.minZ
+            modelMaxX = value.maxX; modelMaxY = value.maxY; modelMaxZ = value.maxZ
+        }
     }
 
     fun setSelectedMove(value: Int) {
@@ -474,9 +518,10 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         colorProgram = createGlProgram(COLOR_VERTEX_SHADER, COLOR_FRAGMENT_SHADER)
         solidProgram = createGlProgram(SOLID_VERTEX_SHADER, SOLID_FRAGMENT_SHADER)
         Log.i(TAG, "nozzle-path shaders compiled")
-        // A new GL context invalidates old VBO ids.
-        pathVbos = IntArray(0)
-        uploadedPath = null
+        // A new GL context invalidates the old buffer ids: the geometry has to
+        // be built into this one again.
+        pathGeometry.forget()
+        if (path != null) buildPending = true
         maxLineWidth = queryMaxLineWidth()
     }
 
@@ -523,6 +568,7 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
 
     override fun onDrawFrame(gl: GL10?) {
         try {
+            if (buildPending) buildGeometry()
             drawFrame()
         } catch (error: Throwable) {
             // Render-thread failures must not take the app down.
@@ -539,316 +585,24 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         val ribbonMoveCount = extrusionPrefix[upTo]
 
         drawSolidLines(gridPositions, gridVertexCount, 1f, 0.24f, 0.30f, 0.40f, 0.48f)
-        // Physical beads in one lit pass: per-face analytic normals with a
-        // fixed 3-light rig (key + fill + rim) so the bead facets read as a
-        // solid printed part from every orbit angle without the zoomed-out
-        // moire that interpolated normals caused.
-        ensureUploads(current)
-        if (pathVbos.size == 6 && pathVbos[0] != 0) {
-            drawLitTrianglesVbo(ribbonMoveCount * RibbonPathGeometry.WINDOW_VERTICES)
-        } else {
-            drawLitTriangles(
-                ribbonPositions,
-                ribbonNormals,
-                ribbonColors,
-                ribbonAmbient,
+        if (pathGeometry.ready) {
+            // Physical beads in one lit pass: per-face analytic normals with a
+            // fixed 3-light rig (key + fill + rim) so the bead facets read as a
+            // solid printed part from every orbit angle without the zoomed-out
+            // moire that interpolated normals caused. The clamp is the same
+            // guard the Prusa renderer carries: never draw past what was built.
+            val litVertices = min(
                 ribbonMoveCount * RibbonPathGeometry.WINDOW_VERTICES,
+                pathGeometry.ribbonVertexCount,
             )
-        }
-        if (showTravels) {
-            if (pathVbos.size == 6 && pathVbos[4] != 0) {
-                drawColoredLinesVbo(travelPrefix[upTo] * 2, TRAVEL_WIDTH)
-            } else {
-                drawColoredLines(travelPositions, travelColors, travelPrefix[upTo] * 2, TRAVEL_WIDTH)
+            drawLitTrianglesVbo(litVertices)
+            if (showTravels) {
+                val travelVertices = min(travelPrefix[upTo] * 2, pathGeometry.travelVertexCount)
+                drawColoredLinesVbo(travelVertices, TRAVEL_WIDTH)
             }
         }
         drawSolidLines(markerGlowPositions, markerGlowVertexCount, 8f, 0.85f, 0.55f, 0.30f, 0.20f)
         drawSolidLines(markerPositions, markerVertexCount, 4.5f, 1f, 1f, 1f, 1f)
-    }
-
-        private fun buildPathBuffers(value: GcodeNozzlePath) {
-        val source = value.moves
-        // One window per move, always: full fidelity (no memory cap - if a
-        // journey cannot fit, the system kills the process rather than us
-        // degrading the preview with coarser windows).
-        val stride = 1
-        // Geometry is built into direct native buffers: the boxed-list build
-        // this replaced OOM'd the Java heap on long prints (boxed Float ~16 B
-        // vs 4 B in the final buffer, and 4 arrays per move with lighting).
-        // Exact pre-size from the parsed path counts: one window per move and
-        // one allocation per sink, so a big path never grows with doubling
-        // copies (the 128 MB grow step is what OOM'd at ~500k+ moves).
-        val extrusionCount = value.extrusionMoveCount
-        val travelRunsUpperBound = value.travelMoveCount
-        val ribbonVertex = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 3)
-        val ribbonNormal = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 3)
-        val ribbonColor = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 4)
-        val ribbonAmbientValues = DirectFloatSink(extrusionCount * RibbonPathGeometry.WINDOW_VERTICES * 1)
-        val travelVertex = DirectFloatSink(travelRunsUpperBound * 2 * 3)
-        val travelColor = DirectFloatSink(travelRunsUpperBound * 2 * 4)
-        // Full-range extrusion points for the camera fit (percentile-trimmed
-        // later), independent of the ribbon stride sampling.
-        val boundsVertex = DirectFloatSink(extrusionCount * 6)
-        var minSpeed = Float.POSITIVE_INFINITY
-        var maxSpeed = Float.NEGATIVE_INFINITY
-        for (moveIndex in 0 until value.moveCount) {
-            val moveOffset = moveIndex * GcodeNozzlePath.VALUES_PER_MOVE
-            if (source[moveOffset + GcodeNozzlePath.KIND] == GcodeNozzlePath.Kind.EXTRUSION.code) {
-                val speed = source[moveOffset + GcodeNozzlePath.SPEED]
-                minSpeed = min(minSpeed, speed)
-                maxSpeed = max(maxSpeed, speed)
-            }
-        }
-        val speedSpan = maxSpeed - minSpeed
-        var offset = 0
-        var extrusionMoves = 0
-        var travelMoves = 0
-        extrusionPrefix = IntArray(value.moveCount + 1)
-        travelPrefix = IntArray(value.moveCount + 1)
-        // Paint in contiguous same-kind windows of STALE-STRIDE moves: with
-        // stride > 1 the sampled move spans the WHOLE window (start point of
-        // the first move, end point of the last, summed deltaE), so long
-        // prints stay continuous instead of alternating gaps.
-        var moveIndex = 0
-        while (moveIndex < value.moveCount) {
-            if (moveIndex - lastReportedMove >= RibbonPathGeometry.BUILD_PROGRESS_STRIDE) {
-                lastReportedMove = moveIndex
-                onBuildProgress?.invoke((moveIndex.toFloat() / max(value.moveCount, 1)).coerceIn(0f, 1f))
-            }
-            val windowOffset = moveIndex * GcodeNozzlePath.VALUES_PER_MOVE
-            val kind = source[windowOffset + GcodeNozzlePath.KIND]
-            val boundsX1 = source[windowOffset + GcodeNozzlePath.X1]
-            val boundsY1 = source[windowOffset + GcodeNozzlePath.Y1]
-            val boundsZ1 = source[windowOffset + GcodeNozzlePath.Z1]
-            val boundsX2 = source[windowOffset + GcodeNozzlePath.X2]
-            val boundsY2 = source[windowOffset + GcodeNozzlePath.Y2]
-            val boundsZ2 = source[windowOffset + GcodeNozzlePath.Z2]
-            // Natural run: consecutive same-kind moves that stay collinear
-            // (turn-split at sharp reversals), WITHOUT the stride bound.
-            var runEnd = moveIndex + 1
-            var firstDx = boundsX2 - boundsX1
-            var firstDy = boundsY2 - boundsY1
-            val firstLen = sqrt(firstDx * firstDx + firstDy * firstDy)
-            if (firstLen > 1e-7f) { firstDx /= firstLen; firstDy /= firstLen }
-            var runChord = 0.0f
-            var runDeltaE = 0f
-            var runArc = 0f
-            while (runEnd < value.moveCount &&
-                source[runEnd * GcodeNozzlePath.VALUES_PER_MOVE + GcodeNozzlePath.KIND] == kind) {
-                val ro = runEnd * GcodeNozzlePath.VALUES_PER_MOVE
-                var ndx = source[ro + GcodeNozzlePath.X2] - source[ro + GcodeNozzlePath.X1]
-                var ndy = source[ro + GcodeNozzlePath.Y2] - source[ro + GcodeNozzlePath.Y1]
-                val nlen = sqrt(ndx * ndx + ndy * ndy)
-                if (nlen > 1e-7f && firstDx * ndx / nlen + firstDy * ndy / nlen < RibbonPathGeometry.TURN_SPLIT_DOT) break
-                runEnd++
-            }
-            for (m in moveIndex until runEnd) {
-                val o = m * GcodeNozzlePath.VALUES_PER_MOVE
-                extrusionPrefix[m + 1] = extrusionMoves
-                travelPrefix[m + 1] = travelMoves
-                if (kind == GcodeNozzlePath.Kind.EXTRUSION.code) {
-                    boundsVertex += source[o + GcodeNozzlePath.X1]
-                    boundsVertex += source[o + GcodeNozzlePath.Y1]
-                    boundsVertex += source[o + GcodeNozzlePath.Z1]
-                    boundsVertex += source[o + GcodeNozzlePath.X2]
-                    boundsVertex += source[o + GcodeNozzlePath.Y2]
-                    boundsVertex += source[o + GcodeNozzlePath.Z2]
-                }
-            }
-            val lastOffset = (runEnd - 1) * GcodeNozzlePath.VALUES_PER_MOVE
-            val sx = source[windowOffset + GcodeNozzlePath.X1]
-            val sy = source[windowOffset + GcodeNozzlePath.Y1]
-            val sz = source[windowOffset + GcodeNozzlePath.Z1]
-            val ex = source[lastOffset + GcodeNozzlePath.X2]
-            val ey = source[lastOffset + GcodeNozzlePath.Y2]
-            val ez = source[lastOffset + GcodeNozzlePath.Z2]
-            // Run-wide totals: one width for the WHOLE natural run so every
-            // stride window of the same line shares identical geometry -
-            // micro-layer borders never alternate width/height.
-            runChord = sqrt((ex - sx) * (ex - sx) + (ey - sy) * (ey - sy))
-            runDeltaE = 0f
-            runArc = 0f
-            for (m in moveIndex until runEnd) {
-                val mo = m * GcodeNozzlePath.VALUES_PER_MOVE
-                runDeltaE += source[mo + GcodeNozzlePath.DELTA_E]
-                val ax = source[mo + GcodeNozzlePath.X1]; val ay = source[mo + GcodeNozzlePath.Y1]
-                val bx = source[mo + GcodeNozzlePath.X2]; val by = source[mo + GcodeNozzlePath.Y2]
-                runArc += sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay))
-            }
-            val runHeight = source[lastOffset + GcodeNozzlePath.LAYER_HEIGHT]
-            val speedRatio = if (kind == GcodeNozzlePath.Kind.EXTRUSION.code && speedSpan > 0f) {
-                ((source[windowOffset + GcodeNozzlePath.SPEED] - minSpeed) / speedSpan).coerceIn(0f, 1f)
-            } else 0f
-            val color = if (kind == GcodeNozzlePath.Kind.EXTRUSION.code) {
-                hsv(extrusionHue(speedRatio), RIBBON_SATURATION, RIBBON_VALUE, 1f)
-            } else floatArrayOf(0.50f, 0.54f, 0.64f, 0.20f)
-            if (kind == GcodeNozzlePath.Kind.EXTRUSION.code) {
-                // Emit stride-sized windows inside the run. Each window uses
-                // the run deltaE scaled to ITS OWN chord, so the resolved
-                // width equals the run width exactly (same numerator/denominator ratio).
-                var windowStart = moveIndex
-                while (windowStart < runEnd) {
-                    val windowLast = min(windowStart + stride, runEnd) - 1
-                    val wo = windowStart * GcodeNozzlePath.VALUES_PER_MOVE
-                    val wlo = windowLast * GcodeNozzlePath.VALUES_PER_MOVE
-                    val wsx = source[wo + GcodeNozzlePath.X1]
-                    val wsy = source[wo + GcodeNozzlePath.Y1]
-                    val wsz = source[wo + GcodeNozzlePath.Z1]
-                    val wex = source[wlo + GcodeNozzlePath.X2]
-                    val wey = source[wlo + GcodeNozzlePath.Y2]
-                    val wez = source[wlo + GcodeNozzlePath.Z2]
-                    val wChord = sqrt((wex - wsx) * (wex - wsx) + (wey - wsy) * (wey - wsy))
-                    val windowDeltaE = if (runChord > 1e-6f) runDeltaE * (wChord / runChord) else runDeltaE
-                    // Window boundaries are joints of the run: miter inside the
-                    // run so the closing and opening windows share their corner
-                    // coordinates, and a perpendicular cap where the run ends so
-                    // bead ends are never skewed by a neighbour.
-                    val currentDir = RibbonPathGeometry.unitDirection(wex - wsx, wey - wsy)
-                    val previousDir = if (windowStart > moveIndex) {
-                        val po = (windowStart - 1) * GcodeNozzlePath.VALUES_PER_MOVE
-                        RibbonPathGeometry.unitDirection(
-                            source[po + GcodeNozzlePath.X2] - source[po + GcodeNozzlePath.X1],
-                            source[po + GcodeNozzlePath.Y2] - source[po + GcodeNozzlePath.Y1],
-                        )
-                    } else null
-                    val nextDir = if (windowLast + 1 < runEnd) {
-                        val no = (windowLast + 1) * GcodeNozzlePath.VALUES_PER_MOVE
-                        RibbonPathGeometry.unitDirection(
-                            source[no + GcodeNozzlePath.X2] - source[no + GcodeNozzlePath.X1],
-                            source[no + GcodeNozzlePath.Y2] - source[no + GcodeNozzlePath.Y1],
-                        )
-                    } else null
-                    val startNormal = RibbonPathGeometry.jointNormal(previousDir, currentDir)
-                    val endNormal = RibbonPathGeometry.jointNormal(currentDir, nextDir)
-                    addRibbonMove(
-                        ribbonVertex, ribbonNormal, ribbonColor, ribbonAmbientValues,
-                        wsx, wsy, wsz, wex, wey, wez,
-                        windowDeltaE,
-                        runHeight,
-                        startNormal.first, startNormal.second,
-                        endNormal.first, endNormal.second,
-                        color,
-                    )
-                    extrusionMoves++
-                    for (m in windowStart until windowLast) {
-                        extrusionPrefix[m + 1] = extrusionMoves
-                        travelPrefix[m + 1] = travelMoves
-                    }
-                    extrusionPrefix[windowLast + 1] = extrusionMoves
-                    windowStart = windowLast + 1
-                }
-                extrusionPrefix[runEnd] = extrusionMoves
-                travelPrefix[runEnd] = travelMoves
-            } else {
-                // Pure-Z layer transitions are not meaningful travel paths;
-                // 599 of them at 0.08 mm would paint vertical scratches over
-                // the whole part.
-                val travelDx = ex - sx
-                val travelDy = ey - sy
-                val travelDz = ez - sz
-                val travelLen = sqrt(travelDx * travelDx + travelDy * travelDy + travelDz * travelDz)
-                val verticalOnly = travelLen > 1e-7f && sqrt(travelDx * travelDx + travelDy * travelDy) < travelLen * 0.25f
-                if (!verticalOnly) {
-                    travelVertex += sx; travelVertex += sy; travelVertex += sz
-                    travelVertex += ex; travelVertex += ey; travelVertex += ez
-                    repeat(2) { color.forEach { travelColor += it } }
-                    travelMoves++
-                }
-                for (m in moveIndex until runEnd) {
-                    travelPrefix[m + 1] = travelMoves
-                    extrusionPrefix[m + 1] = extrusionMoves
-                }
-            }
-            moveIndex = runEnd
-        }
-        ribbonPositions = ribbonVertex.toFloatBuffer()
-        ribbonNormals = ribbonNormal.toFloatBuffer()
-        ribbonColors = ribbonColor.toFloatBuffer()
-        ribbonAmbient = ribbonAmbientValues.toFloatBuffer()
-        travelPositions = travelVertex.toFloatBuffer()
-        travelColors = travelColor.toFloatBuffer()
-
-        // Camera bounds from the printed part only. Stray extrusion moves
-        // (purge line at the plate corner, distant skirt loops) are trimmed
-        // with per-axis percentiles so the orbit pivots on the model, not the
-        // plate; the fallback keeps the view valid for travel-only paths.
-        val bounds = NozzlePathBounds.printedBounds(boundsVertex.toFloatArray())
-        if (bounds != null) {
-            modelMinX = bounds[0]; modelMinY = bounds[1]; modelMinZ = bounds[2]
-            modelMaxX = bounds[3]; modelMaxY = bounds[4]; modelMaxZ = bounds[5]
-        } else {
-            modelMinX = value.minX; modelMinY = value.minY; modelMinZ = value.minZ
-            modelMaxX = value.maxX; modelMaxY = value.maxY; modelMaxZ = value.maxZ
-        }
-    }
-
-    /**
-     * Emits the physical bead for one extrusion move: a colored top face at
-     * z + layer height plus shaded left/right side faces from z to z + height.
-     * The width comes from the actual flow (deltaE * filament area / length /
-     * layer height) bounded by the settings line width, so the geometry follows
-     * the sliced settings (layer height, line width, flow).
-     *
-     * Lighting: each face carries ONE analytic normal (top = +Z, sides = the
-     * perpendicular of the move direction). Constant normals per face mean a
-     * constant luminance per facet - no interpolated gradients, so the render
-     * stays crisp at every zoom and cannot produce corduroy moire. The
-     * [ambient] channel carries the occlusion term: side faces get darker
-     * toward the base (contact shadow) and odd layers keep the parity tint.
-     */
-    private fun addRibbonMove(
-        vertex: DirectFloatSink,
-        normals: DirectFloatSink,
-        colors: DirectFloatSink,
-        ambient: DirectFloatSink,
-        sx: Float, sy: Float, sz: Float,
-        ex: Float, ey: Float, ez: Float,
-        deltaE: Float,
-        parsedLayerHeight: Float,
-        startNx: Float, startNy: Float,
-        endNx: Float, endNy: Float,
-        color: FloatArray,
-    ) {
-        val dx = ex - sx
-        val dy = ey - sy
-        val length = sqrt(dx * dx + dy * dy)
-        val width = resolveBeadWidthMm(
-            lengthMm = length,
-            deltaE = deltaE,
-            parsedLayerHeight = parsedLayerHeight,
-            layerHeightFallback = beadHeight,
-            lineWidth = beadLineWidth,
-            filamentArea = filamentArea,
-        )
-        val height = if (parsedLayerHeight > 0.02f && parsedLayerHeight <= 2.0f) parsedLayerHeight else beadHeight
-        // A degenerate (sub-cutoff) window would leave a hole in the wall; draw
-        // it as a hairline bead so micro-layer prints stay solid. The inspector
-        // keeps the true zero via its own readout path.
-        val render = if (width <= 0f) beadLineWidth * HAIRLINE_WIDTH_RATIO else width
-        // Subtle per-layer tint: odd layers are a touch darker so stacked beads
-        // read as separate layers (the hue still follows speed/z). On fine-layer
-        // prints the parity tint would band every micro-layer, so fade it out.
-        val level = if (height > 0f) (ez / height).roundToInt() else 0
-        val parity = if (level and 1 == 0) 1f else {
-            if (height < FINE_LAYER_HEIGHT_MM) RIBBON_THIN_LAYER_TINT else RIBBON_LAYER_TINT
-        }
-        // On fine layers the side/top contrast at micro-layer scale creates
-        // scalloped "teeth" along curved rims; soften it so micro-beads read as
-        // one continuous surface.
-        val fine = height <= FINE_LAYER_HEIGHT_MM
-        // Geometry is shared with the Prusa renderer: corners are offset by the
-        // boundary normals of the joint, so this window and its neighbours share
-        // their corner coordinates exactly and walls stay seamless.
-        RibbonPathGeometry.addStrip(
-            vertex, normals, colors, ambient,
-            sx, sy, sz, ex, ey, ez,
-            render, height,
-            startNx, startNy, endNx, endNy,
-            color,
-            parity * TOP_AMBIENT,
-            parity * (if (fine) FINE_SIDE_BASE_AMBIENT else SIDE_BASE_AMBIENT),
-            parity * (if (fine) FINE_SIDE_TOP_AMBIENT else SIDE_TOP_AMBIENT),
-        )
     }
 
     private fun buildGrid(value: GcodeNozzlePath) {
@@ -956,96 +710,6 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         return bestIndex
     }
 
-    /**
-     * Uploads the ribbon/travel geometry into vertex buffer objects (GPU
-     * memory) once per path; color-mode flips re-upload. Falls back silently
-     * to client-side pointers if the driver allocates no buffer ids.
-     */
-    private fun ensureUploads(current: GcodeNozzlePath) {
-        if (uploadedPath === current && pathVbos.size == 6) return
-        if (pathVbos.size != 6) {
-            val ids = IntArray(6)
-            GLES20.glGenBuffers(6, ids, 0)
-            pathVbos = ids
-        }
-        val buffers = listOf(ribbonPositions, ribbonNormals, ribbonColors, ribbonAmbient, travelPositions, travelColors)
-        for (index in buffers.indices) {
-            val data = buffers[index] ?: continue
-            data.position(0)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pathVbos[index])
-            GLES20.glBufferData(
-                GLES20.GL_ARRAY_BUFFER,
-                data.remaining() * Float.SIZE_BYTES,
-                data,
-                GLES20.GL_STATIC_DRAW,
-            )
-        }
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-        uploadedPath = current
-    }
-
-    private fun drawLitTriangles(
-        positions: FloatBuffer?,
-        normals: FloatBuffer?,
-        colors: FloatBuffer?,
-        ambient: FloatBuffer?,
-        vertexCount: Int,
-    ) {
-        if (positions == null || normals == null || colors == null || ambient == null || vertexCount <= 0) return
-        GLES20.glUseProgram(litProgram)
-        val position = GLES20.glGetAttribLocation(litProgram, "aPosition")
-        val normal = GLES20.glGetAttribLocation(litProgram, "aNormal")
-        val color = GLES20.glGetAttribLocation(litProgram, "aColor")
-        val ambientLoc = GLES20.glGetAttribLocation(litProgram, "aAmbient")
-        val matrix = GLES20.glGetUniformLocation(litProgram, "uMvpMatrix")
-        val sceneMatrix = GLES20.glGetUniformLocation(litProgram, "uSceneMatrix")
-        val keyDir = GLES20.glGetUniformLocation(litProgram, "uKeyDir")
-        val fillDir = GLES20.glGetUniformLocation(litProgram, "uFillDir")
-        val viewDir = GLES20.glGetUniformLocation(litProgram, "uViewDir")
-        positions.position(0)
-        normals.position(0)
-        colors.position(0)
-        ambient.position(0)
-        GLES20.glEnableVertexAttribArray(position)
-        GLES20.glEnableVertexAttribArray(normal)
-        GLES20.glEnableVertexAttribArray(color)
-        GLES20.glEnableVertexAttribArray(ambientLoc)
-        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, positions)
-        GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 12, normals)
-        GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, colors)
-        GLES20.glVertexAttribPointer(ambientLoc, 1, GLES20.GL_FLOAT, false, 4, ambient)
-        GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
-        GLES20.glUniformMatrix4fv(sceneMatrix, 1, false, scene, 0)
-        GLES20.glUniform3f(keyDir, KEY_LIGHT[0], KEY_LIGHT[1], KEY_LIGHT[2])
-        GLES20.glUniform3f(fillDir, FILL_LIGHT[0], FILL_LIGHT[1], FILL_LIGHT[2])
-        GLES20.glUniform3f(viewDir, 0f, -VIEW_EYE_Y, VIEW_EYE_Z)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
-        GLES20.glDisableVertexAttribArray(position)
-        GLES20.glDisableVertexAttribArray(normal)
-        GLES20.glDisableVertexAttribArray(color)
-        GLES20.glDisableVertexAttribArray(ambientLoc)
-    }
-
-    private fun drawColoredLines(positions: FloatBuffer?, colors: FloatBuffer?, vertexCount: Int, width: Float) {
-        if (positions == null || colors == null || vertexCount <= 0) return
-        GLES20.glUseProgram(colorProgram)
-        val position = GLES20.glGetAttribLocation(colorProgram, "aPosition")
-        val color = GLES20.glGetAttribLocation(colorProgram, "aColor")
-        val matrix = GLES20.glGetUniformLocation(colorProgram, "uMvpMatrix")
-        positions.position(0)
-        colors.position(0)
-        GLES20.glEnableVertexAttribArray(position)
-        GLES20.glEnableVertexAttribArray(color)
-        GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 12, positions)
-        GLES20.glVertexAttribPointer(color, 4, GLES20.GL_FLOAT, false, 16, colors)
-        GLES20.glUniformMatrix4fv(matrix, 1, false, mvp, 0)
-        lineWidth(width)
-        GLES20.glDrawArrays(GLES20.GL_LINES, 0, vertexCount)
-        GLES20.glLineWidth(1f)
-        GLES20.glDisableVertexAttribArray(position)
-        GLES20.glDisableVertexAttribArray(color)
-    }
-
     /** Moves the orbit pivot to the pending touch point (ray-plane intersection). */
     private fun cameraDistance(): Float {
         val current = path ?: return 300f
@@ -1068,22 +732,12 @@ private class NozzlePathRenderer : NozzlePathRendererBase() {
         private const val MIN_ZOOM = 0.25f
         private const val MAX_ZOOM = 60f
         private const val TRAVEL_WIDTH = 1.5f
-        private const val HAIRLINE_WIDTH_RATIO = 0.5f
-        private const val RIBBON_THIN_LAYER_TINT = 0.995f
         // Fixed WORLD-space studio rig: the bead path rotates under the lights
         // while orbiting, so faces shade consistently from every angle. These
         // are directions TOWARD the light.
-        // Eye sits at (0, -distance, 0.62*distance) in view space.
-        // Ambient terms: the top face catches the key light head-on; side faces
-        // darken toward the base so beads look seated on the layer below, and
-        // odd layers keep a subtle tint so stacked layers separate.
-        private const val TOP_AMBIENT = 0.97f
-        private const val SIDE_TOP_AMBIENT = 0.92f
-        private const val SIDE_BASE_AMBIENT = 0.74f
-        private const val FINE_SIDE_BASE_AMBIENT = 0.88f
-        private const val FINE_SIDE_TOP_AMBIENT = 0.95f
-        // Odd layers render a touch darker so layers separate visually.
-        private const val RIBBON_LAYER_TINT = 0.96f
+        // Eye sits at (0, -distance, 0.62*distance) in view space. The ambient
+        // terms and the layer tints live with the geometry that uses them
+        // (RibbonPathBuilders.kt).
 
         private const val LIT_VERTEX_SHADER = """
             uniform mat4 uMvpMatrix;
