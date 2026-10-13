@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,6 +20,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -29,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.SlicerSettings
@@ -59,90 +63,306 @@ internal fun infillPatternLabel(pattern: String): String = when (pattern.lowerca
     else -> pattern.replaceFirstChar { it.uppercase() }
 }
 
+/**
+ * The sections of the print settings: the phone stacks these in this order, and
+ * each pane of the foldable's split picks from this same list, so the two layouts
+ * cannot drift apart.
+ *
+ * [PRINTER] is the sheet's own header block - the machine picker, the two imports,
+ * the profile banner and the reset - and it is a section like the rest so that
+ * every row the phone shows has somewhere to be reached from on a fold.
+ */
+internal enum class PrintSettingsSection(val label: String) {
+    PRINTER("Printer & profile"),
+    QUALITY("Quality"),
+    WALLS_AND_TOP_BOTTOM("Walls and top/bottom"),
+    INFILL("Infill"),
+    SPEED("Speed"),
+    MATERIAL("Material"),
+    COOLING("Cooling"),
+    SUPPORTS("Supports"),
+    TRAVEL_AND_RETRACTION("Travel and retraction"),
+    BUILD_PLATE_ADHESION("Build plate adhesion"),
+    EXPERIMENTAL("Experimental"),
+}
+
+/** Everything but the header block, in the order the phone's cards are stacked. */
+private val PRINT_SETTINGS_CATEGORIES =
+    PrintSettingsSection.entries.filter { it != PrintSettingsSection.PRINTER }
+
+/** The two panes of the foldable's split, tagged so a test can measure them. */
+internal const val PRINT_SETTINGS_LEFT_PANE_TAG = "print-settings-left-pane"
+internal const val PRINT_SETTINGS_RIGHT_PANE_TAG = "print-settings-right-pane"
+
+/**
+ * The print settings, in the two shapes a window has.
+ *
+ * A phone keeps the one scrolling column it has always had: the header block, and
+ * then every category in its own collapsible card.
+ *
+ * A foldable gets **two settings panes side by side** instead, each with its own
+ * section selector and its own scroll, so twice the settings are on the screen at
+ * once: the left opens on Quality and the right on the section after it, and
+ * changing one never disturbs the other. Every section the phone shows is in both
+ * selectors - the header block included, as [PrintSettingsSection.PRINTER] - so
+ * nothing the split could lose has to be found anywhere but a pane. Both layouts
+ * render the same section bodies, so they cannot drift apart.
+ */
 @Composable
 internal fun CategorizedSettingsSheet(
     state: MainUiState,
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onResetOverrides: () -> Unit,
+    expandedLayout: Boolean,
     onImportProfile: () -> Unit = {},
     onImportProject: () -> Unit = {},
     onOpenAllSettings: () -> Unit = {},
     onCuraMachine: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val settings = state.settings
     var confirmingReset by remember { mutableStateOf(false) }
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("Print settings", style = MaterialTheme.typography.headlineSmall)
-        CuraMachinePicker(
-            machines = state.curaMachines,
-            selectedId = state.curaMachineId,
-            onSelect = onCuraMachine,
-        )
-        OutlinedButton(
-            onClick = onImportProfile,
-            modifier = Modifier.fillMaxWidth(),
+    // One selection per pane, kept while the sheet is open. They open on the first
+    // two categories rather than both on the first: the point of the split is two
+    // sections of settings at once, not the same one twice.
+    var leftSection by rememberSaveable { mutableStateOf(PrintSettingsSection.QUALITY) }
+    var rightSection by rememberSaveable { mutableStateOf(PrintSettingsSection.WALLS_AND_TOP_BOTTOM) }
+    val onAskReset: () -> Unit = { confirmingReset = true }
+
+    if (expandedLayout) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
         ) {
-            Text("Import settings from Cura profile (.curaprofile)")
+            Text("Print settings", style = MaterialTheme.typography.headlineSmall)
+            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                PrintSettingsPane(
+                    section = leftSection,
+                    onSection = { leftSection = it },
+                    state = state,
+                    onSettings = onSettings,
+                    onAskReset = onAskReset,
+                    onImportProfile = onImportProfile,
+                    onImportProject = onImportProject,
+                    onOpenAllSettings = onOpenAllSettings,
+                    onCuraMachine = onCuraMachine,
+                    modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_LEFT_PANE_TAG),
+                )
+                // The divider is the split's own line; the space either side of it
+                // is what keeps the two panes' fields from reading as one column.
+                VerticalDivider(modifier = Modifier.fillMaxHeight().padding(horizontal = 12.dp))
+                PrintSettingsPane(
+                    section = rightSection,
+                    onSection = { rightSection = it },
+                    state = state,
+                    onSettings = onSettings,
+                    onAskReset = onAskReset,
+                    onImportProfile = onImportProfile,
+                    onImportProject = onImportProject,
+                    onOpenAllSettings = onOpenAllSettings,
+                    onCuraMachine = onCuraMachine,
+                    modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_RIGHT_PANE_TAG),
+                )
+            }
         }
-        OutlinedButton(
-            onClick = onImportProject,
-            modifier = Modifier.fillMaxWidth(),
+    } else {
+        // The phone's one column, exactly as it was before the split: the header
+        // block, then every category in its own collapsible card.
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("Import settings from Cura project (.3mf)")
-        }
-        Text(
-            "A profile carries print and filament settings. A project carries the machine definition and its start/end G-code too.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedButton(
-            onClick = onOpenAllSettings,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Add more settings (all settings)")
-        }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(state.profileName, style = MaterialTheme.typography.titleMedium)
-                Text(state.profileSource, style = MaterialTheme.typography.bodySmall)
-                if (state.importedRawSettingCount > 0) {
-                    Text(
-                        "${state.importedRawSettingCount} imported values · ${settings.overriddenSettingKeys.size} app overrides",
-                        style = MaterialTheme.typography.bodySmall,
+            Text("Print settings", style = MaterialTheme.typography.headlineSmall)
+            PrintSettingsSectionBody(
+                section = PrintSettingsSection.PRINTER,
+                state = state,
+                onSettings = onSettings,
+                onAskReset = onAskReset,
+                onImportProfile = onImportProfile,
+                onImportProject = onImportProject,
+                onOpenAllSettings = onOpenAllSettings,
+                onCuraMachine = onCuraMachine,
+            )
+            PRINT_SETTINGS_CATEGORIES.forEach { section ->
+                SettingsCategory(
+                    title = section.label,
+                    initiallyExpanded = section == PrintSettingsSection.QUALITY,
+                ) {
+                    PrintSettingsSectionBody(
+                        section = section,
+                        state = state,
+                        onSettings = onSettings,
+                        onAskReset = onAskReset,
+                        onImportProfile = onImportProfile,
+                        onImportProject = onImportProject,
+                        onOpenAllSettings = onOpenAllSettings,
+                        onCuraMachine = onCuraMachine,
                     )
                 }
-                state.warnings.forEach { warning ->
-                    Text("Warning: $warning", color = MaterialTheme.colorScheme.error)
-                }
-                OutlinedButton(
-                    onClick = { confirmingReset = true },
-                    enabled = settings.overriddenSettingKeys.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Reset all app overrides")
-                }
-        if (confirmingReset) {
-            ResetConfirmDialog(
-                title = "Reset all app overrides?",
-                text = "Every setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported. There is no undo.",
-                onDismiss = { confirmingReset = false },
-                onConfirm = {
-                    confirmingReset = false
-                    onResetOverrides()
-                },
-            )
+            }
+            Spacer(Modifier.height(24.dp))
         }
+    }
+    if (confirmingReset) {
+        ResetConfirmDialog(
+            title = "Reset all app overrides?",
+            text = "Every setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported. There is no undo.",
+            onDismiss = { confirmingReset = false },
+            onConfirm = {
+                confirmingReset = false
+                onResetOverrides()
+            },
+        )
+    }
+}
+
+/**
+ * One pane of the foldable's split: the compact selector for the section it shows,
+ * and that section's fields scrolling under it. The selector stays where it is
+ * while the fields scroll, and neither pane's scroll moves the other.
+ */
+@Composable
+private fun PrintSettingsPane(
+    section: PrintSettingsSection,
+    onSection: (PrintSettingsSection) -> Unit,
+    state: MainUiState,
+    onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
+    onAskReset: () -> Unit,
+    onImportProfile: () -> Unit,
+    onImportProject: () -> Unit,
+    onOpenAllSettings: () -> Unit,
+    onCuraMachine: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxHeight()) {
+        PrintSettingsSectionSelector(section = section, onSection = onSection)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(top = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            PrintSettingsSectionBody(
+                section = section,
+                state = state,
+                onSettings = onSettings,
+                onAskReset = onAskReset,
+                onImportProfile = onImportProfile,
+                onImportProject = onImportProject,
+                onOpenAllSettings = onOpenAllSettings,
+                onCuraMachine = onCuraMachine,
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * A pane's section selector: one row, the way every other one-of-N choice in these
+ * sheets is made, with the section in force as the button's own text. Each pane has
+ * its own, which is what keeps the two selections independent.
+ */
+@Composable
+private fun PrintSettingsSectionSelector(
+    section: PrintSettingsSection,
+    onSection: (PrintSettingsSection) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Section: " + section.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            PrintSettingsSection.entries.forEach { entry ->
+                DropdownMenuItem(
+                    text = { Text(if (entry == section) "✔ " + entry.label else entry.label) },
+                    onClick = {
+                        open = false
+                        onSection(entry)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One section's rows, written once and rendered by both layouts: the phone's
+ * stacked cards and the foldable's two panes call this with the same section and
+ * get the same fields, in the same order.
+ */
+@Composable
+private fun PrintSettingsSectionBody(
+    section: PrintSettingsSection,
+    state: MainUiState,
+    onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
+    onAskReset: () -> Unit,
+    onImportProfile: () -> Unit,
+    onImportProject: () -> Unit,
+    onOpenAllSettings: () -> Unit,
+    onCuraMachine: (String) -> Unit,
+) {
+    val settings = state.settings
+    when (section) {
+        PrintSettingsSection.PRINTER -> {
+            CuraMachinePicker(
+                machines = state.curaMachines,
+                selectedId = state.curaMachineId,
+                onSelect = onCuraMachine,
+            )
+            OutlinedButton(
+                onClick = onImportProfile,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Import settings from Cura profile (.curaprofile)")
+            }
+            OutlinedButton(
+                onClick = onImportProject,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Import settings from Cura project (.3mf)")
+            }
+            Text(
+                "A profile carries print and filament settings. A project carries the machine definition and its start/end G-code too.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = onOpenAllSettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Add more settings (all settings)")
+            }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(state.profileName, style = MaterialTheme.typography.titleMedium)
+                    Text(state.profileSource, style = MaterialTheme.typography.bodySmall)
+                    if (state.importedRawSettingCount > 0) {
+                        Text(
+                            "${state.importedRawSettingCount} imported values · ${settings.overriddenSettingKeys.size} app overrides",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    state.warnings.forEach { warning ->
+                        Text("Warning: $warning", color = MaterialTheme.colorScheme.error)
+                    }
+                    OutlinedButton(
+                        onClick = onAskReset,
+                        enabled = settings.overriddenSettingKeys.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Reset all app overrides")
+                    }
+                }
             }
         }
 
-        SettingsCategory("Quality", initiallyExpanded = true) {
+        PrintSettingsSection.QUALITY -> {
             NumberField("Layer height (mm)", settings.layerHeightMm, source(state, SlicerSettings.Keys.LAYER_HEIGHT)) {
                 onSettings(SlicerSettings.Keys.LAYER_HEIGHT) { current -> current.copy(layerHeightMm = it.coerceIn(0.01, 5.0)) }
             }
@@ -243,7 +463,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Walls and top/bottom") {
+        PrintSettingsSection.WALLS_AND_TOP_BOTTOM -> {
             CalculatedField("Wall thickness (mm)", settings.wallThicknessMm, "Wall line count × line width")
             NumberField("Wall line count", settings.wallLineCount.toDouble(), source(state, SlicerSettings.Keys.WALL_LINE_COUNT), decimals = 0) {
                 onSettings(SlicerSettings.Keys.WALL_LINE_COUNT) { current -> current.copy(wallLineCount = it.toInt().coerceIn(0, 1000)) }
@@ -368,7 +588,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Infill") {
+        PrintSettingsSection.INFILL -> {
             NumberField("Infill density (%)", settings.infillDensityPercent, source(state, SlicerSettings.Keys.INFILL_DENSITY)) {
                 onSettings(SlicerSettings.Keys.INFILL_DENSITY) { current -> current.copy(infillDensityPercent = it.coerceIn(0.0, 100.0)) }
             }
@@ -462,7 +682,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Speed") {
+        PrintSettingsSection.SPEED -> {
             NumberField("Print speed (mm/s)", settings.printSpeedMmPerSecond, source(state, SlicerSettings.Keys.PRINT_SPEED)) {
                 onSettings(SlicerSettings.Keys.PRINT_SPEED) { current -> current.copy(printSpeedMmPerSecond = it.coerceIn(0.1, 1000.0)) }
             }
@@ -489,7 +709,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Material") {
+        PrintSettingsSection.MATERIAL -> {
             Text(
                 "${settings.materialBrand} ${settings.materialType} · density ${settings.materialDensityGPerCm3} g/cm³",
                 style = MaterialTheme.typography.bodySmall,
@@ -531,7 +751,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Cooling") {
+        PrintSettingsSection.COOLING -> {
             NumberField("Regular fan speed (%)", settings.fanSpeedPercent, source(state, SlicerSettings.Keys.FAN_SPEED)) {
                 onSettings(SlicerSettings.Keys.FAN_SPEED) { current -> current.copy(fanSpeedPercent = it.coerceIn(0.0, 100.0)) }
             }
@@ -543,7 +763,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Supports") {
+        PrintSettingsSection.SUPPORTS -> {
             SwitchRow("Generate supports", settings.supportsEnabled, source(state, SlicerSettings.Keys.SUPPORTS_ENABLED)) {
                 onSettings(SlicerSettings.Keys.SUPPORTS_ENABLED) { current -> current.copy(supportsEnabled = it) }
             }
@@ -618,7 +838,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Travel and retraction") {
+        PrintSettingsSection.TRAVEL_AND_RETRACTION -> {
             NumberField("Retraction distance (mm)", settings.retractionDistanceMm, source(state, SlicerSettings.Keys.RETRACTION_DISTANCE)) {
                 onSettings(SlicerSettings.Keys.RETRACTION_DISTANCE) { current -> current.copy(retractionDistanceMm = it.coerceIn(0.0, 100.0)) }
             }
@@ -692,7 +912,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Build plate adhesion") {
+        PrintSettingsSection.BUILD_PLATE_ADHESION -> {
             OptionField(
                 label = "Adhesion type",
                 value = settings.adhesionType,
@@ -718,7 +938,7 @@ internal fun CategorizedSettingsSheet(
             }
         }
 
-        SettingsCategory("Experimental") {
+        PrintSettingsSection.EXPERIMENTAL -> {
             NumberField("Time estimate factor (%)", settings.machineTimeEstimationFactorPercent, source(state, SlicerSettings.Keys.MACHINE_TIME_ESTIMATION_FACTOR)) {
                 onSettings(SlicerSettings.Keys.MACHINE_TIME_ESTIMATION_FACTOR) { current -> current.copy(machineTimeEstimationFactorPercent = it.coerceIn(1.0, 1000.0)) }
             }
@@ -986,8 +1206,6 @@ internal fun CategorizedSettingsSheet(
                 }
             }
         }
-
-        Spacer(Modifier.height(24.dp))
     }
 }
 

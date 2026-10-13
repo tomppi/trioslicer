@@ -65,6 +65,9 @@ class ResetConfirmationTest {
                 state = state(),
                 onSettings = { _, _ -> written++ },
                 onResetOverrides = { cleared++ },
+                // The phone's one column: this case is about the reset dialog, and
+                // the wide split has its own tests.
+                expandedLayout = false,
             )
         }
         compose.onNodeWithText("Reset all app overrides").performScrollTo().performClick()

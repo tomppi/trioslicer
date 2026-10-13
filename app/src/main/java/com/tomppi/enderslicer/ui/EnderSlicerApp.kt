@@ -2241,6 +2241,9 @@ fun EnderSlicerApp(
                                 state = state,
                                 onSettings = viewModel::updateSettings,
                                 onResetOverrides = viewModel::resetAllSettingOverrides,
+                                // The window's own decision, above: a fold gets the
+                                // two panes, a phone the one column.
+                                expandedLayout = expandedLayout,
                                 onImportProfile = { profilePicker.launch(arrayOf("*/*")) },
                                 onImportProject = {
                                     projectPicker.launch(
