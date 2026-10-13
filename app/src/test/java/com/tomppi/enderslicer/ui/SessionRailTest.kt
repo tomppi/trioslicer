@@ -106,6 +106,7 @@ class SessionRailTest {
         sliceable: Boolean = false,
         sliceBlockedReason: String? = null,
         busy: Boolean = false,
+        sidebar: SidebarSettings = SidebarSettings(),
     ) {
         reason = sliceBlockedReason
         compose.setContent {
@@ -125,6 +126,7 @@ class SessionRailTest {
                     models = if (sliceable) listOf(plateObject("s-hook.stl")) else emptyList(),
                     engineAvailable = sliceable,
                     isBusy = busy,
+                    sidebarSettings = sidebar,
                 ),
                 gcodeAvailable = gcodeAvailable,
                 sliceBlockedReason = reason,
@@ -137,6 +139,7 @@ class SessionRailTest {
                 onTools = {},
                 onPrusaSettings = { key, _ -> keys += key },
                 onOrcaSettings = { key, _ -> keys += key },
+                onExtraSetting = { key, _ -> keys += key },
             )
         }
     }
@@ -390,5 +393,45 @@ class SessionRailTest {
         compose.onNodeWithText("+").performClick()
 
         assertEquals(listOf(OrcaSliceSettings.Keys.LAYER_HEIGHT), keys)
+    }
+
+    /**
+     * The rows are the user's own list, in the order it was set: what was taken off
+     * is gone, and an added setting is drawn from the engine's own catalogue - its
+     * label, and a value the engine will really be given.
+     */
+    @Test
+    fun theSidebarDrawsTheChosenRowsInTheirOrder() {
+        show(
+            sidebar = SidebarSettings(
+                cura = listOf(SIDEBAR_ADHESION, "wall_line_count", SIDEBAR_LAYER_HEIGHT),
+            ),
+        )
+
+        fun top(id: String) = compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + id)
+            .performScrollTo().fetchSemanticsNode().boundsInRoot.top
+
+        val adhesion = top(SIDEBAR_ADHESION)
+        val added = top("wall_line_count")
+        val layerHeight = top(SIDEBAR_LAYER_HEIGHT)
+        assertTrue(
+            "the rows run in the chosen order, they were $adhesion, $added, $layerHeight",
+            adhesion < added && added < layerHeight,
+        )
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_INFILL).assertDoesNotExist()
+        compose.onNodeWithText("Wall Line Count").performScrollTo().assertIsDisplayed()
+    }
+
+    /** A row taken off leaves the rest of the sidebar alone. */
+    @Test
+    fun aRowTakenOffIsGoneAndTheRestStay() {
+        show(sidebar = SidebarSettings(cura = listOf(SIDEBAR_LAYER_HEIGHT, SIDEBAR_ADHESION)))
+
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_LAYER_HEIGHT)
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_ADHESION)
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_INFILL).assertDoesNotExist()
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_SUPPORTS).assertDoesNotExist()
     }
 }

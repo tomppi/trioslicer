@@ -517,7 +517,7 @@ private fun ChoiceEditor(editor: SessionEditor.Choice) {
     }
 }
 
-private fun numberText(value: Double, decimals: Int): String =
+internal fun numberText(value: Double, decimals: Int): String =
     if (decimals == 0) value.roundToInt().toString() else "%.${decimals}f".format(value)
 
 /** Test tag for the editor's body, so a JVM test can find it. */

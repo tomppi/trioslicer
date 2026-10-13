@@ -366,6 +366,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prusaStartGcode = stateStore.restorePrusaGcode().first,
             prusaEndGcode = stateStore.restorePrusaGcode().second,
             extraCuraSettings = stateStore.restoreExtraCuraSettings(),
+            sidebarSettings = restoredSidebarSettings(),
             curaMachineId = stateStore.restoreCuraMachine(),
             previewMemoryProfile = runCatching {
                 PreviewMemoryProfile.valueOf(stateStore.restorePreviewMemoryProfile())
@@ -1148,6 +1149,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         persistExtraSettings(engine)
+    }
+
+    /**
+     * The stored sidebar for an engine, or the built-in four when it has never been
+     * edited. Everything that comes back through here is filtered first: a list
+     * written by another build, or edited by hand, restores as the rows that still
+     * name something rather than as a sidebar with dead entries in it.
+     */
+    private fun restoredSidebarSettings(): SidebarSettings = SidebarSettings(
+        cura = restoredSidebarRows(SlicerEngine.CURA),
+        prusa = restoredSidebarRows(SlicerEngine.PRUSA),
+        orca = restoredSidebarRows(SlicerEngine.ORCA),
+    )
+
+    private fun restoredSidebarRows(engine: SlicerEngine): List<String> =
+        stateStore.restoreSidebarSettings(engine)?.let(::sanitizeSidebarRows)
+            ?: SidebarSettings().forEngine(engine)
+
+    /**
+     * Adds one of the engine's settings to the sidebar, at the end: the order the
+     * user builds is the order the rows are in, and the picker moves them from
+     * there. Adding one that is already on it changes nothing.
+     */
+    fun addSidebarSetting(engine: SlicerEngine, key: String) {
+        val rows = _uiState.value.sidebarSettings.forEngine(engine)
+        val id = key.trim().lowercase()
+        if (id.isEmpty() || id in rows) return
+        updateSidebarRows(engine, rows + id)
+    }
+
+    /** Takes a row off the sidebar; the setting itself is left alone. */
+    fun removeSidebarSetting(engine: SlicerEngine, id: String) {
+        val rows = _uiState.value.sidebarSettings.forEngine(engine)
+        if (id !in rows) return
+        updateSidebarRows(engine, rows - id)
+    }
+
+    /** Moves a row one place up ([delta] -1) or down (+1). */
+    fun moveSidebarSetting(engine: SlicerEngine, id: String, delta: Int) {
+        val rows = _uiState.value.sidebarSettings.forEngine(engine).toMutableList()
+        val from = rows.indexOf(id)
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, rows.lastIndex)
+        if (to == from) return
+        rows.add(to, rows.removeAt(from))
+        updateSidebarRows(engine, rows)
+    }
+
+    private fun updateSidebarRows(engine: SlicerEngine, rows: List<String>) {
+        _uiState.update { state ->
+            state.copy(sidebarSettings = state.sidebarSettings.withRows(engine, rows))
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!stateStore.saveSidebarSettings(engine, rows)) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "The sidebar's settings could not be saved; " +
+                            "they will not survive a restart",
+                    )
+                }
+            }
+        }
     }
 
     /** Prusa flavors into the app's Cura-side vocabulary (inverse of PrusaConfigWriter). */

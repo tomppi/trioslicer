@@ -7,6 +7,7 @@ import com.tomppi.enderslicer.model.ExtraSettingValidation
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrusaPresetSelection
 import com.tomppi.enderslicer.model.PrusaSliceSettings
+import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.model.SlicerSettings
 import org.json.JSONArray
 import org.json.JSONObject
@@ -308,6 +309,35 @@ class AppStateStore(context: Context) {
         ExtraSettingValidation.validOnly(jsonToMap(preferences.getString(KEY_EXTRA_PRUSA, null)))
             .filterKeys { it !in AllSettingsCatalogs.PRUSA_BLOCKED_KEYS }
 
+    /**
+     * The sidebar's chosen rows for one engine, in the order the user set them. Null
+     * on the way back means this engine has never had its sidebar edited - it shows
+     * the built-in four then - while an empty list is a sidebar the user emptied on
+     * purpose, and the two must not be confused.
+     */
+    fun saveSidebarSettings(engine: SlicerEngine, rows: List<String>): Boolean {
+        val json = JSONArray()
+        rows.forEach { json.put(it) }
+        return preferences.edit().putString(sidebarKey(engine), json.toString()).commit()
+    }
+
+    fun restoreSidebarSettings(engine: SlicerEngine): List<String>? =
+        preferences.getString(sidebarKey(engine), null)?.let { encoded ->
+            runCatching { JSONArray(encoded) }.getOrNull()?.let { array ->
+                buildList {
+                    for (i in 0 until array.length()) {
+                        array.optString(i).takeIf(String::isNotBlank)?.let(::add)
+                    }
+                }
+            }
+        }
+
+    private fun sidebarKey(engine: SlicerEngine): String = when (engine) {
+        SlicerEngine.CURA -> KEY_SIDEBAR_CURA
+        SlicerEngine.PRUSA -> KEY_SIDEBAR_PRUSA
+        SlicerEngine.ORCA -> KEY_SIDEBAR_ORCA
+    }
+
     fun saveExtraOrcaSettings(values: Map<String, String>): ExtraSettingsSave =
         saveExtraSettings(KEY_EXTRA_ORCA, values)
 
@@ -455,6 +485,9 @@ class AppStateStore(context: Context) {
         private const val KEY_PRUSA_END = "prusa-end-gcode"
         private const val KEY_SNAPSHOT_BASELINE = "snapshot-baseline-json"
         private const val KEY_OVERRIDES_JSON = "overrides"
+        private const val KEY_SIDEBAR_CURA = "sidebar-cura-json"
+        private const val KEY_SIDEBAR_PRUSA = "sidebar-prusa-json"
+        private const val KEY_SIDEBAR_ORCA = "sidebar-orca-json"
         private const val MAX_CURA_IMPORT_BYTES = 128L * 1024L * 1024L
     }
 }

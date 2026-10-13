@@ -117,6 +117,7 @@ internal fun CategorizedSettingsSheet(
     onImportProfile: () -> Unit = {},
     onImportProject: () -> Unit = {},
     onOpenAllSettings: () -> Unit = {},
+    onOpenSidebarPicker: () -> Unit = {},
     onCuraMachine: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -145,6 +146,7 @@ internal fun CategorizedSettingsSheet(
                     onImportProfile = onImportProfile,
                     onImportProject = onImportProject,
                     onOpenAllSettings = onOpenAllSettings,
+                    onOpenSidebarPicker = onOpenSidebarPicker,
                     onCuraMachine = onCuraMachine,
                     modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_LEFT_PANE_TAG),
                 )
@@ -160,6 +162,7 @@ internal fun CategorizedSettingsSheet(
                     onImportProfile = onImportProfile,
                     onImportProject = onImportProject,
                     onOpenAllSettings = onOpenAllSettings,
+                    onOpenSidebarPicker = onOpenSidebarPicker,
                     onCuraMachine = onCuraMachine,
                     modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_RIGHT_PANE_TAG),
                 )
@@ -184,6 +187,7 @@ internal fun CategorizedSettingsSheet(
                 onImportProfile = onImportProfile,
                 onImportProject = onImportProject,
                 onOpenAllSettings = onOpenAllSettings,
+                onOpenSidebarPicker = onOpenSidebarPicker,
                 onCuraMachine = onCuraMachine,
             )
             PRINT_SETTINGS_CATEGORIES.forEach { section ->
@@ -199,6 +203,7 @@ internal fun CategorizedSettingsSheet(
                         onImportProfile = onImportProfile,
                         onImportProject = onImportProject,
                         onOpenAllSettings = onOpenAllSettings,
+                        onOpenSidebarPicker = onOpenSidebarPicker,
                         onCuraMachine = onCuraMachine,
                     )
                 }
@@ -234,6 +239,7 @@ private fun PrintSettingsPane(
     onImportProfile: () -> Unit,
     onImportProject: () -> Unit,
     onOpenAllSettings: () -> Unit,
+    onOpenSidebarPicker: () -> Unit,
     onCuraMachine: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -255,6 +261,7 @@ private fun PrintSettingsPane(
                 onImportProfile = onImportProfile,
                 onImportProject = onImportProject,
                 onOpenAllSettings = onOpenAllSettings,
+                onOpenSidebarPicker = onOpenSidebarPicker,
                 onCuraMachine = onCuraMachine,
             )
             Spacer(Modifier.height(24.dp))
@@ -305,6 +312,7 @@ private fun PrintSettingsSectionBody(
     onImportProfile: () -> Unit,
     onImportProject: () -> Unit,
     onOpenAllSettings: () -> Unit,
+    onOpenSidebarPicker: () -> Unit,
     onCuraMachine: (String) -> Unit,
 ) {
     val settings = state.settings
@@ -337,6 +345,12 @@ private fun PrintSettingsSectionBody(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Add more settings (all settings)")
+            }
+            OutlinedButton(
+                onClick = onOpenSidebarPicker,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Add settings to the sidebar")
             }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

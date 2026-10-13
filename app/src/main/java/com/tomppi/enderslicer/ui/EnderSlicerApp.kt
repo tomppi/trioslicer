@@ -35,7 +35,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
@@ -85,6 +87,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -277,6 +280,9 @@ fun EnderSlicerApp(
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
     var nonPlanarOpen by rememberSaveable { mutableStateOf(false) }
     var allSettingsOpen by rememberSaveable { mutableStateOf(false) }
+    // The sidebar picker, raised by any engine's own sheet: one dialog, following
+    // whichever engine would slice.
+    var sidebarPickerOpen by rememberSaveable { mutableStateOf(false) }
     var conicalOpen by rememberSaveable { mutableStateOf(false) }
     var blenderMenuExpanded by rememberSaveable { mutableStateOf(false) }
     // The CAD menu, beside Blender's. Two menus rather than one with a mode switch,
@@ -303,6 +309,16 @@ fun EnderSlicerApp(
     // The phone bottom action block folds the same way and for the same
     // reason: it is part of the Plate subtree, so its flag belongs here too.
     var plateActionBarExpanded by rememberSaveable(key = "plate-action-bar-expanded") { mutableStateOf(true) }
+    // The phone's sidebar panel. Expanding it folds the action bar away, and
+    // bringing the bar back folds it; each remembers its own state, and only one of
+    // the two is expanded at a time.
+    var plateRailOpen by rememberSaveable(key = "plate-session-rail-open") { mutableStateOf(false) }
+    val platePanels = PlatePanelState(plateRailOpen, plateActionBarExpanded)
+    // One place the two flags move, so they cannot both be expanded at once.
+    val showPlatePanels: (PlatePanelState) -> Unit = { next ->
+        plateRailOpen = next.railOpen
+        plateActionBarExpanded = next.actionBarExpanded
+    }
     // Conversation is session-scoped on purpose: the harness owns the real
     // transcript, and a half-sent turn must not survive a process restart.
     var aiMessages by remember { mutableStateOf(listOf<AiChatMessage>()) }
@@ -1234,6 +1250,26 @@ fun EnderSlicerApp(
         // destinations are a bottom bar on a phone and a rail down the side
         // once the window is wide enough for one. The suite reads the window's
         // own size class and hands this Scaffold whatever it does not take.
+        // One rail for both window sizes: the fold keeps it as its permanent column
+        // and the phone opens it as a panel, so the two cannot drift apart - the
+        // same call, the same rows, the same editors.
+        val sessionRail: @Composable () -> Unit = {
+            SessionRail(
+                selected = selectedTab,
+                onSelect = { selectedTab = it },
+                engine = engine,
+                state = state,
+                gcodeAvailable = state.hasCurrentGcode(),
+                sliceBlockedReason = effectiveSliceBlockedReason,
+                onSlice = viewModel::sliceModel,
+                onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
+                onTools = { modelToolsOpen = true },
+                onSettings = viewModel::updateSettings,
+                onPrusaSettings = viewModel::updatePrusaSettings,
+                onOrcaSettings = viewModel::updateOrcaSettings,
+                onExtraSetting = { key, value -> viewModel.setExtraSetting(engine, key, value) },
+            )
+        }
         // The app's chrome, once. A phone puts the destinations in the suite's
         // bottom bar; a fold puts them in the rail on the left, and that rail is
         // ours: the printing session lives in it too, under the destinations,
@@ -1529,8 +1565,12 @@ fun EnderSlicerApp(
                             onSlice = viewModel::sliceModel,
                             onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                             onTools = { modelToolsOpen = true },
-                            expanded = plateActionBarExpanded,
-                            onToggle = { plateActionBarExpanded = !plateActionBarExpanded },
+                            expanded = platePanels.actionBarShowsRows,
+                            // While the sidebar panel is open the bar is only its own
+                            // arrow: the panel carries Slice, Export and Model tools,
+                            // so nothing is lost and the plate gets the strip back.
+                            handleOnly = platePanels.actionBarHandleOnly,
+                            onToggle = { showPlatePanels(platePanels.toggledActionBar()) },
                         )
                     }
                 },
@@ -2115,6 +2155,18 @@ fun EnderSlicerApp(
                                 )
                             }
                         }
+                        // The phone's sidebar: a handle on the plate's left edge while
+                        // it is closed, and the same rail the fold keeps while it is
+                        // open. Only one of it and the action bar is expanded.
+                        if (!expandedLayout) {
+                            PhoneSessionPanel(
+                                open = platePanels.railOpen,
+                                onExpand = { showPlatePanels(platePanels.openedRail()) },
+                                onCollapse = { showPlatePanels(platePanels.closedRail()) },
+                                modifier = Modifier.align(Alignment.CenterStart),
+                                rail = sessionRail,
+                            )
+                        }
                     }
                     AppTab.SETTINGS -> if (allSettingsOpen) {
                         val catalogSpecs = remember(engine) {
@@ -2175,6 +2227,45 @@ fun EnderSlicerApp(
                                 Text("Back to settings")
                             }
                         }
+                    } else if (sidebarPickerOpen) {
+                        val sidebarSpecs = remember(engine) {
+                            when (engine) {
+                                SlicerEngine.CURA -> AllSettingsCatalogs.cura(context.assets)
+                                SlicerEngine.PRUSA -> AllSettingsCatalogs.prusa(context.assets)
+                                SlicerEngine.ORCA -> AllSettingsCatalogs.orca(context.assets)
+                            }
+                        }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding),
+                        ) {
+                            SessionSidebarPicker(
+                                engineLabel = engine.label,
+                                specs = sidebarSpecs,
+                                chosen = state.sidebarSettings.forEngine(engine),
+                                values = remember(engine, sidebarSpecs, state) {
+                                    sidebarEffectiveValues(engine, sidebarSpecs, state)
+                                },
+                                blockedKeys = when (engine) {
+                                    SlicerEngine.CURA -> AllSettingsCatalogs.CURA_BLOCKED_KEYS
+                                    SlicerEngine.PRUSA -> AllSettingsCatalogs.PRUSA_BLOCKED_KEYS
+                                    SlicerEngine.ORCA -> AllSettingsCatalogs.ORCA_BLOCKED_KEYS
+                                },
+                                onAdd = { viewModel.addSidebarSetting(engine, it) },
+                                onRemove = { viewModel.removeSidebarSetting(engine, it) },
+                                onMove = { key, delta -> viewModel.moveSidebarSetting(engine, key, delta) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                            )
+                            OutlinedButton(
+                                onClick = { sidebarPickerOpen = false },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Back to settings")
+                            }
+                        }
                     } else Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -2214,6 +2305,7 @@ fun EnderSlicerApp(
                                 onSettings = viewModel::updatePrusaSettings,
                                 onImportConfig = { prusaConfigImportPicker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) },
                                 onOpenAllSettings = { allSettingsOpen = true },
+                                onOpenSidebarPicker = { sidebarPickerOpen = true },
                                 onPrusaPrinter = viewModel::selectPrusaPrinter,
                                 onPrusaPrint = viewModel::selectPrusaPrint,
                                 onPrusaFilament = viewModel::selectPrusaFilament,
@@ -2226,6 +2318,7 @@ fun EnderSlicerApp(
                                 state = state,
                                 onSettings = viewModel::updateOrcaSettings,
                                 onOpenAllSettings = { allSettingsOpen = true },
+                                onOpenSidebarPicker = { sidebarPickerOpen = true },
                                 onImportProfile = {
                                     orcaProfileImportPicker.launch(
                                         arrayOf("application/json", "application/zip", "*/*"),
@@ -2255,6 +2348,7 @@ fun EnderSlicerApp(
                                     )
                                 },
                                 onOpenAllSettings = { allSettingsOpen = true },
+                                onOpenSidebarPicker = { sidebarPickerOpen = true },
                                 onCuraMachine = viewModel::selectCuraMachine,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2320,20 +2414,7 @@ fun EnderSlicerApp(
 
         if (expandedLayout) {
             Row(modifier = Modifier.fillMaxSize()) {
-                SessionRail(
-                    selected = selectedTab,
-                    onSelect = { selectedTab = it },
-                    engine = engine,
-                    state = state,
-                    gcodeAvailable = state.hasCurrentGcode(),
-                    sliceBlockedReason = effectiveSliceBlockedReason,
-                    onSlice = viewModel::sliceModel,
-                    onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
-                    onTools = { modelToolsOpen = true },
-                    onSettings = viewModel::updateSettings,
-                    onPrusaSettings = viewModel::updatePrusaSettings,
-                    onOrcaSettings = viewModel::updateOrcaSettings,
-                )
+                sessionRail()
                 chrome(Modifier.weight(1f))
             }
         } else {
@@ -3881,11 +3962,48 @@ internal fun SessionRail(
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onPrusaSettings: (String, (PrusaSliceSettings) -> PrusaSliceSettings) -> Unit,
     onOrcaSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
+    /** Writes one of an engine's own settings, which is how an added sidebar row edits. */
+    onExtraSetting: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val summary = plateSessionSummary(engine, state)
-    val values = sessionValues(engine, summary, state, onSettings, onPrusaSettings, onOrcaSettings)
-    var editing by remember { mutableStateOf<SessionValueSlot?>(null) }
+    val context = LocalContext.current
+    val chosenRows = state.sidebarSettings.forEngine(engine)
+    // The catalogue is parsed only when a row needs it: the built-in four are the
+    // hand-written editors they always were, and a sidebar nobody has edited costs
+    // nothing. A sidebar that holds an added setting pays for it once per engine.
+    val sidebarSpecs = remember(engine, chosenRows) {
+        if (chosenRows.all(::isBuiltInSidebarRow)) {
+            emptyList()
+        } else {
+            when (engine) {
+                SlicerEngine.CURA -> AllSettingsCatalogs.cura(context.assets)
+                SlicerEngine.PRUSA -> AllSettingsCatalogs.prusa(context.assets)
+                SlicerEngine.ORCA -> AllSettingsCatalogs.orca(context.assets)
+            }
+        }
+    }
+    // Built once per settings change, not once per recomposition: the rail redraws
+    // on every state update and the map covers the whole catalogue.
+    val sidebarValues = remember(engine, state.settings, state.extraCuraSettings, state.extraPrusaSettings, state.extraOrcaSettings, sidebarSpecs) {
+        if (sidebarSpecs.isEmpty()) emptyMap() else sidebarEffectiveValues(engine, sidebarSpecs, state)
+    }
+    val values = sessionSidebarRows(
+        engine = engine,
+        summary = summary,
+        state = state,
+        chosen = chosenRows,
+        specs = sidebarSpecs,
+        values = sidebarValues,
+        onSettings = onSettings,
+        onPrusaSettings = onPrusaSettings,
+        onOrcaSettings = onOrcaSettings,
+        onExtraSetting = onExtraSetting,
+    )
+    // The row's own id, not the value: the dialog reads the row again on every
+    // recomposition, so a choice that applies at once moves the check mark while it
+    // stays open.
+    var editing by remember { mutableStateOf<String?>(null) }
 
     // A reason that lasts is worth showing; one that is gone before the eye finds
     // it is a flash. The second kind is real: a restored workspace has Smart
@@ -4010,20 +4128,111 @@ internal fun SessionRail(
             }
 
             // Stacked rather than laid out as a row: 80dp cannot hold "Layer
-            // height 0,20 mm" on one line, and this is Material's rail width.
-            SessionValueTile(values.layerHeight, enabled = !state.isBusy) {
-                editing = SessionValueSlot.LAYER_HEIGHT
+            // height 0,20 mm" on one line, and this is Material's rail width. The
+            // rows are the user's own list now, in the order the picker set.
+            values.forEach { row ->
+                SessionValueTile(
+                    row.value,
+                    modifier = Modifier.testTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + row.id),
+                    enabled = !state.isBusy,
+                ) {
+                    editing = row.id
+                }
             }
-            SessionValueTile(values.infill, enabled = !state.isBusy) { editing = SessionValueSlot.INFILL }
-            SessionValueTile(values.supports, enabled = !state.isBusy) { editing = SessionValueSlot.SUPPORTS }
-            SessionValueTile(values.adhesion, enabled = !state.isBusy) { editing = SessionValueSlot.ADHESION }
 
         }
     }
 
-    // The slot, not the value: the dialog reads it again on every recomposition,
-    // so a choice that applies at once moves the check mark while it stays open.
-    editing?.let { slot -> SessionValueDialog(values[slot]) { editing = null } }
+    editing?.let { id ->
+        values.firstOrNull { it.id == id }?.let { row ->
+            SessionValueDialog(row.value) { editing = null }
+        }
+    }
+}
+
+/**
+ * The phone plate's two collapsible surfaces - the sidebar panel and the action bar
+ * - as one state, because only one of them is ever expanded.
+ *
+ * Expanding the panel folds the bar away: the panel carries Slice, Export and Model
+ * tools, so the bar becomes its own arrow until it is brought back, and that same
+ * tap folds the panel. Folding the panel with its own arrow leaves the bar where it
+ * was - [actionBarExpanded] is the bar's own remembered state, and the panel is the
+ * other's.
+ */
+internal data class PlatePanelState(
+    val railOpen: Boolean = false,
+    val actionBarExpanded: Boolean = true,
+) {
+    /** True while the bar draws its rows. The panel being open always wins. */
+    val actionBarShowsRows: Boolean get() = actionBarExpanded && !railOpen
+
+    /** True while the bar is only its own arrow. */
+    val actionBarHandleOnly: Boolean get() = railOpen
+
+    fun openedRail(): PlatePanelState = PlatePanelState(railOpen = true, actionBarExpanded = false)
+
+    fun closedRail(): PlatePanelState = copy(railOpen = false)
+
+    /** The bar's own arrow: it brings the bar back and folds the panel in one tap. */
+    fun toggledActionBar(): PlatePanelState = if (railOpen) {
+        PlatePanelState(railOpen = false, actionBarExpanded = true)
+    } else {
+        copy(actionBarExpanded = !actionBarExpanded)
+    }
+}
+
+/**
+ * The phone's sidebar: a slim handle on the plate's left edge while it is closed,
+ * and the rail itself - the same composable the fold keeps as a column - while it
+ * is open.
+ *
+ * Opening it is what folds the plate's action bar away: the rail carries Slice,
+ * Export and Model tools, so the bar becomes its own arrow until it is brought
+ * back, and the plate keeps that strip of height while the panel is up. The handle
+ * is the only thing on the plate's left edge, so the viewer's own gestures - orbit,
+ * pinch, a tap on the model - are never behind something that would swallow them.
+ */
+@Composable
+internal fun PhoneSessionPanel(
+    open: Boolean,
+    onExpand: () -> Unit,
+    onCollapse: () -> Unit,
+    rail: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier) {
+        if (open) {
+            Column(modifier = Modifier.fillMaxHeight()) {
+                Surface(
+                    tonalElevation = 4.dp,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp),
+                ) {
+                    IconButton(onClick = onCollapse) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                            contentDescription = "Hide the sidebar",
+                        )
+                    }
+                }
+                Box(modifier = Modifier.weight(1f)) { rail() }
+            }
+        } else {
+            Surface(
+                tonalElevation = 4.dp,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp),
+            ) {
+                IconButton(onClick = onExpand) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "Show the sidebar",
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** Material's own rail width: the destinations and the session share one column. */
@@ -4165,6 +4374,11 @@ private fun ActionBar(
     onTools: () -> Unit,
     expanded: Boolean,
     onToggle: () -> Unit,
+    /**
+     * True while the phone's sidebar panel is open: the bar folds down to its own
+     * arrow, which is the one thing that brings it back.
+     */
+    handleOnly: Boolean = false,
 ) {
     val gcodeAvailable = state.hasCurrentGcode()
     Surface(tonalElevation = 4.dp) {
@@ -4175,7 +4389,7 @@ private fun ActionBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            if (expanded) {
+            if (expanded && !handleOnly) {
                 // The blocked reason and the estimate describe the rows below
                 // them, so they fold away with the rest: collapsed is one slim
                 // row.
@@ -4192,31 +4406,33 @@ private fun ActionBar(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = if (handleOnly) Arrangement.Center else Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
-                Button(
-                    onClick = onSlice,
-                    enabled = state.engineAvailable && state.modelPath != null && !state.isBusy && sliceBlockedReason == null,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        when {
-                            state.isBusy -> "Working…"
-                            nonPlanarEnabled -> "Slice non-planar"
-                            conicalEnabled -> "Slice conical"
-                            else -> "Slice"
-                        },
-                    )
-                }
-                if (expanded) {
-                    OutlinedButton(
-                        onClick = onExportGcode,
-                        enabled = gcodeAvailable && !state.isBusy,
+                if (!handleOnly) {
+                    if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
+                    Button(
+                        onClick = onSlice,
+                        enabled = state.engineAvailable && state.modelPath != null && !state.isBusy && sliceBlockedReason == null,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("Export G-code")
+                        Text(
+                            when {
+                                state.isBusy -> "Working…"
+                                nonPlanarEnabled -> "Slice non-planar"
+                                conicalEnabled -> "Slice conical"
+                                else -> "Slice"
+                            },
+                        )
+                    }
+                    if (expanded) {
+                        OutlinedButton(
+                            onClick = onExportGcode,
+                            enabled = gcodeAvailable && !state.isBusy,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Export G-code")
+                        }
                     }
                 }
                 // The collapse control rides in the row that survives, so the
@@ -4224,11 +4440,15 @@ private fun ActionBar(
                 IconButton(onClick = onToggle) {
                     Icon(
                         if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = if (expanded) "Collapse actions" else "Expand actions",
+                        contentDescription = when {
+                            handleOnly -> "Bring the actions back"
+                            expanded -> "Collapse actions"
+                            else -> "Expand actions"
+                        },
                     )
                 }
             }
-            if (expanded) {
+            if (expanded && !handleOnly) {
                 OutlinedButton(
                     onClick = onTools,
                     enabled = state.mesh != null && !state.isBusy,

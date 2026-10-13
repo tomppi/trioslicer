@@ -33,6 +33,7 @@ internal fun PrusaSettingsSheet(
     onSettings: (String, (PrusaSliceSettings) -> PrusaSliceSettings) -> Unit,
     onImportConfig: () -> Unit = {},
     onOpenAllSettings: () -> Unit = {},
+    onOpenSidebarPicker: () -> Unit = {},
     onPrusaPrinter: (String) -> Unit = {},
     onPrusaPrint: (String) -> Unit = {},
     onPrusaFilament: (String) -> Unit = {},
@@ -89,6 +90,12 @@ internal fun PrusaSettingsSheet(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Add more settings (all settings)")
+        }
+        OutlinedButton(
+            onClick = onOpenSidebarPicker,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Add settings to the sidebar")
         }
         // Extracted so the button and its confirmation run the same reset.
         val resetEverything = {

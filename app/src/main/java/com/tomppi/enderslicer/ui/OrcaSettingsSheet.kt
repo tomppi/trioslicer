@@ -51,6 +51,7 @@ internal fun OrcaSettingsSheet(
     state: MainUiState,
     onSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
     onOpenAllSettings: () -> Unit = {},
+    onOpenSidebarPicker: () -> Unit = {},
     onImportProfile: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -105,6 +106,9 @@ internal fun OrcaSettingsSheet(
         )
         OutlinedButton(onClick = onOpenAllSettings, modifier = Modifier.fillMaxWidth()) {
             Text("Add more settings (all settings)")
+        }
+        OutlinedButton(onClick = onOpenSidebarPicker, modifier = Modifier.fillMaxWidth()) {
+            Text("Add settings to the sidebar")
         }
         OutlinedButton(
             onClick = { confirmingReset = true },

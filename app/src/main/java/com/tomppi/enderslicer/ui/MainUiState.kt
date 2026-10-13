@@ -122,6 +122,12 @@ data class MainUiState(
     val prusaPresetFilaments: List<PrusaPresetOption> = emptyList(),
     val orcaSettings: OrcaSliceSettings = OrcaSliceSettings(),
     val extraOrcaSettings: Map<String, String> = emptyMap(),
+    /**
+     * Which rows the plate's sidebar shows, per engine. The four it has always
+     * shown by default; each engine keeps its own list because their settings
+     * differ, and switching engine switches the sidebar with it.
+     */
+    val sidebarSettings: SidebarSettings = SidebarSettings(),
     /** Prusa-imported start/end gcode; the Cura path never sees them. */
     val prusaStartGcode: String = "",
     val prusaEndGcode: String = "",
