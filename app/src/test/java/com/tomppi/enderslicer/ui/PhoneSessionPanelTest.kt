@@ -52,6 +52,7 @@ class PhoneSessionPanelTest {
     private val keys = mutableListOf<String>()
     private var expanded = 0
     private var collapsed = 0
+    private var addSettings = 0
 
     /** The rail the app hands the panel, on a phone-sized window. */
     @Composable
@@ -79,6 +80,7 @@ class PhoneSessionPanelTest {
             onPrusaSettings = { key, _ -> keys += key },
             onOrcaSettings = { key, _ -> keys += key },
             onExtraSetting = { key, _ -> keys += key },
+            onAddSettings = { addSettings++ },
         )
     }
 
@@ -110,6 +112,20 @@ class PhoneSessionPanelTest {
         compose.onNodeWithContentDescription("Hide the sidebar").assertIsDisplayed().performClick()
         assertEquals("and its arrow is the way out", 1, collapsed)
         compose.onNodeWithContentDescription("Show the sidebar").assertDoesNotExist()
+    }
+
+    /**
+     * The rail's + is in the panel too - one composable, so the phone's door into
+     * the sidebar picker is the same one the fold's column has.
+     */
+    @Test
+    fun thePanelCarriesTheRailsPlus() {
+        show(open = true, content = { rail() })
+
+        compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).assertIsDisplayed().performClick()
+        assertEquals("the panel's + opens the picker", 1, addSettings)
+        // The panel's own handle is still there above it.
+        compose.onNodeWithContentDescription("Hide the sidebar").assertIsDisplayed()
     }
 
     /** The rail's editor round-trips in the panel the same way it does in the column. */

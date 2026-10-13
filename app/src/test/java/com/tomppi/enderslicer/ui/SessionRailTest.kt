@@ -12,11 +12,13 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.File
 import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PlateObject
@@ -69,6 +71,7 @@ class SessionRailTest {
 
     private var slices = 0
     private var exports = 0
+    private var addSettings = 0
 
     /** The blocked-slice reason as the rail receives it, driven by a test. */
     private var reason by mutableStateOf<String?>(null)
@@ -140,6 +143,7 @@ class SessionRailTest {
                 onPrusaSettings = { key, _ -> keys += key },
                 onOrcaSettings = { key, _ -> keys += key },
                 onExtraSetting = { key, _ -> keys += key },
+                onAddSettings = { addSettings++ },
             )
         }
     }
@@ -393,6 +397,108 @@ class SessionRailTest {
         compose.onNodeWithText("+").performClick()
 
         assertEquals(listOf(OrcaSliceSettings.Keys.LAYER_HEIGHT), keys)
+    }
+
+    /**
+     * The rail's own +: under the values, in the rail's column, and the door into
+     * the same picker the settings sheet opens.
+     */
+    @Test
+    fun theRailCarriesThePlusUnderTheValues() {
+        show()
+
+        val plus = compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).assertIsDisplayed()
+        val last = compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_ADHESION)
+            .performScrollTo().fetchSemanticsNode().boundsInRoot
+        val plusBounds = plus.fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the + sits under the last value row, they were ${last.bottom} and ${plusBounds.top}",
+            plusBounds.top >= last.bottom,
+        )
+        compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).performClick()
+        assertEquals("and it opens the picker", 1, addSettings)
+    }
+
+    /**
+     * However many rows the user adds, the values scroll and the + does not: it is
+     * pinned below their scroll, so the way to add or remove settings is reachable
+     * without hunting for it.
+     */
+    @Test
+    fun aLongSidebarScrollsWhileThePlusStaysPut() {
+        // Twelve of Cura's own settings under the built-in four: far more than the
+        // rail's height at the fold's window.
+        val many = listOf(
+            SIDEBAR_LAYER_HEIGHT, SIDEBAR_INFILL, SIDEBAR_SUPPORTS, SIDEBAR_ADHESION,
+            "wall_line_count", "wall_thickness", "top_layers", "bottom_layers",
+            "line_width", "infill_sparse_density", "speed_print", "retraction_enable",
+            "cool_fan_speed", "material_print_temperature", "top_bottom_thickness",
+            "skirt_line_count",
+        )
+        show(sidebar = SidebarSettings(cura = many))
+
+        // The first rows are at the top of the scroll...
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_LAYER_HEIGHT)
+            .performScrollTo().assertIsDisplayed()
+        // ...the later ones are only reachable by scrolling the rail...
+        compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + "skirt_line_count")
+            .performScrollTo().assertIsDisplayed()
+
+        // ...and the + was on screen the whole time, without scrolling to it.
+        compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).assertIsDisplayed()
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val plus = compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the + is inside the rail's window, it was ${plus.bottom} of ${root.bottom}",
+            plus.bottom <= root.bottom,
+        )
+        compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).performClick()
+        assertEquals(1, addSettings)
+    }
+
+    /** The picker's back names the place it returns to: the tab it was opened over. */
+    @Test
+    fun thePickersBackNamesTheTabItCameFrom() {
+        assertEquals("Back to the plate", sidebarBackLabel(AppTab.PLATE))
+        assertEquals("Back to Print settings", sidebarBackLabel(AppTab.SETTINGS))
+    }
+
+    /**
+     * One picker, two doors: the rail's + and the settings sheet's row raise the same
+     * state, one screen draws it, and that screen sits above the tab switch - so it
+     * opens over whichever tab it came from and closing it returns there.
+     */
+    @Test
+    fun thePickerHasOneScreenAndTwoDoors() {
+        val app = source("ui/EnderSlicerApp.kt")
+
+        assertTrue(
+            "the rail's + opens the picker",
+            app.contains("onAddSettings = { sidebarPickerOpen = true }"),
+        )
+        assertTrue(
+            "and the settings sheet's row opens the same one",
+            app.contains("onOpenSidebarPicker = { sidebarPickerOpen = true }"),
+        )
+        assertEquals(
+            "one picker screen is drawn, not one per door",
+            1,
+            app.split("SessionSidebarPicker(").size - 1,
+        )
+        assertTrue(
+            "and it is drawn above the tab switch",
+            app.indexOf("if (sidebarPickerOpen) {") in 1 until app.indexOf("} else when (selectedTab)"),
+        )
+    }
+
+    private fun source(relative: String): String {
+        val candidates = listOf(
+            File("src/main/java/com/tomppi/enderslicer/$relative"),
+            File("app/src/main/java/com/tomppi/enderslicer/$relative"),
+        )
+        val file = candidates.firstOrNull(File::isFile)
+            ?: error("Unable to locate source file for $relative from " + File(".").absolutePath)
+        return file.readText()
     }
 
     /**

@@ -4,8 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -84,6 +87,15 @@ internal fun SessionSidebarPicker(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        // Capped and scrollable: a sidebar with thirty rows must not push the search
+        // field and the catalogue off the bottom of the screen, which is where the
+        // rows are added from in the first place.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 240.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
         chosen.forEachIndexed { index, id ->
             val spec = byKey[id]
             val label = spec?.label?.ifBlank { null } ?: builtInSidebarLabel(id)
@@ -117,6 +129,7 @@ internal fun SessionSidebarPicker(
                     Icon(Icons.Filled.Close, contentDescription = "Take " + label + " off the sidebar")
                 }
             }
+        }
         }
 
         OutlinedTextField(

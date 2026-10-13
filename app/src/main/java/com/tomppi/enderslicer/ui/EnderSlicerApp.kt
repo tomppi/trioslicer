@@ -1269,6 +1269,9 @@ fun EnderSlicerApp(
                 onPrusaSettings = viewModel::updatePrusaSettings,
                 onOrcaSettings = viewModel::updateOrcaSettings,
                 onExtraSetting = { key, value -> viewModel.setExtraSetting(engine, key, value) },
+                // One picker, two doors: this is the rail's, and the settings sheet's
+                // "Add settings to the sidebar" row raises the same state.
+                onAddSettings = { sidebarPickerOpen = true },
             )
         }
         // The app's chrome, once. A phone puts the destinations in the suite's
@@ -1574,6 +1577,24 @@ fun EnderSlicerApp(
                     }
                 },
             ) { padding ->
+                // One picker, two doors: the settings sheet's "Add settings to the
+                // sidebar" row and the rail's own + both raise this state, so the
+                // screen is drawn here - over whichever tab it was opened from - and
+                // its back label names that tab.
+                if (sidebarPickerOpen) {
+                    SidebarPickerScreen(
+                        engine = engine,
+                        state = state,
+                        onAdd = { viewModel.addSidebarSetting(engine, it) },
+                        onRemove = { viewModel.removeSidebarSetting(engine, it) },
+                        onMove = { key, delta -> viewModel.moveSidebarSetting(engine, key, delta) },
+                        onClose = { sidebarPickerOpen = false },
+                        backLabel = sidebarBackLabel(selectedTab),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                    )
+                } else
                 // Outside the tab switch on purpose: the Plate menu is what opens this,
                 // so tying it to the More tab meant the tap set a flag and nothing drew.
                 if (engineSetupOpen) {
@@ -2232,45 +2253,6 @@ fun EnderSlicerApp(
                             )
                             OutlinedButton(
                                 onClick = { allSettingsOpen = false },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("Back to settings")
-                            }
-                        }
-                    } else if (sidebarPickerOpen) {
-                        val sidebarSpecs = remember(engine) {
-                            when (engine) {
-                                SlicerEngine.CURA -> AllSettingsCatalogs.cura(context.assets)
-                                SlicerEngine.PRUSA -> AllSettingsCatalogs.prusa(context.assets)
-                                SlicerEngine.ORCA -> AllSettingsCatalogs.orca(context.assets)
-                            }
-                        }
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(padding),
-                        ) {
-                            SessionSidebarPicker(
-                                engineLabel = engine.label,
-                                specs = sidebarSpecs,
-                                chosen = state.sidebarSettings.forEngine(engine),
-                                values = remember(engine, sidebarSpecs, state) {
-                                    sidebarEffectiveValues(engine, sidebarSpecs, state)
-                                },
-                                blockedKeys = when (engine) {
-                                    SlicerEngine.CURA -> AllSettingsCatalogs.CURA_BLOCKED_KEYS
-                                    SlicerEngine.PRUSA -> AllSettingsCatalogs.PRUSA_BLOCKED_KEYS
-                                    SlicerEngine.ORCA -> AllSettingsCatalogs.ORCA_BLOCKED_KEYS
-                                },
-                                onAdd = { viewModel.addSidebarSetting(engine, it) },
-                                onRemove = { viewModel.removeSidebarSetting(engine, it) },
-                                onMove = { key, delta -> viewModel.moveSidebarSetting(engine, key, delta) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                            )
-                            OutlinedButton(
-                                onClick = { sidebarPickerOpen = false },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Back to settings")
@@ -3985,6 +3967,8 @@ internal fun SessionRail(
     onOrcaSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
     /** Writes one of an engine's own settings, which is how an added sidebar row edits. */
     onExtraSetting: (String, String) -> Unit,
+    /** Opens the sidebar picker: the rail's + is the plate's own door into it. */
+    onAddSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val summary = plateSessionSummary(engine, state)
@@ -4044,14 +4028,17 @@ internal fun SessionRail(
         modifier = modifier.fillMaxHeight(),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Column(
-            modifier = Modifier
-                .width(SessionRailWidth)
-                .verticalScroll(rememberScrollState())
-                .padding(vertical = EnderSlicerDimens.Space12),
-            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
+        Column(modifier = Modifier.width(SessionRailWidth).fillMaxHeight()) {
+            // Everything above the + scrolls; the + itself does not, so the
+            // sidebar's own settings are one tap away on any window height.
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = EnderSlicerDimens.Space12),
+                verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             AppTab.entries.forEach { tab ->
                 RailDestination(tab, selected == tab) { onSelect(tab) }
             }
@@ -4160,7 +4147,26 @@ internal fun SessionRail(
                     editing = row.id
                 }
             }
+            }
 
+            // Under the values and outside their scroll: the rail's own door into the
+            // sidebar picker, beside the buttons the rail already carries.
+            OutlinedButton(
+                onClick = onAddSettings,
+                contentPadding = PaddingValues(
+                    horizontal = EnderSlicerDimens.Space4,
+                    vertical = EnderSlicerDimens.Space4,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = EnderSlicerDimens.Space8)
+                    .padding(bottom = EnderSlicerDimens.Space8)
+                    .testTag(SESSION_RAIL_ADD_TAG),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Add", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 
@@ -4273,6 +4279,69 @@ private fun SidebarHandle(
                     modifier = Modifier.size(20.dp),
                 )
             }
+        }
+    }
+}
+
+/** The rail's own + row, tagged so a test can find it in either layout. */
+internal const val SESSION_RAIL_ADD_TAG = "session-rail-add"
+
+/**
+ * What the sidebar picker's back button says: where it returns to, named by the tab
+ * it was opened over. The rail's + can raise the picker from any of them, and the
+ * settings sheet's row raises it from Print settings.
+ */
+internal fun sidebarBackLabel(tab: AppTab): String =
+    if (tab == AppTab.PLATE) "Back to the plate" else "Back to " + tab.label
+
+/**
+ * The sidebar picker as a screen: the same [SessionSidebarPicker] the settings sheet
+ * opens, with the one button back that names the place it came from.
+ */
+@Composable
+private fun SidebarPickerScreen(
+    engine: SlicerEngine,
+    state: MainUiState,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onMove: (String, Int) -> Unit,
+    onClose: () -> Unit,
+    backLabel: String,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val specs = remember(engine) {
+        when (engine) {
+            SlicerEngine.CURA -> AllSettingsCatalogs.cura(context.assets)
+            SlicerEngine.PRUSA -> AllSettingsCatalogs.prusa(context.assets)
+            SlicerEngine.ORCA -> AllSettingsCatalogs.orca(context.assets)
+        }
+    }
+    Column(modifier = modifier) {
+        SessionSidebarPicker(
+            engineLabel = engine.label,
+            specs = specs,
+            chosen = state.sidebarSettings.forEngine(engine),
+            values = remember(engine, specs, state) {
+                sidebarEffectiveValues(engine, specs, state)
+            },
+            blockedKeys = when (engine) {
+                SlicerEngine.CURA -> AllSettingsCatalogs.CURA_BLOCKED_KEYS
+                SlicerEngine.PRUSA -> AllSettingsCatalogs.PRUSA_BLOCKED_KEYS
+                SlicerEngine.ORCA -> AllSettingsCatalogs.ORCA_BLOCKED_KEYS
+            },
+            onAdd = onAdd,
+            onRemove = onRemove,
+            onMove = onMove,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(backLabel)
         }
     }
 }
