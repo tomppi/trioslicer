@@ -77,7 +77,9 @@ internal fun OrcaSettingsSheet(
     var pickerOpen by remember { mutableStateOf(false) }
     // The whole menu: the preset rows, the import, the reset and the eight cards.
     // SettingsSheet renders it once on a phone and twice side by side on a fold.
-    val menu: @Composable (Boolean) -> Unit = { phoneDefaults ->
+    // The profile block: the presets, the import and the reset - and nothing a section
+    // carries. The wide layout shows it once, in its left column.
+    val header: @Composable () -> Unit = {
         Text(
             "The engine slices the machine, process and filament presets you pick below; every " +
                 "field here is layered over them, so nothing has to restate a whole profile.",
@@ -110,7 +112,9 @@ internal fun OrcaSettingsSheet(
             Text("Reset to engine defaults")
         }
 
-        SettingsCategory("Quality", initiallyExpanded = phoneDefaults) {
+    }
+    val sections = listOf(
+        SettingsSection("Quality", initiallyExpanded = true) {
         NumberField(
             label = "Layer height (mm)",
             value = settings.layerHeightMm,
@@ -132,9 +136,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Walls and shells", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Walls and shells", initiallyExpanded = true) {
         IntegerSettingField(
             label = "Wall loops",
             text = settings.wallLoops.toString(),
@@ -169,9 +173,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Infill", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Infill", initiallyExpanded = true) {
         NumberField(
             label = "Sparse infill density (%)",
             value = settings.sparseInfillDensityPercent,
@@ -190,9 +194,9 @@ internal fun OrcaSettingsSheet(
             onValue = { value -> onSettings(OrcaSliceSettings.Keys.SPARSE_INFILL_PATTERN) { it.copy(sparseInfillPattern = value) } },
         )
 
-        }
+        },
 
-        SettingsCategory("Support", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Support", initiallyExpanded = true) {
         SettingSwitch(
             title = "Generate support",
             description = "Support is generated everywhere the overhang angle is exceeded",
@@ -231,9 +235,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Skirt and brim", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Skirt and brim", initiallyExpanded = true) {
         IntegerSettingField(
             label = "Skirt loops",
             text = settings.skirtLoops.toString(),
@@ -256,9 +260,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Speed", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Speed", initiallyExpanded = true) {
         NumberField(
             label = "Inner wall speed (mm/s)",
             value = settings.innerWallSpeedMmPerSecond,
@@ -300,9 +304,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Temperature and fan", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Temperature and fan", initiallyExpanded = true) {
         IntegerSettingField(
             label = "Nozzle temperature (C)",
             text = settings.nozzleTemperatureC.toString(),
@@ -370,9 +374,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        }
+        },
 
-        SettingsCategory("Filament and retraction", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Filament and retraction", initiallyExpanded = true) {
         OptionField(
             label = "Filament type",
             value = settings.filamentType,
@@ -419,14 +423,15 @@ internal fun OrcaSettingsSheet(
                 it.copy(useFirmwareRetraction = value)
             }
         }
-        }
-    }
+        },
+    )
 
     SettingsSheet(
         title = "OrcaSlicer settings",
         expandedLayout = expandedLayout,
+        sections = sections,
         modifier = modifier,
-        menu = menu,
+        header = header,
     )
     if (confirmingReset) {
         ResetConfirmDialog(

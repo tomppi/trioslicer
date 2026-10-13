@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -23,31 +22,51 @@ import androidx.compose.ui.unit.dp
 internal const val SETTINGS_LEFT_PANE_TAG = "settings-left-pane"
 internal const val SETTINGS_RIGHT_PANE_TAG = "settings-right-pane"
 
+/** Every settings card carries its own title as a tag, so a test can list them. */
+internal const val SETTINGS_SECTION_TAG_PREFIX = "settings-section:"
+
+/**
+ * One collapsible card of a settings screen: what it is called, whether the phone
+ * opens it by default, and its rows.
+ *
+ * The screen is these, in order - the same list the phone stacks in its one column
+ * and the wide layout splits between its two.
+ */
+internal class SettingsSection(
+    val title: String,
+    val initiallyExpanded: Boolean,
+    val content: @Composable () -> Unit,
+)
+
 /**
  * One engine's settings screen, in the two shapes a window has - and the one place
  * that shape is written, so all three engines look and behave the same.
  *
- * A phone renders [menu] once, in the one scrolling column it has always had.
+ * A phone renders the profile block ([header]) and then **every** section, in the
+ * one scrolling column it has always had.
  *
- * A wide window renders the **same menu twice**, side by side, each with its own
- * scroll: two settings menus, not a list of sections and a detail pane. Every card
- * keeps its own open or closed state per column - the state lives in the card's own
- * saveable slot - so one section can be open on the left and another on the right
- * and twice the settings are on the screen at once.
- *
- * [menu]'s parameter is whether the sheet's own default cards start open: true in
- * the phone's single column, which is the screen it has always been, and false in
- * the two columns, where a card that opened itself in both would only show the same
- * fields twice.
+ * A wide window splits that same list in two, side by side: the profile block and
+ * the first half of the sections in the left column, the rest in the right. It is a
+ * partition, not a copy - every section is reachable exactly once, in one column or
+ * the other - and the cut is the app's own order split down the middle, which is
+ * where a reader looks for a section whose position he knows. Each column scrolls on
+ * its own and each card keeps its own open or closed state, so Quality can be open on
+ * the left while Walls and top/bottom is open on the right and twice the settings are
+ * on the screen at once. The cards start closed in both columns: a card that opened
+ * itself twice would only show the same fields twice.
  */
 @Composable
 internal fun SettingsSheet(
     title: String,
     expandedLayout: Boolean,
+    sections: List<SettingsSection>,
     modifier: Modifier = Modifier,
-    menu: @Composable (phoneDefaults: Boolean) -> Unit,
+    header: @Composable () -> Unit,
 ) {
     if (expandedLayout) {
+        // The app's own order, split down the middle: with an odd number the left
+        // column takes the extra one, since it also carries the profile block.
+        val split = (sections.size + 1) / 2
         Column(
             modifier = modifier
                 .fillMaxWidth()
@@ -58,14 +77,15 @@ internal fun SettingsSheet(
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 SettingsPane(
                     modifier = Modifier.weight(1f).testTag(SETTINGS_LEFT_PANE_TAG),
-                    menu = menu,
+                    header = header,
+                    sections = sections.take(split),
                 )
                 // The divider is the split's own line; the space either side of it
                 // is what keeps the two columns' fields from reading as one.
                 VerticalDivider(modifier = Modifier.fillMaxHeight().padding(horizontal = 12.dp))
                 SettingsPane(
                     modifier = Modifier.weight(1f).testTag(SETTINGS_RIGHT_PANE_TAG),
-                    menu = menu,
+                    sections = sections.drop(split),
                 )
             }
         }
@@ -78,26 +98,39 @@ internal fun SettingsSheet(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(title, style = MaterialTheme.typography.headlineSmall)
-            menu(true)
+            header()
+            sections.forEach { section ->
+                SettingsCategory(section.title, initiallyExpanded = section.initiallyExpanded) {
+                    section.content()
+                }
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
-/** One column of the wide layout: the whole menu, its own scroll, its own cards. */
+/** One column of the wide layout: its own scroll, its own cards. */
 @Composable
 private fun SettingsPane(
-    menu: @Composable (phoneDefaults: Boolean) -> Unit,
+    sections: List<SettingsSection>,
     modifier: Modifier = Modifier,
+    header: (@Composable () -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
             .fillMaxHeight()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        horizontalAlignment = Alignment.Start,
     ) {
-        menu(false)
+        header?.invoke()
+        sections.forEach { section ->
+            // Closed in the two columns: which two sections are open is the user's
+            // choice, and a card that opened itself in both would be the duplicate
+            // the split exists to avoid.
+            SettingsCategory(section.title, initiallyExpanded = false) {
+                section.content()
+            }
+        }
         Spacer(Modifier.height(24.dp))
     }
 }

@@ -79,9 +79,9 @@ internal fun PrusaSettingsSheet(
             )
         }
     }
-    // The whole menu: the preset rows, the two imports, the reset and the cards.
-    // SettingsSheet renders it once on a phone and twice side by side on a fold.
-    val menu: @Composable (Boolean) -> Unit = { phoneDefaults ->
+    // The profile block: the preset rows, the import, the reset - and nothing a
+    // section carries. The wide layout shows it once, in its left column.
+    val header: @Composable () -> Unit = {
         Text(
             "Every option below maps 1:1 to a PrusaSlicer .ini key.",
             style = MaterialTheme.typography.bodySmall,
@@ -140,7 +140,9 @@ internal fun PrusaSettingsSheet(
             Text("Reset to engine defaults")
         }
 
-        SettingsCategory("Quality", initiallyExpanded = phoneDefaults) {
+    }
+    val sections = listOf(
+        SettingsSection("Quality", initiallyExpanded = true) {
             NumberField("Layer height", settings.layerHeightMm, "Prusa: layer_height", decimals = 3) {
                 onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
                     current.copy(layerHeightMm = it.coerceIn(0.02, 2.0))
@@ -151,9 +153,9 @@ internal fun PrusaSettingsSheet(
                     current.copy(firstLayerHeightMm = it.coerceIn(0.02, 2.0))
                 }
             }
-        }
+        },
 
-        SettingsCategory("Perimeters & shells", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Perimeters & shells", initiallyExpanded = true) {
             NumberField("Perimeters", settings.perimeters.toDouble(), "Prusa: perimeters", decimals = 0) {
                 onSettings(PrusaSliceSettings.Keys.PERIMETERS) { current -> current.copy(perimeters = it.toInt().coerceIn(0, 8)) }
             }
@@ -169,9 +171,9 @@ internal fun PrusaSettingsSheet(
             SwitchRow("External perimeters first", settings.externalPerimetersFirst, "Prusa: external_perimeters_first") {
                 onSettings(PrusaSliceSettings.Keys.EXTERNAL_PERIMETERS_FIRST) { current -> current.copy(externalPerimetersFirst = it) }
             }
-        }
+        },
 
-        SettingsCategory("Infill", initiallyExpanded = phoneDefaults) {
+        SettingsSection("Infill", initiallyExpanded = true) {
             NumberField("Fill density", settings.fillDensityPercent, "Prusa: fill_density", decimals = 1) {
                 onSettings(PrusaSliceSettings.Keys.FILL_DENSITY) { current ->
                     current.copy(fillDensityPercent = it.coerceIn(0.0, 100.0))
@@ -185,9 +187,9 @@ internal fun PrusaSettingsSheet(
             ) {
                 onSettings(PrusaSliceSettings.Keys.FILL_PATTERN) { current -> current.copy(fillPattern = it) }
             }
-        }
+        },
 
-        SettingsCategory("Skirt & brim", initiallyExpanded = false) {
+        SettingsSection("Skirt & brim", initiallyExpanded = false) {
             NumberField("Skirt loops", settings.skirtLoops.toDouble(), "Prusa: skirts", decimals = 0) {
                 onSettings(PrusaSliceSettings.Keys.SKIRT_LOOPS) { current -> current.copy(skirtLoops = it.toInt().coerceIn(0, 10)) }
             }
@@ -197,9 +199,9 @@ internal fun PrusaSettingsSheet(
             NumberField("Brim width", settings.brimWidthMm, "Prusa: brim_width", decimals = 1) {
                 onSettings(PrusaSliceSettings.Keys.BRIM_WIDTH) { current -> current.copy(brimWidthMm = it.coerceIn(0.0, 30.0)) }
             }
-        }
+        },
 
-        SettingsCategory("Support material", initiallyExpanded = false) {
+        SettingsSection("Support material", initiallyExpanded = false) {
             SwitchRow("Enable supports", settings.supportMaterial, "Prusa: support_material") {
                 onSettings(PrusaSliceSettings.Keys.SUPPORT_MATERIAL) { current -> current.copy(supportMaterial = it) }
             }
@@ -224,9 +226,9 @@ internal fun PrusaSettingsSheet(
                     current.copy(supportInterfaceLayers = it.toInt().coerceIn(0, 8))
                 }
             }
-        }
+        },
 
-        SettingsCategory("Speeds", initiallyExpanded = false) {
+        SettingsSection("Speeds", initiallyExpanded = false) {
             NumberField("Print speed", settings.printSpeedMmPerSecond, "Prusa: print_speed", decimals = 1) {
                 onSettings(PrusaSliceSettings.Keys.PRINT_SPEED) { current -> current.copy(printSpeedMmPerSecond = it.coerceIn(5.0, 400.0)) }
             }
@@ -246,9 +248,9 @@ internal fun PrusaSettingsSheet(
             NumberField("Travel speed", settings.travelSpeedMmPerSecond, "Prusa: travel_speed", decimals = 1) {
                 onSettings(PrusaSliceSettings.Keys.TRAVEL_SPEED) { current -> current.copy(travelSpeedMmPerSecond = it.coerceIn(10.0, 500.0)) }
             }
-        }
+        },
 
-        SettingsCategory("Temperature & fan", initiallyExpanded = false) {
+        SettingsSection("Temperature & fan", initiallyExpanded = false) {
             NumberField("Nozzle temperature", settings.nozzleTemperatureC.toDouble(), "Prusa: temperature", decimals = 0) {
                 onSettings(PrusaSliceSettings.Keys.NOZZLE_TEMPERATURE) { current ->
                     current.copy(nozzleTemperatureC = it.toInt().coerceIn(150, 320))
@@ -272,9 +274,9 @@ internal fun PrusaSettingsSheet(
             NumberField("Fan speed", settings.fanSpeedPercent.toDouble(), "Prusa: fan_speed (0-100%)", decimals = 0) {
                 onSettings(PrusaSliceSettings.Keys.FAN_SPEED) { current -> current.copy(fanSpeedPercent = it.toInt().coerceIn(0, 100)) }
             }
-        }
+        },
 
-        SettingsCategory("Extrusion & retraction", initiallyExpanded = false) {
+        SettingsSection("Extrusion & retraction", initiallyExpanded = false) {
             NumberField("Retraction length", settings.retractionLengthMm, "Prusa: retraction_length", decimals = 2) {
                 onSettings(PrusaSliceSettings.Keys.RETRACTION_LENGTH) { current ->
                     current.copy(retractionLengthMm = it.coerceIn(0.0, 10.0))
@@ -301,14 +303,14 @@ internal fun PrusaSettingsSheet(
                     current.copy(extrusionMultiplierPercent = it.coerceIn(50.0, 150.0))
                 }
             }
-        }
-
-    }
+        },
+    )
     SettingsSheet(
         title = "PrusaSlicer settings",
         expandedLayout = expandedLayout,
+        sections = sections,
         modifier = modifier,
-        menu = menu,
+        header = header,
     )
     if (confirmingReset) {
         ResetConfirmDialog(

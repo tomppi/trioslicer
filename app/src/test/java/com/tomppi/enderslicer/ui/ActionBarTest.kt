@@ -1,29 +1,34 @@
 package com.tomppi.enderslicer.ui
 
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithContentDescription
-import androidx.compose.ui.test.assertCountEquals
-import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerSettings
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The brick phone's action bar, folded and unfolded.
+ * The brick phone's action block, expanded and collapsed.
  *
- * Collapsed it is a handle and nothing else - a small arrow, the way the sidebar's
- * own handle is - so the plate keeps the strip for the model; the expand tap buys
- * back the button and the two rows below it.
+ * Expanded it is the bar it has always been. Collapsed it is a small floating arrow
+ * over the model and nothing else - no bar, no surface, no background spanning the
+ * screen - so the strip the bar stood on goes back to the plate.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w411dp-h891dp")
@@ -44,9 +49,11 @@ class ActionBarTest {
         gantryHeightMm = 25.0,
     )
 
-    private var toggles = 0
+    private var hides = 0
+    private var expands = 0
 
-    private fun show(expanded: Boolean, handleOnly: Boolean = false) {
+    @Test
+    fun expandedItCarriesTheRowsAndTheFoldArrow() {
         compose.setContent {
             ActionBar(
                 state = MainUiState(printer = printer, settings = SlicerSettings()),
@@ -56,48 +63,76 @@ class ActionBarTest {
                 onSlice = {},
                 onExportGcode = {},
                 onTools = {},
-                expanded = expanded,
-                onToggle = { toggles++ },
-                handleOnly = handleOnly,
+                onToggle = { hides++ },
             )
         }
-    }
-
-    @Test
-    fun collapsedItIsOnlyItsArrow() {
-        show(expanded = false)
-
-        compose.onNodeWithContentDescription("Expand actions").assertIsDisplayed()
-        compose.onNodeWithText("Slice").assertDoesNotExist()
-        compose.onNodeWithText("Export G-code").assertDoesNotExist()
-        compose.onNodeWithText("Model tools · move, rotate, scale, paint").assertDoesNotExist()
-        compose.onAllNodesWithContentDescription("Collapse actions").assertCountEquals(0)
-    }
-
-    @Test
-    fun expandedItCarriesTheRowsAndTheArrow() {
-        show(expanded = true)
 
         compose.onNodeWithText("Slice").assertIsDisplayed()
         compose.onNodeWithText("Export G-code").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Collapse actions").assertIsDisplayed()
+        compose.onNodeWithText("Model tools · move, rotate, scale, paint").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Hide the actions").assertIsDisplayed().performClick()
+        assertEquals("the fold arrow asks the plate to collapse the bar", 1, hides)
     }
 
-    /** While the sidebar panel is up, the bar is its own arrow and nothing else. */
+    /**
+     * Collapsed: the arrow alone, in a small target, with nothing drawn around it.
+     * The plate behind it is the caller's, and this only takes the 48dp it needs.
+     */
     @Test
-    fun thePanelLeavesTheBarItsArrowAlone() {
-        show(expanded = true, handleOnly = true)
+    fun collapsedItIsASmallArrowAndNothingElse() {
+        compose.setContent {
+            Box(modifier = Modifier.fillMaxSize()) {
+                ActionBarHandle(
+                    onExpand = { expands++ },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(12.dp),
+                )
+            }
+        }
 
-        compose.onNodeWithContentDescription("Bring the actions back").assertIsDisplayed()
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val handle = compose.onNodeWithContentDescription("Show the actions").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the handle is a small target, it was ${handle.width} of ${root.width}",
+            handle.width < root.width / 4f,
+        )
         compose.onNodeWithText("Slice").assertDoesNotExist()
+        compose.onNodeWithText("Export G-code").assertDoesNotExist()
         compose.onNodeWithText("Model tools · move, rotate, scale, paint").assertDoesNotExist()
+
+        compose.onNodeWithContentDescription("Show the actions").performClick()
+        assertEquals(1, expands)
     }
 
+    /**
+     * The plate itself: the bottom bar is drawn only while it is expanded, and the
+     * collapsed plate draws the small handle instead - so there is no full-width
+     * surface left behind when it is folded.
+     */
     @Test
-    fun theArrowIsTheExpandTap() {
-        show(expanded = false)
+    fun theCollapsedPlateDrawsNoBottomBar() {
+        val app = source("ui/EnderSlicerApp.kt")
 
-        compose.onNodeWithContentDescription("Expand actions").performClick()
-        assertEquals(1, toggles)
+        assertTrue(
+            "the Scaffold's bottom bar is guarded by the expanded state",
+            app.contains("!expandedLayout && platePanels.actionBarShowsRows"),
+        )
+        assertTrue(
+            "and the collapsed plate draws the floating handle",
+            app.contains("if (!expandedLayout && !platePanels.actionBarShowsRows)") &&
+                app.contains("ActionBarHandle("),
+        )
+    }
+
+    private fun source(relative: String): String {
+        val candidates = listOf(
+            File("src/main/java/com/tomppi/enderslicer/$relative"),
+            File("app/src/main/java/com/tomppi/enderslicer/$relative"),
+        )
+        val file = candidates.firstOrNull(File::isFile)
+            ?: error("Unable to locate source file for $relative from " + File(".").absolutePath)
+        return file.readText()
     }
 }

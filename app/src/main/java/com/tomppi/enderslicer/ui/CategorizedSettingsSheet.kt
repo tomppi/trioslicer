@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.SlicerSettings
@@ -86,11 +87,11 @@ private val PRINT_SETTINGS_CATEGORIES =
  * A phone keeps the one scrolling column it has always had: the header block, and
  * then every category in its own collapsible card, Quality open as it was.
  *
- * A wide window shows that same menu **twice**, side by side, each column with its
- * own scroll and its own open or closed cards, so one section can be open on the
- * left and another on the right and twice the settings are on the screen at once.
- * No selector and no single chosen section: both columns are the settings menu. The
- * shape itself comes from [SettingsSheet], which every engine's screen now uses.
+ * A wide window splits that same list in two, side by side: the profile block and
+ * the first half of the categories on the left, the rest on the right. Nothing is
+ * duplicated - every category is in exactly one column - and each column has its own
+ * scroll and its own open or closed cards. The shape itself comes from
+ * [SettingsSheet], which every engine's screen now uses.
  */
 @Composable
 internal fun CategorizedSettingsSheet(
@@ -106,69 +107,28 @@ internal fun CategorizedSettingsSheet(
     modifier: Modifier = Modifier,
 ) {
     var confirmingReset by remember { mutableStateOf(false) }
-    SettingsSheet(
-        title = "Print settings",
-        expandedLayout = expandedLayout,
-        modifier = modifier,
-    ) { phoneDefaults ->
-        PrintSettingsMenu(
+    val onAskReset: () -> Unit = { confirmingReset = true }
+    // The profile block, once, and the ten categories in the phone's own order. The
+    // wide layout shows the block in its left column and splits the categories
+    // between the two, so no section is on the screen twice.
+    val header: @Composable () -> Unit = {
+        PrintSettingsSectionBody(
+            section = PrintSettingsSection.PRINTER,
             state = state,
             onSettings = onSettings,
-            onAskReset = { confirmingReset = true },
+            onAskReset = onAskReset,
             onImportProfile = onImportProfile,
             onImportProject = onImportProject,
             onOpenAllSettings = onOpenAllSettings,
             onOpenSidebarPicker = onOpenSidebarPicker,
             onCuraMachine = onCuraMachine,
-            phoneDefaults = phoneDefaults,
         )
     }
-    if (confirmingReset) {
-        ResetConfirmDialog(
-            title = "Reset all app overrides?",
-            text = "Every setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported. There is no undo.",
-            onDismiss = { confirmingReset = false },
-            onConfirm = {
-                confirmingReset = false
-                onResetOverrides()
-            },
-        )
-    }
-}
-
-/**
- * The whole Cura menu, in the one order both shapes show it: the header block, then
- * every category in its own collapsible card. [phoneDefaults] is what keeps the
- * phone's own screen what it was - Quality open - while the wide window's two
- * columns start closed.
- */
-@Composable
-private fun PrintSettingsMenu(
-    state: MainUiState,
-    onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
-    onAskReset: () -> Unit,
-    onImportProfile: () -> Unit,
-    onImportProject: () -> Unit,
-    onOpenAllSettings: () -> Unit,
-    onOpenSidebarPicker: () -> Unit,
-    onCuraMachine: (String) -> Unit,
-    phoneDefaults: Boolean,
-) {
-    PrintSettingsSectionBody(
-        section = PrintSettingsSection.PRINTER,
-        state = state,
-        onSettings = onSettings,
-        onAskReset = onAskReset,
-        onImportProfile = onImportProfile,
-        onImportProject = onImportProject,
-        onOpenAllSettings = onOpenAllSettings,
-        onOpenSidebarPicker = onOpenSidebarPicker,
-        onCuraMachine = onCuraMachine,
-    )
-    PRINT_SETTINGS_CATEGORIES.forEach { section ->
-        SettingsCategory(
+    val sections = PRINT_SETTINGS_CATEGORIES.map { section ->
+        SettingsSection(
             title = section.label,
-            initiallyExpanded = phoneDefaults && section == PrintSettingsSection.QUALITY,
+            // Quality is the one card the phone opens, as it always was.
+            initiallyExpanded = section == PrintSettingsSection.QUALITY,
         ) {
             PrintSettingsSectionBody(
                 section = section,
@@ -182,6 +142,24 @@ private fun PrintSettingsMenu(
                 onCuraMachine = onCuraMachine,
             )
         }
+    }
+    SettingsSheet(
+        title = "Print settings",
+        expandedLayout = expandedLayout,
+        sections = sections,
+        modifier = modifier,
+        header = header,
+    )
+    if (confirmingReset) {
+        ResetConfirmDialog(
+            title = "Reset all app overrides?",
+            text = "Every setting the app has overridden goes back to the imported profile, or to the built-in defaults when nothing was imported. There is no undo.",
+            onDismiss = { confirmingReset = false },
+            onConfirm = {
+                confirmingReset = false
+                onResetOverrides()
+            },
+        )
     }
 }
 
@@ -1117,7 +1095,11 @@ internal fun SettingsCategory(
     content: @Composable Column.() -> Unit,
 ) {
     var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(SETTINGS_SECTION_TAG_PREFIX + title),
+    ) {
         Column {
             Row(
                 modifier = Modifier

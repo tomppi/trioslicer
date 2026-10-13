@@ -73,19 +73,24 @@ class PrintSettingsWiringContractTest {
     @Test
     fun oneShapeAndOneCardAreSharedByEveryEngine() {
         assertTrue(
-            "the shape renders the menu once on a phone and twice when wide",
-            layout.contains("menu(true)") &&
+            "the shape renders every section on a phone and splits the same list when wide",
+            layout.contains("sections.forEach { section ->") &&
+                layout.contains("sections.take(split)") &&
+                layout.contains("sections.drop(split)") &&
                 layout.contains("SETTINGS_LEFT_PANE_TAG") &&
-                layout.contains("SETTINGS_RIGHT_PANE_TAG") &&
-                layout.replace(" ", "").contains("menu(false)"),
+                layout.contains("SETTINGS_RIGHT_PANE_TAG"),
+        )
+        assertTrue(
+            "with the profile block in the left column only",
+            layout.contains("header = header") && layout.contains("header?.invoke()"),
         )
         listOf("Cura" to sheet, "PrusaSlicer" to prusa, "OrcaSlicer" to orca).forEach { (name, text) ->
             assertTrue("$name's screen uses the one shape", text.contains("SettingsSheet("))
-            assertTrue("$name's sections use the one card", text.contains("SettingsCategory("))
+            assertTrue("$name's sections are the one list type", text.contains("SettingsSection("))
         }
         assertTrue(
-            "the Cura menu is the cards themselves, with no selector left",
-            sheet.contains("PRINT_SETTINGS_CATEGORIES.forEach { section ->") &&
+            "the Cura sections are the categories themselves, with no selector left",
+            sheet.contains("PRINT_SETTINGS_CATEGORIES.map { section ->") &&
                 !sheet.contains("Section: "),
         )
         assertTrue(

@@ -66,14 +66,15 @@ class SettingsSheetsTest {
 
         compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).assertExists()
         compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).assertExists()
-        // The header block is in both columns: two settings menus, not one menu
-        // and a detail pane.
-        // The catalogue is not loaded in a test, so the row names the id it falls
-        // back to; the point is that the row is in both columns.
+        // The profile block is the left column's, once, and the sections are split
+        // between the two: the sixth category is the first of the right column.
+        // The catalogue is not loaded in a test, so the printer row names the id it
+        // falls back to.
         inColumnStartingWith(SETTINGS_LEFT_PANE_TAG, "Printer: ").assertIsDisplayed()
-        inColumnStartingWith(SETTINGS_RIGHT_PANE_TAG, "Printer: ").assertIsDisplayed()
+        inColumnStartingWith(SETTINGS_RIGHT_PANE_TAG, "Printer: ").assertDoesNotExist()
         inColumn(SETTINGS_LEFT_PANE_TAG, "Quality").assertIsDisplayed()
-        inColumn(SETTINGS_RIGHT_PANE_TAG, "Quality").assertIsDisplayed()
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Quality").assertDoesNotExist()
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Cooling").assertIsDisplayed()
     }
 
     @Test
@@ -90,11 +91,13 @@ class SettingsSheetsTest {
         compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).assertExists()
         compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).assertExists()
         inColumn(SETTINGS_LEFT_PANE_TAG, "Perimeters & shells").assertIsDisplayed()
-        inColumn(SETTINGS_RIGHT_PANE_TAG, "Perimeters & shells").assertIsDisplayed()
-        // The reset button is in both columns; the confirmation it raises is one
-        // dialog for the whole sheet, not one per column.
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Perimeters & shells").assertDoesNotExist()
+        // The fifth of the eight sections opens the right column.
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Support material").assertIsDisplayed()
+        // The reset belongs to the profile block, in the left column, and the
+        // confirmation it raises is one dialog for the whole sheet.
         inColumn(SETTINGS_LEFT_PANE_TAG, "Reset to engine defaults").assertExists()
-        inColumn(SETTINGS_RIGHT_PANE_TAG, "Reset to engine defaults").assertExists()
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Reset to engine defaults").assertDoesNotExist()
     }
 
     @Test
@@ -111,6 +114,8 @@ class SettingsSheetsTest {
         compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).assertExists()
         compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).assertExists()
         inColumn(SETTINGS_LEFT_PANE_TAG, "Walls and shells").assertIsDisplayed()
-        inColumn(SETTINGS_RIGHT_PANE_TAG, "Walls and shells").assertIsDisplayed()
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Walls and shells").assertDoesNotExist()
+        // The fifth of the eight sections opens the right column.
+        inColumn(SETTINGS_RIGHT_PANE_TAG, "Skirt and brim").assertIsDisplayed()
     }
 }

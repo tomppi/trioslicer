@@ -1557,7 +1557,10 @@ fun EnderSlicerApp(
                     // bottom action bar is for phone-sized windows only. The tabs are not
                     // in here any more: the navigation suite draws them around this
                     // Scaffold, as a bottom bar or as a rail.
-                    if (selectedTab == AppTab.PLATE && !expandedLayout) {
+                    // Only while the bar is expanded: collapsed, the plate draws
+                    // the small floating handle instead and this bar takes no
+                    // height from it at all.
+                    if (selectedTab == AppTab.PLATE && !expandedLayout && platePanels.actionBarShowsRows) {
                         ActionBar(
                             state = state,
                             nonPlanarEnabled = nonPlanarSettings.enabled,
@@ -1566,11 +1569,6 @@ fun EnderSlicerApp(
                             onSlice = viewModel::sliceModel,
                             onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                             onTools = { modelToolsOpen = true },
-                            expanded = platePanels.actionBarShowsRows,
-                            // While the sidebar panel is open the bar is only its own
-                            // arrow: the panel carries Slice, Export and Model tools,
-                            // so nothing is lost and the plate gets the strip back.
-                            handleOnly = platePanels.actionBarHandleOnly,
                             onToggle = { showPlatePanels(platePanels.toggledActionBar()) },
                         )
                     }
@@ -2166,6 +2164,17 @@ fun EnderSlicerApp(
                                 onCollapse = { showPlatePanels(platePanels.closedRail()) },
                                 modifier = Modifier.align(Alignment.CenterStart),
                                 rail = sessionRail,
+                            )
+                        }
+                        // The collapsed action bar: a small arrow over the model
+                        // where the bar's own bottom edge was, with no surface around
+                        // it, so the plate keeps the strip the expanded bar stands on.
+                        if (!expandedLayout && !platePanels.actionBarShowsRows) {
+                            ActionBarHandle(
+                                onExpand = { showPlatePanels(platePanels.toggledActionBar()) },
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(12.dp),
                             )
                         }
                     }
@@ -3661,6 +3670,8 @@ private fun ViewerPanel(
                 .padding(12.dp),
         )
 
+
+
         // The Plate's floating cards live on the right now, clear of the session
         // rail's column on the left: the viewer's own mode switch first, then the
         // printer card and the notice banner under it. They are translucent - the
@@ -4241,9 +4252,10 @@ private fun SidebarHandle(
     onClick: () -> Unit,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
+    modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(48.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -4381,17 +4393,15 @@ private fun ViewerModeButton(
 }
 
 /**
- * Phone bottom action block: the Slice button, Export, the Model tools entry
- * and the export hint.
+ * Phone bottom action block: the Slice button, Export, the Model tools entry and
+ * the export hint.
  *
- * [expanded] is hoisted to the root of [EnderSlicerApp] under
- * "plate-action-bar-expanded" for the same reason the floating cards hoist
- * theirs: selecting another tab disposes the Plate subtree, so a flag
- * remembered inside the block would be lost on the way back. Collapsed, the
- * primary row is all that is left - the Slice button and the chevron - so the
- * plate gets back the height of the Export button, the Model tools row and the
- * hint, while the slice state, the callbacks and the enabled rules are the
- * ones the expanded block has always used.
+ * This is the **expanded** bar, and only that: collapsed, the plate draws
+ * [ActionBarHandle] - a small floating arrow over the model - and no bottom bar at
+ * all, so the strip the bar stood on goes back to the plate. The expand decision is
+ * hoisted to the root of [EnderSlicerApp] in [PlatePanelState] for the same reason
+ * the floating cards hoist theirs: selecting another tab disposes the Plate subtree,
+ * so a flag remembered inside the block would be lost on the way back.
  */
 @Composable
 internal fun ActionBar(
@@ -4402,109 +4412,96 @@ internal fun ActionBar(
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
-    expanded: Boolean,
     onToggle: () -> Unit,
-    /**
-     * True while the phone's sidebar panel is open: the bar folds down to its own
-     * arrow, which is the one thing that brings it back.
-     */
-    handleOnly: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val gcodeAvailable = state.hasCurrentGcode()
-    Surface(tonalElevation = 4.dp) {
+    Surface(tonalElevation = 4.dp, modifier = modifier) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                // Collapsed, the bar is only its arrow: the strip it shares with
-                // the model is a handle's height, not a bar's.
-                .padding(horizontal = 12.dp, vertical = if (expanded && !handleOnly) 8.dp else 2.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            if (expanded && !handleOnly) {
-                // The blocked reason and the estimate describe the rows below
-                // them, so they fold away with the rest: collapsed is one slim
-                // row.
-                sliceBlockedReason?.let { reason ->
-                    Text(reason, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
-                }
-                state.estimatedPrintSeconds?.takeIf { gcodeAvailable }?.let { seconds ->
-                    Text(
-                        "Estimated print time: ${formatPrintTime(seconds)}",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    )
-                }
+            sliceBlockedReason?.let { reason ->
+                Text(reason, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+            }
+            state.estimatedPrintSeconds?.takeIf { gcodeAvailable }?.let { seconds ->
+                Text(
+                    "Estimated print time: ${formatPrintTime(seconds)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = if (expanded && !handleOnly) {
-                    Arrangement.spacedBy(8.dp)
-                } else {
-                    Arrangement.Center
-                },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Collapsed - and while the sidebar panel is up - the bar carries
-                // nothing but its own arrow. The button and the two rows below it
-                // are what the expand gesture buys back, and the model keeps the
-                // strip until then.
-                if (expanded && !handleOnly) {
-                    if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
-                    Button(
-                        onClick = onSlice,
-                        enabled = state.engineAvailable && state.modelPath != null && !state.isBusy && sliceBlockedReason == null,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            when {
-                                state.isBusy -> "Working…"
-                                nonPlanarEnabled -> "Slice non-planar"
-                                conicalEnabled -> "Slice conical"
-                                else -> "Slice"
-                            },
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = onExportGcode,
-                        enabled = gcodeAvailable && !state.isBusy,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Export G-code")
-                    }
-                }
-                // The collapse control rides in the row that survives, so the
-                // same tap target folds and unfolds the block.
-                IconButton(onClick = onToggle) {
-                    Icon(
-                        if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = when {
-                            handleOnly -> "Bring the actions back"
-                            expanded -> "Collapse actions"
-                            else -> "Expand actions"
+                if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
+                Button(
+                    onClick = onSlice,
+                    enabled = state.engineAvailable && state.modelPath != null && !state.isBusy && sliceBlockedReason == null,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        when {
+                            state.isBusy -> "Working…"
+                            nonPlanarEnabled -> "Slice non-planar"
+                            conicalEnabled -> "Slice conical"
+                            else -> "Slice"
                         },
                     )
                 }
-            }
-            if (expanded && !handleOnly) {
                 OutlinedButton(
-                    onClick = onTools,
-                    enabled = state.mesh != null && !state.isBusy,
-                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onExportGcode,
+                    enabled = gcodeAvailable && !state.isBusy,
+                    modifier = Modifier.weight(1f),
                 ) {
-                    Text("Model tools · move, rotate, scale, paint")
+                    Text("Export G-code")
                 }
-                if (!gcodeAvailable) {
-                    Text(
-                        "Slice a model first to export validated G-code",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    )
+                // Folding the block leaves the handle in its place, so the same tap
+                // target unfolds it again.
+                IconButton(onClick = onToggle) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Hide the actions")
                 }
+            }
+            OutlinedButton(
+                onClick = onTools,
+                enabled = state.mesh != null && !state.isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Model tools · move, rotate, scale, paint")
+            }
+            if (!gcodeAvailable) {
+                Text(
+                    "Slice a model first to export validated G-code",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
             }
         }
     }
+}
+
+/**
+ * The collapsed action bar: a small arrow over the model, and nothing else.
+ *
+ * Collapsed used to be the bar itself with its Slice button still on it, which spent
+ * the strip the expand gesture was meant to give back. This is what is left instead -
+ * the same small arrow in a small circle the sidebar's handle uses, with nothing
+ * between it and the model, and the plate's full height above it.
+ */
+@Composable
+internal fun ActionBarHandle(onExpand: () -> Unit, modifier: Modifier = Modifier) {
+    SidebarHandle(
+        onClick = onExpand,
+        icon = Icons.Filled.KeyboardArrowUp,
+        label = "Show the actions",
+        modifier = modifier,
+    )
 }
 
 /** Split tool callbacks, grouped so the viewer signature stays readable. */
