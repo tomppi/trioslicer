@@ -2,25 +2,17 @@ package com.tomppi.enderslicer.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,8 +23,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.SlicerSettings
@@ -90,23 +80,17 @@ internal enum class PrintSettingsSection(val label: String) {
 private val PRINT_SETTINGS_CATEGORIES =
     PrintSettingsSection.entries.filter { it != PrintSettingsSection.PRINTER }
 
-/** The two panes of the foldable's split, tagged so a test can measure them. */
-internal const val PRINT_SETTINGS_LEFT_PANE_TAG = "print-settings-left-pane"
-internal const val PRINT_SETTINGS_RIGHT_PANE_TAG = "print-settings-right-pane"
-
 /**
  * The print settings, in the two shapes a window has.
  *
  * A phone keeps the one scrolling column it has always had: the header block, and
- * then every category in its own collapsible card.
+ * then every category in its own collapsible card, Quality open as it was.
  *
- * A foldable gets **two settings panes side by side** instead, each with its own
- * section selector and its own scroll, so twice the settings are on the screen at
- * once: the left opens on Quality and the right on the section after it, and
- * changing one never disturbs the other. Every section the phone shows is in both
- * selectors - the header block included, as [PrintSettingsSection.PRINTER] - so
- * nothing the split could lose has to be found anywhere but a pane. Both layouts
- * render the same section bodies, so they cannot drift apart.
+ * A wide window shows that same menu **twice**, side by side, each column with its
+ * own scroll and its own open or closed cards, so one section can be open on the
+ * left and another on the right and twice the settings are on the screen at once.
+ * No selector and no single chosen section: both columns are the settings menu. The
+ * shape itself comes from [SettingsSheet], which every engine's screen now uses.
  */
 @Composable
 internal fun CategorizedSettingsSheet(
@@ -122,94 +106,22 @@ internal fun CategorizedSettingsSheet(
     modifier: Modifier = Modifier,
 ) {
     var confirmingReset by remember { mutableStateOf(false) }
-    // One selection per pane, kept while the sheet is open. They open on the first
-    // two categories rather than both on the first: the point of the split is two
-    // sections of settings at once, not the same one twice.
-    var leftSection by rememberSaveable { mutableStateOf(PrintSettingsSection.QUALITY) }
-    var rightSection by rememberSaveable { mutableStateOf(PrintSettingsSection.WALLS_AND_TOP_BOTTOM) }
-    val onAskReset: () -> Unit = { confirmingReset = true }
-
-    if (expandedLayout) {
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 8.dp),
-        ) {
-            Text("Print settings", style = MaterialTheme.typography.headlineSmall)
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                PrintSettingsPane(
-                    section = leftSection,
-                    onSection = { leftSection = it },
-                    state = state,
-                    onSettings = onSettings,
-                    onAskReset = onAskReset,
-                    onImportProfile = onImportProfile,
-                    onImportProject = onImportProject,
-                    onOpenAllSettings = onOpenAllSettings,
-                    onOpenSidebarPicker = onOpenSidebarPicker,
-                    onCuraMachine = onCuraMachine,
-                    modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_LEFT_PANE_TAG),
-                )
-                // The divider is the split's own line; the space either side of it
-                // is what keeps the two panes' fields from reading as one column.
-                VerticalDivider(modifier = Modifier.fillMaxHeight().padding(horizontal = 12.dp))
-                PrintSettingsPane(
-                    section = rightSection,
-                    onSection = { rightSection = it },
-                    state = state,
-                    onSettings = onSettings,
-                    onAskReset = onAskReset,
-                    onImportProfile = onImportProfile,
-                    onImportProject = onImportProject,
-                    onOpenAllSettings = onOpenAllSettings,
-                    onOpenSidebarPicker = onOpenSidebarPicker,
-                    onCuraMachine = onCuraMachine,
-                    modifier = Modifier.weight(1f).testTag(PRINT_SETTINGS_RIGHT_PANE_TAG),
-                )
-            }
-        }
-    } else {
-        // The phone's one column, exactly as it was before the split: the header
-        // block, then every category in its own collapsible card.
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Print settings", style = MaterialTheme.typography.headlineSmall)
-            PrintSettingsSectionBody(
-                section = PrintSettingsSection.PRINTER,
-                state = state,
-                onSettings = onSettings,
-                onAskReset = onAskReset,
-                onImportProfile = onImportProfile,
-                onImportProject = onImportProject,
-                onOpenAllSettings = onOpenAllSettings,
-                onOpenSidebarPicker = onOpenSidebarPicker,
-                onCuraMachine = onCuraMachine,
-            )
-            PRINT_SETTINGS_CATEGORIES.forEach { section ->
-                SettingsCategory(
-                    title = section.label,
-                    initiallyExpanded = section == PrintSettingsSection.QUALITY,
-                ) {
-                    PrintSettingsSectionBody(
-                        section = section,
-                        state = state,
-                        onSettings = onSettings,
-                        onAskReset = onAskReset,
-                        onImportProfile = onImportProfile,
-                        onImportProject = onImportProject,
-                        onOpenAllSettings = onOpenAllSettings,
-                        onOpenSidebarPicker = onOpenSidebarPicker,
-                        onCuraMachine = onCuraMachine,
-                    )
-                }
-            }
-            Spacer(Modifier.height(24.dp))
-        }
+    SettingsSheet(
+        title = "Print settings",
+        expandedLayout = expandedLayout,
+        modifier = modifier,
+    ) { phoneDefaults ->
+        PrintSettingsMenu(
+            state = state,
+            onSettings = onSettings,
+            onAskReset = { confirmingReset = true },
+            onImportProfile = onImportProfile,
+            onImportProject = onImportProject,
+            onOpenAllSettings = onOpenAllSettings,
+            onOpenSidebarPicker = onOpenSidebarPicker,
+            onCuraMachine = onCuraMachine,
+            phoneDefaults = phoneDefaults,
+        )
     }
     if (confirmingReset) {
         ResetConfirmDialog(
@@ -225,14 +137,13 @@ internal fun CategorizedSettingsSheet(
 }
 
 /**
- * One pane of the foldable's split: the compact selector for the section it shows,
- * and that section's fields scrolling under it. The selector stays where it is
- * while the fields scroll, and neither pane's scroll moves the other.
+ * The whole Cura menu, in the one order both shapes show it: the header block, then
+ * every category in its own collapsible card. [phoneDefaults] is what keeps the
+ * phone's own screen what it was - Quality open - while the wide window's two
+ * columns start closed.
  */
 @Composable
-private fun PrintSettingsPane(
-    section: PrintSettingsSection,
-    onSection: (PrintSettingsSection) -> Unit,
+private fun PrintSettingsMenu(
     state: MainUiState,
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onAskReset: () -> Unit,
@@ -241,17 +152,23 @@ private fun PrintSettingsPane(
     onOpenAllSettings: () -> Unit,
     onOpenSidebarPicker: () -> Unit,
     onCuraMachine: (String) -> Unit,
-    modifier: Modifier = Modifier,
+    phoneDefaults: Boolean,
 ) {
-    Column(modifier = modifier.fillMaxHeight()) {
-        PrintSettingsSectionSelector(section = section, onSection = onSection)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(top = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+    PrintSettingsSectionBody(
+        section = PrintSettingsSection.PRINTER,
+        state = state,
+        onSettings = onSettings,
+        onAskReset = onAskReset,
+        onImportProfile = onImportProfile,
+        onImportProject = onImportProject,
+        onOpenAllSettings = onOpenAllSettings,
+        onOpenSidebarPicker = onOpenSidebarPicker,
+        onCuraMachine = onCuraMachine,
+    )
+    PRINT_SETTINGS_CATEGORIES.forEach { section ->
+        SettingsCategory(
+            title = section.label,
+            initiallyExpanded = phoneDefaults && section == PrintSettingsSection.QUALITY,
         ) {
             PrintSettingsSectionBody(
                 section = section,
@@ -264,36 +181,6 @@ private fun PrintSettingsPane(
                 onOpenSidebarPicker = onOpenSidebarPicker,
                 onCuraMachine = onCuraMachine,
             )
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-}
-
-/**
- * A pane's section selector: one row, the way every other one-of-N choice in these
- * sheets is made, with the section in force as the button's own text. Each pane has
- * its own, which is what keeps the two selections independent.
- */
-@Composable
-private fun PrintSettingsSectionSelector(
-    section: PrintSettingsSection,
-    onSection: (PrintSettingsSection) -> Unit,
-) {
-    var open by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Section: " + section.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            PrintSettingsSection.entries.forEach { entry ->
-                DropdownMenuItem(
-                    text = { Text(if (entry == section) "✔ " + entry.label else entry.label) },
-                    onClick = {
-                        open = false
-                        onSection(entry)
-                    },
-                )
-            }
         }
     }
 }

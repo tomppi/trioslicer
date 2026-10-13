@@ -1,13 +1,6 @@
 package com.tomppi.enderslicer.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -17,7 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.PrusaSliceSettings
 
 /**
@@ -37,19 +29,59 @@ internal fun PrusaSettingsSheet(
     onPrusaPrinter: (String) -> Unit = {},
     onPrusaPrint: (String) -> Unit = {},
     onPrusaFilament: (String) -> Unit = {},
+    expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val settings = state.prusaSettings
     val selection = state.prusaPreset
     var confirmingReset by remember { mutableStateOf(false) }
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("PrusaSlicer settings", style = MaterialTheme.typography.headlineSmall)
+    // Extracted so the button and its confirmation run the same reset. It sits at
+    // the sheet's own level because the button is drawn in both of the wide
+    // layout's columns, and one dialog is raised for either of them.
+    val resetEverything = {
+        onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
+            current.copy(
+                layerHeightMm = PrusaSliceSettings().layerHeightMm,
+                firstLayerHeightMm = PrusaSliceSettings().firstLayerHeightMm,
+                perimeters = PrusaSliceSettings().perimeters,
+                topSolidLayers = PrusaSliceSettings().topSolidLayers,
+                bottomSolidLayers = PrusaSliceSettings().bottomSolidLayers,
+                thinWalls = PrusaSliceSettings().thinWalls,
+                externalPerimetersFirst = PrusaSliceSettings().externalPerimetersFirst,
+                fillDensityPercent = PrusaSliceSettings().fillDensityPercent,
+                fillPattern = PrusaSliceSettings().fillPattern,
+                skirtLoops = PrusaSliceSettings().skirtLoops,
+                skirtHeightLayers = PrusaSliceSettings().skirtHeightLayers,
+                skirtDistanceMm = PrusaSliceSettings().skirtDistanceMm,
+                brimWidthMm = PrusaSliceSettings().brimWidthMm,
+                overhangs = PrusaSliceSettings().overhangs,
+                supportMaterial = PrusaSliceSettings().supportMaterial,
+                supportThresholdAngleDegrees = PrusaSliceSettings().supportThresholdAngleDegrees,
+                supportPattern = PrusaSliceSettings().supportPattern,
+                supportInterface = PrusaSliceSettings().supportInterface,
+                supportInterfaceLayers = PrusaSliceSettings().supportInterfaceLayers,
+                printSpeedMmPerSecond = PrusaSliceSettings().printSpeedMmPerSecond,
+                externalPerimeterSpeedMmPerSecond = PrusaSliceSettings().externalPerimeterSpeedMmPerSecond,
+                infillSpeedMmPerSecond = PrusaSliceSettings().infillSpeedMmPerSecond,
+                firstLayerSpeedMmPerSecond = PrusaSliceSettings().firstLayerSpeedMmPerSecond,
+                travelSpeedMmPerSecond = PrusaSliceSettings().travelSpeedMmPerSecond,
+                nozzleTemperatureC = PrusaSliceSettings().nozzleTemperatureC,
+                firstLayerTemperatureC = PrusaSliceSettings().firstLayerTemperatureC,
+                bedTemperatureC = PrusaSliceSettings().bedTemperatureC,
+                firstLayerBedTemperatureC = PrusaSliceSettings().firstLayerBedTemperatureC,
+                fanSpeedPercent = PrusaSliceSettings().fanSpeedPercent,
+                retractionLengthMm = PrusaSliceSettings().retractionLengthMm,
+                retractionSpeedMmPerSecond = PrusaSliceSettings().retractionSpeedMmPerSecond,
+                retractionMinTravelMm = PrusaSliceSettings().retractionMinTravelMm,
+                retractLiftMm = PrusaSliceSettings().retractLiftMm,
+                useFirmwareRetraction = PrusaSliceSettings().useFirmwareRetraction,
+                extrusionMultiplierPercent = PrusaSliceSettings().extrusionMultiplierPercent,
+            )
+        }
+    }
+    // The whole menu: the preset rows, the two imports, the reset and the cards.
+    // SettingsSheet renders it once on a phone and twice side by side on a fold.
+    val menu: @Composable (Boolean) -> Unit = { phoneDefaults ->
         Text(
             "Every option below maps 1:1 to a PrusaSlicer .ini key.",
             style = MaterialTheme.typography.bodySmall,
@@ -97,48 +129,6 @@ internal fun PrusaSettingsSheet(
         ) {
             Text("Add settings to the sidebar")
         }
-        // Extracted so the button and its confirmation run the same reset.
-        val resetEverything = {
-            onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
-                    current.copy(
-                        layerHeightMm = PrusaSliceSettings().layerHeightMm,
-                        firstLayerHeightMm = PrusaSliceSettings().firstLayerHeightMm,
-                        perimeters = PrusaSliceSettings().perimeters,
-                        topSolidLayers = PrusaSliceSettings().topSolidLayers,
-                        bottomSolidLayers = PrusaSliceSettings().bottomSolidLayers,
-                        thinWalls = PrusaSliceSettings().thinWalls,
-                        externalPerimetersFirst = PrusaSliceSettings().externalPerimetersFirst,
-                        fillDensityPercent = PrusaSliceSettings().fillDensityPercent,
-                        fillPattern = PrusaSliceSettings().fillPattern,
-                        skirtLoops = PrusaSliceSettings().skirtLoops,
-                        skirtHeightLayers = PrusaSliceSettings().skirtHeightLayers,
-                        skirtDistanceMm = PrusaSliceSettings().skirtDistanceMm,
-                        brimWidthMm = PrusaSliceSettings().brimWidthMm,
-                        overhangs = PrusaSliceSettings().overhangs,
-                        supportMaterial = PrusaSliceSettings().supportMaterial,
-                        supportThresholdAngleDegrees = PrusaSliceSettings().supportThresholdAngleDegrees,
-                        supportPattern = PrusaSliceSettings().supportPattern,
-                        supportInterface = PrusaSliceSettings().supportInterface,
-                        supportInterfaceLayers = PrusaSliceSettings().supportInterfaceLayers,
-                        printSpeedMmPerSecond = PrusaSliceSettings().printSpeedMmPerSecond,
-                        externalPerimeterSpeedMmPerSecond = PrusaSliceSettings().externalPerimeterSpeedMmPerSecond,
-                        infillSpeedMmPerSecond = PrusaSliceSettings().infillSpeedMmPerSecond,
-                        firstLayerSpeedMmPerSecond = PrusaSliceSettings().firstLayerSpeedMmPerSecond,
-                        travelSpeedMmPerSecond = PrusaSliceSettings().travelSpeedMmPerSecond,
-                        nozzleTemperatureC = PrusaSliceSettings().nozzleTemperatureC,
-                        firstLayerTemperatureC = PrusaSliceSettings().firstLayerTemperatureC,
-                        bedTemperatureC = PrusaSliceSettings().bedTemperatureC,
-                        firstLayerBedTemperatureC = PrusaSliceSettings().firstLayerBedTemperatureC,
-                        fanSpeedPercent = PrusaSliceSettings().fanSpeedPercent,
-                        retractionLengthMm = PrusaSliceSettings().retractionLengthMm,
-                        retractionSpeedMmPerSecond = PrusaSliceSettings().retractionSpeedMmPerSecond,
-                        retractionMinTravelMm = PrusaSliceSettings().retractionMinTravelMm,
-                        retractLiftMm = PrusaSliceSettings().retractLiftMm,
-                        useFirmwareRetraction = PrusaSliceSettings().useFirmwareRetraction,
-                        extrusionMultiplierPercent = PrusaSliceSettings().extrusionMultiplierPercent,
-                    )
-                }
-            }
         OutlinedButton(
             onClick = { confirmingReset = true },
             modifier = Modifier.fillMaxWidth(),
@@ -149,20 +139,8 @@ internal fun PrusaSettingsSheet(
             // different thing - it restores the imported profile.
             Text("Reset to engine defaults")
         }
-        if (confirmingReset) {
-            ResetConfirmDialog(
-                title = "Reset to engine defaults?",
-                text = "Every PrusaSlicer setting goes back to the engine's own default, including " +
-                    "the printer, print and filament presets above. There is no undo.",
-                onDismiss = { confirmingReset = false },
-                onConfirm = {
-                    confirmingReset = false
-                    resetEverything()
-                },
-            )
-        }
 
-        SettingsCategory("Quality", initiallyExpanded = true) {
+        SettingsCategory("Quality", initiallyExpanded = phoneDefaults) {
             NumberField("Layer height", settings.layerHeightMm, "Prusa: layer_height", decimals = 3) {
                 onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
                     current.copy(layerHeightMm = it.coerceIn(0.02, 2.0))
@@ -175,7 +153,7 @@ internal fun PrusaSettingsSheet(
             }
         }
 
-        SettingsCategory("Perimeters & shells", initiallyExpanded = true) {
+        SettingsCategory("Perimeters & shells", initiallyExpanded = phoneDefaults) {
             NumberField("Perimeters", settings.perimeters.toDouble(), "Prusa: perimeters", decimals = 0) {
                 onSettings(PrusaSliceSettings.Keys.PERIMETERS) { current -> current.copy(perimeters = it.toInt().coerceIn(0, 8)) }
             }
@@ -193,7 +171,7 @@ internal fun PrusaSettingsSheet(
             }
         }
 
-        SettingsCategory("Infill", initiallyExpanded = true) {
+        SettingsCategory("Infill", initiallyExpanded = phoneDefaults) {
             NumberField("Fill density", settings.fillDensityPercent, "Prusa: fill_density", decimals = 1) {
                 onSettings(PrusaSliceSettings.Keys.FILL_DENSITY) { current ->
                     current.copy(fillDensityPercent = it.coerceIn(0.0, 100.0))
@@ -325,6 +303,23 @@ internal fun PrusaSettingsSheet(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+    }
+    SettingsSheet(
+        title = "PrusaSlicer settings",
+        expandedLayout = expandedLayout,
+        modifier = modifier,
+        menu = menu,
+    )
+    if (confirmingReset) {
+        ResetConfirmDialog(
+            title = "Reset to engine defaults?",
+            text = "Every PrusaSlicer setting goes back to the engine's own default, including " +
+                "the printer, print and filament presets above. There is no undo.",
+            onDismiss = { confirmingReset = false },
+            onConfirm = {
+                confirmingReset = false
+                resetEverything()
+            },
+        )
     }
 }

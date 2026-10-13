@@ -1,14 +1,11 @@
 package com.tomppi.enderslicer.ui
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +50,7 @@ internal fun OrcaSettingsSheet(
     onOpenAllSettings: () -> Unit = {},
     onOpenSidebarPicker: () -> Unit = {},
     onImportProfile: () -> Unit = {},
+    expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val settings = state.orcaSettings
@@ -77,14 +75,9 @@ internal fun OrcaSettingsSheet(
     }
     val engineRanges = ranges.orEmpty()
     var pickerOpen by remember { mutableStateOf(false) }
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("OrcaSlicer settings", style = MaterialTheme.typography.headlineSmall)
+    // The whole menu: the preset rows, the import, the reset and the eight cards.
+    // SettingsSheet renders it once on a phone and twice side by side on a fold.
+    val menu: @Composable (Boolean) -> Unit = { phoneDefaults ->
         Text(
             "The engine slices the machine, process and filament presets you pick below; every " +
                 "field here is layered over them, so nothing has to restate a whole profile.",
@@ -116,20 +109,8 @@ internal fun OrcaSettingsSheet(
         ) {
             Text("Reset to engine defaults")
         }
-        if (confirmingReset) {
-            ResetConfirmDialog(
-                title = "Reset to engine defaults?",
-                text = "Every OrcaSlicer setting goes back to the engine's own default, including the " +
-                    "presets above and anything a profile imported. There is no undo.",
-                onDismiss = { confirmingReset = false },
-                onConfirm = {
-                    confirmingReset = false
-                    onSettings(OrcaSliceSettings.Keys.LAYER_HEIGHT) { OrcaSliceSettings() }
-                },
-            )
-        }
 
-        Text("Quality", style = MaterialTheme.typography.titleMedium)
+        SettingsCategory("Quality", initiallyExpanded = phoneDefaults) {
         NumberField(
             label = "Layer height (mm)",
             value = settings.layerHeightMm,
@@ -151,7 +132,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Walls and shells", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Walls and shells", initiallyExpanded = phoneDefaults) {
         IntegerSettingField(
             label = "Wall loops",
             text = settings.wallLoops.toString(),
@@ -186,7 +169,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Infill", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Infill", initiallyExpanded = phoneDefaults) {
         NumberField(
             label = "Sparse infill density (%)",
             value = settings.sparseInfillDensityPercent,
@@ -205,7 +190,9 @@ internal fun OrcaSettingsSheet(
             onValue = { value -> onSettings(OrcaSliceSettings.Keys.SPARSE_INFILL_PATTERN) { it.copy(sparseInfillPattern = value) } },
         )
 
-        Text("Support", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Support", initiallyExpanded = phoneDefaults) {
         SettingSwitch(
             title = "Generate support",
             description = "Support is generated everywhere the overhang angle is exceeded",
@@ -244,7 +231,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Skirt and brim", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Skirt and brim", initiallyExpanded = phoneDefaults) {
         IntegerSettingField(
             label = "Skirt loops",
             text = settings.skirtLoops.toString(),
@@ -267,7 +256,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Speed", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Speed", initiallyExpanded = phoneDefaults) {
         NumberField(
             label = "Inner wall speed (mm/s)",
             value = settings.innerWallSpeedMmPerSecond,
@@ -309,7 +300,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Temperature and fan", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Temperature and fan", initiallyExpanded = phoneDefaults) {
         IntegerSettingField(
             label = "Nozzle temperature (C)",
             text = settings.nozzleTemperatureC.toString(),
@@ -377,7 +370,9 @@ internal fun OrcaSettingsSheet(
             },
         )
 
-        Text("Filament and retraction", style = MaterialTheme.typography.titleMedium)
+        }
+
+        SettingsCategory("Filament and retraction", initiallyExpanded = phoneDefaults) {
         OptionField(
             label = "Filament type",
             value = settings.filamentType,
@@ -424,7 +419,26 @@ internal fun OrcaSettingsSheet(
                 it.copy(useFirmwareRetraction = value)
             }
         }
-        Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    SettingsSheet(
+        title = "OrcaSlicer settings",
+        expandedLayout = expandedLayout,
+        modifier = modifier,
+        menu = menu,
+    )
+    if (confirmingReset) {
+        ResetConfirmDialog(
+            title = "Reset to engine defaults?",
+            text = "Every OrcaSlicer setting goes back to the engine's own default, including the " +
+                "presets above and anything a profile imported. There is no undo.",
+            onDismiss = { confirmingReset = false },
+            onConfirm = {
+                confirmingReset = false
+                onSettings(OrcaSliceSettings.Keys.LAYER_HEIGHT) { OrcaSliceSettings() }
+            },
+        )
     }
 
     if (pickerOpen) {

@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -2309,6 +2310,7 @@ fun EnderSlicerApp(
                                 onPrusaPrinter = viewModel::selectPrusaPrinter,
                                 onPrusaPrint = viewModel::selectPrusaPrint,
                                 onPrusaFilament = viewModel::selectPrusaFilament,
+                                expandedLayout = expandedLayout,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(1f),
@@ -2324,6 +2326,7 @@ fun EnderSlicerApp(
                                         arrayOf("application/json", "application/zip", "*/*"),
                                     )
                                 },
+                                expandedLayout = expandedLayout,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(1f),
@@ -3658,18 +3661,41 @@ private fun ViewerPanel(
                 .padding(12.dp),
         )
 
+        // The Plate's floating cards live on the right now, clear of the session
+        // rail's column on the left: the viewer's own mode switch first, then the
+        // printer card and the notice banner under it. They are translucent - the
+        // model is what the plate is for - and they are content of this box, while
+        // a menu opened from the top bar is a popup in its own window, so the menu
+        // always draws over them.
         Column(
             modifier = Modifier
-                .align(Alignment.TopStart)
+                .align(Alignment.TopEnd)
                 .padding(12.dp),
+            horizontalAlignment = Alignment.End,
         ) {
+            if (preview != null || gcodeAvailable) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = PLATE_CARD_ALPHA),
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        ViewerModeButton("Model", ViewerMode.MODEL, viewerMode, true, onViewerMode)
+                        ViewerModeButton("Layers", ViewerMode.LAYERS, viewerMode, preview != null || gcodeAvailable, onViewerMode)
+                        ViewerModeButton("Path", ViewerMode.NOZZLE_PATH, viewerMode, gcodeAvailable, onViewerMode)
+                    }
+                }
+            }
             CollapsibleCard(
                 // Open, this is the one header line that identifies the printer:
                 // name plus build volume, and 340dp is what keeps it on one
                 // line; the old header could stay at 290dp because the
                 // dimensions had a second line to wrap onto. Folded, the card
                 // is the chevron alone, so it stops holding the plate's
-                // top-left corner while the model is being inspected.
+                // top-right corner while the model is being inspected.
                 title = "%s · %.0f × %.0f × %.0f mm".format(
                     effectivePrinter.name,
                     effectivePrinter.widthMm,
@@ -3775,27 +3801,11 @@ private fun ViewerPanel(
             }
         }
 
-        if (preview != null || gcodeAvailable) {
-            Card(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    ViewerModeButton("Model", ViewerMode.MODEL, viewerMode, true, onViewerMode)
-                    ViewerModeButton("Layers", ViewerMode.LAYERS, viewerMode, preview != null || gcodeAvailable, onViewerMode)
-                    ViewerModeButton("Path", ViewerMode.NOZZLE_PATH, viewerMode, gcodeAvailable, onViewerMode)
-                }
-            }
-        }
     }
 }
 
 /**
- * The status banner in the plate's top-left corner: the ViewModel's status line
+ * The status banner in the plate's top-right corner: the ViewModel's status line
  * as the header, the gesture help as the content. Folded, the banner is the
  * chevron alone, so the status line comes back only while it is open - the same
  * trade the other Plate cards make.
@@ -4204,32 +4214,52 @@ internal fun PhoneSessionPanel(
     Box(modifier = modifier) {
         if (open) {
             Column(modifier = Modifier.fillMaxHeight()) {
-                Surface(
-                    tonalElevation = 4.dp,
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp),
-                ) {
-                    IconButton(onClick = onCollapse) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                            contentDescription = "Hide the sidebar",
-                        )
-                    }
-                }
+                SidebarHandle(
+                    onClick = onCollapse,
+                    icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    label = "Hide the sidebar",
+                )
                 Box(modifier = Modifier.weight(1f)) { rail() }
             }
         } else {
-            Surface(
-                tonalElevation = 4.dp,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp),
-            ) {
-                IconButton(onClick = onExpand) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = "Show the sidebar",
-                    )
-                }
+            SidebarHandle(
+                onClick = onExpand,
+                icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                label = "Show the sidebar",
+            )
+        }
+    }
+}
+
+/**
+ * The sidebar's handle, closed and open alike: a small arrow in a small circle,
+ * not a slab. The 48dp box is the touch target Material asks for; what is drawn is
+ * the 32dp circle inside it, so the plate keeps the rest of the corner.
+ */
+@Composable
+private fun SidebarHandle(
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            tonalElevation = 4.dp,
+            color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.9f),
+            shape = CircleShape,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    icon,
+                    contentDescription = label,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
@@ -4364,7 +4394,7 @@ private fun ViewerModeButton(
  * ones the expanded block has always used.
  */
 @Composable
-private fun ActionBar(
+internal fun ActionBar(
     state: MainUiState,
     nonPlanarEnabled: Boolean,
     conicalEnabled: Boolean,
@@ -4386,7 +4416,9 @@ private fun ActionBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                // Collapsed, the bar is only its arrow: the strip it shares with
+                // the model is a handle's height, not a bar's.
+                .padding(horizontal = 12.dp, vertical = if (expanded && !handleOnly) 8.dp else 2.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             if (expanded && !handleOnly) {
@@ -4406,10 +4438,18 @@ private fun ActionBar(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = if (handleOnly) Arrangement.Center else Arrangement.spacedBy(8.dp),
+                horizontalArrangement = if (expanded && !handleOnly) {
+                    Arrangement.spacedBy(8.dp)
+                } else {
+                    Arrangement.Center
+                },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (!handleOnly) {
+                // Collapsed - and while the sidebar panel is up - the bar carries
+                // nothing but its own arrow. The button and the two rows below it
+                // are what the expand gesture buys back, and the model keeps the
+                // strip until then.
+                if (expanded && !handleOnly) {
                     if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
                     Button(
                         onClick = onSlice,
@@ -4425,14 +4465,12 @@ private fun ActionBar(
                             },
                         )
                     }
-                    if (expanded) {
-                        OutlinedButton(
-                            onClick = onExportGcode,
-                            enabled = gcodeAvailable && !state.isBusy,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("Export G-code")
-                        }
+                    OutlinedButton(
+                        onClick = onExportGcode,
+                        enabled = gcodeAvailable && !state.isBusy,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Export G-code")
                     }
                 }
                 // The collapse control rides in the row that survives, so the

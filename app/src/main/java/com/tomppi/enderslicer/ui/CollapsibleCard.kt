@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,6 +28,15 @@ import androidx.compose.ui.unit.dp
  * Material still calls a touch target.
  */
 private val FoldedCardSize = 48.dp
+
+/**
+ * How much of the model a Plate card lets through.
+ *
+ * The cards float over the model, and a solid surface made them the thing the eye
+ * landed on first. At this alpha the bed and the part read through the card while
+ * every line of its own text stays legible against the theme's surface behind it.
+ */
+internal const val PLATE_CARD_ALPHA = 0.78f
 
 /**
  * One floating Plate card with two states: open, or folded down to a bare
@@ -57,7 +67,12 @@ internal fun CollapsibleCard(
     headerTrailing: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(modifier = modifier) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = PLATE_CARD_ALPHA),
+        ),
+    ) {
         if (expanded) {
             Row(
                 modifier = Modifier

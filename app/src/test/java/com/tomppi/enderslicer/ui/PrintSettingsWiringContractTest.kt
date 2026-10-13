@@ -6,17 +6,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The print settings' wiring to the window: the app's own expanded decision, and
- * the one call site that hands it to the sheet.
+ * The print settings' wiring to the window: the app's own expanded decision, the
+ * three call sites that hand it to the three engine sheets, and the one shape and
+ * one card they are all built from.
  *
  * The threshold is the window's, not the sheet's - the Print tab's content box has
  * already lost the navigation rail's width by the time the sheet is composed, so a
  * second measurement there would disagree on a 600-680dp window. This pins the one
- * decision both layouts hang off, and the one section list they are built from.
+ * decision every layout hangs off, and the one section list they are built from.
  */
 class PrintSettingsWiringContractTest {
     private val app = source("ui/EnderSlicerApp.kt")
     private val sheet = source("ui/CategorizedSettingsSheet.kt")
+    private val layout = source("ui/SettingsSheet.kt")
+    private val prusa = source("ui/PrusaSettingsSheet.kt")
+    private val orca = source("ui/OrcaSettingsSheet.kt")
 
     /** The sheet's sections are the ones the phone shows, in the phone's own order. */
     @Test
@@ -43,38 +47,46 @@ class PrintSettingsWiringContractTest {
         )
     }
 
-    /** The window decides expanded, and the print settings sheet is told it. */
+    /** The window decides expanded, and all three engine sheets are told it. */
     @Test
-    fun theWindowDecidesExpandedAndTheSheetIsToldIt() {
+    fun theWindowDecidesExpandedAndEverySheetIsToldIt() {
         assertTrue(
             "the app's one width decision",
             app.contains("val expandedLayout = maxWidth >= 600.dp"),
         )
-        val call = app.substringAfter("CategorizedSettingsSheet(").substringBefore("\n                        )")
+        val curaCall = app.substringAfter("CategorizedSettingsSheet(").substringBefore("\n                        )")
         assertTrue(
-            "the sheet is handed the window's own decision, not a second measurement",
-            call.contains("expandedLayout = expandedLayout"),
+            "the Cura sheet is handed the window's own decision, not a second measurement",
+            curaCall.contains("expandedLayout = expandedLayout"),
         )
+        val prusaCall = app.substringAfter("PrusaSettingsSheet(").substringBefore("\n                        )")
+        assertTrue("and the PrusaSlicer sheet", prusaCall.contains("expandedLayout = expandedLayout"))
+        val orcaCall = app.substringAfter("OrcaSettingsSheet(").substringBefore("\n                        )")
+        assertTrue("and the OrcaSlicer sheet", orcaCall.contains("expandedLayout = expandedLayout"))
     }
 
     /**
-     * Both layouts render the same section bodies and the same selector list: the
-     * phone's stacked cards and the wide layout's two panes cannot drift apart into
-     * two different sets of settings.
+     * One shape and one card for all three engines: the phone's single column and
+     * the wide layout's two columns come from the same [SettingsSheet], and every
+     * section of every engine is the same [SettingsCategory] card.
      */
     @Test
-    fun bothLayoutsRenderTheSameSections() {
+    fun oneShapeAndOneCardAreSharedByEveryEngine() {
         assertTrue(
-            "the phone stacks the categories",
-            sheet.contains("PRINT_SETTINGS_CATEGORIES.forEach { section ->") &&
-                sheet.contains("SettingsCategory("),
+            "the shape renders the menu once on a phone and twice when wide",
+            layout.contains("menu(true)") &&
+                layout.contains("SETTINGS_LEFT_PANE_TAG") &&
+                layout.contains("SETTINGS_RIGHT_PANE_TAG") &&
+                layout.replace(" ", "").contains("menu(false)"),
         )
+        listOf("Cura" to sheet, "PrusaSlicer" to prusa, "OrcaSlicer" to orca).forEach { (name, text) ->
+            assertTrue("$name's screen uses the one shape", text.contains("SettingsSheet("))
+            assertTrue("$name's sections use the one card", text.contains("SettingsCategory("))
+        }
         assertTrue(
-            "the wide layout gives each pane its own selector over the same list",
-            sheet.contains("private fun PrintSettingsPane(") &&
-                sheet.contains("PrintSettingsSection.entries.forEach { entry ->") &&
-                sheet.contains("PRINT_SETTINGS_LEFT_PANE_TAG") &&
-                sheet.contains("PRINT_SETTINGS_RIGHT_PANE_TAG"),
+            "the Cura menu is the cards themselves, with no selector left",
+            sheet.contains("PRINT_SETTINGS_CATEGORIES.forEach { section ->") &&
+                !sheet.contains("Section: "),
         )
         assertTrue(
             "and one body per section, written once",

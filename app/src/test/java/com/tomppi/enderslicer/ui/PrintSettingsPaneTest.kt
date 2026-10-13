@@ -28,14 +28,12 @@ import org.robolectric.annotation.Config
 import kotlin.math.abs
 
 /**
- * The print settings' two shapes: the phone's one column and the foldable's split.
+ * The print settings' two shapes: the phone's one column and the wide window's two.
  *
- * The split is not an index and a detail pane - **both panes are settings**, each
- * with its own section selector and its own scroll, so twice the settings are on
- * the screen at once. These hold that: two panes side by side on different
- * sections, one pane's choice leaving the other alone, an edit surviving a section
- * change, a long section scrolling inside its own pane, every row that is not a
- * category still reachable, and the phone still the one column it has always been.
+ * The wide window holds **two settings menus**, not a list of sections and a detail
+ * pane: the same collapsible cards, side by side, each column with its own scroll
+ * and its own open or closed cards - so Quality can be open on the left while
+ * Infill is open on the right, and twice the settings are on the screen at once.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -58,7 +56,6 @@ class PrintSettingsPaneTest {
 
     private val settings = mutableStateOf(SlicerSettings())
     private val registered = mutableListOf<String>()
-    private var openedAllSettings = 0
 
     private fun show(expandedLayout: Boolean) {
         compose.setContent {
@@ -70,79 +67,81 @@ class PrintSettingsPaneTest {
                 },
                 onResetOverrides = {},
                 expandedLayout = expandedLayout,
-                onOpenAllSettings = { openedAllSettings++ },
                 modifier = Modifier.fillMaxSize(),
             )
         }
     }
 
-    /** A node of [tag]'s pane that says [text]: this pane holds that row. */
+    /** A node of [tag]'s column that says [text]: this column holds that row. */
     private fun inPane(tag: String, text: String): SemanticsNodeInteraction =
         compose.onNode(hasText(text) and hasAnyAncestor(hasTestTag(tag)))
 
-    /** The section [tag]'s pane shows, as its selector's own button reads. */
-    private fun chooseSection(tag: String, from: String, to: String) {
-        inPane(tag, "Section: $from").performClick()
-        compose.onNodeWithText(to).performClick()
-    }
-
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h800dp")
-    fun theSplitIsTwoPanesOfSettingsEachWithItsOwnSection() {
+    fun theWideLayoutIsTwoOfTheSameSettingsMenu() {
         show(expandedLayout = true)
 
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-        val left = compose.onNodeWithTag(PRINT_SETTINGS_LEFT_PANE_TAG).fetchSemanticsNode().boundsInRoot
-        val right = compose.onNodeWithTag(PRINT_SETTINGS_RIGHT_PANE_TAG).fetchSemanticsNode().boundsInRoot
+        val left = compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).fetchSemanticsNode().boundsInRoot
+        val right = compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).fetchSemanticsNode().boundsInRoot
 
-        assertTrue("the left pane starts on the left, its edge was ${left.left}", left.left < root.width / 4f)
+        assertTrue("the left column starts on the left, its edge was ${left.left}", left.left < root.width / 4f)
         assertTrue(
-            "the right pane reaches the right edge, it was ${right.right} of ${root.width}",
+            "the right column reaches the right edge, it was ${right.right} of ${root.width}",
             right.right > root.width * 3f / 4f,
         )
         assertTrue(
-            "the panes meet at the divider, they were ${left.right} and ${right.left}",
+            "the columns meet at the divider, they were ${left.right} and ${right.left}",
             right.left - left.right > 0f && right.left - left.right < 60f,
         )
         assertTrue(
-            "both panes are one height, they were ${left.height} and ${right.height}",
+            "both columns are one height, they were ${left.height} and ${right.height}",
             abs(left.height - right.height) < 2f,
         )
         assertTrue(
-            "the split fills the height it is given, it was ${left.height} of ${root.height}",
+            "the columns fill the height they are given, it was ${left.height} of ${root.height}",
             left.height > root.height * 0.5f,
         )
 
-        // Both panes are settings - the first field of two different sections - and
-        // each carries the selector that chose it.
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Section: Quality").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Layer height (mm)").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Section: Walls and top/bottom").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Wall thickness (mm)").assertIsDisplayed()
-        compose.onNodeWithText("Wall thickness (mm)").assertIsDisplayed()
+        // Both columns are the settings menu: the header rows and the cards, in
+        // each of them - and no selector anywhere.
+        listOf(SETTINGS_LEFT_PANE_TAG, SETTINGS_RIGHT_PANE_TAG).forEach { tag ->
+            inPane(tag, "Quality").assertExists()
+            inPane(tag, "Walls and top/bottom").assertExists()
+            inPane(tag, "Add more settings (all settings)").assertExists()
+        }
+        compose.onNodeWithText("Section: Quality").assertDoesNotExist()
     }
 
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h800dp")
-    fun onePanesChoiceLeavesTheOtherPaneAlone() {
+    fun theTwoColumnsScrollAndOpenTheirOwnCards() {
         show(expandedLayout = true)
 
-        chooseSection(PRINT_SETTINGS_LEFT_PANE_TAG, "Quality", "Supports")
+        // Quality open on the left only: the right column's own card is still shut.
+        inPane(SETTINGS_LEFT_PANE_TAG, "Quality").performClick()
+        inPane(SETTINGS_LEFT_PANE_TAG, "Layer height (mm)").assertIsDisplayed()
+        inPane(SETTINGS_RIGHT_PANE_TAG, "Layer height (mm)").assertDoesNotExist()
 
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Section: Supports").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Generate supports").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Layer height (mm)").assertDoesNotExist()
-        // The right pane is where it was, selector and fields alike.
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Section: Walls and top/bottom").assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Wall thickness (mm)").assertIsDisplayed()
+        // The right column scrolls to another section and opens that one.
+        inPane(SETTINGS_RIGHT_PANE_TAG, "Infill").performScrollTo().performClick()
+        inPane(SETTINGS_RIGHT_PANE_TAG, "Infill density (%)").performScrollTo().assertIsDisplayed()
+
+        // Neither column's scroll moved the other: the left still shows the card it
+        // opened, and the two keep their own frames.
+        inPane(SETTINGS_LEFT_PANE_TAG, "Layer height (mm)").assertIsDisplayed()
+        val left = compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).fetchSemanticsNode().boundsInRoot
+        val right = compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).fetchSemanticsNode().boundsInRoot
+        assertTrue("the columns kept their own frames", left.right < right.left)
     }
 
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h800dp")
-    fun anEditMadeInAPaneSurvivesASectionChange() {
+    fun anEditMadeInAColumnSurvivesACardChange() {
         show(expandedLayout = true)
 
-        val field = inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Layer height (mm)")
+        inPane(SETTINGS_LEFT_PANE_TAG, "Quality").performClick()
+        val field = inPane(SETTINGS_LEFT_PANE_TAG, "Layer height (mm)")
         field.performTextReplacement("0.3")
         assertEquals(
             "an edit applies immediately, exactly as it does on the phone",
@@ -151,68 +150,20 @@ class PrintSettingsPaneTest {
         )
         assertEquals(0.3, settings.value.layerHeightMm, 1e-9)
 
-        chooseSection(PRINT_SETTINGS_LEFT_PANE_TAG, "Quality", "Infill")
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Infill density (%)").assertIsDisplayed()
+        // Shut the card and open another one in the same column, then come back.
+        inPane(SETTINGS_LEFT_PANE_TAG, "Quality").performClick()
+        inPane(SETTINGS_LEFT_PANE_TAG, "Walls and top/bottom").performScrollTo().performClick()
+        inPane(SETTINGS_LEFT_PANE_TAG, "Wall thickness (mm)").assertIsDisplayed()
+        inPane(SETTINGS_LEFT_PANE_TAG, "Walls and top/bottom").performScrollTo().performClick()
+        inPane(SETTINGS_LEFT_PANE_TAG, "Quality").performScrollTo().performClick()
 
-        chooseSection(PRINT_SETTINGS_LEFT_PANE_TAG, "Infill", "Quality")
-        val back = inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Layer height (mm)")
+        val back = inPane(SETTINGS_LEFT_PANE_TAG, "Layer height (mm)")
         back.assertIsDisplayed()
         assertEquals(
-            "the section comes back at the value it was left at",
+            "the card comes back at the value it was left at",
             "0.3",
             back.fetchSemanticsNode().config[SemanticsProperties.EditableText].text,
         )
-    }
-
-    @Test
-    @Config(sdk = [35], qualifiers = "w1000dp-h800dp")
-    fun aLongSectionScrollsInsideItsOwnPaneAndNeverMovesTheOther() {
-        show(expandedLayout = true)
-
-        val before = compose.onNodeWithTag(PRINT_SETTINGS_RIGHT_PANE_TAG).fetchSemanticsNode().boundsInRoot
-        // Quality is far taller than the pane: its last row is only reachable by the
-        // pane's own scroll.
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Slicing tolerance: Middle · closest to surface")
-            .performScrollTo()
-            .assertIsDisplayed()
-
-        val after = compose.onNodeWithTag(PRINT_SETTINGS_RIGHT_PANE_TAG).fetchSemanticsNode().boundsInRoot
-        assertTrue(
-            "the other pane did not move, it was ${before.top} and is ${after.top}",
-            abs(before.top - after.top) < 1f && abs(before.height - after.height) < 1f,
-        )
-        val left = compose.onNodeWithTag(PRINT_SETTINGS_LEFT_PANE_TAG).fetchSemanticsNode().boundsInRoot
-        assertTrue(
-            "the scrolled pane kept its own frame, it was ${before.height} and is ${left.height}",
-            abs(before.height - left.height) < 1f,
-        )
-        inPane(PRINT_SETTINGS_LEFT_PANE_TAG, "Section: Quality").assertIsDisplayed()
-    }
-
-    @Test
-    @Config(sdk = [35], qualifiers = "w1000dp-h800dp")
-    fun everyRowThatIsNotACategoryIsStillReachableInAPane() {
-        show(expandedLayout = true)
-
-        // The header block is a section like the rest, so either selector reaches it.
-        chooseSection(PRINT_SETTINGS_RIGHT_PANE_TAG, "Walls and top/bottom", "Printer & profile")
-
-        compose.onNode(
-            hasText("Printer: ", substring = true) and
-                hasAnyAncestor(hasTestTag(PRINT_SETTINGS_RIGHT_PANE_TAG)),
-        ).assertExists()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Import settings from Cura profile (.curaprofile)")
-            .performScrollTo().assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Import settings from Cura project (.3mf)")
-            .performScrollTo().assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Add more settings (all settings)")
-            .performScrollTo().assertIsDisplayed()
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Reset all app overrides")
-            .performScrollTo().assertIsDisplayed()
-
-        // And it still does what it says.
-        inPane(PRINT_SETTINGS_RIGHT_PANE_TAG, "Add more settings (all settings)").performClick()
-        assertEquals("the all-settings sheet is asked for", 1, openedAllSettings)
     }
 
     @Test
@@ -220,8 +171,8 @@ class PrintSettingsPaneTest {
     fun aPhoneKeepsTheOneColumn() {
         show(expandedLayout = false)
 
-        compose.onNodeWithTag(PRINT_SETTINGS_LEFT_PANE_TAG).assertDoesNotExist()
-        compose.onNodeWithTag(PRINT_SETTINGS_RIGHT_PANE_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(SETTINGS_LEFT_PANE_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(SETTINGS_RIGHT_PANE_TAG).assertDoesNotExist()
         compose.onNodeWithText("Section: Quality").assertDoesNotExist()
 
         // The header block first, then the categories as the collapsible cards they

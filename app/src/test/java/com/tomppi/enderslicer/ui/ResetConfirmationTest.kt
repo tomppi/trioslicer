@@ -103,6 +103,8 @@ class ResetConfirmationTest {
             PrusaSettingsSheet(
                 state = MainUiState(printer = printer, prusaSettings = prusa.value),
                 onSettings = { _, change -> written++; prusa.value = change(prusa.value) },
+                // The phone's one column: the wide split has its own tests.
+                expandedLayout = false,
             )
         }
         compose.onNodeWithText("Reset to engine defaults").performScrollTo().performClick()
@@ -118,6 +120,7 @@ class ResetConfirmationTest {
             OrcaSettingsSheet(
                 state = MainUiState(printer = printer, orcaSettings = orca.value),
                 onSettings = { _, change -> written++; orca.value = change(orca.value) },
+                expandedLayout = false,
             )
         }
         compose.onNodeWithText("Reset to engine defaults").performScrollTo().performClick()
