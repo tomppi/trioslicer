@@ -4,6 +4,64 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-10-13
+
+### Added
+
+- **The plate's sidebar holds the settings you choose.** The rows under the plate's quick settings were a
+  fixed four - layer height, infill, supports, adhesion. They are now yours, **per engine**: an **Add**
+  button on the sidebar itself (and the same control in Print settings) opens a searchable picker over
+  that engine's own settings, with the chosen rows listed in order to move up, move down or take off.
+  Cura, PrusaSlicer and OrcaSlicer each keep their own list, exactly as their profiles and sheets are
+  separate. Every added row has a working editor built from the setting's own metadata - a number gets a
+  slider over the range the engine declares, a switch gets an off/on - and it writes the same setting the
+  settings sheet writes. A setting that cannot work on the sidebar says so (a text setting is not a
+  number or a switch; one the app manages is named as such) instead of being added dead. The sidebar
+  scrolls when the list grows, and the Add row stays at its foot wherever you have scrolled to.
+- **A settings snapshot for PrusaSlicer and OrcaSlicer.** Cura profiles already recorded what an import
+  set, and offered to put it back. Importing a PrusaSlicer preset or an OrcaSlicer profile now does the
+  same: the profile block shows the imported file as a **configuration snapshot**, and **Reset all app
+  overrides** returns to it. That is deliberately not the same as **Reset to engine defaults**, which is
+  still there and goes back to the engine's own values; the confirmation says which one you are doing.
+  The snapshot survives a relaunch and a restored workspace, and a setting the engine will not take is
+  named rather than dropped.
+- **Two settings menus on a fold, and a settings panel on a brick phone.** On a wide screen the Print
+  settings screen is two independently scrolling menus: the left carries the profile block and the first
+  half of the sections, the right carries the rest, so twice as many settings are in front of you and
+  nothing is listed twice. On a brick phone the same rail is available as a panel that folds out over
+  the plate.
+
+### Changed
+
+- **The Plate's floating cards moved to the right and went translucent**, so they sit clear of the
+  sidebar and stop cutting the model in half - the bed and the model read faintly through them. The
+  menus that open from the top bar (Import, Plate, Blender, CAD) draw over them, proved on the device.
+- **The folded action bar is an arrow and nothing else.** Collapsed, the bar is not drawn at all: the
+  viewer runs to the bottom of the screen and a small circular arrow sits over the model to bring the
+  actions back. The strip the bar used to leave belonged to the model.
+- **All three engines' settings sheets look alike.** OrcaSlicer drew bare section headings where Cura
+  and PrusaSlicer drew cards, so one engine's menu bars were black and the others grey. All three now
+  share one section card and one layout, at both widths.
+
+### Fixed
+
+- The sidebar picker's own list of chosen rows grew without limit and began pushing the search field and
+  the catalogue off the bottom of the screen; it is capped and scrolls inside itself.
+
+### Notes
+
+- **No printed pair has been clicked together yet.** All three joint styles - the cantilever placed at a
+  tap, the wall lip's ring and its cuts, and the library hooks - are verified in the app, in the geometry
+  they build and in the meshes they produce, not in plastic. Treat the first print as a test: **Engage**,
+  **Wall** and **Depth** are the numbers to move, and a drooping undercut prints deeper than drawn.
+- **The library hooks are scaled.** They are designed at about 20 mm with deliberately tight fits;
+  scaling them down scales those clearances with them, and below 1:1 they stop being the joint the author
+  tested. The panel warns under 0.15 mm, and the two round shapes need a round seam of about their own
+  size - refused on a solid one, by name and with the volume it measured.
+- **A preview costs about 792 bytes of graphics memory per drawn move.** The app asks the device what it
+  can afford and says which profile it is in: a phone with RAM to spare holds the whole path, and one
+  without draws a band or a window around the scrub. No move is ever skipped at any profile.
+
 ## [1.9.2] - 2026-10-12
 
 ### Added
