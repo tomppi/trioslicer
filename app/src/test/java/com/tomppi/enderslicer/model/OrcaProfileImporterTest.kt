@@ -97,6 +97,29 @@ class OrcaProfileImporterTest {
         assertTrue(result.refusedKeys.isEmpty())
     }
 
+    /**
+     * A key the app manages itself is carried by the profile but never sent to the
+     * engine, and a value the engine's own catalogue refuses is not either. Both are
+     * named, so an imported snapshot can say what it could not write.
+     */
+    @Test
+    fun keysThisAppWillNotSendAreNamed() {
+        val result = parse(
+            JSONObject()
+                .put("print_settings_id", "p")
+                .put("layer_height", "0.24")
+                .put("machine_start_gcode", "G28")
+                .put("initial_layer_infill_speed", "not-a-number")
+                .toString(),
+        )
+
+        // machine_start_gcode is the app's own to write; the speed is a value the
+        // engine would refuse; layer_height is applied and so appears in neither list.
+        assertEquals(listOf("machine_start_gcode"), result.managedKeys)
+        assertEquals(listOf("initial_layer_infill_speed"), result.refusedKeys)
+        assertEquals(0.24, result.applyTo(OrcaSliceSettings()).layerHeightMm, 1e-9)
+    }
+
     @Test
     fun aNumericKeyStillRefusesAValueThatIsNotANumber() {
         val result = parse(

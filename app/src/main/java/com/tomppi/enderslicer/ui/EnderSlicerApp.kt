@@ -2301,6 +2301,7 @@ fun EnderSlicerApp(
                                 onPrusaPrinter = viewModel::selectPrusaPrinter,
                                 onPrusaPrint = viewModel::selectPrusaPrint,
                                 onPrusaFilament = viewModel::selectPrusaFilament,
+                                onResetToSnapshot = viewModel::resetPrusaToSnapshot,
                                 expandedLayout = expandedLayout,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2317,6 +2318,7 @@ fun EnderSlicerApp(
                                         arrayOf("application/json", "application/zip", "*/*"),
                                     )
                                 },
+                                onResetToSnapshot = viewModel::resetOrcaToSnapshot,
                                 expandedLayout = expandedLayout,
                                 modifier = Modifier
                                     .fillMaxWidth()

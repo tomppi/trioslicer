@@ -35,6 +35,41 @@ class AppStateStore(context: Context) {
         val profileSource: String,
     )
 
+    /**
+     * One PrusaSlicer preset's own values: what its .ini set, so the app can show
+     * where the settings came from and put them back. Per engine, not shared - a
+     * Prusa snapshot is not a Cura profile and must not be restored as one.
+     */
+    data class PrusaSnapshotBaseline(
+        /** The machine envelope as the import left it; Cura's baseline carries the same. */
+        val machine: SlicerSettings,
+        val settings: PrusaSliceSettings,
+        val startGcode: String,
+        val endGcode: String,
+        val profileName: String,
+        val profileSource: String,
+        /** Settings the .ini stated. */
+        val importedValues: Int = 0,
+        /** Keys the .ini states that this app does not send to the engine. */
+        val unmappedKeys: List<String> = emptyList(),
+    )
+
+    /**
+     * One OrcaSlicer profile's own values. Orca keeps no G-code of its own in the
+     * app - the writer emits the app's - so there is none in its snapshot either.
+     */
+    data class OrcaSnapshotBaseline(
+        /** The machine envelope as the import left it. */
+        val machine: SlicerSettings,
+        val settings: OrcaSliceSettings,
+        val profileName: String,
+        val profileSource: String,
+        /** Settings the profile's own values map held. */
+        val importedValues: Int = 0,
+        /** Keys the profile carried that the app will not send to the engine. */
+        val refusedKeys: List<String> = emptyList(),
+    )
+
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val stateDirectory = File(appContext.filesDir, "persistent-state").apply { mkdirs() }
@@ -459,6 +494,86 @@ class AppStateStore(context: Context) {
         preferences.edit().remove(KEY_SNAPSHOT_BASELINE).apply()
     }
 
+    fun savePrusaSnapshotBaseline(baseline: PrusaSnapshotBaseline) {
+        val json = JSONObject()
+            .put("machine", SlicerSettingsJson.serialize(baseline.machine))
+            .put("settings", JSONObject(PrusaSliceSettingsJson.serialize(baseline.settings)))
+            .put("startGcode", baseline.startGcode)
+            .put("endGcode", baseline.endGcode)
+            .put("profileName", baseline.profileName)
+            .put("profileSource", baseline.profileSource)
+            .put("importedValues", baseline.importedValues)
+            .put("unmappedKeys", JSONArray(baseline.unmappedKeys))
+        preferences.edit().putString(KEY_PRUSA_SNAPSHOT_BASELINE, json.toString()).apply()
+    }
+
+    fun prusaSnapshotBaseline(): PrusaSnapshotBaseline? {
+        val encoded = preferences.getString(KEY_PRUSA_SNAPSHOT_BASELINE, null) ?: return null
+        return runCatching {
+            val root = JSONObject(encoded)
+            PrusaSnapshotBaseline(
+                machine = SlicerSettingsJson.apply(
+                    SlicerSettings(),
+                    root.getJSONObject("machine"),
+                    SlicerSettingsJson.allKeys,
+                ),
+                settings = PrusaSliceSettingsJson.deserialize(root.getJSONObject("settings").toString())
+                    ?: return null,
+                startGcode = root.optString("startGcode", ""),
+                endGcode = root.optString("endGcode", ""),
+                profileName = root.optString("profileName", ""),
+                profileSource = root.optString("profileSource", ""),
+                importedValues = root.optInt("importedValues", 0),
+                unmappedKeys = root.optJSONArray("unmappedKeys").toStringList(),
+            )
+        }.getOrNull()
+    }
+
+    fun clearPrusaSnapshotBaseline() {
+        preferences.edit().remove(KEY_PRUSA_SNAPSHOT_BASELINE).apply()
+    }
+
+    fun saveOrcaSnapshotBaseline(baseline: OrcaSnapshotBaseline) {
+        val json = JSONObject()
+            .put("machine", SlicerSettingsJson.serialize(baseline.machine))
+            .put("settings", JSONObject(OrcaSliceSettingsJson.serialize(baseline.settings)))
+            .put("profileName", baseline.profileName)
+            .put("profileSource", baseline.profileSource)
+            .put("importedValues", baseline.importedValues)
+            .put("refusedKeys", JSONArray(baseline.refusedKeys))
+        preferences.edit().putString(KEY_ORCA_SNAPSHOT_BASELINE, json.toString()).apply()
+    }
+
+    fun orcaSnapshotBaseline(): OrcaSnapshotBaseline? {
+        val encoded = preferences.getString(KEY_ORCA_SNAPSHOT_BASELINE, null) ?: return null
+        return runCatching {
+            val root = JSONObject(encoded)
+            OrcaSnapshotBaseline(
+                machine = SlicerSettingsJson.apply(
+                    SlicerSettings(),
+                    root.getJSONObject("machine"),
+                    SlicerSettingsJson.allKeys,
+                ),
+                settings = OrcaSliceSettingsJson.deserialize(root.getJSONObject("settings").toString())
+                    ?: return null,
+                profileName = root.optString("profileName", ""),
+                profileSource = root.optString("profileSource", ""),
+                importedValues = root.optInt("importedValues", 0),
+                refusedKeys = root.optJSONArray("refusedKeys").toStringList(),
+            )
+        }.getOrNull()
+    }
+
+    fun clearOrcaSnapshotBaseline() {
+        preferences.edit().remove(KEY_ORCA_SNAPSHOT_BASELINE).apply()
+    }
+
+    /** A JSON array of strings, or nothing when the key is absent or malformed. */
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return (0 until length()).mapNotNull { index -> optString(index).takeIf { it.isNotBlank() } }
+    }
+
     companion object {
         const val KIND_PROJECT = "project"
         const val KIND_PROFILE = "profile"
@@ -484,6 +599,8 @@ class AppStateStore(context: Context) {
         private const val KEY_PRUSA_START = "prusa-start-gcode"
         private const val KEY_PRUSA_END = "prusa-end-gcode"
         private const val KEY_SNAPSHOT_BASELINE = "snapshot-baseline-json"
+    private const val KEY_PRUSA_SNAPSHOT_BASELINE = "prusa-snapshot-baseline-json"
+    private const val KEY_ORCA_SNAPSHOT_BASELINE = "orca-snapshot-baseline-json"
         private const val KEY_OVERRIDES_JSON = "overrides"
         private const val KEY_SIDEBAR_CURA = "sidebar-cura-json"
         private const val KEY_SIDEBAR_PRUSA = "sidebar-prusa-json"

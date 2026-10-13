@@ -105,6 +105,23 @@ fun cutBaseName(name: String): String {
     return name
 }
 
+/**
+ * What one engine's import left behind, as its profile block shows it: the file the
+ * settings came from, the line that says they are a snapshot of it, how much it
+ * carried, and anything in it the app will not send to the engine.
+ *
+ * Cura's own import keeps its fields on [MainUiState] itself; this is the same card
+ * for the two engines that gained one later.
+ */
+data class EngineSnapshot(
+    val name: String,
+    val source: String,
+    /** Settings the imported file stated; 0 when the importer does not count them. */
+    val importedValues: Int = 0,
+    /** Keys it carried that the app does not send to the engine, named. */
+    val notSentKeys: List<String> = emptyList(),
+)
+
 data class MainUiState(
     val printer: PrinterDefinition,
     val settings: SlicerSettings = SlicerSettings(),
@@ -373,6 +390,13 @@ data class MainUiState(
     val profileName: String = "Built-in current Cura settings",
     val profileSource: String = "Cura 5.14.0-alpha.0 / setting version 27 reference",
     val importedRawSettingCount: Int = 0,
+    /**
+     * The snapshot an imported PrusaSlicer preset left behind, or null when nothing
+     * has been imported: its profile block shows the card only once there is one.
+     */
+    val prusaSnapshot: EngineSnapshot? = null,
+    /** The same for an imported OrcaSlicer profile. */
+    val orcaSnapshot: EngineSnapshot? = null,
     val curaVersion: String? = null,
     val settingVersion: String? = "27",
     val engineProfile: CuraEngineProfile? = null,

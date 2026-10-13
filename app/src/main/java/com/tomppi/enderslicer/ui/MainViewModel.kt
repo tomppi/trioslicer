@@ -183,6 +183,13 @@ private const val SNAP_PREVIEW_DEBOUNCE_MILLIS = 220L
 const val MIN_JOINT_SCALE = 0.5f
 const val MAX_JOINT_SCALE = 2f
 
+/**
+ * What every engine's snapshot says under the imported file's name: the settings are a
+ * snapshot of that file, not a live view of it - the file is gone from the app's point
+ * of view the moment it is read, and only these values remain.
+ */
+private const val CONFIGURATION_SNAPSHOT_SOURCE = "Configuration snapshot"
+
 /** Said when a placement would leave the whole model under the bed. */
 private const val ENTIRELY_BELOW_BED_MESSAGE =
     "The whole model is below the build plate; raise it so part of it is above Z=0 before slicing"
@@ -238,6 +245,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val profileName: String,
         val profileSource: String,
         val baselineSettings: SlicerSettings?,
+        /** The two engines' own snapshots, read back with Cura's. */
+        val prusaSnapshot: AppStateStore.PrusaSnapshotBaseline?,
+        val orcaSnapshot: AppStateStore.OrcaSnapshotBaseline?,
         /** Display name of an export a previous process interrupted, if there was one. */
         val interruptedExportName: String?,
         /** Display name of a workspace whose configuration fingerprint no longer matches. */
@@ -309,6 +319,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val initialStartGcode = BuiltInGcode.defaultStartGcode
     private val initialEndGcode = BuiltInGcode.defaultEndGcode
     private var importedSettingsBaseline: SlicerSettings? = null
+    // One baseline per engine: a PrusaSlicer preset and an OrcaSlicer profile each keep
+    // what they set, so their sheets can show it and put it back - and neither can be
+    // restored as the other, or as Cura's.
+    private var importedPrusaBaseline: AppStateStore.PrusaSnapshotBaseline? = null
+    private var importedOrcaBaseline: AppStateStore.OrcaSnapshotBaseline? = null
 
     /**
      * The joint's booleans, one at a time and only after a pause.
@@ -902,6 +917,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistSettings(changed, workspaceMutationGeneration.incrementAndGet())
     }
 
+    /**
+     * Records what an imported PrusaSlicer preset set: its values, the machine envelope
+     * it left, its G-code, and the file it came from. Persisted with Cura's baseline -
+     * one baseline per engine - so a relaunch still shows the snapshot and can still
+     * put it back.
+     */
+    private fun savePrusaSnapshot(
+        machine: SlicerSettings,
+        settings: PrusaSliceSettings,
+        startGcode: String,
+        endGcode: String,
+        sourceName: String,
+        importedValues: Int,
+        unmappedKeys: List<String>,
+    ) {
+        val baseline = AppStateStore.PrusaSnapshotBaseline(
+            machine = machine,
+            settings = settings,
+            startGcode = startGcode,
+            endGcode = endGcode,
+            profileName = sourceName,
+            profileSource = CONFIGURATION_SNAPSHOT_SOURCE,
+            importedValues = importedValues,
+            unmappedKeys = unmappedKeys,
+        )
+        importedPrusaBaseline = baseline
+        _uiState.update {
+            it.copy(
+                prusaSnapshot = EngineSnapshot(
+                    name = sourceName,
+                    source = CONFIGURATION_SNAPSHOT_SOURCE,
+                    importedValues = importedValues,
+                    notSentKeys = unmappedKeys,
+                ),
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { stateStore.savePrusaSnapshotBaseline(baseline) }
+                .onFailure(::showOperationFailure)
+        }
+    }
+
+    /** The same, for an imported OrcaSlicer profile. */
+    private fun saveOrcaSnapshot(
+        machine: SlicerSettings,
+        settings: OrcaSliceSettings,
+        sourceName: String,
+        importedValues: Int,
+        refusedKeys: List<String>,
+    ) {
+        val baseline = AppStateStore.OrcaSnapshotBaseline(
+            machine = machine,
+            settings = settings,
+            profileName = sourceName,
+            profileSource = CONFIGURATION_SNAPSHOT_SOURCE,
+            importedValues = importedValues,
+            refusedKeys = refusedKeys,
+        )
+        importedOrcaBaseline = baseline
+        _uiState.update {
+            it.copy(
+                orcaSnapshot = EngineSnapshot(
+                    name = sourceName,
+                    source = CONFIGURATION_SNAPSHOT_SOURCE,
+                    importedValues = importedValues,
+                    notSentKeys = refusedKeys,
+                ),
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { stateStore.saveOrcaSnapshotBaseline(baseline) }
+                .onFailure(::showOperationFailure)
+        }
+    }
+
     fun importPrusaConfig(uri: Uri) {
         if (deferUntilRestoreCompletes { importPrusaConfig(uri) }) return
         if (!beginOperation("Importing PrusaSlicer config…")) return
@@ -950,11 +1040,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 persistPrusaSettings(imported.settings)
+                val stored = _uiState.value
                 if (imported.startGcode != null || imported.endGcode != null) {
-                    val stored = _uiState.value
                     stateStore.savePrusaGcode(stored.prusaStartGcode, stored.prusaEndGcode)
                 }
-                persistSettings(_uiState.value.settings, workspaceMutationGeneration.incrementAndGet())
+                persistSettings(stored.settings, workspaceMutationGeneration.incrementAndGet())
+                // What this preset set, kept as the engine's own snapshot: the sheet
+                // shows it, and "Reset all app overrides" puts it back.
+                savePrusaSnapshot(
+                    machine = stored.settings,
+                    settings = imported.settings,
+                    startGcode = stored.prusaStartGcode,
+                    endGcode = stored.prusaEndGcode,
+                    sourceName = displayName(uri),
+                    importedValues = imported.unusedKeyCount,
+                    unmappedKeys = imported.unmappedKeys,
+                )
             }.onFailure(::showOperationFailure)
         }
     }
@@ -1055,6 +1156,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistOrcaSettings(_uiState.value.orcaSettings)
         persistExtraSettings(SlicerEngine.ORCA)
         persistSettings(_uiState.value.settings, workspaceMutationGeneration.incrementAndGet())
+        // The profile's own snapshot, per engine like Cura's: shown by its sheet, and
+        // the thing "Reset all app overrides" puts back.
+        val stored = _uiState.value
+        saveOrcaSnapshot(
+            machine = stored.settings,
+            settings = stored.orcaSettings,
+            sourceName = imported.sourceName,
+            importedValues = result.values.size,
+            refusedKeys = buildList {
+                // Keys the profile carries that the app manages itself, and values the
+                // engine's own catalogue refused: neither is sent to the engine, so the
+                // snapshot names them instead of dropping them in silence.
+                addAll(result.managedKeys)
+                addAll(result.refusedKeys)
+            }.distinct(),
+        )
     }
 
     /** What was imported, what was not, and which base preset the engine will layer it over. */
@@ -1252,12 +1369,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _uiState.value
         if (current.isBusy) return
         val changed = transform(current.prusaSettings)
+        // An edit here is an app override like any other: the key joins the same set
+        // the Cura fields write to, which is what the profile block counts and what
+        // "Reset all app overrides" puts back.
+        val machine = current.settings
+            .copy(overriddenSettingKeys = current.settings.overriddenSettingKeys + key)
         _uiState.update { state ->
             state.withoutPublishedSlice("Settings changed; slice again to export G-code").copy(
                 prusaSettings = changed,
+                settings = machine,
             )
         }
         persistPrusaSettings(changed)
+        persistSettings(machine, workspaceMutationGeneration.incrementAndGet())
     }
 
     private fun persistPrusaSettings(settings: PrusaSliceSettings) {
@@ -1283,12 +1407,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _uiState.value
         if (current.isBusy) return
         val changed = transform(current.orcaSettings)
+        // An app override, like a Cura field's edit: the set is what the profile
+        // block counts and what "Reset all app overrides" restores.
+        val machine = current.settings
+            .copy(overriddenSettingKeys = current.settings.overriddenSettingKeys + key)
         _uiState.update { state ->
             state.withoutPublishedSlice("Settings changed; slice again to export G-code").copy(
                 orcaSettings = changed,
+                settings = machine,
             )
         }
         persistOrcaSettings(changed)
+        persistSettings(machine, workspaceMutationGeneration.incrementAndGet())
     }
 
     private var prusaCatalogue: PrusaPresetCatalog? = null
@@ -1456,6 +1586,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         orcaSettingsPersistenceJob = viewModelScope.launch(Dispatchers.IO) {
             previousWrite?.join()
             stateStore.saveOrcaSettings(settings)
+        }
+    }
+
+    /**
+     * Puts every app override back to what the imported PrusaSlicer preset set: its values,
+     * its G-code and the machine envelope it left. The weaker of the two resets its sheet
+     * offers - "Reset to engine defaults" is the stronger one and goes to PrusaSlicer's own
+     * defaults - so the two are named for what they do.
+     */
+    fun resetPrusaToSnapshot() {
+        if (_uiState.value.isBusy) return
+        val baseline = importedPrusaBaseline ?: return
+        // The engine's own settings carry no override set of their own: the app's one
+        // set lives on the machine settings, and the baseline holds it as the import
+        // left it - which is what "cleared" means here.
+        val machine = baseline.machine.withRecomputedDerived()
+        val settings = baseline.settings
+        persistSettings(machine, workspaceMutationGeneration.incrementAndGet())
+        persistPrusaSettings(settings)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { stateStore.savePrusaGcode(baseline.startGcode, baseline.endGcode) }
+                .onFailure(::showOperationFailure)
+        }
+        _uiState.update {
+            it.withoutPublishedSlice().copy(
+                settings = machine,
+                prusaSettings = settings,
+                prusaStartGcode = baseline.startGcode,
+                prusaEndGcode = baseline.endGcode,
+                statusMessage = "App overrides cleared; the values imported from " +
+                    baseline.profileName + " are active",
+            )
+        }
+    }
+
+    /** The same for OrcaSlicer, which keeps no G-code of its own in this app. */
+    fun resetOrcaToSnapshot() {
+        if (_uiState.value.isBusy) return
+        val baseline = importedOrcaBaseline ?: return
+        val machine = baseline.machine.withRecomputedDerived()
+        val settings = baseline.settings
+        persistSettings(machine, workspaceMutationGeneration.incrementAndGet())
+        persistOrcaSettings(settings)
+        _uiState.update {
+            it.withoutPublishedSlice().copy(
+                settings = machine,
+                orcaSettings = settings,
+                statusMessage = "App overrides cleared; the values imported from " +
+                    baseline.profileName + " are active",
+            )
         }
     }
 
@@ -5995,6 +6175,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     val snapshotBaseline = if (saved == null) stateStore.snapshotBaseline() else null
+                    // PrusaSlicer's and OrcaSlicer's snapshots are not tied to Cura's
+                    // pending import, so they come back whatever else is being restored.
+                    val prusaSnapshot = stateStore.prusaSnapshotBaseline()
+                    val orcaSnapshot = stateStore.orcaSnapshotBaseline()
                     val scene = saved?.takeIf { it.kind == AppStateStore.KIND_PROJECT }
                         ?.file
                         ?.inputStream()
@@ -6080,6 +6264,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         profileName = effectiveProfileName,
                         profileSource = effectiveProfileSource,
                         baselineSettings = snapshotBaseline?.settings,
+                        prusaSnapshot = prusaSnapshot,
+                        orcaSnapshot = orcaSnapshot,
                         interruptedExportName = interruptedExportName,
                         skippedWorkspaceName = skippedWorkspaceName,
                         workspaceUnreadable = workspaceLoad.isFailure,
@@ -6115,6 +6301,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         scene = restored.scene,
                         statusMessage = "Restored ${restored.config.name} and ${restored.settings.overriddenSettingKeys.size} app overrides",
                     )
+                }
+                // Whatever else was restored, the two engines' snapshots come back with
+                // it: their profile blocks show the imported file again, and their resets
+                // can still put its values back.
+                importedPrusaBaseline = restored.prusaSnapshot
+                importedOrcaBaseline = restored.orcaSnapshot
+                if (restored.prusaSnapshot != null || restored.orcaSnapshot != null) {
+                    _uiState.update { state ->
+                        state.copy(
+                            prusaSnapshot = restored.prusaSnapshot?.let { baseline ->
+                                EngineSnapshot(
+                                    name = baseline.profileName,
+                                    source = baseline.profileSource,
+                                    importedValues = baseline.importedValues,
+                                    notSentKeys = baseline.unmappedKeys,
+                                )
+                            },
+                            orcaSnapshot = restored.orcaSnapshot?.let { baseline ->
+                                EngineSnapshot(
+                                    name = baseline.profileName,
+                                    source = baseline.profileSource,
+                                    importedValues = baseline.importedValues,
+                                    notSentKeys = baseline.refusedKeys,
+                                )
+                            },
+                        )
+                    }
                 }
                 restoreWorkspace(restored.workspace)
                 restored.skippedWorkspaceName?.let { name ->

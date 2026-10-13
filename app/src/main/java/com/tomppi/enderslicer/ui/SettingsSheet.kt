@@ -10,7 +10,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -24,6 +26,62 @@ internal const val SETTINGS_RIGHT_PANE_TAG = "settings-right-pane"
 
 /** Every settings card carries its own title as a tag, so a test can list them. */
 internal const val SETTINGS_SECTION_TAG_PREFIX = "settings-section:"
+
+/**
+ * One engine's imported snapshot, in its profile block: the file the settings came
+ * from, the line that says they are a snapshot of it, what it carried, and anything
+ * in it this app will not send to the engine - named, not dropped in silence.
+ *
+ * Below it sits "Reset to engine defaults", which is the stronger of the pair: this
+ * card's own button puts back what the import set, and that one discards the import
+ * as well. Each says which it is, and each asks before it acts.
+ */
+@Composable
+internal fun EngineSnapshotCard(
+    snapshot: EngineSnapshot,
+    overrides: Int,
+    onAskReset: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(modifier = modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(snapshot.name, style = MaterialTheme.typography.titleMedium)
+            Text(snapshot.source, style = MaterialTheme.typography.bodySmall)
+            if (snapshot.importedValues > 0) {
+                Text(
+                    snapshot.importedValues.toString() + " imported values · " +
+                        overrides.toString() + " app overrides",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (snapshot.notSentKeys.isNotEmpty()) {
+                // The names are the point: a key the engine is never given is a
+                // difference between what was imported and what will be printed.
+                Text(
+                    "Not sent to this engine: " + snapshot.notSentKeys.take(SNAPSHOT_KEY_NAMES_SHOWN)
+                        .joinToString(", ") +
+                        if (snapshot.notSentKeys.size > SNAPSHOT_KEY_NAMES_SHOWN) {
+                            " and " + (snapshot.notSentKeys.size - SNAPSHOT_KEY_NAMES_SHOWN) + " more"
+                        } else {
+                            ""
+                        },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            OutlinedButton(
+                onClick = onAskReset,
+                enabled = overrides > 0,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Reset all app overrides")
+            }
+        }
+    }
+}
+
+/** How many refused keys the snapshot names before it counts the rest. */
+private const val SNAPSHOT_KEY_NAMES_SHOWN = 8
 
 /**
  * One collapsible card of a settings screen: what it is called, whether the phone

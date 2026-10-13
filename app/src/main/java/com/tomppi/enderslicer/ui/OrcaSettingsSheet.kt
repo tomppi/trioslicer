@@ -50,6 +50,8 @@ internal fun OrcaSettingsSheet(
     onOpenAllSettings: () -> Unit = {},
     onOpenSidebarPicker: () -> Unit = {},
     onImportProfile: () -> Unit = {},
+    /** Puts every app override back to what an imported profile set. */
+    onResetToSnapshot: () -> Unit = {},
     expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -61,6 +63,7 @@ internal fun OrcaSettingsSheet(
     // The reset is destructive and one tap: it throws away every OrcaSlicer
     // setting, the presets and anything imported, and nothing brings it back.
     var confirmingReset by remember { mutableStateOf(false) }
+    var confirmingSnapshotReset by remember { mutableStateOf(false) }
     val liveSettings = rememberUpdatedState(settings)
     LaunchedEffect(Unit) {
         val loaded = withContext(Dispatchers.IO) { AllSettingsCatalogs.orcaRanges(context.assets) }
@@ -104,6 +107,16 @@ internal fun OrcaSettingsSheet(
         }
         OutlinedButton(onClick = onOpenSidebarPicker, modifier = Modifier.fillMaxWidth()) {
             Text("Add settings to the sidebar")
+        }
+        // The imported profile's own snapshot, when there is one: the file it came
+        // from, and the reset that puts its values back. The row below is the other
+        // half of the pair - it discards the import as well.
+        state.orcaSnapshot?.let { snapshot ->
+            EngineSnapshotCard(
+                snapshot = snapshot,
+                overrides = state.settings.overriddenSettingKeys.size,
+                onAskReset = { confirmingSnapshotReset = true },
+            )
         }
         OutlinedButton(
             onClick = { confirmingReset = true },
@@ -437,13 +450,29 @@ internal fun OrcaSettingsSheet(
         ResetConfirmDialog(
             title = "Reset to engine defaults?",
             text = "Every OrcaSlicer setting goes back to the engine's own default, including the " +
-                "presets above and anything a profile imported. There is no undo.",
+                "presets above and anything a profile imported. \"Reset all app overrides\" is the " +
+                "one that keeps the import. There is no undo.",
             onDismiss = { confirmingReset = false },
             onConfirm = {
                 confirmingReset = false
                 onSettings(OrcaSliceSettings.Keys.LAYER_HEIGHT) { OrcaSliceSettings() }
             },
         )
+    }
+    state.orcaSnapshot?.let { snapshot ->
+        if (confirmingSnapshotReset) {
+            ResetConfirmDialog(
+                title = "Reset all app overrides?",
+                text = "Every app override goes back to what " + snapshot.name +
+                    " imported. OrcaSlicer's own defaults are not touched - that is " +
+                    "\"Reset to engine defaults\". There is no undo.",
+                onDismiss = { confirmingSnapshotReset = false },
+                onConfirm = {
+                    confirmingSnapshotReset = false
+                    onResetToSnapshot()
+                },
+            )
+        }
     }
 
     if (pickerOpen) {

@@ -121,6 +121,23 @@ class PrusaConfigImporterTest {
         assertEquals(230.0, result.depthMm ?: -1.0, 1e-9)
     }
 
+    /**
+     * The keys the app never sends are named, not counted away: a snapshot has to be
+     * able to say what an imported file carried that it will not write.
+     */
+    @Test
+    fun theKeysTheAppNeverSendsAreNamed() {
+        val result = PrusaConfigImporter.parse(
+            "[print]\nlayer_height = 0.35\nperimeters = 5\nfoo_setting = 3\nanother_one = x\n",
+        )
+
+        assertEquals(listOf("foo_setting", "another_one"), result.unmappedKeys)
+        // Everything it did read is not in the list, and the count is the file's own.
+        assertEquals(4, result.unusedKeyCount)
+        assertEquals(0.35, result.settings.layerHeightMm, 1e-9)
+        assertEquals(5, result.settings.perimeters)
+    }
+
     @Test
     fun missingKeysFallBackToAppDefaults() {
         val result = PrusaConfigImporter.parse("[print]\nlayer_height = 0.35")

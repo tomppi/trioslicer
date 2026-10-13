@@ -80,6 +80,12 @@ object OrcaProfileImporter {
         val extraKeys: Map<String, String>,
         val ignoredKeyCount: Int,
         val refusedKeys: List<String>,
+        /**
+         * Keys the profile carried with a value that this app manages itself and so never
+         * sends to the engine, by name. They are not applied and not stored - the import
+         * names them instead of counting them away.
+         */
+        val managedKeys: List<String> = emptyList(),
         val notes: List<String>,
     ) {
 
@@ -200,6 +206,7 @@ object OrcaProfileImporter {
         val extras = linkedMapOf<String, String>()
         var machine = MachineValues()
         val refused = mutableListOf<String>()
+        val managed = mutableListOf<String>()
         val notes = mutableListOf<String>()
         val skipped = mutableListOf<String>()
         val specs = catalog.associateBy(ExtraSettingSpec::key)
@@ -214,14 +221,21 @@ object OrcaProfileImporter {
                     key == "enable_arc_fitting" -> if (flagValue(value) == true) {
                         notes += "arc fitting stays off: the app's G-code pipeline models linear moves only"
                     }
-                    key == "machine_start_gcode" || key == "machine_end_gcode" ->
+                    key == "machine_start_gcode" || key == "machine_end_gcode" -> {
                         notes += "the preset's machine G-code was not applied; the app writes its own"
+                        // Named as well as noted: the snapshot says which keys it could
+                        // not send, not only that something was left out.
+                        managed += key
+                    }
                     key in ENVELOPE_KEYS -> machine = machineValues(key, value, machine)
                     key in FIELD_KEYS -> values[key] = value
                     key.contains("gcode") -> ignored++
                     // A preset that states nothing for a key has not asked for it to change.
                     value.isBlank() -> ignored++
-                    key in AllSettingsCatalogs.ORCA_BLOCKED_KEYS -> ignored++
+                    key in AllSettingsCatalogs.ORCA_BLOCKED_KEYS -> {
+                        ignored++
+                        managed += key
+                    }
                     // An empty catalogue means the asset could not be read, not that the profile names
                 // nothing this app knows. Every override would be dropped in silence and the
                 // import would still report success.
@@ -243,6 +257,7 @@ object OrcaProfileImporter {
             extraKeys = extras,
             ignoredKeyCount = ignored,
             refusedKeys = refused.distinct().sorted(),
+            managedKeys = managed.distinct().sorted(),
             notes = notes.distinct(),
         )
     }

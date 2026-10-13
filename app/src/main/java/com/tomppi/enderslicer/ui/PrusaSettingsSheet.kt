@@ -29,12 +29,15 @@ internal fun PrusaSettingsSheet(
     onPrusaPrinter: (String) -> Unit = {},
     onPrusaPrint: (String) -> Unit = {},
     onPrusaFilament: (String) -> Unit = {},
+    /** Puts every app override back to what an imported .ini set. */
+    onResetToSnapshot: () -> Unit = {},
     expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val settings = state.prusaSettings
     val selection = state.prusaPreset
     var confirmingReset by remember { mutableStateOf(false) }
+    var confirmingSnapshotReset by remember { mutableStateOf(false) }
     // Extracted so the button and its confirmation run the same reset. It sits at
     // the sheet's own level because the button is drawn in both of the wide
     // layout's columns, and one dialog is raised for either of them.
@@ -129,14 +132,25 @@ internal fun PrusaSettingsSheet(
         ) {
             Text("Add settings to the sidebar")
         }
+        // The imported preset's own snapshot, when there is one: the file it came
+        // from, and the reset that puts its values back. The row below is the other
+        // half of the pair - it discards the import as well.
+        state.prusaSnapshot?.let { snapshot ->
+            EngineSnapshotCard(
+                snapshot = snapshot,
+                overrides = state.settings.overriddenSettingKeys.size,
+                onAskReset = { confirmingSnapshotReset = true },
+            )
+        }
         OutlinedButton(
             onClick = { confirmingReset = true },
             modifier = Modifier.fillMaxWidth(),
         ) {
             // Named for what it does, in the words the OrcaSlicer sheet already
             // uses for the same action: both put every field back to the engine's
-            // own default. Cura's pair stays "Reset all app overrides", which is a
-            // different thing - it restores the imported profile.
+            // own default, and both discard what an import set. Cura's pair stays
+            // "Reset all app overrides", which is the weaker of the two - it
+            // restores the imported profile.
             Text("Reset to engine defaults")
         }
 
@@ -316,12 +330,28 @@ internal fun PrusaSettingsSheet(
         ResetConfirmDialog(
             title = "Reset to engine defaults?",
             text = "Every PrusaSlicer setting goes back to the engine's own default, including " +
-                "the printer, print and filament presets above. There is no undo.",
+                "the printer, print and filament presets above, and an imported snapshot is " +
+                "discarded. \"Reset all app overrides\" is the one that keeps it. There is no undo.",
             onDismiss = { confirmingReset = false },
             onConfirm = {
                 confirmingReset = false
                 resetEverything()
             },
         )
+    }
+    state.prusaSnapshot?.let { snapshot ->
+        if (confirmingSnapshotReset) {
+            ResetConfirmDialog(
+                title = "Reset all app overrides?",
+                text = "Every app override goes back to what " + snapshot.name +
+                    " imported. PrusaSlicer's own defaults are not touched - that is " +
+                    "\"Reset to engine defaults\". There is no undo.",
+                onDismiss = { confirmingSnapshotReset = false },
+                onConfirm = {
+                    confirmingSnapshotReset = false
+                    onResetToSnapshot()
+                },
+            )
+        }
     }
 }

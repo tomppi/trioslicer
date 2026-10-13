@@ -28,6 +28,15 @@ object PrusaConfigImporter {
         val filamentDiameterMm: Double?,
         val gcodeFlavor: String?,
         val unusedKeyCount: Int,
+        /**
+         * Keys the config states that this app never sends to the engine, in the
+         * order the file gave them.
+         *
+         * The mapped fields above are written through the engine's own settings;
+         * everything else the file carries would be dropped in silence, so an
+         * import records them and the snapshot names them.
+         */
+        val unmappedKeys: List<String> = emptyList(),
     )
 
     /** Duplicate keys across sections: machine settings must win over print/filament ones. */
@@ -72,7 +81,11 @@ object PrusaConfigImporter {
                 "the settings an import would read"
         }
 
-        fun value(key: String): String? = values[key]?.second
+        val read = mutableSetOf<String>()
+        fun value(key: String): String? {
+            read += key
+            return values[key]?.second
+        }
         fun double(key: String): Double? = value(key)?.replace(",", ".")?.trimEnd('%')?.toDoubleOrNull()
         fun int(key: String): Int? = value(key)?.toIntOrNull()
         fun bool(key: String): Boolean? = value(key)?.trim()?.lowercase()?.let { token ->
@@ -147,6 +160,7 @@ object PrusaConfigImporter {
             filamentDiameterMm = double("filament_diameter"),
             gcodeFlavor = value("gcode_flavor"),
             unusedKeyCount = values.size,
+            unmappedKeys = values.keys.filterNot { it in read },
         )
     }
 
