@@ -4,6 +4,40 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] - 2026-10-25
+
+### Fixed
+
+- **Build-up drew a slice of the print instead of the print itself.** The Layers tab plans the
+  layers whose geometry it holds in the vertex buffers as a window, and that window was the
+  selected layer plus eight below and two above - right for **Current layer**, which only ever
+  shows one layer, but Build-up draws the accumulation, so a 586-layer print showed a thin band
+  near the scrub and stopped there. Build-up now holds **layer 0 to the selected layer**: at layer
+  301 of 587 the footer reads 301 layers in the buffers, and the stack stands on the bed. Stepping
+  the scrub up **appends** the layer it adds (about 2 ms) instead of rebuilding the stack (about
+  200 ms), the budget comes from the device's own profile rather than a constant, and a device that
+  genuinely cannot take the whole stack holds the layers under the scrub that fit and names both
+  numbers.
+- **The model was painted in the support interface's colour.** The layer view colours model paths
+  by speed on a hue sweep from 240 degrees (slow, blue) to 0 (fast, red), and the 180 to 240
+  degree section - cyan towards blue - was written with its neighbour's formula. A 200 mm/s path,
+  which is what every wall and infill line of a normal Cura slice carries, therefore came out
+  magenta: the exact colour the palette reserves for the support interface, so the whole model
+  looked labelled support interface while the counts beside it said 728,314 model paths against
+  1,460 interface paths. The ramp is one function now (PreviewColors) with its sections in order,
+  and the model reads cyan at normal print speeds.
+
+### Notes
+
+- **No printed pair has been clicked together yet.** The snap joints are verified in the app, in
+  the geometry they build and in the meshes they produce - not in plastic. Treat the first print
+  as a test: **Engage**, **Wall** and **Depth** are the numbers to move, and a drooping undercut
+  prints deeper than drawn.
+- **The Cura slice pipeline still parses its layer preview with the conservative 800,000-segment
+  cap** rather than the device profile, so a Cura slice whose paths exceed it stores folded runs
+  (the footer says so: nothing is dropped). PrusaSlicer and OrcaSlicer already use the device's
+  share; matching Cura to them is a separate change.
+
 ## [1.9.3] - 2026-10-13
 
 ### Added
