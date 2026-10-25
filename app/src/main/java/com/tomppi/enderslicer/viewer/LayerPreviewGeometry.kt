@@ -528,33 +528,8 @@ internal class LayerPreviewGeometry(
                 red = 0.12f; green = 0.92f; blue = 0.82f
             }
             else -> {
-                val range = kotlin.math.max(maximum - minimum, 0.001f)
-                val normalized = ((speed - minimum) / range).coerceIn(0f, 1f)
-                val hue = 240f * (1f - normalized)
-                val chroma = 0.95f
-                val hueSection = (hue / 60f) % 6f
-                val x = chroma * (1f - abs(hueSection % 2f - 1f))
-                val match = 1f - chroma
-                when {
-                    hueSection < 1f -> {
-                        red = chroma + match; green = x + match; blue = match
-                    }
-                    hueSection < 2f -> {
-                        red = x + match; green = chroma + match; blue = match
-                    }
-                    hueSection < 3f -> {
-                        red = match; green = chroma + match; blue = x + match
-                    }
-                    hueSection < 4f -> {
-                        red = x + match; green = match; blue = chroma + match
-                    }
-                    hueSection < 5f -> {
-                        red = x + match; green = match; blue = chroma + match
-                    }
-                    else -> {
-                        red = chroma + match; green = match; blue = x + match
-                    }
-                }
+                val rgb = PreviewColors.speed(speed, minimum, maximum)
+                red = rgb[0]; green = rgb[1]; blue = rgb[2]
             }
         }
         repeat(copies) {
