@@ -123,17 +123,30 @@ holds about three times that.
   and `RealGcodeLayerCoverageTest` measures the reported prints.
 - Every count the Layers tab shows - "N paths", "N through this layer", "Support N" - is the
   **source** count (`sourceSegmentCount`, `supportSegmentCount`), never the stored runs.
-- The vertex buffers hold a **window** of layers around the selection (the selected layer, eight
-  under it for the build-up style, two above), planned by `LayerWindow.plan` from the device
-  profile's `PreviewCapacity.segments`. Never build the whole print's lines into one buffer: that
-  is what the old 800,000-segment cap was really protecting, and it cost the layer in view its
-  paths.
+- The vertex buffers hold a **window** of layers, and the style decides which window. **Current
+  layer** holds the selected layer, eight under it and two above (`LayerWindow.plan`), because
+  that view only ever shows one layer. **Build-up** holds **layer 0 to the selected layer** - the
+  whole model under the scrub (`LayerWindow.planBuildUp`) - because that view draws the
+  accumulation; an eleven-layer context window drew a slice of a 586-layer print. The style is
+  part of the plan, not just the draw: both styles were planned as a context band in the 101/107
+  layer-window work, and the footer's "11 layers" could not tell the slice apart from a stack.
+- The build-up window is budgeted by `LayerWindow.vertexPathBudget` from
+  `PreviewCapacity.segments`: the profile's heap share is counted in 24-byte stored paths, and
+  the window's path vertices cost 56 bytes, so the same share buys fewer of them. The reported
+  586-layer Cura slice is 768,747 paths - about 43 MB of path buffers in full - so the whole
+  stack is the normal case; a device that genuinely cannot take it holds the layers under the
+  selection that fit and **names both numbers**, never draws a silently short stack. Never build
+  the whole print's lines into one buffer: that is what the old 800,000-segment cap was really
+  protecting.
 - A driver may refuse the window's allocation, so the path budget halves down to the selected
   layer alone (`BandAllocator`); a layer that even then will not fit is **named with both
   numbers** (`LayerWindow.refusal`), never sampled.
 - The window's ribbons belong to the selected layer and are rebuilt on every selection change,
   including moves inside the window; the path buffers are rebuilt only when the selection leaves
-  it (`LayerPreviewGeometry.select`).
+  a current-layer window, and the build-up stack is **grown** - the new layers are appended (or
+  copied into a larger buffer), not rebuilt from the bed - as the scrub moves up
+  (`LayerPreviewGeometry.select`). The footer's "N layers in the buffers" is the held window in
+  both styles.
 - A restored artifact has no preview until it is read: the Layers tab says "Reading the file's
   layers…" and the ViewModel parses it (`ensureLayerPreview`) instead of showing the model.
 - The window is **re-planned for every selection** from the device's capacity, and nothing about a

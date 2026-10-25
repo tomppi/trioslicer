@@ -2,13 +2,15 @@ package com.tomppi.enderslicer.viewer
 
 import com.tomppi.enderslicer.engine.GcodeLayerPreview
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The layer view's geometry, measured rather than counted: every stored path of the selected
- * layer is in the buffers, the buffers hold the window and nothing else, and selecting another
- * layer rebuilds the geometry there.
+ * The layer view's geometry, measured rather than counted: every stored path of every layer in
+ * the window is in the buffers, the buffers hold the window and nothing else, the current-layer
+ * style keeps its context band, the build-up style holds the whole stack from the bed to the
+ * scrub, and a build-up window that grows by a layer appends it instead of rebuilding the stack.
  */
 class LayerPreviewGeometryTest {
 
@@ -60,6 +62,19 @@ class LayerPreviewGeometryTest {
         note = "auto profile · 4.0 GB free",
     )
 
+    private fun geometry(
+        value: GcodeLayerPreview,
+        capacitySegments: Int = Int.MAX_VALUE,
+        style: LayerPreviewStyle = LayerPreviewStyle.CURRENT_LAYER,
+    ): LayerPreviewGeometry = LayerPreviewGeometry(value, capacity(capacitySegments), style)
+
+    /** The layer count the footer's "N layers in the buffers" holds. */
+    private fun heldLayers(status: String): Int {
+        val match = Regex("^(\\d+) layers? in the buffers").find(status)
+        requireNotNull(match) { "no layer count in '$status'" }
+        return match.groupValues[1].toInt()
+    }
+
     @Test
     fun everyPathOfTheSelectedLayerIsDrawn() {
         val value = preview(pathsOf = { 40 })
@@ -91,14 +106,14 @@ class LayerPreviewGeometryTest {
     }
 
     @Test
-    fun theBuffersHoldTheWindowAndNothingElse() {
+    fun theCurrentLayerBuffersHoldItsContextWindowAndNothingElse() {
         val value = preview(pathsOf = { 30 })
         val geometry = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
         geometry.select(50)
 
         val expected = geometry.window.sumOf { value.layers[it].segmentCount } * 2
         assertEquals(expected, geometry.pathVertexCount())
-        assertEquals("the window is a band of layers, not the print", true, geometry.window.count() <= 11)
+        assertEquals("the current-layer window is a band", true, geometry.window.count() <= 11)
         assertTrue(geometry.window.first <= 50 && geometry.window.last >= 50)
         assertEquals(
             "the ribbons are the selected layer's own paths",
@@ -134,38 +149,11 @@ class LayerPreviewGeometryTest {
         )
     }
 
-    /**
-     * The reported Build-up regression: with 6.9 GB free the footer read "1 layer in the
-     * buffers". The window near the start of the print is small (the file ends there), and the
-     * planner's remembered refusal turned that small window into a ceiling for the rest of the
-     * session, so every later selection held one layer. A small window is a planning outcome,
-     * not a memory limit, and it may not stick.
-     */
+    /** The current-layer style keeps exactly the window it always had: selected, 8 under, 2 over. */
     @Test
-    fun aSmallWindowAtTheStartDoesNotShrinkTheOnesAfterIt() {
-        val value = preview(layers = 400, pathsOf = { 30 })
-        val geometry = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
-
-        geometry.select(1)
-        assertTrue("the first window is clamped by the start of the print", geometry.window.first == 0)
-        val firstCount = geometry.window.count()
-
-        geometry.select(200)
-        assertEquals(
-            "the window has to be the full context again",
-            1 + LayerWindow.CONTEXT_BELOW + LayerWindow.CONTEXT_ABOVE,
-            geometry.window.count(),
-        )
-        assertTrue("and it grew rather than staying small", geometry.window.count() > firstCount)
-        assertEquals(200 - LayerWindow.CONTEXT_BELOW, geometry.window.first)
-        assertEquals(200 + LayerWindow.CONTEXT_ABOVE, geometry.window.last)
-    }
-
-    /** Build-up draws the layers below, so the window always holds them when they fit. */
-    @Test
-    fun buildUpHoldsTheSelectedLayerAndTheContextAroundIt() {
+    fun theCurrentLayerStyleHoldsTheSelectedLayerAndTheContextAroundIt() {
         val value = preview(layers = 400, pathsOf = { 20 })
-        val geometry = LayerPreviewGeometry(value, capacity(Int.MAX_VALUE))
+        val geometry = geometry(value, style = LayerPreviewStyle.CURRENT_LAYER)
         geometry.select(300)
 
         assertEquals(300 - LayerWindow.CONTEXT_BELOW, geometry.window.first)
@@ -175,6 +163,8 @@ class LayerPreviewGeometryTest {
             geometry.vertexStart(300) > 0 && geometry.vertexEnd(300) > geometry.vertexStart(300),
         )
         assertEquals(geometry.pathVertexCount(), geometry.vertexEnd(geometry.window.last))
+        assertEquals(1 + LayerWindow.CONTEXT_BELOW + LayerWindow.CONTEXT_ABOVE, geometry.window.count())
+        assertEquals(geometry.window.count(), heldLayers(geometry.status))
     }
 
     @Test
@@ -216,5 +206,204 @@ class LayerPreviewGeometryTest {
         geometry.select(1)
         assertTrue(geometry.status, geometry.status.contains("folded across the print"))
         assertTrue(geometry.status, geometry.status.contains("auto profile"))
+    }
+
+    // --- the build-up style holds the whole stack, from the bed to the scrub -----------------
+
+    @Test
+    fun buildUpHoldsEveryLayerFromTheBedToTheSelection() {
+        val value = preview(layers = 400, pathsOf = { 20 })
+        val geometry = geometry(value, style = LayerPreviewStyle.BUILD_UP)
+        geometry.select(300)
+
+        assertEquals("the whole stack to the scrub, and nothing above it", 0..300, geometry.window)
+        assertEquals(301, geometry.window.count())
+        assertEquals(301 * 20 * 2, geometry.pathVertexCount())
+        assertEquals(0, geometry.vertexStart(0))
+        assertEquals(20 * 2, geometry.vertexEnd(0))
+        assertTrue(geometry.status, geometry.status.startsWith("301 layers in the buffers"))
+        assertTrue(geometry.status, geometry.status.contains("6020 runs for 6020 paths"))
+        assertEquals("the footer names the layers actually held", 301, heldLayers(geometry.status))
+    }
+
+    @Test
+    fun buildUpStepsOneTenAndFiveHundredLayersDeep() {
+        val value = preview(layers = 586, pathsOf = { 30 })
+        val geometry = geometry(value, style = LayerPreviewStyle.BUILD_UP)
+        for (anchor in intArrayOf(1, 10, 500)) {
+            geometry.select(anchor)
+            assertEquals("build-up is planned from layer zero", 0..anchor, geometry.window)
+            assertEquals(anchor + 1, geometry.window.count())
+            assertEquals((anchor + 1) * 30 * 2, geometry.pathVertexCount())
+            assertEquals(anchor + 1, heldLayers(geometry.status))
+        }
+    }
+
+    /**
+     * The reported slice on the reported kind of device: 586 layers of about a thousand paths
+     * each, on the auto profile from a phone with 6.9 GB free and a 512 MB heap class. The whole
+     * stack is about 33 MB of path buffers, so it is held in full - this is not a reduced window.
+     */
+    @Test
+    fun theReportedPrintHoldsTheWholeStackAtTheScrub() {
+        val value = preview(layers = 586, pathsOf = { 1_000 })
+        val device = PreviewDeviceMemory(
+            totalBytes = 8_000_000_000L,
+            availableBytes = 6_900_000_000L,
+            lowRamDevice = false,
+            memoryClassMb = 512,
+            largeMemoryClassMb = 512,
+        )
+        val capacity = PreviewMemoryPolicy.resolve(PreviewMemoryProfile.AUTO, device, conservativeMoves = 1_000_000)
+        val geometry = LayerPreviewGeometry(value, capacity, LayerPreviewStyle.BUILD_UP)
+        geometry.select(325)
+
+        assertEquals(0..325, geometry.window)
+        assertEquals(326, geometry.window.count())
+        assertEquals(326_000 * 2, geometry.pathVertexCount())
+        assertTrue(geometry.status, geometry.status.startsWith("326 layers in the buffers"))
+        assertTrue(geometry.status, geometry.status.contains("326000 runs for 326000 paths"))
+        assertTrue("the whole stack fits the device profile", geometry.status.contains("auto profile"))
+        assertTrue("no reduction is named for a whole stack that fits", !geometry.status.contains("the window holds"))
+        assertEquals(326, heldLayers(geometry.status))
+    }
+
+    @Test
+    fun aBudgetTooSmallForTheWholeStackReducesTheWindowAndNamesBothNumbers() {
+        val value = preview(layers = 100, pathsOf = { 1_000 })
+        // 200,000 stored paths of profile budget are 85,714 window paths of vertex buffers.
+        val capacity = capacity(200_000)
+        val budget = LayerWindow.vertexPathBudget(capacity.segments)
+        val geometry = LayerPreviewGeometry(value, capacity, LayerPreviewStyle.BUILD_UP)
+        geometry.select(99)
+
+        assertEquals("the selected layer is never dropped", 99, geometry.window.last)
+        assertTrue("the stack does not start at the bed in a reduced window", geometry.window.first > 0)
+        assertEquals(85, geometry.window.count())
+        assertTrue(
+            geometry.status,
+            geometry.status.contains("the window holds 85000 of the 100000 runs the whole stack to this layer holds"),
+        )
+        assertTrue(geometry.status, geometry.status.contains("(85 of 100 layers)"))
+        assertEquals("the footer names the layers actually held", 85, heldLayers(geometry.status))
+        assertTrue(
+            "what is held fits the budget",
+            LayerWindow.segments(geometry.window) { value.layers[it].segmentCount } <= budget,
+        )
+    }
+
+    @Test
+    fun aReducedBuildUpWindowDrawsOnlyWhatItHoldsAndSaysWhatIsMissing() {
+        val value = preview(layers = 100, pathsOf = { 1_000 })
+        val geometry = LayerPreviewGeometry(value, capacity(200_000), LayerPreviewStyle.BUILD_UP)
+        geometry.select(99)
+
+        val stack = LayerPreviewDraw.buildUp(geometry, LayerPreviewStyle.BUILD_UP)
+        assertEquals("the drawn stack is the held window under the selection", geometry.window.first..98, stack.layers)
+        assertEquals(geometry.window.count() - 1, stack.layerCount)
+        assertTrue("no silent sampling: the drawn paths are all of the held layers'", stack.vertexCount > 0)
+        assertEquals(
+            LayerWindow.segments(geometry.window.first..98) { value.layers[it].segmentCount } * 2,
+            stack.vertexCount,
+        )
+    }
+
+    @Test
+    fun aBuildUpStepUpAppendsTheLayerInsteadOfRebuildingTheStack() {
+        val value = preview(layers = 400, pathsOf = { 20 })
+        val geometry = geometry(value, style = LayerPreviewStyle.BUILD_UP)
+        geometry.select(300)
+        val positions = requireNotNull(geometry.pathPositions)
+        val colors = requireNotNull(geometry.pathColors)
+        val vertices = geometry.pathVertexCount()
+
+        assertTrue("stepping up one layer", geometry.select(301))
+        assertSame("the path buffers are kept, not rebuilt", positions, geometry.pathPositions)
+        assertSame("the colours are kept too", colors, geometry.pathColors)
+        assertEquals(0..301, geometry.window)
+        assertEquals(
+            "only the new layer's paths were written",
+            vertices + value.layers[301].segmentCount * 2,
+            geometry.pathVertexCount(),
+        )
+        assertEquals(302, heldLayers(geometry.status))
+
+        // The appended vertices really are layer 301's own first path.
+        val start = geometry.vertexStart(301)
+        val layer = value.layers[301]
+        positions.position(start * 3)
+        assertEquals(layer.segments[0], positions.get(), 1e-4f)
+        assertEquals(layer.segments[1], positions.get(), 1e-4f)
+        assertEquals(layer.z, positions.get(), 1e-4f)
+        assertEquals(layer.segments[2], positions.get(), 1e-4f)
+        assertEquals(layer.segments[3], positions.get(), 1e-4f)
+        assertEquals(layer.z, positions.get(), 1e-4f)
+    }
+
+    @Test
+    fun movingDownInsideTheBuildUpStackKeepsTheBuffersAndGrowsBackIntoThem() {
+        val value = preview(layers = 400, pathsOf = { 20 })
+        val geometry = geometry(value, style = LayerPreviewStyle.BUILD_UP)
+        geometry.select(300)
+        val held = geometry.window
+        val positions = requireNotNull(geometry.pathPositions)
+
+        geometry.select(100)
+        assertEquals("moving down does not shrink the held stack", held, geometry.window)
+        assertSame("and does not rebuild it", positions, geometry.pathPositions)
+        assertEquals(100, geometry.selectedLayerIndex)
+        assertEquals(held.count(), heldLayers(geometry.status))
+
+        geometry.select(301)
+        assertSame("growing back into the held buffer does not rebuild it", positions, geometry.pathPositions)
+        assertEquals(0..301, geometry.window)
+    }
+
+    @Test
+    fun growingPastTheBuffersCapacityStillHoldsTheWholeStack() {
+        val value = preview(layers = 120, pathsOf = { 20 })
+        val geometry = geometry(value, style = LayerPreviewStyle.BUILD_UP)
+        geometry.select(0)
+        // The first layer is small, so the roomy allocation is soon full: the stack must still
+        // grow to the whole print, by copying what is held rather than by dropping it.
+        for (layer in 1 until 120) geometry.select(layer)
+        assertEquals(0..119, geometry.window)
+        assertEquals(120 * 20 * 2, geometry.pathVertexCount())
+        assertEquals(120, heldLayers(geometry.status))
+    }
+
+    @Test
+    fun switchingStyleReplansTheWindow() {
+        val value = preview(layers = 400, pathsOf = { 20 })
+        val geometry = geometry(value)
+        geometry.select(300)
+        assertEquals(292..302, geometry.window)
+
+        assertTrue(geometry.setStyle(LayerPreviewStyle.BUILD_UP))
+        assertEquals("build-up is the whole stack", 0..300, geometry.window)
+        assertEquals(301 * 20 * 2, geometry.pathVertexCount())
+
+        assertTrue(geometry.setStyle(LayerPreviewStyle.CURRENT_LAYER))
+        assertEquals(292..302, geometry.window)
+        assertEquals(11, heldLayers(geometry.status))
+    }
+
+    @Test
+    fun theFooterAgreesWithWhatTheBuffersHoldInBothStyles() {
+        val value = preview(layers = 200, pathsOf = { 40 })
+        for (style in arrayOf(LayerPreviewStyle.CURRENT_LAYER, LayerPreviewStyle.BUILD_UP)) {
+            val geometry = geometry(value, style = style)
+            geometry.select(150)
+            assertEquals(
+                "$style footer names the layers in the buffers",
+                geometry.window.count(),
+                heldLayers(geometry.status),
+            )
+            // And the buffers really hold those layers and no others.
+            assertEquals(
+                geometry.window.sumOf { value.layers[it].segmentCount } * 2,
+                geometry.pathVertexCount(),
+            )
+        }
     }
 }

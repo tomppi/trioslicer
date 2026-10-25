@@ -1,22 +1,28 @@
 package com.tomppi.enderslicer.viewer
 
-import kotlin.math.max
 import java.util.Locale
+import kotlin.math.max
 
 /**
- * The layers the layer view holds geometry for at once: the selected layer, the ones under it
- * that the build-up style draws as context, and a couple above so stepping up does not rebuild.
+ * The layers the layer view holds geometry for at once, planned from the selected layer and the
+ * style the view is in.
  *
- * A layer view only ever shows one layer, so there is no reason to hold the whole print: the
- * paths of every layer stay in the Java heap (the parser folds them to fit the device's share),
- * and the vertex buffers hold this window. The window never drops the selected layer - that is
- * what the refusal names when even one layer's geometry will not allocate.
+ * The current-layer style only ever shows one layer, so it holds that layer and the few around
+ * it: eight under and two above, so stepping through the print does not rebuild every time. The
+ * build-up style draws the whole model from the bed up to the scrub, so its window is layer zero
+ * to the selected layer - the whole stack. Both are windows, never samples: every layer in the
+ * range is drawn.
+ *
+ * Both windows are planned against the device profile's [PreviewCapacity.segments], converted
+ * for the build-up style to what its vertex buffers cost a path ([vertexPathBudget]). A budget
+ * that cannot hold the whole stack leaves the selected layer in the window, holds the layers
+ * under it that do fit, and names the reduction with both numbers; nothing here samples.
  */
 internal object LayerWindow {
-    /** Layers under the selection the build-up style shows as context. */
+    /** Layers under the selection the current-layer style keeps as context. */
     const val CONTEXT_BELOW = 8
 
-    /** Layers above the selection, so stepping up does not rebuild the window. */
+    /** Layers above the selection, so stepping up does not rebuild the current-layer window. */
     const val CONTEXT_ABOVE = 2
 
     /** The floor a refused allocation halves to: the selected layer on its own. */
@@ -31,9 +37,9 @@ internal object LayerWindow {
     const val RIBBON_COLOR_FLOATS = 24
 
     /**
-     * The window around [anchor], grown outwards one layer at a time from [segmentsOf] while the
-     * context fits [segmentBudget]. The selected layer is always in the window, whatever it
-     * costs: a layer too large to hold is named, never sampled.
+     * The current-layer window around [anchor], grown outwards one layer at a time from
+     * [segmentsOf] while the context fits [segmentBudget]. The selected layer is always in the
+     * window, whatever it costs: a layer too large to hold is named, never sampled.
      */
     fun plan(
         layerCount: Int,
@@ -52,13 +58,13 @@ internal object LayerWindow {
         while (step <= max(contextBelow, contextAbove)) {
             if (step <= contextBelow && first > 0) {
                 val cost = segmentsOf(first - 1).coerceAtLeast(0)
-                if (used + cost > segmentBudget) break
+                if (used.toLong() + cost > segmentBudget) break
                 first--
                 used += cost
             }
             if (step <= contextAbove && last < layerCount - 1) {
                 val cost = segmentsOf(last + 1).coerceAtLeast(0)
-                if (used + cost > segmentBudget) break
+                if (used.toLong() + cost > segmentBudget) break
                 last++
                 used += cost
             }
@@ -67,15 +73,70 @@ internal object LayerWindow {
         return first..last
     }
 
+    /**
+     * The build-up window for [anchor]: layer zero to the selected layer - the whole model under
+     * the scrub - while it fits [segmentBudget]. A budget too small for the whole stack holds the
+     * layers directly under the selection that do fit, so the top of the build stays continuous
+     * with the scrub; the selected layer is never dropped. It is planned from the bed upward so
+     * growing the selection upward only ever extends the same stack.
+     */
+    fun planBuildUp(
+        layerCount: Int,
+        segmentsOf: (Int) -> Int,
+        anchor: Int,
+        segmentBudget: Int,
+    ): IntRange {
+        if (layerCount <= 0) return IntRange.EMPTY
+        val selected = anchor.coerceIn(0, layerCount - 1)
+        var whole = 0L
+        for (index in 0..selected) {
+            whole += segmentsOf(index).coerceAtLeast(0)
+            if (whole > segmentBudget) break
+        }
+        if (whole <= segmentBudget) return 0..selected
+        var first = selected
+        var used = segmentsOf(selected).coerceAtLeast(0).toLong()
+        while (first > 0) {
+            val cost = segmentsOf(first - 1).coerceAtLeast(0).toLong()
+            if (used + cost > segmentBudget) break
+            first--
+            used += cost
+        }
+        return first..selected
+    }
+
+    /** The whole build-up stack to [anchor]: layer zero to the selected layer. */
+    fun stackRange(layerCount: Int, anchor: Int): IntRange {
+        if (layerCount <= 0) return IntRange.EMPTY
+        return 0..anchor.coerceIn(0, layerCount - 1)
+    }
+
+    /**
+     * The paths a window's vertex buffers may hold for this device profile.
+     *
+     * [PreviewCapacity.segments] is the profile's heap share counted in stored paths at
+     * [PreviewMemoryPolicy.LAYER_SEGMENT_BYTES] each; the window's positions and colours cost
+     * [PATH_POSITION_FLOATS] + [PATH_COLOR_FLOATS] floats a path, so that same share holds this
+     * many of them. The build-up stack is planned against this figure, not against a layer count.
+     */
+    fun vertexPathBudget(capacitySegments: Int): Int {
+        val heapBytes = capacitySegments.coerceAtLeast(0).toLong() *
+            PreviewMemoryPolicy.LAYER_SEGMENT_BYTES
+        val pathBytes = (PATH_POSITION_FLOATS + PATH_COLOR_FLOATS).toLong() * 4L
+        return (heapBytes / pathBytes)
+            .coerceIn(MINIMUM_SEGMENTS.toLong(), Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
     /** The stored paths a window holds, which is what its buffers have to take. */
     fun segments(range: IntRange, segmentsOf: (Int) -> Int): Int {
         if (range.isEmpty()) return 0
-        var total = 0
+        var total = 0L
         for (index in range) {
             total += segmentsOf(index).coerceAtLeast(0)
-            if (total < 0) return Int.MAX_VALUE
+            if (total > Int.MAX_VALUE) return Int.MAX_VALUE
         }
-        return total
+        return total.toInt()
     }
 
     /** The lines a window's paths cost in the vertex buffers. */

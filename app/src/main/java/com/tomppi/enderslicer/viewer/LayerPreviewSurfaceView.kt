@@ -4,6 +4,7 @@ import android.content.Context
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -60,8 +61,7 @@ class LayerPreviewSurfaceView(
         queuedStyle = style
         queuedCapacity = capacity
         queueEvent {
-            layerRenderer.setPreview(preview, capacity)
-            layerRenderer.setStyle(style)
+            layerRenderer.setPreview(preview, capacity, style)
             layerRenderer.setSelectedLayer(selectedLayerIndex)
         }
         requestRender()
@@ -178,9 +178,10 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
     private var selectedLayerIndex = 0
     private var capacity = PreviewCapacity.Default
     /**
-     * The geometry of the layers in view. Only the window around the selected layer is built, and
-     * it is rebuilt when the selection leaves it; the paths of every layer stay in the parser's
-     * storage.
+     * The geometry of the layers in view: the selected layer's context for the current-layer
+     * style, the whole stack to the scrub for build-up. It is rebuilt when the selection leaves
+     * the window or the style changes, and the build-up stack is appended to as it grows; the
+     * paths of every layer stay in the parser's storage.
      */
     private var geometry: LayerPreviewGeometry? = null
     private var maximumLayerZ = 0f
@@ -208,14 +209,29 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
     private val modelView = FloatArray(16)
     private val mvp = FloatArray(16)
 
-    fun setPreview(value: GcodeLayerPreview, previewCapacity: PreviewCapacity) {
-        if (preview === value && capacity == previewCapacity) return
+    fun setPreview(
+        value: GcodeLayerPreview,
+        previewCapacity: PreviewCapacity,
+        previewStyle: LayerPreviewStyle,
+    ) {
+        if (preview === value && capacity == previewCapacity && style == previewStyle) return
+        val newScene = preview !== value || capacity != previewCapacity
         preview = value
         capacity = previewCapacity
+        style = previewStyle
         selectedLayerIndex = if (value.layers.indices.isEmpty()) 0 else selectedLayerIndex.coerceIn(value.layers.indices)
-        geometry = LayerPreviewGeometry(value, previewCapacity).also { it.select(selectedLayerIndex) }
-        buildGrid(value)
-        resetCamera()
+        val started = System.nanoTime()
+        geometry = LayerPreviewGeometry(value, previewCapacity, previewStyle).also { it.select(selectedLayerIndex) }
+        val elapsed = (System.nanoTime() - started) / 1_000_000
+        if (newScene) {
+            buildGrid(value)
+            resetCamera()
+        }
+        Log.i(
+            "LayerPreviewView",
+            "layer preview " + previewStyle.name + ": " + (geometry?.status ?: "") +
+                " · window built in " + elapsed + " ms",
+        )
         onPreviewStatus?.invoke(geometry?.status ?: "")
     }
 
@@ -223,12 +239,17 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         val current = preview ?: return
         val bounded = if (current.layers.indices.isEmpty()) 0 else value.coerceIn(current.layers.indices)
         selectedLayerIndex = bounded
-        geometry?.select(bounded)
+        val started = System.nanoTime()
+        val changed = geometry?.select(bounded) ?: false
+        val elapsed = (System.nanoTime() - started) / 1_000_000
+        if (changed) {
+            Log.i(
+                "LayerPreviewView",
+                "layer preview step to " + bounded + ": " + (geometry?.status ?: "") +
+                    " · selection handled in " + elapsed + " ms",
+            )
+        }
         onPreviewStatus?.invoke(geometry?.status ?: "")
-    }
-
-    fun setStyle(value: LayerPreviewStyle) {
-        style = value
     }
 
     fun rotate(deltaYaw: Float, deltaPitch: Float) {
@@ -311,16 +332,19 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
 
         drawSolidLines(gridBuffer, gridVertexCount, 1f, 0.26f, 0.32f, 0.42f, 0.50f)
         val built = geometry ?: return
-        // Build-up draws the layers the window holds under the selection as context, at the
-        // same faint alpha as before; the current layer is drawn in full over its own ribbons.
-        val currentStart = built.vertexStart(selectedLayerIndex)
-        if (style == LayerPreviewStyle.BUILD_UP && currentStart > 0) {
-            drawColoredPaths(firstVertex = 0, vertexCount = currentStart, alpha = 0.15f, mode = GLES20.GL_LINES)
+        // Build-up draws the whole stack the window holds under the selection, from the bed up,
+        // at the same faint alpha as before; the current layer is drawn in full over its own
+        // ribbons, and the current-layer style draws only that layer.
+        val stack = LayerPreviewDraw.buildUp(built, style)
+        if (!stack.isEmpty) {
+            drawColoredPaths(stack.firstVertex, stack.vertexCount, BUILD_UP_ALPHA, GLES20.GL_LINES)
         }
         drawSolidTriangles(built.ribbonHalo, built.ribbonVertexCount, 0.0f, 0.0f, 0.0f, 0.96f)
         drawColoredTriangles(built.ribbonPositions, built.ribbonColors, built.ribbonVertexCount)
-        val currentEnd = built.vertexEnd(selectedLayerIndex)
-        drawColoredPaths(currentStart, currentEnd - currentStart, 1f, GLES20.GL_LINES)
+        val selectedPaths = LayerPreviewDraw.selected(built)
+        if (!selectedPaths.isEmpty) {
+            drawColoredPaths(selectedPaths.firstVertex, selectedPaths.vertexCount, 1f, GLES20.GL_LINES)
+        }
     }
 
     private fun drawSolidLines(
@@ -481,6 +505,7 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         const val MAX_GRID_LINES = 512
         const val MIN_SCENE_SIZE = 20f
         const val PATH_WIDTH = 3.8f
+        const val BUILD_UP_ALPHA = 0.15f
 
         const val COLOR_VERTEX_SHADER = """
             uniform mat4 uMvpMatrix;
