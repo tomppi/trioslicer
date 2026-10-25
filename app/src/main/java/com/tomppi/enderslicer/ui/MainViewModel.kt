@@ -137,7 +137,19 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.tomppi.enderslicer.solidcraft.CadBodyMeshes
+import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.CadLiveUpdate
+import com.tomppi.enderslicer.solidcraft.CadSliceHandoff
+import com.tomppi.enderslicer.solidcraft.CadWorkspace
+import com.tomppi.enderslicer.solidcraft.DocumentDelta
+import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import com.tomppi.enderslicer.solidcraft.SolidCraftSession
+import com.tomppi.enderslicer.solidcraft.ToolStep
+import org.json.JSONArray
 import org.json.JSONObject
 
 private const val CONFIG_SNAPSHOT_FORMAT = "enderslicer-config-snapshot"
@@ -170,6 +182,23 @@ private const val MAX_DIAGNOSTIC_LOG_BYTES = 8L * 1024L * 1024L
  * into one operation, short enough that letting go feels like it did something.
  */
 private const val SNAP_PREVIEW_DEBOUNCE_MILLIS = 220L
+
+/**
+ * How often a live CAD document's display cache and workspace descriptor are written.
+ *
+ * This is persistence, never the picture: the plate repaints after every agent edit. Writing
+ * tens of kilobytes after every boolean would be disk work nobody is waiting for.
+ */
+private const val CAD_PERSIST_INTERVAL_MILLIS = 1_500L
+
+/**
+ * The file kinds that open as a CAD document through the engine's io crate.
+ *
+ * STEP and IGES are also the two formats Import model converts to a mesh through OpenCASCADE;
+ * which route a file takes is the menu item the user picked, and the status line says which
+ * one answered. 3MF, OBJ and glTF had no CAD route at all before this.
+ */
+private val CAD_DOCUMENT_EXTENSIONS = setOf("step", "stp", "iges", "igs", "3mf", "obj", "glb", "gltf", "solidcraft")
 
 /**
  * The joint's scale slider: half-size to double.
@@ -503,6 +532,921 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Ends the CAD engine. Safe when it is not running. */
     fun stopCadEngine() {
         viewModelScope.launch { withContext(Dispatchers.IO) { CadEngine.stop() } }
+    }
+
+    // ------------------------------------------------------------------
+    // SolidCraft: the plate's live CAD document
+    // ------------------------------------------------------------------
+    //
+    // The human is a spectator on a CAD document. This section starts the engine, keeps the
+    // plate's tessellation in step with the design as the agent edits it, and performs the two
+    // deliberate exports the human owns: the STL a Slice consumes, and the STEP/STL/3MF an
+    // explicit Export writes. Nothing in this class changes the document itself.
+
+    /** The live tessellation: one mesh per body of the engine's design. */
+    private val cadBodies = CadBodyMeshes()
+
+    /** Repaints run one at a time, in the order the engine reported the edits. */
+    private val cadRepaintLock = Mutex()
+
+    /** The plate object drawing the document, so a repaint replaces it rather than adding one. */
+    private var cadDisplayObjectId: String? = null
+
+    /** The display cache file the plate object's source path names. */
+    private var cadDisplayMeshPath: String? = null
+
+    /** Ids of plate objects made from the document by a split (or a snap joint on its halves). */
+    private val cadDerivedPlateIds = mutableSetOf<String>()
+
+    /** The design file the running engine session has open, so a restart reopens it once. */
+    @Volatile
+    private var cadOpenDesignPath: String? = null
+
+    /** When the state last took a new display revision; the UI reports the first frame after it. */
+    @Volatile
+    private var cadRevisionAtMillis: Long = 0L
+
+    @Volatile
+    private var cadLastPersistAt: Long = 0L
+
+    private val _solidCraftSheetOpen = MutableStateFlow(false)
+
+    /** The agent sheet: the only place a human asks for a change to a CAD document. */
+    val solidCraftSheetOpen: StateFlow<Boolean> = _solidCraftSheetOpen.asStateFlow()
+
+    fun openSolidCraftSheet() {
+        _solidCraftSheetOpen.value = true
+    }
+
+    fun closeSolidCraftSheet() {
+        _solidCraftSheetOpen.value = false
+    }
+
+    private fun cadWorkspace(): CadWorkspace = SolidCraftEngine.workspace(app).ensureDirectories()
+
+    /**
+     * Starts the engine, subscribing the live view before it can report a change.
+     *
+     * Idempotent: the same call from the sheet, a restored document or a Slice finds the
+     * running engine and only makes sure the plate's listener is attached.
+     */
+    private fun ensureCadEngine(): Boolean {
+        SolidCraftEngine.onDocumentChanged = { delta -> onSolidCraftDelta(delta) }
+        return SolidCraftEngine.ensureStarted(app)
+    }
+
+    /** Starts the engine and shows its state; the sidebar's connect-agent button lands here. */
+    fun connectCadAgent() {
+        if (_uiState.value.isBusy) return
+        if (!beginOperation("Starting the CAD agent…")) return
+        viewModelScope.launch {
+            try {
+                val doc = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val existing = _uiState.value.cadDocument
+                    if (existing != null) {
+                        val design = File(existing.designPath)
+                        val session = SolidCraftEngine.session()
+                            ?: throw IllegalStateException("the CAD agent session disappeared")
+                        if (design.isFile) {
+                            session.open(design.absolutePath)
+                            cadOpenDesignPath = existing.designPath
+                            val composed = refreshCadAllBodies(session, cadWorkspace(), existing.name)
+                            if (composed != null) publishCadMesh(composed, existing.name, existing.designPath, existing.sourcePath, null)
+                        }
+                    }
+                    _uiState.value.cadDocument
+                }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = if (doc != null) {
+                            "CAD agent ready · " + doc.name + " · " + doc.bodyCount +
+                                " bodies on the plate · the agent is the only author"
+                        } else {
+                            "CAD agent ready on 127.0.0.1:" + SolidCraftEngine.bridgePort() +
+                                " · the plate will show the engine's document as the agent builds it"
+                        },
+                    )
+                }
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * Ends the engine. The document and its plate picture stay: a Slice starts the engine
+     * again for the export it needs, and reconnecting reopens the design.
+     */
+    fun stopCadAgent() {
+        SolidCraftEngine.onDocumentChanged = null
+        viewModelScope.launch {
+            _uiState.update { it.copy(statusMessage = "Stopping the CAD agent…") }
+            withContext(Dispatchers.IO) {
+                persistCadWorkspaceNow()
+                SolidCraftEngine.stop()
+            }
+            cadOpenDesignPath = null
+            val doc = _uiState.value.cadDocument
+            _uiState.update {
+                it.copy(
+                    statusMessage = if (doc != null) {
+                        "CAD agent stopped · " + doc.name + " stays on the plate; Slice will " +
+                            "export it and the agent can be connected again"
+                    } else {
+                        "CAD agent stopped"
+                    },
+                )
+            }
+        }
+    }
+
+    /** Takes the CAD document off the plate. The design file stays in the workspace. */
+    fun closeCadDocument() {
+        SolidCraftEngine.onDocumentChanged = null
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                persistCadWorkspaceNow()
+                SolidCraftEngine.stop()
+            }
+            cadOpenDesignPath = null
+            cadBodies.clear()
+            val objectId = cadDisplayObjectId
+            cadDisplayObjectId = null
+            cadDisplayMeshPath = null
+            _uiState.update { state ->
+                state.copy(
+                    models = state.models.filterNot { it.id == objectId },
+                    selectedModelId = state.models.firstOrNull { it.id != objectId }?.id,
+                    cadDocument = null,
+                ).withoutPublishedSlice("CAD document closed")
+            }
+            withContext(Dispatchers.IO) {
+                runCatching { workspaceStore.save(workspaceSnapshot(_uiState.value) ?: return@runCatching) }
+            }
+            _uiState.update {
+                it.copy(
+                    statusMessage = "CAD document closed; its design file is kept in the " +
+                        "SolidCraft workspace and the plate can import a mesh again",
+                )
+            }
+        }
+    }
+
+    /**
+     * Re-derives the plate from the document's current shape.
+     *
+     * The way out of a stale plate: the split or snap layout made from the previous shape is
+     * dropped (its objects removed, and it is named in the status), the document object is
+     * rebuilt at the document's own coordinates, and the plate is the current shape again.
+     */
+    fun rebuildCadPlateFromDocument() {
+        val document = _uiState.value.cadDocument ?: return
+        if (_uiState.value.isBusy) return
+        if (!beginOperation("Rebuilding the plate from the document…")) return
+        viewModelScope.launch {
+            try {
+                val mesh = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    openCadDesign(session, document)
+                    refreshCadAllBodies(session, cadWorkspace(), document.name)
+                        ?: throw IllegalStateException("the engine reported no bodies to draw")
+                }
+                val dropped = cadDerivedPlateIds.size
+                publishCadMesh(
+                    composed = mesh,
+                    name = document.name,
+                    designPath = document.designPath,
+                    sourcePath = document.sourcePath,
+                    editMillis = null,
+                    replaceDerived = true,
+                )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Plate rebuilt from the CAD document" +
+                            if (dropped > 0) {
+                                " · the " + dropped + "-object split layout made from the " +
+                                    "previous shape was dropped"
+                            } else {
+                                ""
+                            },
+                    )
+                }
+                Diagnostics.info("cad", "plate rebuilt from " + document.name)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * Opens a STEP/IGES/3MF/OBJ/glTF file as the engine's live CAD document.
+     *
+     * This is the CAD route into the app, and it is deliberately separate from Import model:
+     * that one still turns STEP/IGES into a mesh through OpenCASCADE, while this hands the
+     * file to the engine's own io crate and keeps it as a document the agent can edit. The
+     * status line says which of the two the user got.
+     */
+    fun openCadDocument(uri: Uri) {
+        if (deferUntilRestoreCompletes { openCadDocument(uri) }) return
+        if (!beginOperation("Opening the CAD document…")) return
+        viewModelScope.launch {
+            try {
+                val prepared = withContext(Dispatchers.IO) {
+                    retainReadPermission(uri)
+                    val sourceName = displayName(uri)
+                    val extension = sourceName.substringAfterLast('.', "").lowercase()
+                    if (extension !in CAD_DOCUMENT_EXTENSIONS) {
+                        throw IllegalStateException(
+                            "SolidCraft opens STEP, IGES, 3MF, OBJ and glTF files; " +
+                                sourceName + " is not one of them",
+                        )
+                    }
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    val workspace = cadWorkspace()
+                    val staged = workspace.importFile(sourceName)
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        staged.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("could not read " + sourceName)
+                    session.open(staged.absolutePath)
+                    val name = sourceName.substringBeforeLast('.', sourceName)
+                        .ifBlank { "CAD document" }
+                    val design = workspace.designFile(name)
+                    session.save(design.absolutePath)
+                    cadOpenDesignPath = design.absolutePath
+                    val composed = refreshCadAllBodies(session, workspace, name)
+                        ?: throw IllegalStateException(
+                            "the engine opened " + sourceName + " but reported no bodies to draw",
+                        )
+                    PreparedCadOpen(name, sourceName, design, composed, cadBodies.count)
+                }
+                // An opened file is a new document, not an edit of whatever was on the plate:
+                // it replaces the document's plate object (and any split layout made from the
+                // old one), exactly as opening a model does in mesh mode.
+                publishCadMesh(
+                    composed = prepared.mesh,
+                    name = prepared.name,
+                    designPath = prepared.design.absolutePath,
+                    sourcePath = prepared.sourceName,
+                    editMillis = null,
+                    replaceDerived = true,
+                )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Opened " + prepared.sourceName + " as a CAD document " +
+                            "(SolidCraft engine) · " + prepared.bodies + " bodies · " +
+                            "%,d".format(prepared.mesh.triangleCount) +
+                            " triangles display tessellation · the agent can now edit it",
+                    )
+                }
+                scheduleCadPersist(force = true)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * Writes STEP/STL/3MF on demand: the human taking the result out, not editing it.
+     */
+    fun exportCadDocument(uri: Uri, format: String) {
+        val doc = _uiState.value.cadDocument ?: return
+        if (!beginOperation("Exporting the CAD document as " + format.uppercase() + "…")) return
+        viewModelScope.launch {
+            try {
+                val written = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    openCadDesign(session, doc)
+                    val target = cadWorkspace().exportFile(doc.name, format)
+                    session.export(target.absolutePath, format = format.filter { it.isLetterOrDigit() })
+                    check(target.isFile && target.length() > 0L) {
+                        "the engine wrote no " + format.uppercase() + " data"
+                    }
+                    app.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                        target.inputStream().use { input -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("Unable to open the export destination")
+                    target
+                }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Exported " + doc.name + " as " + format.uppercase() +
+                            " (" + formatFileSize(written.length()) + ") · the document is unchanged",
+                    )
+                }
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /** One prepared open, so the plate update happens on the main-thread coroutine. */
+    private data class PreparedCadOpen(
+        val name: String,
+        val sourceName: String,
+        val design: File,
+        val mesh: com.tomppi.enderslicer.viewer.StlMesh,
+        val bodies: Int,
+    )
+
+    /**
+     * The live-view callback: an agent's edit landed, repaint what it changed.
+     *
+     * The callback arrives on the bridge's thread. Repaints are serialised by [cadRepaintLock]
+     * and each one is cheap by construction - the engine exports only the bodies the edit named
+     * and their triangles are patched into the composer, so the common edit costs one engine
+     * round trip plus one small batch of exports, not a re-read of the document.
+     */
+    private fun onSolidCraftDelta(delta: DocumentDelta) {
+        if (SolidCraftEngine.session() == null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            cadRepaintLock.withLock { repaintCad(delta) }
+        }
+    }
+
+    private suspend fun repaintCad(delta: DocumentDelta) {
+        val session = SolidCraftEngine.session() ?: return
+        val workspace = cadWorkspace()
+        val receivedAt = System.currentTimeMillis()
+        val startNanos = System.nanoTime()
+        val previous = _uiState.value.cadDocument
+        val openedName = delta.openedPath
+            ?.let { File(it).nameWithoutExtension }
+            ?.takeIf { it.isNotBlank() }
+        val name = openedName
+            ?: previous?.name
+            ?: runCatching { cadDesignName(session) }.getOrNull()
+            ?: "CAD document"
+        val design = workspace.designFile(name)
+        markCadUpdating(true)
+        var incremental = false
+        if (!delta.fullRefresh && delta.repaintBodies.isNotEmpty()) {
+            val loaded = exportCadBodies(session, workspace, name, delta.repaintBodies)
+            if (loaded != null && CadLiveUpdate.applyIncremental(cadBodies, delta) { loaded[it] }) {
+                incremental = true
+            }
+        } else if (!delta.fullRefresh) {
+            // A removed-only edit (a delete): no triangles to export, the composer drops them.
+            cadBodies.remove(delta.removedBodies)
+            incremental = true
+        }
+        val exportedNanos = System.nanoTime()
+        if (!incremental) {
+            // The honest fallback for the edits that do not name bodies (undo, a parameter
+            // rebuild, an opened file): re-read the document body by body.
+            if (refreshCadAllBodies(session, workspace, name) == null) {
+                markCadUpdating(false)
+                _uiState.update {
+                    it.copy(statusMessage = "CAD document: the engine has no bodies to draw yet")
+                }
+                return
+            }
+        }
+        val mesh = cadBodies.compose(name)
+        if (mesh == null) {
+            markCadUpdating(false)
+            _uiState.update { it.copy(statusMessage = "CAD document: the design is empty") }
+            return
+        }
+        // The source of truth is saved as soon as it exists, not only on a timer: the design
+        // file is what a later session opens, and losing one edit to a crash would lose the
+        // agent's work rather than the picture of it.
+        val designPath = design.absolutePath
+        if (!File(designPath).isFile || delta.fullRefresh || delta.openedPath != null) {
+            runCatching {
+                session.save(designPath)
+                cadOpenDesignPath = designPath
+            }.onFailure { Log.w("MainViewModel", "could not save the CAD design", it) }
+        }
+        val meshDoneNanos = System.nanoTime()
+        val published = publishCadMesh(
+            composed = mesh,
+            name = name,
+            designPath = designPath,
+            sourcePath = delta.openedPath ?: previous?.sourcePath,
+            editMillis = System.currentTimeMillis() - receivedAt,
+        )
+        val stateDoneNanos = System.nanoTime()
+        if (!published) return
+        val millis = fun (from: Long, to: Long) = (to - from) / 1_000_000
+        Log.i(
+            "MainViewModel",
+            "cad live: " + delta.tool + (delta.command?.let { " " + it } ?: "") +
+                " · call→export " + millis(startNanos, exportedNanos) + " ms" +
+                " · export→mesh " + millis(exportedNanos, meshDoneNanos) + " ms" +
+                " · mesh→state " + millis(meshDoneNanos, stateDoneNanos) + " ms" +
+                " · total " + millis(startNanos, stateDoneNanos) + " ms" +
+                " · " + cadBodies.count + " bodies · " + mesh.triangleCount + " triangles",
+        )
+        Diagnostics.info(
+            "cad",
+            "repainted " + name + " after " + delta.tool + ": " + mesh.triangleCount +
+                " triangles from " + cadBodies.count + " bodies",
+        )
+        scheduleCadPersist()
+    }
+
+    /** Marks the document as being repainted, without touching the picture or the camera. */
+    private fun markCadUpdating(updating: Boolean) {
+        _uiState.update { state ->
+            val doc = state.cadDocument ?: return@update state
+            if (doc.updating == updating) state else state.copy(cadDocument = doc.copy(updating = updating))
+        }
+    }
+
+    /**
+     * Puts one freshly composed tessellation on the plate, in place.
+     *
+     * The same plate object id, the same name and the same camera: the model view resets its
+     * camera when a mesh arrives under a different name or the plate's object count changes,
+     * and the camera belongs to the spectator. The placement is the document's own coordinates
+     * (exactly the identity), because where the agent puts the part in the design is where it
+     * prints - the app adds no placement of its own.
+     */
+    private fun publishCadMesh(
+        composed: com.tomppi.enderslicer.viewer.StlMesh,
+        name: String,
+        designPath: String,
+        sourcePath: String?,
+        editMillis: Long?,
+        replaceDerived: Boolean = false,
+    ): Boolean {
+        val state = _uiState.value
+        val previous = state.cadDocument
+        val objectId = cadDisplayObjectId ?: previous?.displayObjectId
+        val existing = objectId?.let { id -> state.models.firstOrNull { it.id == id } }
+        // Only a split (or a jointed pair) is stale geometry made from the previous shape. An
+        // object the user REMOVED from the plate is not stale: the next agent edit brings the
+        // document back as a fresh plate object, the way an import would.
+        if (existing == null && objectId != null && !replaceDerived && cadDerivedPlateIds.isNotEmpty()) {
+            // The plate holds a split or a jointed pair made from the document's previous
+            // shape: the new shape is not pasted over it. The document is marked stale and
+            // named, Slice refuses to export it, and Rebuild plate is the way forward.
+            val reason = "the agent changed the document, but the plate holds a split or snap " +
+                "layout made from its previous shape. The plate shows the previous shape; " +
+                "press Rebuild plate in the CAD agent sheet to take the new one."
+            val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
+                designPath = designPath,
+                sourcePath = sourcePath ?: previous?.sourcePath,
+                updating = false,
+                bodyCount = cadBodies.count,
+                derivedStale = true,
+                staleReason = reason,
+                lastEditMillis = editMillis ?: previous?.lastEditMillis,
+                editCount = (previous?.editCount ?: 0) + 1,
+            )
+            _uiState.update { it.copy(cadDocument = document, statusMessage = reason) }
+            scheduleCadPersist()
+            return false
+        }
+        val placement = if (existing != null) {
+            reapplyPlatePlacement(existing.placement, existing.sourceMesh, composed)
+        } else {
+            documentCoordinates(composed)
+        }
+        val paint = when {
+            existing == null -> SupportPaintState()
+            existing.sourceMesh.triangleCount == composed.triangleCount -> existing.supportPaint
+            else -> SupportPaintState()
+        }
+        val paintDropped = existing != null &&
+            existing.sourceMesh.triangleCount != composed.triangleCount &&
+            (existing.supportPaint.enforcerTriangles.isNotEmpty() ||
+                existing.supportPaint.blockerTriangles.isNotEmpty())
+        val id = existing?.id ?: objectId ?: PlateObject.newId()
+        cadDisplayObjectId = id
+        val cachePath = cadDisplayMeshPath ?: File(
+            File(app.filesDir, "models"),
+            "solidcraft-" + CadWorkspace.slug(name) + "-display.stl",
+        ).absolutePath
+        cadDisplayMeshPath = cachePath
+        val display = PlateObject(
+            id = id,
+            name = name,
+            sourceMesh = composed,
+            mesh = placement.transformed(composed),
+            sourcePath = cachePath,
+            placement = placement,
+            supportPaint = paint,
+        )
+        // The document's own object is replaced in place; a first one is added to the plate (the
+        // other objects there are the human's own imports), and a rebuild drops the objects a
+        // split made from the old shape first.
+        val models = when {
+            existing != null -> state.models.map { if (it.id == id) display else it }
+            replaceDerived -> state.models.filterNot { it.id in cadDerivedPlateIds } + display
+            else -> state.models + display
+        }
+        if (replaceDerived) cadDerivedPlateIds.clear()
+        cadRevisionAtMillis = System.currentTimeMillis()
+        val document = CadDocument(
+            name = name,
+            designPath = designPath,
+            sourcePath = sourcePath ?: previous?.sourcePath,
+            displayObjectId = id,
+            displayMeshPath = cachePath,
+            displayRevision = (previous?.displayRevision ?: 0L) + 1L,
+            triangleCount = composed.triangleCount,
+            bodyCount = cadBodies.count,
+            updating = false,
+            derivedStale = false,
+            staleReason = null,
+            lastEditMillis = editMillis ?: previous?.lastEditMillis,
+            editCount = (previous?.editCount ?: 0) + if (editMillis != null) 1 else 0,
+            sliceStlPath = previous?.sliceStlPath,
+            sliceExportRevision = previous?.sliceExportRevision ?: -1L,
+            sliceExportAtMillis = previous?.sliceExportAtMillis ?: 0L,
+            sliceTriangles = previous?.sliceTriangles ?: 0,
+        )
+        _uiState.update { current ->
+            current.copy(
+                models = models,
+                selectedModelId = current.selectedModelId ?: id,
+                cadDocument = document,
+            ).withoutPublishedSlice(current.statusMessage)
+        }
+        val paintNote = if (paintDropped) {
+            " · painted supports were cleared because the shape's triangle count changed"
+        } else {
+            ""
+        }
+        _uiState.update { it.copy(statusMessage = cadStatusLine(it.cadDocument ?: document) + paintNote) }
+        Diagnostics.info(
+            "cad",
+            "display " + name + ": " + composed.triangleCount + " triangles from " +
+                cadBodies.count + " bodies, revision " + document.displayRevision,
+        )
+        return true
+    }
+
+    /**
+     * The placement that puts a mesh at the document's own coordinates: exactly the identity.
+     *
+     * Where the agent puts the part in the design is where it prints. The app adds no plate
+     * placement of its own on top of that; the human's transforms are carried separately, by
+     * [reapplyPlatePlacement].
+     */
+    private fun documentCoordinates(mesh: com.tomppi.enderslicer.viewer.StlMesh): ModelPlacement =
+        ModelPlacement(
+            centerXmm = mesh.bounds.centerX.toDouble(),
+            centerYmm = mesh.bounds.centerY.toDouble(),
+            baseZmm = mesh.bounds.minZ.toDouble(),
+            source = "SolidCraft document coordinates",
+        )
+
+    /**
+     * Carries the human's plate transform onto a newly derived mesh.
+     *
+     * A placement is the mesh's identity plus what the human did to it: the linear part holds
+     * their rotation and scale, and the centre and base are the identity's plus their move. So
+     * the transform is expressed relative to the old mesh and applied to the new one - a part
+     * that grows keeps the place and the turn the user gave it, and never recentres itself.
+     */
+    private fun reapplyPlatePlacement(
+        old: ModelPlacement,
+        oldMesh: com.tomppi.enderslicer.viewer.StlMesh,
+        newMesh: com.tomppi.enderslicer.viewer.StlMesh,
+    ): ModelPlacement {
+        val oldIdentity = documentCoordinates(oldMesh)
+        val movedX = old.centerXmm - oldIdentity.centerXmm
+        val movedY = old.centerYmm - oldIdentity.centerYmm
+        val movedZ = old.baseZmm - oldIdentity.baseZmm
+        val untouched = old.linear == ModelPlacement.IDENTITY &&
+            kotlin.math.abs(movedX) < 1e-6 &&
+            kotlin.math.abs(movedY) < 1e-6 &&
+            kotlin.math.abs(movedZ) < 1e-6
+        if (untouched) return documentCoordinates(newMesh)
+        return ModelPlacement(
+            linear = old.linear,
+            centerXmm = newMesh.bounds.centerX.toDouble() + movedX,
+            centerYmm = newMesh.bounds.centerY.toDouble() + movedY,
+            baseZmm = newMesh.bounds.minZ.toDouble() + movedZ,
+            source = old.source,
+        )
+    }
+
+    /** The status line for a live document: what it is, how big, and what was exported when. */
+    private fun cadStatusLine(document: CadDocument): String = buildString {
+        append("CAD document ").append(document.name)
+        append(" · ").append(document.bodyCount).append(" bodies · ")
+        append("%,d".format(document.triangleCount)).append(" triangles rendered")
+        document.lastEditMillis?.let { append(" · last edit ").append(it).append(" ms") }
+        if (document.sliceExportAtMillis > 0L) {
+            append(" · STL exported ")
+            append(((System.currentTimeMillis() - document.sliceExportAtMillis) / 1000).coerceAtLeast(0))
+            append("s ago (")
+            append("%,d".format(document.sliceTriangles))
+            append(" triangles)")
+        }
+    }
+
+    /** The first frame after a repaint, reported by the plate, so the latency has an end. */
+    fun onCadFrame(displayRevision: Long) {
+        val document = _uiState.value.cadDocument ?: return
+        if (document.displayRevision != displayRevision) return
+        val frameMillis = System.currentTimeMillis() - cadRevisionAtMillis
+        Log.i(
+            "MainViewModel",
+            "cad frame: revision " + displayRevision + " composed and drawn " + frameMillis +
+                " ms after the edit reached the state",
+        )
+    }
+
+    /**
+     * Exports the named bodies and parses them, or null when the engine could not.
+     *
+     * One batch call for every body keeps the round trip count at one; the files are separate
+     * because the composer patches bodies separately.
+     */
+    private fun exportCadBodies(
+        session: SolidCraftSession,
+        workspace: CadWorkspace,
+        name: String,
+        bodies: List<String>,
+    ): Map<String, com.tomppi.enderslicer.viewer.StlMesh>? {
+        val unique = bodies.distinct().filter { it.isNotBlank() }
+        if (unique.isEmpty()) return emptyMap()
+        val steps = unique.map { body ->
+            ToolStep(
+                command = "file.export",
+                params = JSONObject()
+                    .put("path", workspace.bodyFile(name, body).absolutePath)
+                    .put("format", "stl")
+                    .put("bodies", JSONArray().put(body)),
+            )
+        }
+        return try {
+            session.batch(steps, rollback = false)
+            val parsed = LinkedHashMap<String, com.tomppi.enderslicer.viewer.StlMesh>()
+            for (body in unique) {
+                val file = workspace.bodyFile(name, body)
+                if (!file.isFile || file.length() == 0L) return null
+                parsed[body] = StlParser.parse(file, body, MeshTriangleLimits.current())
+            }
+            parsed
+        } catch (error: Throwable) {
+            Log.w("MainViewModel", "the CAD engine could not export a changed body", error)
+            null
+        }
+    }
+
+    /**
+     * Reads every body of the design and rebuilds the composer.
+     *
+     * The fallback for the edits that do not name bodies, and the first read after the app
+     * starts: still a refresh of the same scene - one batch of exports and the plate object it
+     * already has - never a file load.
+     */
+    private fun refreshCadAllBodies(
+        session: SolidCraftSession,
+        workspace: CadWorkspace,
+        name: String,
+    ): com.tomppi.enderslicer.viewer.StlMesh? {
+        val bodyNames = runCatching { cadBodyNames(session) }.getOrNull() ?: return null
+        cadBodies.clear()
+        if (bodyNames.isEmpty()) return null
+        val steps = bodyNames.map { body ->
+            ToolStep(
+                command = "file.export",
+                params = JSONObject()
+                    .put("path", workspace.bodyFile(name, body).absolutePath)
+                    .put("format", "stl")
+                    .put("bodies", JSONArray().put(body)),
+            )
+        }
+        runCatching { session.batch(steps, rollback = false) }.getOrElse { return null }
+        for (body in bodyNames) {
+            val file = workspace.bodyFile(name, body)
+            if (!file.isFile || file.length() == 0L) return null
+            val mesh = runCatching {
+                StlParser.parse(file, body, MeshTriangleLimits.current())
+            }.getOrNull() ?: return null
+            cadBodies.put(body, mesh)
+        }
+        return cadBodies.compose(name)
+    }
+
+    /** The design's own name, for a first document the app did not open from a file. */
+    private fun cadDesignName(session: SolidCraftSession): String =
+        session.inspectDesignJson(measure = false, sketches = false)
+            .optString("name")
+            .takeIf { it.isNotBlank() }
+            ?: "CAD document"
+
+    /** The design's body names, from the engine's own report. */
+    private fun cadBodyNames(session: SolidCraftSession): List<String> {
+        val design = session.inspectDesignJson(measure = false, sketches = false)
+        val bodies = design.optJSONArray("bodies") ?: return emptyList()
+        return (0 until bodies.length()).mapNotNull { index ->
+            when (val value = bodies.opt(index)) {
+                is JSONObject -> value.optString("name").takeIf { it.isNotBlank() }
+                is String -> value.takeIf { it.isNotBlank() }
+                else -> null
+            }
+        }
+    }
+
+    /** Makes the engine's session hold [document]'s design, reopening it after a restart. */
+    private fun openCadDesign(session: SolidCraftSession, document: CadDocument) {
+        if (cadOpenDesignPath == document.designPath) return
+        val design = File(document.designPath)
+        if (!design.isFile) {
+            throw IllegalStateException(
+                "the CAD document's design file is missing (" + design.absolutePath +
+                    "); reconnect the agent and rebuild it",
+            )
+        }
+        session.open(design.absolutePath)
+        cadOpenDesignPath = document.designPath
+    }
+
+    /**
+     * The export a Slice consumes, exported at Slice time.
+     *
+     * The first Slice always exports: a fresh STL from the engine's current document. A later
+     * Slice reuses that file only while no edit has moved the document on - the handoff object
+     * makes that decision, and the status line says which happened.
+     */
+    private fun prepareCadForSlice(document: CadDocument): PreparedCadSlice {
+        val workspace = cadWorkspace()
+        return when (val decision = CadSliceHandoff.decide(document, workspace.exports, System.currentTimeMillis())) {
+            is CadSliceHandoff.Decision.Reuse -> PreparedCadSlice(
+                mesh = StlParser.parse(decision.source, document.name, MeshTriangleLimits.current()),
+                file = decision.source,
+                exportedAt = document.sliceExportAtMillis,
+                message = "Reusing " + decision.source.name + " (exported " +
+                    ((System.currentTimeMillis() - document.sliceExportAtMillis) / 1000).coerceAtLeast(0) +
+                    "s ago, unchanged since); slicing it",
+                exported = false,
+            )
+            is CadSliceHandoff.Decision.Export -> {
+                if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                val session = SolidCraftEngine.session()
+                    ?: throw IllegalStateException("the CAD agent session disappeared")
+                openCadDesign(session, document)
+                val started = System.currentTimeMillis()
+                session.export(decision.destination.absolutePath, format = "stl")
+                check(decision.destination.isFile && decision.destination.length() > 0L) {
+                    "the engine wrote no STL for the CAD document"
+                }
+                val mesh = StlParser.parse(decision.destination, document.name, MeshTriangleLimits.current())
+                PreparedCadSlice(
+                    mesh = mesh,
+                    file = decision.destination,
+                    exportedAt = started,
+                    message = "Exported the CAD document to " + decision.destination.name + " (" +
+                        "%,d".format(mesh.triangleCount) + " triangles) in " +
+                        (System.currentTimeMillis() - started) + " ms; slicing it",
+                    exported = true,
+                )
+            }
+        }
+    }
+
+    private data class PreparedCadSlice(
+        val mesh: com.tomppi.enderslicer.viewer.StlMesh,
+        val file: File,
+        val exportedAt: Long,
+        val message: String,
+        val exported: Boolean,
+    )
+
+    /**
+     * The Slice the plate's button calls.
+     *
+     * A mesh plate slices exactly as before. A CAD document exports its print STL first - the
+     * deliberate export, not the per-edit display tessellation - then hands that mesh to the
+     * unchanged slice pipeline, so every engine sees the document as the mesh it would have
+     * been imported as.
+     */
+    fun sliceModel() {
+        val document = _uiState.value.cadDocument
+        if (document == null) {
+            sliceModelCore()
+            return
+        }
+        if (document.derivedStale) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = document.staleReason
+                        ?: "the CAD document changed since the plate was split; " +
+                            "Rebuild plate in the CAD agent sheet before slicing",
+                )
+            }
+            return
+        }
+        if (_uiState.value.isBusy) return
+        viewModelScope.launch {
+            if (!beginOperation("Exporting the CAD document…")) return@launch
+            try {
+                val prepared = withContext(Dispatchers.IO) { prepareCadForSlice(document) }
+                val objectId = cadDisplayObjectId
+                _uiState.update { state ->
+                    val doc = state.cadDocument ?: return@update state
+                    // The printed mesh is the derived mesh at print quality, with the plate
+                    // transform re-applied: the document is not re-derived behind the user's
+                    // edits, and the exported STL is what he will actually print.
+                    val models = state.models.map { object3d ->
+                        if (object3d.id == objectId) {
+                            val placement = reapplyPlatePlacement(
+                                object3d.placement,
+                                object3d.sourceMesh,
+                                prepared.mesh,
+                            )
+                            val paint = if (object3d.sourceMesh.triangleCount == prepared.mesh.triangleCount) {
+                                object3d.supportPaint
+                            } else {
+                                SupportPaintState()
+                            }
+                            object3d.copy(
+                                sourceMesh = prepared.mesh,
+                                mesh = placement.transformed(prepared.mesh),
+                                placement = placement,
+                                supportPaint = paint,
+                            )
+                        } else {
+                            object3d
+                        }
+                    }
+                    state.copy(
+                        models = models,
+                        cadDocument = doc.copy(
+                            sliceStlPath = prepared.file.absolutePath,
+                            sliceExportRevision = doc.displayRevision,
+                            sliceExportAtMillis = prepared.exportedAt,
+                            sliceTriangles = prepared.mesh.triangleCount,
+                        ),
+                        isBusy = false,
+                        statusMessage = prepared.message,
+                    )
+                }
+                withContext(Dispatchers.IO) { persistCadWorkspaceNow() }
+                Diagnostics.info("cad", prepared.message)
+                sliceModelCore()
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /** Writes the display cache and the workspace descriptor, at most every 1.5 s. */
+    private fun scheduleCadPersist(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - cadLastPersistAt < CAD_PERSIST_INTERVAL_MILLIS) return
+        cadLastPersistAt = now
+        viewModelScope.launch(Dispatchers.IO) { persistCadWorkspaceNow() }
+    }
+
+    /**
+     * Persists a live document: the design (the source of truth), its display cache (so a
+     * restored plate has something to draw before the engine starts) and the workspace
+     * descriptor that names both.
+     *
+     * Batched rather than per edit: the picture is never batched, but writing tens of
+     * kilobytes to disk after every boolean would be work with no one waiting for it.
+     */
+    private fun persistCadWorkspaceNow() {
+        val state = _uiState.value
+        val document = state.cadDocument ?: return
+        val mesh = cadBodies.compose(document.name)
+        if (mesh != null) {
+            val cache = File(
+                File(app.filesDir, "models"),
+                "solidcraft-" + CadWorkspace.slug(document.name) + "-display.stl",
+            )
+            cache.parentFile?.mkdirs()
+            val temporary = File(cache.parentFile, cache.name + ".next")
+            runCatching {
+                StlMeshWriter.writeBinary(mesh, temporary)
+                if (cache.exists() && !cache.delete()) {
+                    error("could not replace " + cache.absolutePath)
+                }
+                check(temporary.renameTo(cache)) { "could not move the CAD display cache into place" }
+            }.onFailure {
+                temporary.delete()
+                Log.w("MainViewModel", "could not write the CAD display cache", it)
+            }
+        }
+        SolidCraftEngine.session()?.takeIf { SolidCraftEngine.isReady() }?.let { session ->
+            runCatching { session.save(document.designPath) }.onFailure {
+                Log.w("MainViewModel", "could not save the CAD design", it)
+            }
+            cadOpenDesignPath = document.designPath
+        }
+        workspaceSnapshot(_uiState.value)?.let { snapshot ->
+            runCatching { workspaceStore.save(snapshot) }.onFailure {
+                Log.w("MainViewModel", "could not save the CAD workspace descriptor", it)
+            }
+        }
     }
 
     /** Guards against a second start landing while the first is still waiting for the port. */
@@ -1671,12 +2615,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onSuccess {
                 importedScene = null
+                // The CAD document's view goes with the plate: the design file and the running
+                // engine stay, so asking the agent for a change brings the document back.
+                cadBodies.clear()
+                cadDisplayObjectId = null
+                cadDisplayMeshPath = null
+                cadDerivedPlateIds.clear()
                 _uiState.update { current ->
                     // The plate is empty, so every joint and every previewed half the
                     // session holds belongs to an object that is gone.
                     current.withoutPublishedSlice().copy(
                         models = emptyList(),
                         selectedModelId = null,
+                        cadDocument = null,
                         importedSceneTransformAvailable = false,
                         importedSceneModelName = null,
                         warnings = current.warnings.filterNot {
@@ -2069,6 +3020,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     return@runCatching
+                }
+                // A CAD document's split halves are geometry derived from the document's
+                // previous shape: a later document change must not paste over them, and
+                // Rebuild plate must know which objects to take away.
+                if (state.cadDocument?.displayObjectId == model.id) {
+                    cadDerivedPlateIds.addAll(objects.map { it.id })
                 }
                 val low = objects.first()
                 val commit = { current: MainUiState ->
@@ -5239,7 +6196,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistPaintSoon()
     }
 
-    fun sliceModel() {
+    private fun sliceModelCore() {
         val snapshot = _uiState.value
         val originalPath = snapshot.modelPath
         val transformedMesh = snapshot.mesh
@@ -6446,15 +7403,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        // The CAD document the descriptor held, when its design file is still there. The plate
+        // entry that was restored is the display cache, so the picture comes back; the design
+        // is the document, and the engine is started again by Connect or at Slice.
+        val restoredCad = snapshot.cad?.let { saved ->
+            if (!File(saved.designPath).isFile) return@let null
+            CadDocument(
+                name = saved.name,
+                designPath = saved.designPath,
+                sourcePath = saved.sourcePath,
+                displayObjectId = objects.firstOrNull { it.sourcePath == saved.displayMeshPath }?.id
+                    ?: saved.displayObjectId,
+                displayMeshPath = saved.displayMeshPath,
+                derivedStale = saved.derivedStale,
+                staleReason = saved.staleReason,
+                displayRevision = saved.displayRevision,
+                triangleCount = saved.triangleCount,
+                bodyCount = saved.bodyCount,
+                sliceStlPath = saved.sliceStlPath,
+                sliceExportRevision = saved.sliceExportRevision,
+                sliceExportAtMillis = saved.sliceExportAtMillis,
+                sliceTriangles = saved.sliceTriangles,
+            )
+        }
+        if (restoredCad != null) {
+            cadDisplayObjectId = restoredCad.displayObjectId
+            cadDisplayMeshPath = restoredCad.displayMeshPath
+        }
         _uiState.update { current ->
             current.withoutPublishedSlice()
                 .withModels(objects)
                 .copy(
                     isBusy = false,
-                    statusMessage = if (objects.size > 1) {
-                        "Restored ${objects.size} models on the plate; slice again to create validated G-code"
-                    } else {
-                        "Restored ${snapshot.modelDisplayName} workspace; slice again to create validated G-code"
+                    cadDocument = restoredCad,
+                    statusMessage = when {
+                        restoredCad != null ->
+                            "Restored CAD document ${restoredCad.name} · ${restoredCad.bodyCount} " +
+                                "bodies · connect the CAD agent to work on it; Slice exports it again"
+                        objects.size > 1 ->
+                            "Restored ${objects.size} models on the plate; slice again to create validated G-code"
+                        else ->
+                            "Restored ${snapshot.modelDisplayName} workspace; slice again to create validated G-code"
                     },
                 )
                 // The tool can be opened again on a restored pair, which is the whole point of
@@ -6484,6 +7473,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             supportPaint = selected.supportPaint,
             models = state.models.mapNotNull { it.toWorkspaceEntry() },
             snap = state.toSnapshotSnap(),
+            cad = state.cadDocument?.let { document ->
+                WorkspaceStateStore.CadState(
+                    name = document.name,
+                    designPath = document.designPath,
+                    sourcePath = document.sourcePath,
+                    displayMeshPath = document.displayMeshPath,
+                    displayRevision = document.displayRevision,
+                    triangleCount = document.triangleCount,
+                    bodyCount = document.bodyCount,
+                    displayObjectId = document.displayObjectId,
+                    derivedStale = document.derivedStale,
+                    staleReason = document.staleReason,
+                    sliceStlPath = document.sliceStlPath,
+                    sliceExportRevision = document.sliceExportRevision,
+                    sliceExportAtMillis = document.sliceExportAtMillis,
+                    sliceTriangles = document.sliceTriangles,
+                )
+            },
         )
     }
 

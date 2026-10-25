@@ -12,7 +12,7 @@
 # answers for a device that is gone. So it reconnects, re-roots and retries rather than
 # reporting the first refusal as the truth.
 #
-#   SERIAL:   the device. Default 100.72.208.101:5555.
+#   SERIAL:   the device. Default 100.64.13.7:5555.
 #   APK:      what to install. Default the release build, which is signed.
 #   SKIP_BUILD=1 to install whatever is already there.
 #
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERIAL="${SERIAL:-100.72.208.101:5555}"
+SERIAL="${SERIAL:-100.64.13.7:5555}"
 APK="${APK:-$ROOT/app/build/outputs/apk/release/app-release.apk}"
 APP_ID=com.tomppi.enderslicercura
 

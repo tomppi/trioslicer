@@ -20,6 +20,8 @@ internal enum class EngineMode(
     val skill: String,
     /** What that engine is for, in the terms the skills themselves use. */
     val scope: String,
+    /** Where the engine listens, for the one engine the agent drives over an MCP bridge. */
+    private val bridge: String = "",
 ) {
     BLENDER(
         label = "Blender",
@@ -30,6 +32,17 @@ internal enum class EngineMode(
         label = "CAD",
         skill = "cad-engine",
         scope = "parametric modelling: exact geometry, real dimensions, STEP in and out",
+    ),
+    SOLIDCRAFT(
+        label = "SolidCraft",
+        skill = "solidcraft-engine",
+        scope = "the live CAD document the main plate viewport draws: parametric features, " +
+            "exact geometry, STEP in and out, every change visible on the plate as it is made",
+        bridge = "The engine is this phone's own SolidCraft process: its MCP bridge is on " +
+            "127.0.0.1:9878 (forward it with adb forward tcp:9878 tcp:9878) and the user has " +
+            "the token on the clipboard from Copy SolidCraft MCP token. The app renders the " +
+            "document itself - never use the engine's screenshot tool - and the plate follows " +
+            "every edit live.",
     ),
     ;
 
@@ -44,7 +57,7 @@ internal enum class EngineMode(
     val preamble: String
         get() = "[The user is in the $label menu and is working with the $label engine " +
             "($scope). Use the $skill skill for this request. The other engine is not the " +
-            "one in view.]"
+            "one in view." + if (bridge.isBlank()) "" else " $bridge" + "]"
 
     /** The user's text with the engine stated in front of it. */
     fun prompt(text: String): String = preamble + "\n\n" + text

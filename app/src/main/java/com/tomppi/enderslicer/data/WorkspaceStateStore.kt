@@ -138,6 +138,43 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val models: List<Entry> = emptyList(),
         /** The split pair the snap fit was offered on, or null when there was none. */
         val snap: SnapState? = null,
+        /**
+         * The CAD document the plate was showing, or null when the model was a mesh.
+         *
+         * The document's source of truth is [CadState.designPath], an engine design file; the
+         * triangles the plate draws are a display cache, as [CadState.displayMeshPath] names.
+         */
+        val cad: CadState? = null,
+    )
+
+    /**
+     * The workspace half of a live CAD document.
+     *
+     * It is deliberately not a model file: the design is the document, and the tessellation
+     * beside it is only what the last session's view drew. A restore reads the design back
+     * through the engine (the Tessellated cache is a convenience for the frame before the
+     * engine starts); Slice is what writes an STL, and its path is recorded here so a later
+     * Slice can say honestly whether it reused that export.
+     */
+    data class CadState(
+        val name: String,
+        val designPath: String,
+        /** The STEP/IGES/3MF/OBJ/glTF file the document was opened from, when it was. */
+        val sourcePath: String? = null,
+        /** The display cache the restored plate draws until the engine exports again. */
+        val displayMeshPath: String? = null,
+        val displayRevision: Long = 0L,
+        val triangleCount: Int = 0,
+        val bodyCount: Int = 0,
+        /** The plate object drawing the display cache, so a repaint replaces it. */
+        val displayObjectId: String? = null,
+        /** True when the plate held a split/snap layout made from the previous shape. */
+        val derivedStale: Boolean = false,
+        val staleReason: String? = null,
+        val sliceStlPath: String? = null,
+        val sliceExportRevision: Long = -1L,
+        val sliceExportAtMillis: Long = 0L,
+        val sliceTriangles: Int = 0,
     )
 
     private val stateDirectory = File(filesDirectory, "persistent-state").apply { mkdirs() }
@@ -237,6 +274,19 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         validateEntry(snapshot.modelPath, snapshot.modelDisplayName, snapshot.supportPaint)
         snapshot.models.forEach { entry ->
             validateEntry(entry.modelPath, entry.modelDisplayName, entry.supportPaint)
+        }
+        // The design file is not a model file: it lives in the engine's own workspace inside
+        // the app's files directory, and it is the one piece of the descriptor that must never
+        // name a path outside it.
+        snapshot.cad?.let { cad ->
+            require(cad.name.isNotBlank() && cad.name.length <= MAX_DISPLAY_NAME_LENGTH) {
+                "Workspace CAD document name is invalid"
+            }
+            val design = File(cad.designPath).canonicalFile
+            val files = filesDirectory.canonicalFile
+            require(design.path.startsWith(files.path + File.separator)) {
+                "Workspace CAD document is outside the app's files directory"
+            }
         }
     }
 
@@ -355,6 +405,32 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                     },
             )
         }
+        // The CAD document is written beside the plate it was shown on, never as one of the
+        // plate's models: the design is the document, and the display cache entry is only the
+        // frame the last session drew. Written only when a document is live, so a mesh plate's
+        // descriptor keeps the byte shape it had.
+        snapshot.cad?.let { cad ->
+            root.put(
+                "cad",
+                JSONObject()
+                    .put("name", cad.name)
+                    .put("designPath", cad.designPath)
+                    .put("displayRevision", cad.displayRevision)
+                    .put("triangleCount", cad.triangleCount)
+                    .put("bodyCount", cad.bodyCount)
+                    .put("sliceExportRevision", cad.sliceExportRevision)
+                    .put("sliceExportAtMillis", cad.sliceExportAtMillis)
+                    .put("sliceTriangles", cad.sliceTriangles)
+                    .put("derivedStale", cad.derivedStale)
+                    .apply {
+                        cad.sourcePath?.let { put("sourcePath", it) }
+                        cad.displayMeshPath?.let { put("displayMeshPath", it) }
+                        cad.displayObjectId?.let { put("displayObjectId", it) }
+                        cad.sliceStlPath?.let { put("sliceStlPath", it) }
+                        cad.staleReason?.let { put("staleReason", it) }
+                    },
+            )
+        }
         return root
     }
 
@@ -373,7 +449,37 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             supportPaint = decodeSupportPaint(root.optJSONObject("supportPaint")),
             models = models,
             snap = decodeSnap(root.optJSONObject("snap"), models),
+            cad = decodeCad(root.optJSONObject("cad")),
         )
+    }
+
+    /**
+     * The saved CAD document, or null when the descriptor has none - or carries one without
+     * the two things that make it a document. Every field is read leniently: a damaged record
+     * costs the CAD state, never the plate the rest of the descriptor describes.
+     */
+    private fun decodeCad(json: JSONObject?): CadState? {
+        if (json == null) return null
+        return runCatching {
+            val name = json.optString("name").takeIf { it.isNotBlank() } ?: return null
+            val designPath = json.optString("designPath").takeIf { it.isNotBlank() } ?: return null
+            CadState(
+                name = name,
+                designPath = designPath,
+                sourcePath = json.optString("sourcePath").takeIf { it.isNotBlank() },
+                displayMeshPath = json.optString("displayMeshPath").takeIf { it.isNotBlank() },
+                displayRevision = json.optLong("displayRevision", 0L).coerceAtLeast(0L),
+                triangleCount = json.optInt("triangleCount", 0).coerceAtLeast(0),
+                bodyCount = json.optInt("bodyCount", 0).coerceAtLeast(0),
+                displayObjectId = json.optString("displayObjectId").takeIf { it.isNotBlank() },
+                derivedStale = json.optBoolean("derivedStale", false),
+                staleReason = json.optString("staleReason").takeIf { it.isNotBlank() },
+                sliceStlPath = json.optString("sliceStlPath").takeIf { it.isNotBlank() },
+                sliceExportRevision = json.optLong("sliceExportRevision", -1L),
+                sliceExportAtMillis = json.optLong("sliceExportAtMillis", 0L).coerceAtLeast(0L),
+                sliceTriangles = json.optInt("sliceTriangles", 0).coerceAtLeast(0),
+            )
+        }.getOrNull()
     }
 
     private fun encodeEntry(entry: Entry): JSONObject = JSONObject()

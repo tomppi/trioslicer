@@ -57,8 +57,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 113
-        versionName = "1.9.4"
+        versionCode = 114
+        versionName = "1.9.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -674,6 +674,27 @@ fun checkOcctEnginePackaged(apk: File, label: String) {
 }
 
 /**
+ * The SolidCraft engine: the live CAD document on the Plate runs in this binary.
+ *
+ * It is fetched by scripts/fetch-solidcraft-engine-android.sh (jniLibs is gitignored), and its
+ * release asset is published separately from the source commit because CI has no Rust cross
+ * toolchain. So this check is a task of its own rather than a dependency of assemble: a checkout
+ * without the binary builds an app whose CAD agent says the engine is not packaged, which is a
+ * named failure at runtime, and the task is what a release run calls to prove it was packed.
+ */
+fun checkSolidCraftEnginePackaged(apk: File, label: String) {
+    check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
+    ZipFile(apk).use { zip ->
+        val entry = zip.getEntry("lib/arm64-v8a/libsolidcraft_exec.so")
+        check(entry != null && entry.size > 10_000_000L) {
+            "$label APK does not contain the ARM64 SolidCraft engine, so the Plate's live CAD " +
+                "document has nothing to run. Fetch it with " +
+                "scripts/fetch-solidcraft-engine-android.sh."
+        }
+    }
+}
+
+/**
  * The CAD workspace's whole runtime: OCP, build123d and their dependencies.
  *
  * Asserted by package rather than by count, because a truncated payload is the failure that
@@ -709,6 +730,48 @@ fun checkCadPayloadPackaged(apk: File, label: String) {
                 "A partial payload stages a tree that looks complete and fails on the device."
         }
     }
+}
+
+/**
+ * The staged SolidCraft engine, checked before a build that is meant to carry it.
+ *
+ * Deliberately NOT a dependency of assemble: the release asset is published after the source
+ * commit, and a fork or CI without it must still be able to build the app (the CAD agent then
+ * reports the named failure the UI was built for). Release runs call it explicitly.
+ */
+val verifySolidCraftEngineExecutable by tasks.registering {
+    group = "verification"
+    description = "Checks that the SolidCraft engine executable is staged for arm64-v8a"
+    doLast {
+        val engine = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so").asFile
+        check(engine.isFile && engine.length() > 10_000_000L) {
+            "SolidCraft engine is missing or truncated at " + engine.absolutePath +
+                ". Run scripts/fetch-solidcraft-engine-android.sh (or " +
+                "scripts/build-solidcraft-engine-android.sh)."
+        }
+        val magic = engine.inputStream().use { input ->
+            val bytes = ByteArray(4)
+            check(input.read(bytes) == 4) { engine.absolutePath + " is too short to be an engine" }
+            bytes
+        }
+        check(
+            magic[0] == 0x7f.toByte() && magic[1] == 'E'.code.toByte() &&
+                magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte(),
+        ) { engine.absolutePath + " is not an ELF binary" }
+        logger.lifecycle(
+            "SolidCraft engine staged: " + engine.name + " (" + (engine.length() / (1024 * 1024)) + " MB)",
+        )
+    }
+}
+
+/**
+ * The debug APK's own copy of the engine check, for a release run that wants it in the package.
+ */
+val verifyDebugApkSolidCraftContents by tasks.registering {
+    group = "verification"
+    description = "Builds the debug APK and verifies the SolidCraft engine is packaged"
+    dependsOn("assembleDebug")
+    doLast { checkSolidCraftEnginePackaged(debugApkFile(), "Debug") }
 }
 
 val verifyDebugApkEngines by tasks.registering {

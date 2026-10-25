@@ -1,0 +1,84 @@
+# SolidCraft engine (TrioSlicer / enderslicercura, on the plate)
+
+**This is the app's live CAD document.** The main plate can show a SolidCraft 0.22.1 design
+rather than a mesh; you are its author, and every geometry change you make appears on the user's
+plate as it happens. The user is looking at the same viewport the app uses for imported STLs,
+with the same orbit/zoom/pan/double-tap gestures, and he keeps every plate function (move,
+rotate, scale, split, snap fit, support paint, Slice, Export) on a mesh derived from your
+document.
+
+Rule of thumb:
+
+| task | engine |
+|---|---|
+| "build a bracket / enclosure / adapter, exact dimensions" | **this engine** (SolidCraft on the plate) |
+| "make this scanned model thinner" / "fix this wall" | blender-mcp-engine (mesh editing) |
+| "turn this photo into a model" | image-to-3d-model, then CAD to correct dimensions |
+
+The older **cad-engine** skill drives a different engine (build123d on OCP, its own viewport and
+its own MCP token on 9877). Do not mix them up: this one holds the document the PLATE draws.
+
+## 1. Connect
+
+The engine is a child process of the app, speaking MCP over its own stdio; the app exposes that
+session on **127.0.0.1:9878** for you, behind a bearer token.
+
+1. The user opens the **CAD agent** sheet (the sidebar button, or CAD menu > Connect CAD agent)
+   and taps **Copy MCP token** - the clipboard gesture is biometric-gated on purpose, and the
+   app is the only place a token can be handed over on a phone without root. Ask the user for
+   it; it is one tap.
+2. Forward the port:  adb -s <dev-phone-serial> forward tcp:9878 tcp:9878
+3. Speak newline-delimited JSON-RPC 2.0 on that socket. Every message carries the token as a
+   top-level "token" field (or inside params):
+
+    {"jsonrpc":"2.0","id":1,"method":"initialize","token":"<token>","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}
+    {"jsonrpc":"2.0","method":"notifications/initialized","token":"<token>","params":{}}
+    {"jsonrpc":"2.0","id":2,"method":"tools/list","token":"<token>","params":{}}
+    {"jsonrpc":"2.0","id":3,"method":"tools/call","token":"<token>","params":{"name":"execute","arguments":{"command":"solid.box","params":{"length":40,"width":30,"height":20}}}}
+
+The tool surface is upstream SolidCraft's (list_commands, describe_command, execute, batch,
+inspect_design, measure, body_topology, set_parameter, export, undo, redo, new_design, open,
+save, ...). The app refuses the engine's screenshot tool: the plate is the viewport, and the
+engine's own GPU renderer is never used.
+
+## 2. The live view
+
+Every execute/batch that changes geometry is followed by the app exporting only the bodies the
+engine named (created_bodies / changed_bodies / removed_bodies) and patching them into the
+plate. There is no debounce and nothing to trigger:
+
+- do not ask the user to refresh, re-import, or export an STL to see the change;
+- do not use screenshot or render tools; the plate is the picture;
+- undo, redo, a parameter edit (set_parameter / parameters.change), new_design and open have no
+  body report, so the app re-reads the whole document body by body - still the same scene;
+- if the user has split the derived mesh, or applied a snap joint, a document change marks the
+  plate stale and the app says so; the user presses Rebuild plate in the agent sheet. Do not
+  loop edits trying to force it; say one sentence about the split being stale.
+
+## 3. Coordinates and placement
+
+The engine's own coordinates are the plate's: where the body sits in the design is where it
+prints. The app adds no centring of its own, so:
+
+- build the part on the bed: positive Z, and somewhere inside the machine's X/Y (ask the user's
+  printer settings, or keep it near the origin and small);
+- if the part must move on the bed, move it in the document (transforms/assemblies), not by
+  asking the user to drag it - though the user can drag/rotate/scale the derived mesh if he
+  wants to.
+
+## 4. Saving and Slice
+
+- The app saves the design itself into its workspace after edits; do not overwrite the app's
+  design path unless you are asked to.
+- Slice is the user's button: pressing it exports a fresh print STL from the current document
+  (or reuses the last export while the document is unchanged) and hands it to the slicer
+  engines.
+- Export STEP/STL/3MF is the user's other button; both are in the CAD agent sheet.
+
+## 5. Rules that are not the upstream engine's
+
+- Files are confined to the app's workspace directory passed as --allow-path; an open/export
+  path outside it is refused.
+- The token is a bearer credential for the engine session: keep it out of logs and chat
+  transcripts.
+- The app and the engine are both on the phone; there is no desktop SolidCraft involved.

@@ -66,12 +66,12 @@ class KlipperHostIdentityTest {
      */
     @Test
     fun connectingToTheComputerNamesTheComputerAndNotThePhone() {
-        val pc = KlipperHostChoice(mode = KlipperHostMode.PC, host = "100.72.208.101")
+        val pc = KlipperHostChoice(mode = KlipperHostMode.PC, host = "100.64.13.7")
         val cleared = pcPrintOnScreen().withoutHost(pc)
 
-        assertEquals("the choice's host, so the route's own affordances stay right", "100.72.208.101", cleared.remoteHost)
-        assertEquals("and the identity tag the card reads", "100.72.208.101", cleared.hostLabel)
-        assertTrue(cleared.stateMessage.contains("100.72.208.101"))
+        assertEquals("the choice's host, so the route's own affordances stay right", "100.64.13.7", cleared.remoteHost)
+        assertEquals("and the identity tag the card reads", "100.64.13.7", cleared.hostLabel)
+        assertTrue(cleared.stateMessage.contains("100.64.13.7"))
         assertNull("while nothing of the print it had is on screen", cleared.printState)
     }
 
@@ -172,8 +172,8 @@ class KlipperHostIdentityTest {
         position = listOf(12.0, 34.0, 5.0),
         printFileName = "cube.gcode",
         printState = "cancelled",
-        remoteHost = "100.72.208.101",
-        hostLabel = "100.72.208.101",
+        remoteHost = "100.64.13.7",
+        hostLabel = "100.64.13.7",
         webcams = listOf(
             KlipperWebcam(
                 name = "printer",

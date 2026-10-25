@@ -31,6 +31,7 @@ import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperViewModel
+import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.EngineSetupScreen
@@ -65,6 +66,21 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         startKlipperHostIfPrinterAttached(intent)
+    }
+
+    /**
+     * The SolidCraft engine is a child process, and a child does not die with its parent.
+     * Left running it holds the live design in a process nobody can see or stop, so ending
+     * the app ends it. Stopping the activity for a rotation is not ending the app: the view
+     * model survives and the engine stays up with the plate.
+     */
+    override fun onDestroy() {
+        if (isFinishing) {
+            // The stop waits for the child to exit, and this is the UI thread: ending the app
+            // must not wait up to the five seconds the destroy could take.
+            Thread { runCatching { SolidCraftEngine.stop() } }.start()
+        }
+        super.onDestroy()
     }
 
     /**

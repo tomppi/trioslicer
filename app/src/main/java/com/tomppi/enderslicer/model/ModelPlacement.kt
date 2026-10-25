@@ -61,6 +61,15 @@ data class ModelPlacement(
         val dx = centerXmm - rawBounds.centerX
         val dy = centerYmm - rawBounds.centerY
         val dz = baseZmm - rawBounds.minZ
+        // A document that already sits at the plate's own coordinates costs no placement
+        // pass: the live CAD view recomposes its body meshes on every agent edit, and
+        // copying every vertex through a transform that does nothing would be the largest
+        // cost in a repaint. The tolerance covers the float bounds the centre came from.
+        if (linear == IDENTITY &&
+            abs(dx) <= 1e-3 && abs(dy) <= 1e-3 && abs(dz) <= 1e-3
+        ) {
+            return mesh
+        }
         // The placed display copy is written on every placement. Big meshes
         // keep it in a direct native buffer (the same rule the STL parser
         // uses) so a multi-million-triangle placed model does not sit on the

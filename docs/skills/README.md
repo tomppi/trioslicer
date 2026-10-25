@@ -5,6 +5,7 @@ Sanitized copies of the assistant's skill files - the runbooks it follows when a
 | file | what it covers |
 |---|---|
 | [`cad-engine.md`](cad-engine.md) | Building exact geometry with build123d on OCP: the socket engine, the render command, 2D drawings, and which phone it is actually on |
+| [`solidcraft-engine.md`](solidcraft-engine.md) | Driving the app's live SolidCraft CAD document on the plate over its MCP bridge: the token, the protocol, the live repaint contract, and the placement rules |
 | [`blender-mcp-engine.md`](blender-mcp-engine.md) | Driving the Blender engine embedded in the app over its MCP socket, and the STL export handoff into the slicer UI |
 | [`image-to-3d-model.md`](image-to-3d-model.md) | Photograph to printable STL: the generator, its settings, post-processing, validation and the delivery handoff |
 | [`gpu-box-power.md`](gpu-box-power.md) | Hibernating and waking the GPU box over Wake-on-LAN, and why each piece of that configuration is needed |

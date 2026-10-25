@@ -166,6 +166,7 @@ import com.tomppi.enderslicer.modelling.CadViewerSettings
 import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
+import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntOffset
@@ -229,9 +230,20 @@ fun EnderSlicerApp(
     plateOverlayContent: @Composable BoxScope.() -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val solidCraftSheetOpen by viewModel.solidCraftSheetOpen.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.PLATE) }
+
+    // The end of a live repaint: the first frame that draws a new display revision. The
+    // latency reported for an agent edit runs from the call's answer to this frame.
+    val cadDisplayRevision = state.cadDocument?.displayRevision
+    LaunchedEffect(cadDisplayRevision) {
+        val revision = cadDisplayRevision ?: return@LaunchedEffect
+        androidx.compose.runtime.withFrameNanos { }
+        viewModel.onCadFrame(revision)
+    }
+
 
     // A failure lands in the corner of the model viewer, and that corner is on
     // the Plate. Everything the app does from another tab - importing a
@@ -861,6 +873,31 @@ fun EnderSlicerApp(
         }
     }
 
+    /**
+     * Sends to the harness from the CAD agent sheet.
+     *
+     * This is the one human edit surface a CAD document has: the agent is told which engine it
+     * is driving and where that engine listens, and the user sees their own words. The same
+     * CAD conversation the CAD screen uses, so the agent keeps its context.
+     */
+    fun askSolidCraftAgent(text: String) {
+        aiScope.launch {
+            cadBusy = true
+            cadStatus = null
+            try {
+                val chat = cadChat.get()
+                    ?: error("Connect the harness first - the sparkle button on the plate")
+                withContext(Dispatchers.IO) { chat.send(EngineMode.SOLIDCRAFT.prompt(text)) }
+                cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+                pollForReply(chat, { cadMessages = it }, { cadStatus = it })
+            } catch (error: Throwable) {
+                cadStatus = error.message?.take(160) ?: "Harness call failed"
+            } finally {
+                cadBusy = false
+            }
+        }
+    }
+
     /** Publishes the camera the user is looking through, so the agent can adopt it. */
     fun publishModellingCamera(camera: ModellingCamera) {
         // The agent writes this file too and bumps the same counter, so an
@@ -1205,6 +1242,22 @@ fun EnderSlicerApp(
     ) { uri: Uri? ->
         uri?.let(viewModel::exportGcode)
     }
+    // The CAD document's exports: the file is the engine's document written out, which is a
+    // different verb from Slice and leaves the document unchanged.
+    val cadStepExportPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/step"),
+    ) { uri: Uri? -> uri?.let { viewModel.exportCadDocument(it, "step") } }
+    val cadStlExportPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("model/stl"),
+    ) { uri: Uri? -> uri?.let { viewModel.exportCadDocument(it, "stl") } }
+    val cad3mfExportPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("model/3mf"),
+    ) { uri: Uri? -> uri?.let { viewModel.exportCadDocument(it, "3mf") } }
+    // The CAD route into the app: STEP/IGES/3MF/OBJ/glTF through the engine's own io crate,
+    // not through OCCT's STEP-to-mesh converter. Import model keeps the mesh route.
+    val cadDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let(viewModel::openCadDocument)
+    }
 
     val effectiveSliceBlockedReason = sliceBlockedReason
         ?: if (nonPlanarSettings.enabled && conicalSettings.enabled) {
@@ -1265,6 +1318,13 @@ fun EnderSlicerApp(
                 onSlice = viewModel::sliceModel,
                 onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                 onTools = { modelToolsOpen = true },
+                cadDocument = state.cadDocument != null,
+                // The one human edit surface a CAD document has: start the engine and open
+                // the sheet the chat and the exports live in.
+                onCadAgent = {
+                    viewModel.connectCadAgent()
+                    viewModel.openSolidCraftSheet()
+                },
                 onSettings = viewModel::updateSettings,
                 onPrusaSettings = viewModel::updatePrusaSettings,
                 onOrcaSettings = viewModel::updateOrcaSettings,
@@ -1337,6 +1397,28 @@ fun EnderSlicerApp(
                                             onClick = {
                                                 importMenuExpanded = false
                                                 stlPicker.launch(arrayOf("*/*"))
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        // Not a mesh import and not OCCT's converter: the file
+                                        // becomes the engine's live document, and Slice is what
+                                        // turns it into the STL a slicer reads.
+                                        DropdownMenuItem(
+                                            text = { Text("Open CAD document") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                importMenuExpanded = false
+                                                cadDocumentPicker.launch(
+                                                    arrayOf(
+                                                        "application/step",
+                                                        "application/octet-stream",
+                                                        "model/3mf",
+                                                        "model/obj",
+                                                        "model/gltf-binary",
+                                                        "model/gltf+json",
+                                                        "*/*",
+                                                    ),
+                                                )
                                             },
                                             enabled = !state.isBusy,
                                         )
@@ -1549,6 +1631,53 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
+                                        HorizontalDivider()
+                                        // The plate's own CAD engine, not the CAD screen's: it
+                                        // drives the live document the main viewport draws. The
+                                        // agent is its author; the human's surfaces are the sheet,
+                                        // look, Slice and Export.
+                                        MenuSectionLabel("Plate CAD agent (SolidCraft)")
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    state.cadDocument?.let { "CAD agent · " + it.name }
+                                                        ?: "Connect CAD agent",
+                                                )
+                                            },
+                                            leadingIcon = { Icon(AppIcons.Sparkle, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                viewModel.connectCadAgent()
+                                                viewModel.openSolidCraftSheet()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy SolidCraft MCP token") },
+                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                requestMcpTokenCopy(
+                                                    context = context,
+                                                    clipLabel = "SolidCraft MCP token",
+                                                    engineName = "SolidCraft CAD agent",
+                                                    tokenFile = {
+                                                        SolidCraftEngine.ensureToken(context)
+                                                        SolidCraftEngine.tokenFile(context)
+                                                    },
+                                                )
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Stop CAD agent") },
+                                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                viewModel.stopCadAgent()
+                                            },
+                                            enabled = !state.isBusy && SolidCraftEngine.isReady(),
+                                        )
                                     }
                                 }
                             }
@@ -1573,6 +1702,7 @@ fun EnderSlicerApp(
                             onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                             onTools = { modelToolsOpen = true },
                             onToggle = { showPlatePanels(platePanels.toggledActionBar()) },
+
                         )
                     }
                 },
@@ -2671,6 +2801,65 @@ fun EnderSlicerApp(
             insecure = aiInsecure,
             modifier = Modifier.fillMaxSize(),
         )
+    }
+
+    // The CAD agent sheet: the whole human surface on a live CAD document besides looking at
+    // it, slicing it and exporting it. Kept above the AI chat so the sheet is never behind it.
+    if (solidCraftSheetOpen && selectedTab == AppTab.PLATE) {
+        AppBottomSheet(onDismissRequest = { viewModel.closeSolidCraftSheet() }) {
+            val exportBase = state.cadDocument?.name
+                ?.replace(Regex("[^A-Za-z0-9._-]"), "-")
+                ?.take(64)
+                ?.ifBlank { null }
+                ?: "cad-document"
+            SolidCraftSheet(
+                document = state.cadDocument,
+                messages = cadMessages,
+                chatConfigured = aiConfigured,
+                chatBusy = cadBusy,
+                chatStatus = cadStatus,
+                onConnect = viewModel::connectCadAgent,
+                onStop = viewModel::stopCadAgent,
+                onCloseDocument = viewModel::closeCadDocument,
+                onRebuild = viewModel::rebuildCadPlateFromDocument,
+                onCopyToken = {
+                    requestMcpTokenCopy(
+                        context = context,
+                        clipLabel = "SolidCraft MCP token",
+                        engineName = "SolidCraft CAD agent",
+                        tokenFile = {
+                            SolidCraftEngine.ensureToken(context)
+                            SolidCraftEngine.tokenFile(context)
+                        },
+                    )
+                },
+                onExport = { format ->
+                    when (format) {
+                        "step" -> cadStepExportPicker.launch(exportBase + ".step")
+                        "stl" -> cadStlExportPicker.launch(exportBase + ".stl")
+                        "3mf" -> cad3mfExportPicker.launch(exportBase + ".3mf")
+                    }
+                },
+                onOpenFile = {
+                    cadDocumentPicker.launch(
+                        arrayOf(
+                            "application/step",
+                            "application/octet-stream",
+                            "model/3mf",
+                            "model/obj",
+                            "model/gltf-binary",
+                            "model/gltf+json",
+                            "*/*",
+                        ),
+                    )
+                },
+                onAsk = ::askSolidCraftAgent,
+                onDismiss = { viewModel.closeSolidCraftSheet() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding(),
+            )
+        }
     }
 
     // Asked at the moment the address is used, not when it is typed: the answer
@@ -3964,6 +4153,10 @@ internal fun SessionRail(
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
+    /** True when the plate is drawing the engine's CAD document. */
+    cadDocument: Boolean = false,
+    /** Starts the CAD agent and opens its sheet, where a change can be asked for. */
+    onCadAgent: () -> Unit = {},
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onPrusaSettings: (String, (PrusaSliceSettings) -> PrusaSliceSettings) -> Unit,
     onOrcaSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
@@ -4135,6 +4328,22 @@ internal fun SessionRail(
                     .padding(horizontal = EnderSlicerDimens.Space8),
             ) {
                 RailButtonLabel("Model tools")
+            }
+            // The agent is the CAD document's author: this is where a human asks for a
+            // change, and it is beside the model tools because those still work - they edit
+            // the plate's derived mesh, never the document.
+            OutlinedButton(
+                onClick = onCadAgent,
+                enabled = !state.isBusy,
+                contentPadding = PaddingValues(
+                    horizontal = EnderSlicerDimens.Space4,
+                    vertical = EnderSlicerDimens.Space4,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = EnderSlicerDimens.Space8),
+            ) {
+                RailButtonLabel(if (cadDocument) "CAD agent · live" else "CAD agent")
             }
 
             // Stacked rather than laid out as a row: 80dp cannot hold "Layer

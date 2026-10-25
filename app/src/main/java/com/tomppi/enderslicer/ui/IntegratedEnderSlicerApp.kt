@@ -703,6 +703,17 @@ fun IntegratedEnderSlicerApp(
             )
         },
         plateOverlayContent = {
+            // The CAD document's plate badge: what the plate is showing, whether the agent is
+            // editing it, and the way into the one sheet that can ask for a change.
+            slicerState.cadDocument?.let { document ->
+                SolidCraftPlateBadge(
+                    document = document,
+                    onClick = { slicerViewModel.openSolidCraftSheet() },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(12.dp),
+                )
+            }
             if (smartInfillPanelOpen) {
                 SmartInfillWorkbenchPanel(
                     state = nativeInfillState ?: SmartInfillUiState(

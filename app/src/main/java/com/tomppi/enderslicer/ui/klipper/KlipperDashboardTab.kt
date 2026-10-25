@@ -193,7 +193,7 @@ private fun HostCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
     KlipperCard(
         title = "Printer",
         // The card describes whichever host the app is driving. It said "running in
-        // this app" even when the header above it read "Connected to 100.65.211.17".
+        // this app" even when the header above it read "Connected to 100.64.13.8".
         //
         // The name comes from the state's own identity tag, not from whichever host string
         // happens to be in it: while a host change is connecting, the numbers on screen are

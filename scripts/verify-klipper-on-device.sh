@@ -9,7 +9,7 @@
 #
 # The app has to have run at least once, so its payload is extracted.
 #
-#   SERIAL:  the device. Default 100.72.208.101:5555.
+#   SERIAL:  the device. Default 100.64.13.7:5555.
 #   DICT:    the board's dictionary from a firmware build. See verify-klipper-batch.sh
 #            for how to produce one - it has to be the board's build, not the host
 #            MCU's, or the config's pins will not resolve.
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERIAL="${SERIAL:-100.72.208.101:5555}"
+SERIAL="${SERIAL:-100.64.13.7:5555}"
 APP_ID="${APP_ID:-com.tomppi.enderslicercura}"
 DICT="${DICT:-$ROOT/.build/klipper-src/out/klipper.dict}"
 GCODE="${GCODE:-$ROOT/native/klipper-pty/batch-motion.gcode}"

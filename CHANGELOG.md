@@ -4,6 +4,57 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.5] - 2026-10-25
+
+### Added
+
+- **The plate's model can be a live CAD document.** SolidCraft 0.22.1 - a pure-Rust parametric
+  CAD engine (MIT OR Apache-2.0) - is packaged as `libsolidcraft_exec.so` the way the OCCT
+  console is, started as a child process, and driven over its own stdio MCP server. The app
+  exposes that session to an AI agent on loopback port 9878 behind the same kind of token as
+  the Blender (9876) and Python CAD (9877) engines. The model screen is still the app's
+  renderer: the engine's own viewport and `screenshot` tool are never used.
+- **Every agent edit repaints, and only what it changed.** The engine answers a feature command
+  with the bodies it created, changed and removed; the app exports just those bodies, patches
+  their triangles into the plate object in place, and keeps the object's identity, its
+  placement and the camera. There is no debounce and no file-loading step: a box, a fillet, a
+  cut and a parameter change each land as the model changing shape. Undo, redo, a parameter
+  rebuild and an opened file have no body report, so the whole document is re-read body by
+  body - still the same scene, not a reload.
+- **The human keeps every plate function.** Move, rotate, scale, lay flat, drop to plate,
+  reset, split, snap fit, support paint, multi-object tools, Slice, Export and the
+  Model/Layers/Path viewer switch all act on a derived mesh. A document change re-applies the
+  plate transform (a growing part keeps its turn and its place) and keeps paint while the
+  triangle count matches; a painted mesh that no longer matches is named as cleared. A split
+  or snap layout made from the previous shape marks the plate stale with a named reason -
+  Slice refuses it - and **Rebuild plate from the document** takes the new shape.
+- **CAD files open as documents.** Import > **Open CAD document** opens STEP, IGES, 3MF, OBJ
+  and glTF through the engine's own io crate as a live document the agent can edit. **Import
+  model** keeps every existing route, including OpenCASCADE's STEP/IGES to mesh conversion;
+  which item was used is which engine answered, and the status line says so.
+- **Slice writes the print STL.** Pressing Slice on a CAD document exports a fresh STL into
+  the workspace and slices it through the unchanged pipeline; an unchanged document reuses the
+  recorded export and the status line says which happened. STEP/STL/3MF export stays a
+  separate, explicit action in the CAD agent sheet.
+- **An agent sheet on the plate**: the sidebar's CAD agent button, engine state, connect/stop,
+  the biometric-gated MCP token copy, a composer that asks the harness agent for changes, the
+  STEP/STL/3MF exports, and Close/Rebuild. It is the only human surface that asks for a
+  document change; the document itself has no editing UI.
+- `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
+  release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
+  asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the
+  per-function behaviour; `docs/skills/solidcraft-engine.md` is the agent's runbook.
+
+### Notes
+
+- The engine binary is a release asset published separately from this commit (CI has no Rust
+  cross toolchain): publish `solidcraft-engine-arm64-v0.22.1.tar.gz` at the tag the fetch
+  script names, as the OCCT engine's is.
+- Display and print tessellations are the same SolidCraft STL export - 0.22.1's `file.export`
+  has no tessellation-quality parameter - so "display" and "print" name when it is taken.
+- The plate's layout after a split or snap joint is not re-split automatically when the agent
+  changes the document: the stale state is named and Rebuild is the deliberate way forward.
+
 ## [1.9.4] - 2026-10-25
 
 ### Fixed
@@ -644,7 +695,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **The Printer card described the wrong host, and claimed no printer was attached when one was.** On the
   PC Klipper route it read "The Klipper host running in this app" while the header above it said "Connected
-  to 100.65.211.17", and below that it added "No printer is attached, so there is nothing for the host to
+  to 100.64.13.8", and below that it added "No printer is attached, so there is nothing for the host to
   drive yet" - a claim about *this phone's* USB bus, which has nothing to do with a printer attached to
   another computer. Found by the user from one screenshot of the contradiction; the missing-printer line
   was mine, added when the card was taught to explain the Klipper config error that an absent printer

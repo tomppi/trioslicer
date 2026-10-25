@@ -17,7 +17,7 @@ import org.junit.Test
  */
 class KlipperPrintLossTest {
     private val local = KlipperHostChoice(mode = KlipperHostMode.DEVICE)
-    private val remote = KlipperHostChoice(mode = KlipperHostMode.PC, host = "100.72.208.101")
+    private val remote = KlipperHostChoice(mode = KlipperHostMode.PC, host = "100.64.13.7")
 
     @Test
     fun aLocalDropWhilePrintingIsThePrintDying() {

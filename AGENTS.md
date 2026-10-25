@@ -166,3 +166,35 @@ Checked against Cura's source, and each one was wrong here before:
 - **Bead width** = `ΔE × π(d/2)² / length_XY / layer_height`, and it is read from the file's
   `;Layer height:` header rather than guessed from Z rises.
 - A width is **never zero** (`FlavorParser.py`: `line_widths[:, 0] = 0.35  # Just a guess`).
+
+## A CAD document is the engine's; the plate edits a derived mesh
+
+The Plate can show a live SolidCraft CAD document. Two owners, and a change must not confuse
+them: the **document** is the engine's (features, parameters, its own coordinates, which bodies
+exist) and only the agent authors it; the **derived mesh** on the plate is the app's, and every
+human plate function - move, rotate, scale, split, snap fit, paint, Slice, Export - acts on it.
+
+- A repaint after an agent edit replaces the plate object's `sourceMesh` in place and
+  **re-applies** the human's edits: the placement transform relative to the old mesh, and the
+  paint only while the triangle count matches (otherwise it is cleared and named in the
+  status). It must never reset the camera, recentre the part, or go through a file-loading
+  step: `ModelSurfaceView.resetCamera` fires on a new display name or a changed object count,
+  so the document object keeps one id and one name.
+- No debounce on the picture. An edit repaints as soon as it is reported; a second edit that
+  arrives during a repaint is merged into the next one. Persisting the display cache and the
+  workspace descriptor is batched - that is persistence, not the view.
+- The engine exports **only the bodies the edit named** (`file.export` with a `bodies` list).
+  Undo/redo, `set_parameter`, `new_design` and `open` carry no body report and fall back to
+  reading the document body by body. `screenshot` is refused by the bridge: the plate is the
+  viewport.
+- A split or snap layout is geometry made from the previous shape. When the document changes
+  under it, the document is marked stale with a named reason, Slice refuses it, and **Rebuild
+  plate from the document** is the deliberate way to take the new shape. Never paste the new
+  mesh over the user's split.
+- Slice exports the print STL from the current document (or reuses the last export while the
+  document is unchanged) and slices the derived mesh, so the human's plate edits are what
+  prints. The Slice export and the per-edit display tessellation are the same SolidCraft STL
+  export; they differ in when they are taken.
+- Open CAD files (STEP/IGES/3MF/OBJ/glTF) through `Import > Open CAD document`, which uses the
+  engine's own io crate and keeps a document. `Import model` keeps the mesh routes, including
+  OpenCASCADE's STEP/IGES conversion. The menu item is the route choice.

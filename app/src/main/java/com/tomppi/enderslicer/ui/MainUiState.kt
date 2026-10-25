@@ -16,6 +16,7 @@ import com.tomppi.enderslicer.model.PrusaSliceSettings
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.profile.CuraEngineProfile
+import com.tomppi.enderslicer.solidcraft.CadDocument
 import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
@@ -159,6 +160,16 @@ data class MainUiState(
     val models: List<PlateObject> = emptyList(),
     /** The object the tools act on. Null exactly when the plate is empty. */
     val selectedModelId: String? = null,
+    /**
+     * The plate's CAD document when the model is the engine's design, null when it is a mesh.
+     *
+     * The human is a spectator on this document: [CadDocument] is read by the plate's status
+     * line and the agent sheet, and nothing in the app edits it. The geometry, features,
+     * parameters and placement all belong to the agent driving the engine; the app's verbs are
+     * look, Slice, Export and asking the agent. Its triangles are derived state, refreshed in
+     * place as the agent works.
+     */
+    val cadDocument: CadDocument? = null,
     /** How the plate is laid out and printed. A workflow choice, not a slicing setting. */
     val platePreferences: PlatePreferences = PlatePreferences(),
     /** True while there is a placement change to take back. */
