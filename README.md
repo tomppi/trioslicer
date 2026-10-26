@@ -162,6 +162,24 @@ resolved settings before a critical print.
   covers both styles - the cantilever placed at a tap, and the wall lip's ring around the seam, whose
   **Engage** and **Tooth** sizes are the first numbers to move
 
+## Reaching the app from another machine (the tailnet)
+
+The engines behind the agent - Blender on 9876, the Python CAD engine on 9877, SolidCraft on 9878 -
+listen on loopback by default. Turn on **Reachable on the network** in the CAD agent sheet and the
+phone republishes all three on **its own address, tailnet first**, so an agent on a computer can
+drive them without adb, without a cable, and with nobody at the desk.
+
+Connecting is one paste: each row's **Copy** puts the address **and that engine's token** on the
+clipboard as one line, after the fingerprint prompt -
+
+    tcp://100.64.13.7:9878 token=<the engine's token>
+
+On the Android side this is [TailSocks](https://github.com/bropines/tailsocks) in **root mode**: a
+root daemon with a real kernel `tailscale0`, so the phone accepts inbound TCP like any Linux node -
+the official userspace app cannot, which is why it needs a publish rule instead. [docs/TAILNET.md](docs/TAILNET.md)
+is the full guide: root mode, the app's switch, `tailscale serve` for anything that is not an engine,
+the four answers a probe can give, and the phone-as-a-client direction.
+
 ## Safety
 
 Generated G-code is checked for valid extrusion temperatures, machine bounds, metadata and filename formatting before export, and remote printing requires explicit confirmation. Smart Infill and thermal FEA are engineering aids, not certified analyses — validate loads, constraints, material data, print orientation and safety factors before relying on them. Always verify the printer condition, model placement, build volume, temperatures, filament, first layer and custom G-code; terminal commands can move axes, heat the printer, modify firmware state or stop a print.
@@ -172,6 +190,7 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [keystore/README.md](keystore/README.md) - the release key and how to verify a downloaded APK
 - [Calibrating the input shaper with a phone](docs/INPUT_SHAPING.md)
 - [AI_ASSISTANT.md](AI_ASSISTANT.md) and [BLENDER_MCP_INTEGRATION.md](BLENDER_MCP_INTEGRATION.md) - the harness the assistant talks to, and the embedded Blender engine
+- [docs/TAILNET.md](docs/TAILNET.md) - reaching the app's engine bridges from another machine over a tailnet: TailSocks root mode, the app's **Reachable on the network** switch, the one-line hand-over, and what each probe answer means
 - [docs/MCP_TOKEN_SECURITY.md](docs/MCP_TOKEN_SECURITY.md) - what an engine token grants, how to check one, and what was considered and declined
 - [docs/KLIPPER_UI.md](docs/KLIPPER_UI.md) - the printer's screens, KAMP among them, and what each reads from klippy
 - [docs/octoprint-integration.md](docs/octoprint-integration.md) and [docs/skills/](docs/skills/) - printer integration, and the assistant's skill files
