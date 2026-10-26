@@ -377,3 +377,64 @@ the per-library text, not rely on the type.
 The table above remains an inventory to work from rather than legal advice:
 several entries are dual-licensed, and where so, the permissive option should be
 taken and recorded.
+## SolidCraft engine (`libsolidcraft_exec.so`)
+
+- Project: `tangency-labs/solidcraft` (`https://github.com/tangency-labs/solidcraft`)
+- Pinned version: `0.22.1`
+- License: **MIT OR Apache-2.0**, at your option
+- Copyright: 2026 SolidCraft contributors
+
+The plate's live CAD document is a SolidCraft document: a pure-Rust parametric CAD engine with its
+own B-rep kernel (the `truck` crates), sketch solver, sheet metal, plastic-feature and assembly
+families. The app packages its console as a native library the way it packages the OCCT console -
+`app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so`, 63 MB stripped - and runs it as a child
+process, speaking its own stdio MCP server. The app never uses the engine's viewport or its GPU
+renderer: the plate is the viewport, and the engine's `screenshot` tool is refused by the bridge.
+
+**Provenance.** `scripts/build-solidcraft-engine-android.sh` cross-compiles the console from the
+pinned upstream tag for `aarch64-linux-android` (cargo, `--release`, stripped). The binary is
+unmodified upstream source - no files are patched - and this repository publishes it as the
+`solidcraft-engine-v0.22.1` release asset, which
+`scripts/fetch-solidcraft-engine-android.sh` downloads and verifies by SHA-256 before staging.
+The two licence texts and upstream's NOTICE are tracked at
+[`native/solidcraft/licenses/`](native/solidcraft/licenses).
+
+**Upstream's NOTICE, reproduced** (Apache-2.0 section 4(d) requires propagating it):
+
+> SolidCraft is Copyright (c) 2026 SolidCraft contributors, licensed under the MIT License or the
+> Apache License, Version 2.0, at your option.
+>
+> **Third-party material.** Software dependencies are listed in `Cargo.lock`; their licences are in
+> `THIRD-PARTY-LICENSES.txt` (`cargo xtask licences`), which the programs also carry (Help > About >
+> Licences, `solidcraft-cli licences`). The geometry kernel builds on the truck crates
+> (truck-modeling, truck-shapeops, truck-meshalgo, truck-stepio, truck-topology and their
+> dependencies, `https://github.com/ricosjp/truck`), licensed under the Apache License 2.0 and used
+> as libraries. truck-shapeops 0.4.0 is vendored in `vendor/truck-shapeops` with SolidCraft
+> modifications (listed in `vendor/README.md` and marked in the source); its licence is in
+> `vendor/truck-shapeops/LICENSE`. Copyright (c) RICOS Co. Ltd.
+>
+> Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which
+> are licensed MIT OR Apache-2.0; `ATTRIBUTION.md` lists the files. The release packaging
+> (`.github/workflows/release.yml`, `packaging/`) is adapted from PhotoCraft
+> (`https://github.com/storytold/photocraft`), licensed under the Apache License 2.0.
+>
+> The incremental Radiance RGBE row adapter in `crates/render/src/lighting/hdr.rs` adapts decoding
+> state machines from image 0.25.10 (`https://github.com/image-rs/image`), MIT OR Apache-2.0.
+> `ATTRIBUTION.md` describes the bounded/cancellable changes; the original licence texts are
+> included in `THIRD-PARTY-LICENSES.txt`.
+>
+> Most bundled assets are drawn in code or contributed originally; third-party fonts (Liberation
+> Sans for sketch text, BIZ UDPGothic for web Japanese display) are licensed under SIL OFL 1.1. The
+> per-file list is in `ATTRIBUTION.md`.
+>
+> SolidCraft is an independent project and is not affiliated with, sponsored by or endorsed by
+> Autodesk, Dassault Systèmes, PTC, Siemens, Blender or any other CAD vendor. Fusion, AutoCAD,
+> Inventor, Alias and Tinkercad are trademarks of Autodesk, Inc.; SolidWorks is a trademark of
+> Dassault Systèmes; Onshape and Creo are trademarks of PTC; Blender is a trademark of the Blender
+> Foundation. Product names appear only to describe compatibility.
+
+**Dependency licence texts travel in the binary.** The console carries the same
+`THIRD-PARTY-LICENSES.txt` upstream generates (`cargo xtask licences`), readable without a network or
+a source tree through `solidcraft-cli licences`. The truck kernel alone is Apache-2.0 (RICOS Co.
+Ltd.), and its text is part of that set.
+
