@@ -18,9 +18,6 @@ internal object GizmoDrag {
     /** Degrees a drag the length of the ring's radius is worth. */
     const val DEGREES_PER_RADIUS = 60f
 
-    /** Slack on the depth test, so a handle sitting on the surface is not judged hidden. */
-    const val DEPTH_TOLERANCE_MM = 1.5f
-
     /**
      * How long an arrow has to project to be its own ruler. Under this it is
      * pointing at the viewer, and the drag is read on the vertical screen axis
@@ -37,17 +34,23 @@ internal object GizmoDrag {
     /**
      * Which candidate the finger grabbed, or -1 for none.
      *
-     * A candidate has to be within touchRadiusPx of the touch on screen, and not
-     * hidden behind the model: surfaceDepthMm is how far away the model is under
-     * the finger, and a handle further than that, beyond the tolerance, is behind
-     * it. The nearest on screen wins; when two land within a few pixels of each
-     * other - the two sides of a ring seen almost edge-on - the nearer one does.
+     * Screen distance alone decides: the gizmo is an affordance drawn over the
+     * model, so a finger that lands on a handle within [touchRadiusPx] is aiming
+     * at the handle it can see, whatever geometry stands behind it. This used to
+     * also reject handles deeper than the model's surface under the finger -
+     * "reaching through the part to a ring on its far side" felt wrong - but on a
+     * two-part plate a lid covers the X and Y arrows sitting at the lid's own
+     * mid-plane, so every touch on them fell through to the camera and the object
+     * could not be moved by them at all. A handle the user can see is theirs.
+     *
+     * When two candidates land within a few pixels of each other - the two sides
+     * of a ring seen almost edge-on, or the three arrows sharing a pivot - the
+     * nearer one on screen wins, and an exact tie is broken by depth (the one
+     * closest to the eye is the one that looks on top).
      */
     fun chooseHandle(
         candidates: List<HandleCandidate>,
         touchRadiusPx: Float,
-        surfaceDepthMm: Float?,
-        depthToleranceMm: Float = DEPTH_TOLERANCE_MM,
     ): Int {
         if (!touchRadiusPx.isFinite() || touchRadiusPx <= 0f) return -1
         var best = -1
@@ -58,11 +61,6 @@ internal object GizmoDrag {
                 return@forEachIndexed
             }
             if (candidate.screenDistancePx > touchRadiusPx) return@forEachIndexed
-            if (surfaceDepthMm != null && surfaceDepthMm.isFinite() &&
-                candidate.depthMm > surfaceDepthMm + depthToleranceMm
-            ) {
-                return@forEachIndexed
-            }
             val closer = candidate.screenDistancePx < bestScreen - SCREEN_TIE_PX
             val tiedButNearer = kotlin.math.abs(candidate.screenDistancePx - bestScreen) <= SCREEN_TIE_PX &&
                 candidate.depthMm < bestDepth

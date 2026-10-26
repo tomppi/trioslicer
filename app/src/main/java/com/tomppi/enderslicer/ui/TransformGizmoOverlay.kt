@@ -51,10 +51,11 @@ private const val SCALE_DEFAULT_PERCENT = 100
  * natural gesture. It stays small and out of the way, because the thing being
  * transformed is underneath it.
  *
- * The same card carries the two whole-model actions, because the long press is
- * where the hand already is when one of them is wanted: Split, which is the way
- * into the cut tool the model tools also open, and the red X that takes the
- * object off the plate. The X is red and reads "Remove model" rather than a bare
+ * The same card carries the whole-model actions, because the long press is
+ * where the hand already is when one of them is wanted: Drop, which puts the
+ * object back on the build plate (the same action the undo line names), Split,
+ * which is the way into the cut tool the model tools also open, and the red X
+ * that takes the object off the plate. The X is red and reads "Remove model" rather than a bare
  * close - it deletes the model, not the card - and it asks before it does.
  *
  * A plate holding more than one object also gets the plate's own settings here.
@@ -75,6 +76,12 @@ internal fun TransformGizmoOverlay(
     onScalePercent: (Int) -> Unit,
     onScaleFinished: () -> Unit,
     onDone: () -> Unit,
+    /** Drops the object the card belongs to onto the build plate, as the model tools' own action does. */
+    onDrop: () -> Unit,
+    /** False when there is nothing to drop; the reason is shown under the row. */
+    dropEnabled: Boolean = true,
+    /** Why Drop is disabled, when it is: a dead button says nothing. */
+    dropDisabledReason: String? = null,
     /** How many objects the plate holds: the plate's settings need more than one. */
     objectCount: Int,
     /** Opens the plate's multi-object sheet, the same one the engine card opens. */
@@ -102,7 +109,20 @@ internal fun TransformGizmoOverlay(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (!compact) {
-                GizmoModeRow(mode = mode, onMode = onMode, onDone = onDone)
+                GizmoModeRow(
+                    mode = mode,
+                    onMode = onMode,
+                    onDrop = onDrop,
+                    dropEnabled = dropEnabled,
+                    onDone = onDone,
+                )
+                if (!dropEnabled && dropDisabledReason != null) {
+                    Text(
+                        text = dropDisabledReason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Text(
@@ -260,6 +280,8 @@ internal fun TransformGizmoOverlay(
 private fun GizmoModeRow(
     mode: TransformGizmoMode,
     onMode: (TransformGizmoMode) -> Unit,
+    onDrop: () -> Unit,
+    dropEnabled: Boolean,
     onDone: () -> Unit,
 ) {
     Row(
@@ -269,9 +291,19 @@ private fun GizmoModeRow(
         ModeButton("Rotate", mode == TransformGizmoMode.ROTATE) { onMode(TransformGizmoMode.ROTATE) }
         ModeButton("Move", mode == TransformGizmoMode.MOVE) { onMode(TransformGizmoMode.MOVE) }
         ModeButton("Scale", mode == TransformGizmoMode.SCALE) { onMode(TransformGizmoMode.SCALE) }
+        // An action, not a fourth mode: it has its own border and no selected
+        // state, and it sits beside Done because the hand is leaving the card
+        // from there. It is the model tools' existing drop-to-plate action.
+        OutlinedButton(
+            onClick = onDrop,
+            enabled = dropEnabled,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        ) {
+            SingleLineLabel("Drop")
+        }
         TextButton(
             onClick = onDone,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
         ) {
             SingleLineLabel("Done")
         }
@@ -286,7 +318,7 @@ private fun GizmoModeRow(
  */
 @Composable
 private fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    val padding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    val padding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
     if (selected) {
         Button(onClick = onClick, contentPadding = padding) { SingleLineLabel(label) }
     } else {

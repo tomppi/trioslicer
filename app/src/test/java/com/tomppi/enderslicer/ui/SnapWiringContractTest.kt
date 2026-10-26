@@ -519,12 +519,17 @@ class SnapWiringContractTest {
         )
 
         val view = source("viewer/ModelSurfaceView.kt")
-        assertTrue("only a handle starts a joint move", view.contains("handle?.kind == GizmoHandleKind.ARROW"))
-        assertTrue("the held arrow is lit", view.contains("modelRenderer.setGizmoActiveAxis(handle.axis)"))
+        // The joint's own grab lives in its own helper now, so ACTION_DOWN can offer the
+        // gesture to the handles before it offers it to the pickers - the joint's arrows
+        // are affordances exactly like the model's gizmo.
+        val jointGrab = view.substringAfter("private fun grabJointArrowAt(")
+            .substringBefore("private fun grabGizmoHandleAt(")
+        assertTrue("only a handle starts a joint move", jointGrab.contains("handle.kind != GizmoHandleKind.ARROW"))
+        assertTrue("the held arrow is lit", jointGrab.contains("modelRenderer.setGizmoActiveAxis(handle.axis)"))
         assertTrue("and goes dark when it comes up", view.contains("modelRenderer.setGizmoActiveAxis(null)"))
         assertTrue(
             "measured along the arrow's own shaft, not the selected model's",
-            view.contains("modelRenderer.gizmoArrowSamples(handle.axis)"),
+            jointGrab.contains("modelRenderer.gizmoArrowSamples(handle.axis)"),
         )
         assertTrue("and the rest step back while it is held", view.contains("GIZMO_IDLE_DIM"))
 

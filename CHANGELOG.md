@@ -4,6 +4,40 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.10] - 2026-10-26
+
+### Fixed
+
+- **The transform gizmo's arrows are grabbable over any part.** The gizmo is drawn on top of the
+  model already - the overlay pass disables depth testing and runs after every object - but its
+  hit test also asked the geometry under the finger: a handle deeper than the model's surface at
+  that point (beyond a 1.5 mm tolerance) was rejected as "behind the model", and the touch fell
+  through to the camera. On a two-part plate that is every touch on the X and Y arrows of a
+  selected lid, because those arrows sit at the lid's own mid-plane: the +Z arrow poked above
+  the lid and worked, and dragging X/Y orbited the camera instead. The hit test is now screen
+  distance alone (depth only breaks a tie between two handles on almost the same pixel), and a
+  finger-down is offered to the gizmo's handles - and the joint's arrows - before the camera,
+  the object pick, the face pick or any painting: an affordance drawn over the model belongs to
+  the user who can see it. A touch that lands on no handle behaves exactly as before. The
+  drawing order and the depth-test-free overlay pass are pinned by a test so they cannot drift.
+
+### Added
+
+- **Drop sits beside Done in the model tools card.** The app's drop-to-plate action (the one the
+  undo line names "Model dropped to the build plate") is now a secondary button next to Done in
+  the floating transform card, for every object the card can act on - imported meshes and CAD
+  document parts alike. It is disabled with a named reason when there is nothing to drop (no
+  selection, or an operation running) instead of a dead button, and it keeps the existing undo.
+
+### Tested
+
+- `GizmoOverlayOrderTest` pins that the gizmo pass runs after the model with `GL_DEPTH_TEST`
+  disabled (and that no depth-range trick is the mechanism), that `ACTION_DOWN` offers the touch
+  to the gizmo's handles before the joint picker, the face picker and finger-move, and that the
+  gizmo hit test no longer consults the model hit ray. `GizmoDragTest` now covers a handle drawn
+  over the model being chosen by screen distance even when nearer geometry exists, with depth
+  only breaking a screen tie. `TransformGizmoOverlayTest` (Robolectric compose) covers Drop
+  beside Done, the named-reason disabled state, and the undo row that names a model drop.
 ## [1.9.9] - 2026-10-26
 
 ### Changed

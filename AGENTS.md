@@ -167,6 +167,29 @@ Checked against Cura's source, and each one was wrong here before:
   `;Layer height:` header rather than guessed from Z rises.
 - A width is **never zero** (`FlavorParser.py`: `line_widths[:, 0] = 0.35  # Just a guess`).
 
+## An affordance is drawn over the model, and owns the touch that lands on it
+
+The plate draws its transform gizmo in the same GL frame as the parts. A part bigger than the
+gizmo (a lid over the arrows at its own mid-plane) used to hide it twice: the hit test judged a
+handle behind the model's surface and refused it, so dragging an X/Y arrow orbited the camera,
+and the user reported it as "the arrow is under the lid".
+
+- **Draw order plus depth testing off is the whole stacking rule.** `drawScene` draws the grid
+  and the model first, then the overlays - axis triad, annotation, gizmo - each with
+  `GL_DEPTH_TEST` disabled for its pass. Do not add a "depth range" workaround, and do not draw
+  an affordance before the model. `GizmoOverlayOrderTest` fails if the order or the disabled
+  test changes.
+- **Touch arbitration offers the gesture to the affordance first.** In `ACTION_DOWN` the gizmo
+  handles (and the joint's arrows) are tested before the joint picker, the face picker, painting,
+  finger-move and the camera. A finger-down that lands within `GizmoDrag.TOUCH_RADIUS_PX` of a
+  handle starts that drag whatever geometry stands behind it; a miss falls through unchanged.
+- **Never ask the geometry what is in front of a gizmo handle.** The hit test is screen distance
+  (with depth only as the tie-break for two handles within a few pixels). `MeshPicker.pick` in
+  `gizmoHitAt` is exactly the bug above; `GizmoOverlayOrderTest` asserts it is gone.
+- A transform card's action buttons (Drop, Split, Remove) act on the selected object through the
+  same view-model calls the model tools use - no second implementation - and a disabled action
+  says why in a sentence rather than being a dead button (`TransformGizmoOverlayTest`).
+
 ## A CAD document's parts are separate plate objects; converting is the human's press
 
 The Plate can show a live SolidCraft CAD document. Two owners, and a change must not confuse

@@ -561,6 +561,75 @@ class ModelSurfaceView(
         }
     }
 
+    /**
+     * Starts the joint's arrow drag when the finger went down on one of its arrows.
+     *
+     * The joint's own mode: only one of its arrows starts a move, and only that axis
+     * moves. A grab that lands on no arrow is the camera's, exactly as it is under the
+     * model's own move gizmo - the part never moves by accident.
+     */
+    private fun grabJointArrowAt(x: Float, y: Float): Boolean {
+        val handle = modelRenderer.gizmoHitAt(x, y, GizmoDrag.TOUCH_RADIUS_PX) ?: return false
+        if (handle.kind != GizmoHandleKind.ARROW) return false
+        // The arrow's own shaft: its first sample is the pivot the drag is measured
+        // from and its last is the tip, so the finger's pixels turn into millimetres
+        // along THAT arrow.
+        val points = modelRenderer.gizmoArrowSamples(handle.axis) ?: return false
+        val count = points.size / 3
+        if (count < 2) return false
+        draggingJointAxis = handle.axis
+        jointAxisMillimetres = 0f
+        jointAxisPivotX = points[0]
+        jointAxisPivotY = points[1]
+        jointAxisPivotZ = points[2]
+        val last = (count - 1) * 3
+        jointAxisLengthMm = kotlin.math.sqrt(
+            (points[last] - points[0]) * (points[last] - points[0]) +
+                (points[last + 1] - points[1]) * (points[last + 1] - points[1]) +
+                (points[last + 2] - points[2]) * (points[last + 2] - points[2]),
+        )
+        modelRenderer.setGizmoActiveAxis(handle.axis)
+        onJointAxisGrab?.invoke(handle.axis)
+        return true
+    }
+
+    /**
+     * Starts a model-gizmo drag when the finger went down on one of its handles.
+     *
+     * A ring turns and an arrow slides, and only a handle starts either: a drag that
+     * began on the model or the plate stays the camera's. The hit test is screen
+     * distance only (see [ModelRenderer.gizmoHitAt]), because the gizmo is drawn over
+     * the model - a part bigger than the arrow must never take the gesture back.
+     */
+    private fun grabGizmoHandleAt(x: Float, y: Float): Boolean {
+        if (gizmoMode == TransformGizmoMode.NONE) return false
+        if (paintMode != SupportPaintMode.NONE || annotationActive) return false
+        val handle = modelRenderer.gizmoHitAt(x, y, GizmoDrag.TOUCH_RADIUS_PX) ?: return false
+        when (handle.kind) {
+            GizmoHandleKind.RING -> {
+                draggingRotate = true
+                rotateDegrees = 0f
+                rotateAxis = handle.axis
+                rotateGrabX = x
+                rotateGrabY = y
+                val reference = modelRenderer.ringDragReference(handle.axis, x, y)
+                rotateTangentX = reference?.get(0) ?: 0f
+                rotateTangentY = reference?.get(1) ?: 0f
+                rotateRadiusPx = reference?.get(2) ?: 0f
+                modelRenderer.setGizmoActiveAxis(handle.axis)
+                onHandleDragActive?.invoke(true)
+            }
+            GizmoHandleKind.ARROW -> {
+                draggingAxisMove = true
+                axisMoveAxis = handle.axis
+                axisMoveMillimetres = 0f
+                modelRenderer.setGizmoActiveAxis(handle.axis)
+                onHandleDragActive?.invoke(true)
+            }
+        }
+        return true
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!cameraInteractive) return false
         val painting = paintMode != SupportPaintMode.NONE
@@ -574,116 +643,69 @@ class ModelSurfaceView(
                 previousX = event.x
                 previousY = event.y
                 panning = false
-                if (jointMoveActive) {
-                    // The joint's own mode: only one of its arrows starts a
-                    // move, and only that axis moves. A grab that lands on no
-                    // arrow is the camera's, exactly as it is under the model's
-                    // own move gizmo - the part never moves by accident.
-                    val handle = modelRenderer.gizmoHitAt(event.x, event.y, GizmoDrag.TOUCH_RADIUS_PX)
-                    if (handle?.kind == GizmoHandleKind.ARROW) {
-                        // The arrow's own shaft: its first sample is the pivot the
-                        // drag is measured from and its last is the tip, so the
-                        // finger's pixels turn into millimetres along THAT arrow.
-                        val points = modelRenderer.gizmoArrowSamples(handle.axis)
-                        val count = points?.size?.div(3) ?: 0
-                        if (points != null && count >= 2) {
-                            draggingJointAxis = handle.axis
-                            jointAxisMillimetres = 0f
-                            jointAxisPivotX = points[0]
-                            jointAxisPivotY = points[1]
-                            jointAxisPivotZ = points[2]
-                            val last = (count - 1) * 3
-                            jointAxisLengthMm = kotlin.math.sqrt(
-                                (points[last] - points[0]) * (points[last] - points[0]) +
-                                    (points[last + 1] - points[1]) * (points[last + 1] - points[1]) +
-                                    (points[last + 2] - points[2]) * (points[last + 2] - points[2]),
-                            )
-                            modelRenderer.setGizmoActiveAxis(handle.axis)
-                            onJointAxisGrab?.invoke(handle.axis)
+                // Affordances first. A finger that lands on a gizmo handle starts that
+                // drag before the camera, the pickers or the tools see the gesture: the
+                // handle is drawn over the model, so it is the thing the user aimed at,
+                // whatever part stands behind it. Only a miss falls through to the plate.
+                val grabbedJointArrow = jointMoveActive && grabJointArrowAt(event.x, event.y)
+                val grabbedGizmoHandle = !grabbedJointArrow && !jointMoveActive &&
+                    grabGizmoHandleAt(event.x, event.y)
+                if (!grabbedJointArrow && !grabbedGizmoHandle) {
+                    if (draggingJointAxis == null && jointPickActive) {
+                        // Where the joint goes is the point the tap lands on, and the
+                        // picker runs off the UI thread like every other probe here:
+                        // the coordinates are copied, not the event.
+                        pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
+                        schedulePaintPick()
+                        if (jointStrokeActive) {
+                            // A cut stroke: whether this is the tap that cuts one
+                            // place or the drag that draws a direction is only known
+                            // when it ends, so hold the movement until the pick has
+                            // answered whether the gesture began on the model.
+                            strokeActive = true
+                            strokeMoved = false
+                            strokeFirstHit = null
+                            strokePendingUp = false
+                            strokeDownX = event.x
+                            strokeDownY = event.y
+                            strokeUpX = event.x
+                            strokeUpY = event.y
+                            strokeAccumDx = 0f
+                            strokeAccumDy = 0f
                         }
                     }
-                }
-                if (draggingJointAxis == null && jointPickActive) {
-                    // Where the joint goes is the point the tap lands on, and the
-                    // picker runs off the UI thread like every other probe here:
-                    // the coordinates are copied, not the event.
-                    pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
-                    schedulePaintPick()
-                    if (jointStrokeActive) {
-                        // A cut stroke: whether this is the tap that cuts one
-                        // place or the drag that draws a direction is only known
-                        // when it ends, so hold the movement until the pick has
-                        // answered whether the gesture began on the model.
-                        strokeActive = true
-                        strokeMoved = false
-                        strokeFirstHit = null
-                        strokePendingUp = false
-                        strokeDownX = event.x
-                        strokeDownY = event.y
-                        strokeUpX = event.x
-                        strokeUpY = event.y
-                        strokeAccumDx = 0f
-                        strokeAccumDy = 0f
+                    if (surfacePickActive) {
+                        // Ask whether this gesture began on the model. Until the answer
+                        // arrives the touch is held rather than guessed at.
+                        facePickReported = false
+                        brushDeciding = true
+                        brushDragging = false
+                        brushAccumDx = 0f
+                        brushAccumDy = 0f
+                        brushProbePending.set(true)
+                        pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
+                        schedulePaintPick()
                     }
-                }
-                if (surfacePickActive) {
-                    // Ask whether this gesture began on the model. Until the answer
-                    // arrives the touch is held rather than guessed at.
-                    facePickReported = false
-                    brushDeciding = true
-                    brushDragging = false
-                    brushAccumDx = 0f
-                    brushAccumDy = 0f
-                    brushProbePending.set(true)
-                    pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
-                    schedulePaintPick()
-                }
-                if (painting) {
-                    pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
-                    schedulePaintPick()
-                } else if (annotating) {
-                    // Whether this becomes a handle drag or an orbit is decided
-                    // by a hit test that runs off the UI thread, so hold the
-                    // touch until it answers rather than guessing.
-                    annotationDownX = event.x
-                    annotationDownY = event.y
-                    annotationMoved = false
-                    annotationGrabbed = null
-                    annotationDeciding = true
-                    annotationAccumDx = 0f
-                    annotationAccumDy = 0f
-                    pendingAnnotationProbe.set(floatArrayOf(event.x, event.y))
-                    scheduleAnnotationProbe()
-                } else if (dragMoveActive) {
-                    draggingModel = true
-                    dragTotalX = 0f
-                    dragTotalY = 0f
-                } else if (gizmoMode != TransformGizmoMode.NONE) {
-                    // Only a handle starts a transform: a drag that began on the
-                    // model or the plate is the camera's, as it was before.
-                    val handle = modelRenderer.gizmoHitAt(event.x, event.y, GizmoDrag.TOUCH_RADIUS_PX)
-                    when (handle?.kind) {
-                        GizmoHandleKind.RING -> {
-                            draggingRotate = true
-                            rotateDegrees = 0f
-                            rotateAxis = handle.axis
-                            rotateGrabX = event.x
-                            rotateGrabY = event.y
-                            val reference = modelRenderer.ringDragReference(handle.axis, event.x, event.y)
-                            rotateTangentX = reference?.get(0) ?: 0f
-                            rotateTangentY = reference?.get(1) ?: 0f
-                            rotateRadiusPx = reference?.get(2) ?: 0f
-                            modelRenderer.setGizmoActiveAxis(handle.axis)
-                            onHandleDragActive?.invoke(true)
-                        }
-                        GizmoHandleKind.ARROW -> {
-                            draggingAxisMove = true
-                            axisMoveAxis = handle.axis
-                            axisMoveMillimetres = 0f
-                            modelRenderer.setGizmoActiveAxis(handle.axis)
-                            onHandleDragActive?.invoke(true)
-                        }
-                        null -> Unit
+                    if (painting) {
+                        pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
+                        schedulePaintPick()
+                    } else if (annotating) {
+                        // Whether this becomes a handle drag or an orbit is decided
+                        // by a hit test that runs off the UI thread, so hold the
+                        // touch until it answers rather than guessing.
+                        annotationDownX = event.x
+                        annotationDownY = event.y
+                        annotationMoved = false
+                        annotationGrabbed = null
+                        annotationDeciding = true
+                        annotationAccumDx = 0f
+                        annotationAccumDy = 0f
+                        pendingAnnotationProbe.set(floatArrayOf(event.x, event.y))
+                        scheduleAnnotationProbe()
+                    } else if (dragMoveActive) {
+                        draggingModel = true
+                        dragTotalX = 0f
+                        dragTotalY = 0f
                     }
                 }
             }
@@ -2248,7 +2270,7 @@ private class ModelRenderer(
      */
     fun gizmoHitAt(screenX: Float, screenY: Float, tolerancePx: Float): GizmoHit? {
         val overlay = gizmoOverlay ?: return null
-        val scene = mesh ?: return null
+        mesh ?: return null
         if (overlay.handles.isEmpty()) return null
         val hits = ArrayList<GizmoHit>(overlay.handles.size * 8)
         val candidates = ArrayList<GizmoDrag.HandleCandidate>(overlay.handles.size * 8)
@@ -2270,12 +2292,12 @@ private class ModelRenderer(
                 )
             }
         }
-        // What the model is doing under the finger: a handle further away than
-        // that surface is behind the model, and reaching through the part to grab a
-        // ring on its far side is exactly what felt wrong.
-        val surface = MeshPicker.pick(scene, screenX, screenY)
-        val surfaceDepth = surface?.let { MeshPicker.depthOf(it.x, it.y, it.z) }
-        val chosen = GizmoDrag.chooseHandle(candidates, tolerancePx, surfaceDepth)
+        // Screen distance alone decides which handle was grabbed: the gizmo is drawn
+        // over the model (see drawGizmo), so a finger on an arrow or a ring is aiming
+        // at the affordance it can see. Consulting the geometry here used to reject the
+        // X/Y arrows buried in a lid's own mid-plane - the very touches the user wanted
+        // to move the lid with - and hand the gesture to the camera instead.
+        val chosen = GizmoDrag.chooseHandle(candidates, tolerancePx)
         return if (chosen >= 0) hits[chosen] else null
     }
 
@@ -2500,6 +2522,10 @@ private class ModelRenderer(
 
         drawGrid()
         drawMesh()
+        // Everything after the model is an affordance, not geometry: the axis triad,
+        // the annotation overlay and the transform gizmo each draw with depth testing
+        // off (see their own comments), so a part bigger than an arrow can never hide
+        // it. The gizmo goes last because it is the one the finger aims at.
         drawAxisTriad()
         drawAnnotation()
         drawGizmo()

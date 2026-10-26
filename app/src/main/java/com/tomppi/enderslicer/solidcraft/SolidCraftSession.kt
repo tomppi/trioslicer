@@ -26,7 +26,7 @@ data class ToolStep(
 class SolidCraftSession(
     private val client: McpClient,
     private val clientName: String = "TrioSlicer",
-    private val clientVersion: String = "1.9.7",
+    private val clientVersion: String = "1.9.10",
 ) {
 
     /** What the engine said about itself at initialize; null before the handshake. */

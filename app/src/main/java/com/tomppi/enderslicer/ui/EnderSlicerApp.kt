@@ -2803,6 +2803,19 @@ fun EnderSlicerApp(
                                     gizmoReadout = null
                                 },
                                 onDone = closeGizmo,
+                                // The model tools' own drop-to-plate action, surfaced where the hand
+                                // already is: it acts on the selected object, exactly as
+                                // ViewModel.dropModelToBed does, and its undo line is the one the
+                                // panel then shows. Nothing to drop (no selection) or a running
+                                // operation disables it with a reason instead of a dead button.
+                                onDrop = viewModel::dropModelToBed,
+                                dropEnabled = state.selectedModel != null && !state.isBusy,
+                                dropDisabledReason = when {
+                                    state.selectedModel == null ->
+                                        "Nothing to drop: no model is selected"
+                                    state.isBusy -> "Wait for the running operation, then drop"
+                                    else -> null
+                                },
                                 // The plate's own settings, from the menu the long press
                                 // opens. multiObjectOpen is the one piece of state behind
                                 // this and the engine card's button, so both open the one
