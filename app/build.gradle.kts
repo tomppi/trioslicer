@@ -802,13 +802,14 @@ val verifyDebugApkSolidCraftContents by tasks.registering {
 
 val verifyDebugApkEngines by tasks.registering {
     group = "verification"
-    description = "Builds the debug APK and verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender and filaSim engines"
+    description = "Builds the debug APK and verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender, filaSim and SolidCraft engines"
     dependsOn(
         verifyDebugApkContents,
         verifyDebugApkPrusaContents,
         verifyDebugApkOrcaContents,
         verifyDebugApkBlenderContents,
         verifyDebugApkFilaSimContents,
+        verifyDebugApkSolidCraftContents,
     )
 }
 
@@ -823,7 +824,7 @@ val verifyDebugApkEngines by tasks.registering {
  */
 val verifyReleaseApkEngines by tasks.registering {
     group = "verification"
-    description = "Verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender, filaSim and OCCT engines, and the CAD payload, in the release APK"
+    description = "Verifies the packaged CuraEngine, PrusaSlicer, OrcaSlicer, Blender, filaSim, OCCT and SolidCraft engines, and the CAD payload, in the release APK"
     dependsOn("assembleRelease")
     doLast {
         val apk = releaseApkFile()
@@ -833,8 +834,12 @@ val verifyReleaseApkEngines by tasks.registering {
         checkBlenderPackaged(apk, "Release")
         checkFilaSimPackaged(apk, "Release")
         checkOcctEnginePackaged(apk, "Release")
+        checkSolidCraftEnginePackaged(apk, "Release")
         checkCadPayloadPackaged(apk, "Release")
-        logger.lifecycle("Release APK carries all six engines and the CAD payload: " + apk.name)
+        // Seven engines, not six: the SolidCraft check existed and was never called here, and CI
+        // never fetched the binary, so 1.9.5 shipped an APK whose CAD menu could only say the
+        // engine was not packaged. The task that names every engine is the one that must run.
+        logger.lifecycle("Release APK carries all seven engines and the CAD payload: " + apk.name)
     }
 }
 
