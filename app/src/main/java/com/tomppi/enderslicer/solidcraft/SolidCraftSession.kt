@@ -75,12 +75,24 @@ class SolidCraftSession(
     }
 
     /** Every tool the engine offers, for the diagnostics log and the connect status. */
-    fun listTools(timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): List<String> {
-        val result = client.request("tools/list", JSONObject(), timeoutMillis)
-        val tools = result.optJSONArray("tools") ?: return emptyList()
-        return (0 until tools.length()).mapNotNull { index ->
-            tools.optJSONObject(index)?.optString("name")?.takeIf { it.isNotBlank() }
+    fun listTools(timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): List<String> =
+        toolDefinitions(timeoutMillis).let { tools ->
+            (0 until tools.length()).mapNotNull { index ->
+                tools.optJSONObject(index)?.optString("name")?.takeIf { it.isNotBlank() }
+            }
         }
+
+    /**
+     * The engine's complete tool catalogue - names, descriptions and JSON schemas.
+     *
+     * The engine is the one owner of this list, and two consumers read this one answer: the
+     * in-app agent, in this process, and an external agent through [SolidCraftBridge], which
+     * forwards the same `tools/list`. Nothing in the app restates the schemas, so a tool the
+     * engine adds reaches both without an app change.
+     */
+    fun toolDefinitions(timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS): JSONArray {
+        val result = client.request("tools/list", JSONObject(), timeoutMillis)
+        return result.optJSONArray("tools") ?: JSONArray()
     }
 
     /** A raw tools/call. The result is the engine's MCP result, errors included. */

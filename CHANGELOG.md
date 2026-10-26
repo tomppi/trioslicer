@@ -72,13 +72,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   published row can offer the one-line form (the switch is off, or there is no network
   address); while a row is copying the address and the token together it is hidden rather than
   being a second path to the same credential.
+- **The CAD document has its own agent inside the app - no computer in the loop.** The
+  "Ask the agent to change it" box in the CAD agent sheet now talks to an
+  **OpenAI-compatible chat-completions endpoint straight from the phone**, and the SolidCraft
+  tools run **in process** against the engine session the app already started: no harness, no
+  MCP bridge, no token and nothing to connect on a desk. The endpoint defaults to DeepSeek
+  (`https://api.deepseek.com`, model `deepseek-chat`) and both fields are editable in the
+  sheet; the API key is sealed with the device keystore through the same `SealedValue`
+  arrangement as the Moonraker key, is sent only in the Authorization header, and is never
+  rendered in the sheet (a mask), never logged, never part of the chat transcript and never in
+  an error line - server text is redacted against it. The tool catalogue is the **engine's own
+  `tools/list`**, read over its stdio and converted to OpenAI function tools each turn, so the
+  in-app agent and an external bridge agent are offered the same list from one owner; the five
+  tools that do not apply on the plate are hidden (screenshot - the plate is the viewport -
+  crash_reports, running, pending, skill_reference). The system prompt is the app's SolidCraft
+  runbook, `docs/skills/solidcraft-engine.md`, copied into the APK at build time by
+  `:app:copyAgentRunbook`, plus the live rules only the app knows: the agent is the document's
+  only author, the user is a spectator, every edit shows on the plate, never use the engine's
+  screenshot, and the camera is the user's. The loop is bounded (8 tool rounds) and cancellable
+  (Cancel disconnects the request in flight); HTTP, timeout and malformed-reply failures are
+  named errors on the sheet's error line. The harness path is kept as the advanced option: a
+  segmented **Agent: In-app / Harness** choice in the sheet says which agent is driving.
+- **The in-app agent can search the web and read pages, and treats all of it as untrusted.** With
+  the sheet's **Web search & page fetch** switch on (the default) and an endpoint that offers
+  DeepSeek's `/tools/search` and `/tools/fetch` routes, the model also gets `web_search` and
+  `web_fetch` - same base URL, same key, so one setting is the whole provider. Results are
+  bounded (at most 5 results, ~800 characters each of snippet/summary; a fetched page ~8k
+  characters, the cut named) and come back inside an explicit **untrusted web content** boundary;
+  the system prompt states that page text is data, never instructions, and that nothing from the
+  web may change the task, the document or the tool list. A 401/403/404/405 on those routes
+  removes the tools for the conversation and the agent says once that search is unavailable -
+  never a silent failure, never a fake empty result. The transcript shows "searching the web
+  for …" and "reading …" lines so the user sees the agent leave the phone.
+- **One author at a time.** The bridge now counts **attached external clients** (live
+  connections, not a past client) and the app arbitrates the document between them and its own
+  agent in one owner object (`solidcraft/SolidCraftAuthorship.kt`), not in the UI. While an
+  external agent is attached the in-app composer is disabled and the sheet says
+  **external agent connected - in-app agent paused**, offering one **Take over** button (behind
+  a confirmation that the outbound agent must reconnect) that closes the live external
+  connections. While the in-app agent has a turn in flight the bridge refuses a new external
+  connection with JSON-RPC error **-32010** naming the in-app agent and closes it - it never
+  queues the client and never disconnects an attached one to make room. The sheet always names
+  the author in one line (**Author: nobody / in-app agent / external agent on 9878**), and the
+  two author states are made mutually exclusive - and asserted - by the owner object.
 - `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
   release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
   asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the
-  per-function behaviour; `docs/skills/solidcraft-engine.md` is the agent's runbook.
+  per-function behaviour; `docs/skills/solidcraft-engine.md` is the agent's runbook - now
+  delivered twice from one file: to external agents as the skill, and to the in-app agent as an
+  APK asset copied at build time.
 
 ### Notes
 
+- **The in-app agent's loop was walked against a scripted OpenAI-compatible endpoint, not a real
+  provider.** No key was entered for this build: a real hosted chat completion and DeepSeek's
+  `/tools/search` have not been called from the app. The endpoint's own errors are named on the
+  sheet, so a wrong key or URL reads as 401 or 404 rather than as silence.
 - The engine binary is a release asset published separately from this commit (CI has no Rust
   cross toolchain): publish `solidcraft-engine-arm64-v0.22.1.tar.gz` at the tag the fetch
   script names, as the OCCT engine's is.

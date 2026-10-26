@@ -104,6 +104,14 @@ import com.tomppi.enderslicer.annotation.AnnotationGesture
 import com.tomppi.enderslicer.annotation.AnnotationKind
 import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
+import com.tomppi.enderslicer.cadagent.AgentException
+import com.tomppi.enderslicer.cadagent.AgentMode
+import com.tomppi.enderslicer.cadagent.AgentRunbook
+import com.tomppi.enderslicer.cadagent.AgentSettings
+import com.tomppi.enderslicer.cadagent.AgentSettingsStore
+import com.tomppi.enderslicer.cadagent.AgentToolCatalog
+import com.tomppi.enderslicer.cadagent.CadAgent
+import com.tomppi.enderslicer.cadagent.StoredAgentSettings
 import com.tomppi.enderslicer.conical.ConicalSettingsStore
 import com.tomppi.enderslicer.engine.GcodeDialect
 import com.tomppi.enderslicer.harness.EngineMode
@@ -165,6 +173,7 @@ import com.tomppi.enderslicer.nativebridge.CadEngine
 import com.tomppi.enderslicer.agent.AgentBridgeCopy
 import com.tomppi.enderslicer.agent.AgentBridgeTarget
 import com.tomppi.enderslicer.agent.AgentBridgeTokens
+import com.tomppi.enderslicer.solidcraft.SolidCraftAgentHost
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
@@ -400,6 +409,15 @@ fun EnderSlicerApp(
     var cadFramePending by remember { mutableStateOf(false) }
     var cadPick by remember { mutableStateOf<CadPick?>(null) }
     val cadChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
+    // The CAD document's author can be this phone's own process: an OpenAI-compatible endpoint
+    // called directly from the app, with the engine's tools run in process. In-app is the
+    // default; the harness above stays as the advanced path. Both write cadMessages, so the
+    // transcript is the same box either way and the sheet says which agent is driving.
+    val agentSettingsStore = remember(context) { AgentSettingsStore(context.applicationContext) }
+    var agentSettings by remember { mutableStateOf(agentSettingsStore.loadSettings()) }
+    // What the endpoint has said about the web tool routes, once the agent has tried them.
+    var inAppWebNotice by remember { mutableStateOf<String?>(null) }
+    val inAppCadAgent = remember { java.util.concurrent.atomic.AtomicReference<CadAgent?>(null) }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
     var modellingCameraRev by remember { mutableStateOf(0L) }
@@ -873,13 +891,123 @@ fun EnderSlicerApp(
     }
 
     /**
-     * Sends to the harness from the CAD agent sheet.
+     * Runs one turn of the in-app agent against the live engine.
      *
-     * This is the one human edit surface a CAD document has: the agent is told which engine it
-     * is driving and where that engine listens, and the user sees their own words. The same
-     * CAD conversation the CAD screen uses, so the agent keeps its context.
+     * The tool catalogue is the engine's own `tools/list` answer, read over its stdio every turn -
+     * plus the app's web tools when the endpoint offers them and the user left them on - and every
+     * engine call runs in process through [SolidCraftAgentHost], which hands the live view its
+     * DocumentDelta so the plate changes as the agent works.
+     *
+     * The one-author boundary is claimed before any request leaves the phone:
+     * [SolidCraftAuthorship.beginInAppTurn] is atomic, so an external connection cannot slip in
+     * between the check and an edit, and the bridge refuses new clients while this turn runs.
+     */
+    fun askInAppAgent(text: String, stored: StoredAgentSettings) {
+        aiScope.launch {
+            cadBusy = true
+            cadStatus = null
+            inAppWebNotice = inAppCadAgent.get()?.webToolsNotice
+            cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+            val ownership = SolidCraftEngine.authorship()
+            var turnBegan = false
+            try {
+                if (!stored.settings.isConfigured) {
+                    throw AgentException(
+                        "not-configured",
+                        stored.settings.baseUrlProblem()?.let {
+                            "The in-app agent is not ready: " + it + "."
+                        } ?: "The in-app agent has no model name yet; add one in this sheet.",
+                    )
+                }
+                // The tools are the engine's, so the engine has to be up before a turn. Nothing
+                // is started here: Connect agent is the user's button, and an engine that was
+                // stopped mid-conversation must read as stopped, not as a dead phone.
+                if (!viewModel.attachCadLiveView()) {
+                    throw AgentException(
+                        "engine-not-running",
+                        "The CAD engine is not running - press Connect agent, then ask again.",
+                    )
+                }
+                val session = SolidCraftEngine.session()
+                    ?: throw AgentException(
+                        "engine-not-running",
+                        "The CAD engine is not running - press Connect agent, then ask again.",
+                    )
+                val catalog = withContext(Dispatchers.IO) {
+                    try {
+                        AgentToolCatalog.fromEngine(
+                            engineTools = session.toolDefinitions(),
+                            includeWebTools = stored.settings.webSearch,
+                        )
+                    } catch (error: com.tomppi.enderslicer.solidcraft.McpException) {
+                        throw AgentException(
+                            "engine-unavailable",
+                            "The CAD engine did not answer its tool list: " +
+                                (error.message ?: "no reason given"),
+                            error,
+                        )
+                    }
+                }
+                val runbook = withContext(Dispatchers.IO) {
+                    AgentRunbook.load(context.applicationContext)
+                }
+                val agent = inAppCadAgent.get() ?: CadAgent(
+                    toolHost = SolidCraftAgentHost(
+                        session = { SolidCraftEngine.session()?.takeIf { SolidCraftEngine.isReady() } },
+                        onDocumentChanged = { delta -> SolidCraftEngine.onDocumentChanged?.invoke(delta) },
+                        log = { message -> Log.i("CadAgent", message) },
+                    ),
+                    runbook = runbook,
+                    log = { message -> Log.i("CadAgent", message) },
+                ).also { inAppCadAgent.set(it) }
+                // The boundary, claimed once for the whole turn. A false answer means an
+                // external agent attached after the sheet's last poll: the sheet's paused state
+                // is the way through (Take over), not a silent edit.
+                turnBegan = ownership.beginInAppTurn()
+                if (!turnBegan) {
+                    throw AgentException(
+                        "external-agent-attached",
+                        ownership.inAppBlockedReason()
+                            ?: "An external agent is editing this document; press Take over first.",
+                    )
+                }
+                val reply = withContext(Dispatchers.IO) {
+                    agent.run(stored, catalog, text) { activity ->
+                        // Plain words while the agent leaves the phone for the web, so the user
+                        // sees the search/fetch happen.
+                        aiScope.launch {
+                            cadMessages = cadMessages + AiChatMessage(fromUser = false, text = activity)
+                        }
+                    }
+                }
+                cadMessages = cadMessages + AiChatMessage(fromUser = false, text = reply)
+                inAppWebNotice = agent.webToolsNotice
+            } catch (error: AgentException) {
+                cadStatus = if (error.code == "cancelled") "Stopped" else error.message
+                inAppWebNotice = inAppCadAgent.get()?.webToolsNotice ?: inAppWebNotice
+            } catch (error: Throwable) {
+                cadStatus = "The in-app agent failed: " +
+                    (error.message ?: error.javaClass.simpleName).take(200)
+            } finally {
+                if (turnBegan) ownership.endInAppTurn()
+                cadBusy = false
+            }
+        }
+    }
+
+    /**
+     * Sends one request to whichever agent authors the CAD document.
+     *
+     * In-app is the default: the endpoint is called from this phone and the engine's tools run in
+     * process. The harness is the advanced path and keeps its own conversation on the harness.
+     * Both write cadMessages, so the transcript is the same either way.
      */
     fun askSolidCraftAgent(text: String) {
+        val stored = agentSettingsStore.load()
+        if (stored.settings.mode == AgentMode.IN_APP) {
+            askInAppAgent(text, stored)
+            return
+        }
         aiScope.launch {
             cadBusy = true
             cadStatus = null
@@ -893,6 +1021,106 @@ fun EnderSlicerApp(
                 cadStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
                 cadBusy = false
+            }
+        }
+    }
+
+    /**
+     * Take over from an attached external agent (the sheet's one button while paused).
+     *
+     * The authorship closes the live bridge connections and detaches them before returning, so
+     * the sheet's next poll reads "Author: nobody" and the in-app composer is usable again. The
+     * outbound agent has to reconnect; the confirmation in the sheet says so.
+     */
+    fun takeOverFromExternalAgent() {
+        SolidCraftEngine.takeOverFromExternalAgents()
+        inAppWebNotice = inAppCadAgent.get()?.webToolsNotice
+    }
+
+    /** Persists the agent choice; in-app stays the default and the harness the advanced path. */
+    fun setAgentMode(mode: AgentMode) {
+        if (agentSettings.mode == mode) return
+        agentSettingsStore.saveMode(mode)
+        agentSettings = agentSettingsStore.loadSettings()
+        inAppWebNotice = null
+        cadStatus = when {
+            mode == AgentMode.HARNESS && !aiConfigured ->
+                "The harness is not connected yet. Connect it from the sparkle chat, or switch " +
+                    "back to the in-app agent - it needs no computer."
+            else -> null
+        }
+    }
+
+    /**
+     * Saves the in-app endpoint. [apiKey] null keeps the stored key - the field is never bound to
+     * it - and a blank string clears it.
+     */
+    fun saveAgentSettings(baseUrl: String, model: String, apiKey: String?) {
+        val previous = agentSettingsStore.loadSettings()
+        agentSettingsStore.save(
+            AgentSettings(
+                mode = previous.mode,
+                baseUrl = baseUrl.trim(),
+                model = model.trim(),
+                hasApiKey = previous.hasApiKey,
+                webSearch = previous.webSearch,
+            ),
+            apiKey,
+        )
+        agentSettings = agentSettingsStore.loadSettings()
+        val endpointChanged = previous.baseUrl.trim() != agentSettings.baseUrl.trim() ||
+            previous.model != agentSettings.model
+        if (endpointChanged) {
+            // A different endpoint or model is a different agent: the old conversation and what
+            // the old server said about search do not apply to it.
+            inAppCadAgent.get()?.reset()
+            cadMessages = emptyList()
+        } else if (apiKey != null) {
+            // A new key can have different tool-route permission, so re-learn what search offers.
+            inAppCadAgent.get()?.reset()
+        }
+        inAppWebNotice = null
+        cadStatus = when {
+            !agentSettings.isConfigured -> agentSettings.baseUrlProblem()?.let {
+                "The in-app agent is not ready: " + it + "."
+            }
+            else -> null
+        }
+    }
+
+    fun clearAgentApiKey() {
+        agentSettingsStore.clearApiKey()
+        agentSettings = agentSettingsStore.loadSettings()
+        inAppCadAgent.get()?.reset()
+        inAppWebNotice = null
+    }
+
+    /** Persists the web-tools switch; the next turn's catalogue follows it. */
+    fun setAgentWebSearch(enabled: Boolean) {
+        val current = agentSettingsStore.loadSettings()
+        agentSettingsStore.save(current.copy(webSearch = enabled, hasApiKey = current.hasApiKey))
+        agentSettings = agentSettingsStore.loadSettings()
+        inAppCadAgent.get()?.reset()
+        inAppWebNotice = null
+        cadStatus = null
+    }
+
+    /** Cancels the turn in flight, whichever agent is driving it. */
+    fun cancelAgentTurn() {
+        when (agentSettings.mode) {
+            AgentMode.IN_APP -> inAppCadAgent.get()?.cancel()
+            AgentMode.HARNESS -> {
+                val chat = cadChat.get() ?: return
+                aiScope.launch {
+                    try {
+                        withContext(Dispatchers.IO) { chat.stop() }
+                        cadStatus = "Stopped"
+                    } catch (error: Throwable) {
+                        cadStatus = error.message?.take(160) ?: "Could not stop the harness turn"
+                    } finally {
+                        cadBusy = false
+                    }
+                }
             }
         }
     }
@@ -2814,9 +3042,18 @@ fun EnderSlicerApp(
             SolidCraftSheet(
                 document = state.cadDocument,
                 messages = cadMessages,
+                agentSettings = agentSettings,
                 chatConfigured = aiConfigured,
                 chatBusy = cadBusy,
                 chatStatus = cadStatus,
+                onAgentModeChange = ::setAgentMode,
+                onAgentSettingsSave = ::saveAgentSettings,
+                onAgentKeyClear = ::clearAgentApiKey,
+                onAgentWebSearchChange = ::setAgentWebSearch,
+                inAppWebNotice = inAppWebNotice,
+                authorship = SolidCraftEngine.authorship(),
+                onTakeOver = ::takeOverFromExternalAgent,
+                onCancelAgent = ::cancelAgentTurn,
                 onConnect = viewModel::connectCadAgent,
                 onStop = viewModel::stopCadAgent,
                 onCloseDocument = viewModel::closeCadDocument,

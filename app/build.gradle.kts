@@ -57,7 +57,7 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 116
+        versionCode = 117
         versionName = "1.9.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -153,6 +153,32 @@ android {
 
 kotlin {
     jvmToolchain(17)
+}
+
+/**
+ * The in-app agent's runbook is the repository's SolidCraft skill document.
+ *
+ * One source, two deliveries: external agents read docs/skills/solidcraft-engine.md through the
+ * skill, and the app's own agent gets the same file as an APK asset. Copying it here at build
+ * time means the two can never drift, and nothing about the runbook is pasted into Kotlin. It is
+ * generated, not committed, for the same reason.
+ */
+val copyAgentRunbook by tasks.registering(Copy::class) {
+    group = "build setup"
+    description = "Copies docs/skills/solidcraft-engine.md into the APK for the in-app CAD agent"
+    from(rootProject.file("docs/skills/solidcraft-engine.md"))
+    into(layout.projectDirectory.dir("src/main/assets/agent"))
+    rename { "solidcraft-engine.md" }
+}
+
+// The asset must exist before anything that packages it or reads it runs: the app for its
+// system prompt, and the JVM tests for the "the asset is the skill document" check.
+tasks.matching {
+    it.name == "preBuild" ||
+        (it.name.startsWith("merge") && it.name.endsWith("Assets")) ||
+        (it.name.startsWith("test") && it.name.endsWith("UnitTest"))
+}.configureEach {
+    dependsOn(copyAgentRunbook)
 }
 
 val curaEngineExecutable = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libcuraengine_exec.so")

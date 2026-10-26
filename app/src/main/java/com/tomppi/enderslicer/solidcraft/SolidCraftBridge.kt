@@ -46,18 +46,35 @@ interface McpForwarder {
  * per line, ids rewritten on the way in and back on the way out, notifications forwarded without
  * a reply. The bridge is not a transport for two different engine sessions - every connection
  * multiplexes onto the one engine process the app started.
+ *
+ * **One author.** The document may be edited by the app's in-app agent or by external agents
+ * through this bridge, never both at once; [SolidCraftAuthorship] owns that rule. This class
+ * supplies the two facts the rule needs: how many external connections are attached right now,
+ * and whether a new one may attach. While the in-app agent has a turn in flight, a new connection
+ * is answered with a named `AUTHORSHIP_BUSY` JSON-RPC error and closed - never queued, and never
+ * by disconnecting a client that is already attached. [closeExternalClients] is what the sheet's
+ * **Take over** calls.
  */
 class SolidCraftBridge(
     private val token: String?,
     private val forwarder: McpForwarder,
     /** Called after a successful tool call that changed the design. */
     private val onDocumentChanged: (DocumentDelta) -> Unit,
+    /** The one-author rule this bridge's live connections feed. */
+    private val authorship: SolidCraftAuthorship = SolidCraftAuthorship(),
     private val port: Int = DEFAULT_PORT,
     private val log: (String) -> Unit = {},
 ) : Closeable {
 
     private var serverSocket: ServerSocket? = null
     private val connections = ConcurrentHashMap.newKeySet<Socket>()
+
+    /** The connections currently counted as attached external authors. */
+    private val externalClients = ConcurrentHashMap.newKeySet<Socket>()
+
+    init {
+        authorship.bindExternalCloser { closeExternalClients() }
+    }
 
     @Volatile
     private var running = false
@@ -78,6 +95,7 @@ class SolidCraftBridge(
         socket.bind(InetSocketAddress(InetAddress.getByName(HOST), port))
         serverSocket = socket
         boundPort = socket.localPort
+        authorship.noteBridgePort(boundPort)
         running = true
         acceptThread = thread(name = "solidcraft-bridge-accept", isDaemon = true) {
             while (running) {
@@ -97,15 +115,51 @@ class SolidCraftBridge(
 
     override fun close() {
         running = false
+        // The external connections are detached before the server goes: a Take over and an
+        // engine stop both leave the authorship at nobody rather than at a dead client.
+        runCatching { closeExternalClients() }
+        authorship.bindExternalCloser(null)
+        authorship.noteBridgePort(0)
         runCatching { serverSocket?.close() }
         serverSocket = null
         boundPort = 0
         for (socket in connections) runCatching { socket.close() }
         connections.clear()
+        externalClients.clear()
         acceptThread = null
     }
 
+    /**
+     * Closes every live external connection and returns how many there were.
+     *
+     * The authorship is decremented for each one before its socket is closed, so a state read
+     * right after this returns is already "nobody". The outbound agent sees EOF and has to
+     * reconnect; nothing is queued for it.
+     */
+    fun closeExternalClients(): Int {
+        var closed = 0
+        for (socket in externalClients.toList()) {
+            if (externalClients.remove(socket)) {
+                authorship.detachExternal()
+                closed++
+            }
+            runCatching { socket.close() }
+        }
+        return closed
+    }
+
+    /** How many external connections are attached, for tests and diagnostics. */
+    fun externalClientCount(): Int = externalClients.size
+
     private fun serve(socket: Socket) {
+        // The count the sheet and the in-app agent read is live connections, not a history:
+        // it goes up when this socket becomes an author and down when the socket ends, whatever
+        // ended it. A connection that arrives while the in-app agent is driving never becomes an
+        // author: it gets one named error and is closed.
+        val attached = authorship.attachExternal()
+        if (attached) {
+            externalClients.add(socket)
+        }
         try {
             socket.soTimeout = 0
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
@@ -113,21 +167,41 @@ class SolidCraftBridge(
             while (running) {
                 val line = reader.readLine() ?: break
                 if (line.isBlank()) continue
-                val reply = handleLine(line)
-                if (reply != null) {
-                    synchronized(writer) {
-                        writer.write(reply.toByteArray(Charsets.UTF_8))
-                        writer.write('\n'.code)
-                        writer.flush()
-                    }
+                if (!attached) {
+                    writeReply(writer, refusalFor(line))
+                    break
                 }
+                val reply = handleLine(line)
+                if (reply != null) writeReply(writer, reply)
             }
         } catch (error: Throwable) {
             log("agent connection ended: " + (error.message ?: error.javaClass.simpleName))
         } finally {
+            if (externalClients.remove(socket)) authorship.detachExternal()
             connections.remove(socket)
             runCatching { socket.close() }
         }
+    }
+
+    private fun writeReply(writer: OutputStream, reply: String) {
+        synchronized(writer) {
+            writer.write(reply.toByteArray(Charsets.UTF_8))
+            writer.write('\n'.code)
+            writer.flush()
+        }
+    }
+
+    /**
+     * The named refusal for a connection opened while the in-app agent is driving.
+     *
+     * It answers the client's first message with a JSON-RPC error carrying its own id, so an
+     * outbound agent sees exactly why and when to retry instead of a silent drop or a stalled
+     * read. The connection is closed right after the answer.
+     */
+    private fun refusalFor(line: String): String {
+        val message = runCatching { JSONObject(line) }.getOrNull()
+            ?: return jsonRpcError(null, PARSE_ERROR, "parse error: the bridge expects one JSON object per line")
+        return jsonRpcError(message.opt("id"), AUTHORSHIP_BUSY, authorship.refusalMessage())
     }
 
     /**
@@ -149,6 +223,11 @@ class SolidCraftBridge(
                 UNAUTHORIZED,
                 "unauthorized: send the token the app wrote to files/solidcraft/solidcraft_mcp_token.txt",
             )
+        }
+        // The one-author rule is checked here as well as on the socket, so a caller that drives
+        // handleLine directly cannot bypass it. The message names who is driving and what to do.
+        if (!authorship.externalAllowed()) {
+            return jsonRpcError(message.opt("id"), AUTHORSHIP_BUSY, authorship.refusalMessage())
         }
         val method = message.optString("method")
         val params = message.optJSONObject("params") ?: JSONObject()
@@ -245,5 +324,8 @@ class SolidCraftBridge(
         private const val UNAUTHORIZED = -32001
         private const val ENGINE_UNAVAILABLE = -32002
         private const val ENGINE_TIMEOUT = -32003
+
+        /** The named refusal while the in-app agent is the document's author. */
+        const val AUTHORSHIP_BUSY = -32010
     }
 }

@@ -45,6 +45,10 @@ docs/suture-walls-concept.png
 docs/zipper-bond-concept.png
 docs/zipper-bond-v2.png
 
+# The in-app CAD agent's runbook is docs/skills/solidcraft-engine.md, copied into the APK by
+# :app:copyAgentRunbook at build time so the skill and the in-app agent never disagree.
+app/src/main/assets/agent/
+
 # Blender MCP engine (arm64-only, staged by the engine build; not committed)
 app/src/main/assets/blender/
 native/blender/blender-jniLibs/

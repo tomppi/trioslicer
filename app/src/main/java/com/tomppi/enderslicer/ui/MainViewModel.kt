@@ -596,6 +596,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return SolidCraftEngine.ensureStarted(app)
     }
 
+    /**
+     * Attaches the plate's live view to the running engine for the in-app agent's tool calls.
+     *
+     * The bridge path subscribes when the engine is started from the sheet; the in-app agent
+     * runs in this process and must repaint through the same handler, but it never starts the
+     * engine itself - Connect agent is the user's button. A false answer is "not connected".
+     */
+    fun attachCadLiveView(): Boolean {
+        if (!SolidCraftEngine.isReady()) return false
+        SolidCraftEngine.onDocumentChanged = { delta -> onSolidCraftDelta(delta) }
+        return true
+    }
+
     /** Starts the engine and shows its state; the sidebar's connect-agent button lands here. */
     fun connectCadAgent() {
         if (_uiState.value.isBusy) return

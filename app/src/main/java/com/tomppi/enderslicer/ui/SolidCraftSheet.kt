@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +37,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.agent.AgentBridgeCopy
 import com.tomppi.enderslicer.agent.AgentBridgeLine
@@ -42,7 +47,10 @@ import com.tomppi.enderslicer.agent.AgentBridgeTarget
 import com.tomppi.enderslicer.agent.AgentBridgeTokens
 import com.tomppi.enderslicer.agent.BridgeLinkState
 import com.tomppi.enderslicer.agent.BridgeNetworkPreference
+import com.tomppi.enderslicer.cadagent.AgentMode
+import com.tomppi.enderslicer.cadagent.AgentSettings
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.SolidCraftAuthorship
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -61,10 +69,42 @@ import kotlinx.coroutines.withContext
 internal fun SolidCraftSheet(
     document: CadDocument?,
     messages: List<AiChatMessage>,
-    /** False when the harness has not been reached, so the chat cannot be used yet. */
+    /**
+     * Which agent drives the document, and - for the in-app one - the endpoint it calls.
+     *
+     * The API key is not in here: [AgentSettings] has no field for it, so nothing this sheet
+     * composes can render or log the credential. [AgentSettings.keyMask] is the only thing about
+     * it that reaches the screen.
+     */
+    agentSettings: AgentSettings,
+    /** False when the harness has not been reached, so the harness path cannot send yet. */
     chatConfigured: Boolean,
     chatBusy: Boolean,
     chatStatus: String?,
+    /** Switches the author between this phone's own agent and the harness on a computer. */
+    onAgentModeChange: (AgentMode) -> Unit,
+    /**
+     * Saves the in-app endpoint. [apiKey] null keeps the stored key, which is what lets the
+     * field stay empty and the saved key stay unreadable.
+     */
+    onAgentSettingsSave: (baseUrl: String, model: String, apiKey: String?) -> Unit,
+    onAgentKeyClear: () -> Unit,
+    /** Switches the in-app agent's web search and page fetch on or off. */
+    onAgentWebSearchChange: (Boolean) -> Unit,
+    /**
+     * The one-author rule, polled here so the sheet always names who is driving and pauses the
+     * in-app composer while an external agent is attached.
+     */
+    authorship: SolidCraftAuthorship,
+    /** The **Take over** confirmation: closes the live external connections. */
+    onTakeOver: () -> Unit,
+    /**
+     * One sentence about the endpoint's web routes once the agent has learned them, or null
+     * while they are untested/available. Shown so a missing search is named, never silent.
+     */
+    inAppWebNotice: String?,
+    /** Cancels the in-app agent's current turn (the harness path has its own Stop). */
+    onCancelAgent: () -> Unit,
     onConnect: () -> Unit,
     onStop: () -> Unit,
     onCloseDocument: () -> Unit,
@@ -91,11 +131,16 @@ internal fun SolidCraftSheet(
     var engineStatus by remember { mutableStateOf(SolidCraftEngine.status(context)) }
     var ready by remember { mutableStateOf(SolidCraftEngine.isReady()) }
     var starting by remember { mutableStateOf(SolidCraftEngine.isStarting()) }
+    // Who is allowed to edit the document right now. The rule lives in SolidCraftAuthorship;
+    // the sheet only renders the snapshot, so the screen can never disagree with the guard.
+    var authorState by remember { mutableStateOf(authorship.state()) }
+    var confirmTakeOver by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             engineStatus = SolidCraftEngine.status(context)
             ready = SolidCraftEngine.isReady()
             starting = SolidCraftEngine.isStarting()
+            authorState = authorship.state()
             delay(400)
         }
     }
@@ -351,33 +396,120 @@ internal fun SolidCraftSheet(
         )
         HorizontalDivider()
         Text("Ask the agent to change it", style = MaterialTheme.typography.titleSmall)
-        if (!chatConfigured) {
-            Text(
-                "The AI chat is not connected. Open it from the sparkle button and connect the " +
-                    "harness first; then this box sends to the same CAD conversation.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // Which agent authors the document, said plainly. In-app is the default: the model
+        // endpoint is called straight from this phone, so nothing has to be running on a desk.
+        // The harness stays as the advanced path - an agent on a computer that reaches this
+        // phone's engine bridge.
+        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            AgentMode.entries.forEach { mode ->
+                FilterChip(
+                    selected = agentSettings.mode == mode,
+                    onClick = { onAgentModeChange(mode) },
+                    label = { Text(mode.label) },
+                )
+            }
+        }
+        Text(
+            agentSettings.drivingSentence(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // The one line that is always true, in every state: who is the document's author.
+        Text(
+            authorState.authorLine,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (authorState.inAppPaused) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        if (agentSettings.mode == AgentMode.IN_APP) {
+            InAppAgentSettings(
+                settings = agentSettings,
+                webNotice = inAppWebNotice,
+                onSave = onAgentSettingsSave,
+                onClearKey = onAgentKeyClear,
+                onWebSearchChange = onAgentWebSearchChange,
             )
-        } else {
-            messages.takeLast(4).forEach { message ->
+        }
+        // An external agent is attached to this document: the in-app agent is paused, and Take
+        // over is the one action offered. It closes the external connection, and the confirmation
+        // says the outbound agent has to reconnect.
+        val pausedByExternal = agentSettings.mode == AgentMode.IN_APP && authorState.inAppPaused
+        if (pausedByExternal) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(EnderSlicerDimens.Space8)) {
+                    Text(authorState.pausedLine, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Only one agent may author the document. The external agent is connected " +
+                            "to the engine bridge; take the document back to ask the in-app agent " +
+                            "for a change.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = { confirmTakeOver = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Take over") }
+                }
+            }
+        }
+        // Both agents write the same transcript, so the conversation the user sees does not
+        // change with the choice of author.
+        if (messages.isNotEmpty()) {
+            messages.takeLast(6).forEach { message ->
                 Text(
-                    (if (message.fromUser) "You: " else "Agent: ") + message.text.take(300),
+                    (if (message.fromUser) "You: " else "Agent: ") + message.text.take(400),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            chatStatus?.let {
-                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-            }
+        }
+        chatStatus?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+        val canSend = when {
+            chatBusy -> false
+            // The in-app composer is disabled while an external agent is attached: the paused
+            // block above is the only action then, and the authorship object refuses a turn
+            // even if a stale screen tried to send one.
+            agentSettings.mode == AgentMode.IN_APP -> agentSettings.isConfigured && authorState.canInAppEdit
+            else -> chatConfigured
+        }
+        if (!chatBusy && !canSend && !pausedByExternal) {
+            Text(
+                if (agentSettings.mode == AgentMode.IN_APP) {
+                    "Set the endpoint above and this box talks to it directly - the phone is " +
+                        "the whole agent. The key is sealed in the device keystore and is never " +
+                        "shown again."
+                } else {
+                    "The harness is not connected. Open it from the sparkle button and connect " +
+                        "it first; this box then sends to the same CAD conversation."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if ((canSend || chatBusy) && !pausedByExternal) {
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
                     placeholder = { Text("Ask for a change") },
                     maxLines = 3,
+                    enabled = !chatBusy,
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                if (chatBusy) {
+                    OutlinedButton(onClick = onCancelAgent) { Text("Cancel") }
+                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                }
                 Button(
                     onClick = {
                         val text = draft.trim()
@@ -387,7 +519,7 @@ internal fun SolidCraftSheet(
                         }
                     },
                     enabled = !chatBusy && draft.isNotBlank(),
-                ) { Text(if (chatBusy) "…" else "Send") }
+                ) { Text(if (chatBusy) "Working…" else "Send") }
             }
         }
         HorizontalDivider()
@@ -407,8 +539,141 @@ internal fun SolidCraftSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    // Take over is destructive to the external agent's session, not to the document: its
+    // connection ends and it has to reconnect before it can edit again.
+    if (confirmTakeOver) {
+        AlertDialog(
+            onDismissRequest = { confirmTakeOver = false },
+            title = { Text("Take the document back?") },
+            text = {
+                Text(
+                    "This closes the external agent's connection to this document. The outbound " +
+                        "agent has to reconnect before it can edit again; the in-app agent can " +
+                        "be used immediately.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmTakeOver = false
+                        onTakeOver()
+                    },
+                ) { Text("Take over") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmTakeOver = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
+
+/**
+ * The in-app agent's endpoint: base URL, model, the one secret and the web-tools switch.
+ *
+ * The key field is never bound to the stored key - it only ever holds what the user is typing
+ * now - and the saved key is reported only as [AgentSettings.keyMask]. Saving with the field
+ * empty keeps the stored key, which is what makes "replace" possible without ever reading the
+ * old one back into a text field.
+ *
+ * The web switch is here because search and fetch are not the engine's tools: they call the same
+ * endpoint with the same credential, and this is where the user decides whether the agent may
+ * leave the phone for the web at all.
+ */
+@Composable
+private fun InAppAgentSettings(
+    settings: AgentSettings,
+    webNotice: String?,
+    onSave: (baseUrl: String, model: String, apiKey: String?) -> Unit,
+    onClearKey: () -> Unit,
+    onWebSearchChange: (Boolean) -> Unit,
+) {
+    var baseUrl by remember { mutableStateOf(settings.baseUrl) }
+    var model by remember { mutableStateOf(settings.model) }
+    // Never the stored value: this holds only what the user is typing in this session.
+    var key by remember { mutableStateOf("") }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
+    ) {
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            label = { Text("Base URL") },
+            placeholder = { Text("https://api.openai.com/v1") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            label = { Text("Model") },
+            placeholder = { Text("gpt-4o-mini") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it },
+            label = {
+                Text(
+                    if (settings.hasApiKey) "API key (saved - type a new one to replace)"
+                    else "API key (optional if the endpoint needs none)",
+                )
+            },
+            placeholder = { Text(if (settings.hasApiKey) settings.keyMask else "sk-…") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            Button(
+                onClick = {
+                    onSave(baseUrl, model, key.trim().takeIf { it.isNotEmpty() })
+                    key = ""
+                },
+                enabled = baseUrl.isNotBlank() && model.isNotBlank(),
+            ) { Text("Save endpoint") }
+            if (settings.hasApiKey) {
+                TextButton(onClick = onClearKey) { Text("Clear key") }
+            }
+        }
+        Text(
+            "Key: " + settings.keyMask + " · sealed with this device's keystore, never shown " +
+                "again, never logged and never part of the chat transcript.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Web search & page fetch", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (settings.webSearch) {
+                        "On · the agent can search and read pages through this endpoint, with " +
+                            "this same key; their text arrives marked as untrusted data."
+                    } else {
+                        "Off · the agent stays on the phone and builds from your own words."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = settings.webSearch, onCheckedChange = onWebSearchChange)
+        }
+        webNotice?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (settings.isCleartextRemote) {
+            Text(
+                "This is plain http to another machine: the key and every prompt travel " +
+                    "unencrypted. Use https unless this is your own network.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
 
 /**
  * One published bridge in the sheet: its name and port, the line to paste, and the state of

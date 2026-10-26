@@ -59,6 +59,13 @@ object SolidCraftEngine {
     @Volatile
     private var bridgeToken: String? = null
 
+    /**
+     * The one-author rule for the document: the in-app agent and the bridge's external clients
+     * feed the same object, which is what makes their states mutually exclusive. It outlives a
+     * bridge restart on purpose - a stopped engine is not an author, and neither is a dead client.
+     */
+    private val authorship = SolidCraftAuthorship()
+
     @Volatile
     private var starting = false
 
@@ -106,6 +113,16 @@ object SolidCraftEngine {
     fun isStopping(): Boolean = stopping
 
     fun bridgePort(): Int = bridge?.boundPort ?: 0
+
+    /** The one-author rule, for the sheet and for the in-app agent's turn boundary. */
+    fun authorship(): SolidCraftAuthorship = authorship
+
+    /**
+     * Take over from an attached external agent: close its live bridge connections and hand the
+     * document back to the in-app agent. Returns how many connections were closed; the outbound
+     * agent has to reconnect.
+     */
+    fun takeOverFromExternalAgents(): Int = authorship.takeOver()
 
     fun tools(): List<String> = toolNames
 
@@ -266,6 +283,7 @@ object SolidCraftEngine {
         // with it: the app itself still uses the session for exports and slicing.
         val liveBridge = SolidCraftBridge(
             token = token,
+            authorship = authorship,
             forwarder = object : McpForwarder {
                 override fun request(method: String, params: JSONObject, timeoutMillis: Long): JSONObject =
                     raw.request(method, params, timeoutMillis)
