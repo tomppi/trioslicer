@@ -21,13 +21,28 @@ its own MCP token on 9877). Do not mix them up: this one holds the document the 
 ## 1. Connect
 
 The engine is a child process of the app, speaking MCP over its own stdio; the app exposes that
-session on **127.0.0.1:9878** for you, behind a bearer token.
+session on **127.0.0.1:9878** on the phone, behind a bearer token.
 
-1. The user opens the **CAD agent** sheet (the sidebar button, or CAD menu > Connect CAD agent)
-   and taps **Copy MCP token** - the clipboard gesture is biometric-gated on purpose, and the
-   app is the only place a token can be handed over on a phone without root. Ask the user for
-   it; it is one tap.
-2. Forward the port:  adb -s <dev-phone-serial> forward tcp:9878 tcp:9878
+**Reach it over the tailnet, not adb.** The phone (or any device with a Tailscale CLI - TailSocks in
+root mode works) publishes that loopback port once:
+
+    tailscale serve --bg --tcp 9878 127.0.0.1:9878
+    # -> tcp://<phone>.<tailnet>.ts.net:9878
+
+That URL is the connection. No adb, no forward, and no device serial anywhere in the loop - which
+matters, because a serial is exactly how an agent ends up poking the wrong phone.
+
+1. **Probe first.** Connect to tcp://<phone>.<tailnet>.ts.net:9878 and send an initialize frame with
+   no token. Three answers, three meanings:
+   - `{"error":{"code":-32001,"message":"unauthorized: send the token ..."}}` - the bridge is up and
+     reachable. Good; add the token.
+   - connection reset straight after accept - the serve is forwarding but the app's bridge is not
+     listening: the CAD agent is not connected. Ask the user to open TrioSlicer, CAD agent, Connect.
+     The engine is a child of the app and dies with it; say that, do not retry in a loop.
+   - timeout - the serve is not running, or the node is off the tailnet.
+2. **Token.** The user taps **Copy MCP token** in the CAD agent sheet (the clipboard gesture is
+   biometric-gated on purpose; the app is the only place a token can be handed over on a phone
+   without root). It is one tap. Treat it as a bearer credential: not in logs, not in chat history.
 3. Speak newline-delimited JSON-RPC 2.0 on that socket. Every message carries the token as a
    top-level "token" field (or inside params):
 
