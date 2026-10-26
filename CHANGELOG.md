@@ -4,7 +4,7 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.9.5] - 2026-10-25
+## [1.9.5] - 2026-10-26
 
 ### Added
 
@@ -162,7 +162,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delivered twice from one file: to external agents as the skill, and to the in-app agent as an
   APK asset copied at build time.
 
+- **The other half of the engine is now in the runbook.** SolidCraft's catalogue is 461 commands
+  in 39 families, and the app had been using about twenty of them. The plastic family is
+  measured on the device and written into the runbook the agent reads: **plastic.snap_fit** (a
+  cantilever hook and its catch - +132 mm3 in 52 triangles and 0.17 s on a shelled case),
+  **plastic.boss** (screw boss with a hole, fillets and optional ribs - +791.6 mm3, 1,380
+  triangles), **plastic.lip** and its groove, **plastic.rest**, and the **rules** that carry a
+  material's wall thickness, clearance and draft (ABS 1.5 mm: 1.5 thick, 0.1 clearance, 2 deg)
+  - assigning a 1.5 deg rule turned a cylinder boss into a cone and removing it rebuilt the
+  cylinder, because the rule owns the geometry. Alongside them: **mesh.convert** (a box STL's
+  12 mesh faces became 6 planar B-rep faces in 0.15 s; a sphere is refused by name), **modelled
+  against cosmetic threads** (5,337 faces and 52,242 triangles against "the B-rep is untouched
+  and the export is the plain cylinder"), rib, web, emboss and deboss, **inspect.*** (minimum
+  radius, clearance, interference - and the honest note that inspect.draft returns no per-face
+  numbers), timeline rollback and suppress, materials with mass properties, and surface
+  thickening. The runbook states the rule plainly: on a CAD document use the engine's plastic
+  features, not the plate's mesh-level snap panel - that panel is for imported meshes - and
+  sheet metal stays out of scope.
+
 ### Fixed
+
+- **A new design no longer leaves the previous model on the plate.** new_design (and open) on
+  an empty document dropped the engine's bodies, but the plate kept drawing the old picture
+  while the status line said the engine had no bodies yet. The document's plate object is now
+  dropped, imported meshes stay, a published slice is invalidated, and the status sentence is
+  kept; a re-read that *fails* is now distinguished from a document that *is* empty - it keeps
+  the last picture and says the engine did not answer instead of claiming the design is empty.
 
 - **An in-app chat can no longer show the harness session's transcript.** The two CAD backends
   were writing one shared `cadMessages` list, so a conversation had with the harness agent (a
