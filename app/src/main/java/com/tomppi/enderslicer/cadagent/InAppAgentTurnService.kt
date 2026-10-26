@@ -23,10 +23,11 @@ import com.tomppi.enderslicer.MainActivity
  * reach the endpoint" report this was built from. This service pins the process to foreground
  * priority for the length of a turn, with its own notification naming the CAD agent as working.
  *
- * The partial wake lock is bounded, like the engine keeper's: it is armed when the turn starts
- * and given a fixed lease ([WAKE_LOCK_TIMEOUT_MS], a little past the longest bounded turn), so a
- * release that is ever missed still expires instead of pinning the CPU until the app ends. The
- * turn boundary releases it explicitly on every exit path - answer, error, cancel, service stop.
+ * The partial wake lock is held for the turn and not leased: the in-app agent has no tool-round
+ * limit any more, so there is no honest figure for how long a turn may last. It is released on
+ * every exit path - answer, error, cancel, service stop - and if the process dies the lock dies
+ * with it. The foreground notification is the visible proof it is held, so a stuck turn is
+ * something the user can see and stop rather than something that quietly drains the battery.
  *
  * **No screen-on flag.** The user asked for the screen to be allowed to sleep; the screen going
  * off is fine. What must not happen is the process being frozen, and that is the service's job.
@@ -47,11 +48,7 @@ class InAppAgentTurnService : Service() {
             startForeground(NOTIF_ID, notification)
         }
         acquireWakeLock()
-        Log.i(
-            TAG,
-            "in-app agent turn keeper foreground; wake lock armed for " +
-                WAKE_LOCK_TIMEOUT_MS / 60_000 + " min",
-        )
+        Log.i(TAG, "in-app agent turn keeper foreground; wake lock held until the turn ends")
         // A finished turn must not be resurrected by a restart: the conversation state it was
         // keeping alive lives in the activity, not here.
         return START_NOT_STICKY
@@ -75,7 +72,11 @@ class InAppAgentTurnService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
             setReferenceCounted(false)
-            acquire(WAKE_LOCK_TIMEOUT_MS)
+            // No lease: a turn has no round limit, so there is no honest way to say how long it
+            // may last. The lock is released in onDestroy, it dies with the process if the app is
+            // killed, and the foreground notification is the visible proof it is held - a stuck
+            // turn shows as that notification until Stop or the app leaving the screen.
+            acquire()
         }
     }
 
@@ -89,16 +90,6 @@ class InAppAgentTurnService : Service() {
         private const val CHANNEL_ID = "in-app-agent-turn"
         private const val NOTIF_ID = 0x6167
         private const val WAKE_LOCK_TAG = "enderslicercura:in-app-agent-turn"
-
-        /**
-         * The lease on the CPU for one turn.
-         *
-         * A turn is bounded by eight tool rounds, each of which can spend up to the client's
-         * 180 s read timeout before it even runs a tool, so half an hour covers the longest
-         * bounded turn. Past that, the lock lapses on its own rather than holding the CPU for
-         * the life of the process.
-         */
-        private const val WAKE_LOCK_TIMEOUT_MS = 30L * 60L * 1_000L
 
         /** Idempotent; safe to call when the app is still foreground (a turn starts in it). */
         fun start(context: Context) {

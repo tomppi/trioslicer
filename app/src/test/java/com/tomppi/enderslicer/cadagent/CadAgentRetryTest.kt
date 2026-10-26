@@ -189,20 +189,23 @@ class CadAgentRetryTest {
         assertTrue(notices.isEmpty())
     }
 
+    /**
+     * The loop has no round limit: a model that keeps calling tools is stopped by the user, not
+     * by a count. This pins a chain longer than the old limit of eight - the case the limit broke.
+     */
     @Test
-    fun aToolRoundLimitNamesTheCountAndSaysTheUserCanAskToContinue() {
-        server.responder = { FakeOpenAiServer.toolCall("execute", "{}") }
-
-        try {
-            run(agent())
-            fail("expected the round limit")
-        } catch (error: AgentException) {
-            assertEquals("tool-round-limit", error.code)
-            val message = error.message.orEmpty()
-            assertTrue("names how many rounds ran: " + message, message.contains("8 tool rounds"))
-            assertTrue("says the user can ask it to continue in one message: " + message,
-                message.contains("one more message - 'continue'"))
+    fun aLongToolChainIsNotStoppedByARoundCount() {
+        var calls = 0
+        server.responder = { _ ->
+            calls++
+            if (calls <= 10) {
+                FakeOpenAiServer.toolCall("execute", "{}")
+            } else {
+                FakeOpenAiServer.finalAnswer("done after ten rounds")
+            }
         }
+        assertEquals("done after ten rounds", run(agent()))
+        assertEquals(11, server.requests.size)
     }
 
     @Test

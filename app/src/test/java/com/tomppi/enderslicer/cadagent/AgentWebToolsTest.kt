@@ -94,7 +94,9 @@ class AgentWebToolsTest {
 
     @Test
     fun aSearchRoundTripCallsTheToolRouteWithTheSameKeyAndWrapsTheResultsAsUntrusted() {
-        val longSnippet = "s".repeat(2_000)
+        // Built from the limit, not a number: raising the snippet limit must not silently turn
+        // this test into one that never sees a cut.
+        val longSnippet = "s".repeat(AgentWebTools.MAX_TEXT_CHARS + 500)
         server.responder = { request ->
             when (request.path) {
                 "/v1/tools/search" -> FakeOpenAiServer.Reply(
@@ -103,7 +105,7 @@ class AgentWebToolsTest {
                         listOf(
                             Triple("M3 socket head cap screw dimensions", "https://example.com/m3", longSnippet),
                         ),
-                        summary = "y".repeat(2_000),
+                        summary = "y".repeat(AgentWebTools.MAX_TEXT_CHARS + 500),
                     ),
                 )
                 else -> {
@@ -136,7 +138,7 @@ class AgentWebToolsTest {
         assertTrue("a long snippet is cut and the cut is marked", wrapped.contains("…"))
         assertTrue(
             "the whole result is bounded",
-            wrapped.length < 6_000,
+            wrapped.length < AgentWebTools.MAX_TEXT_CHARS * 6,
         )
         assertEquals("no engine tool ran in a web-only turn", 0, host.calls.get())
         assertTrue(
@@ -186,7 +188,7 @@ class AgentWebToolsTest {
 
     @Test
     fun aFetchReturnsMarkdownBoundedAndMarked() {
-        val page = "p".repeat(9_000)
+        val page = "p".repeat(AgentWebTools.MAX_FETCH_CHARS + 2_000)
         server.responder = { request ->
             when (request.path) {
                 "/v1/tools/fetch" -> FakeOpenAiServer.Reply(

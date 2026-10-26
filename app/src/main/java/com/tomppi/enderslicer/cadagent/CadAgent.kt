@@ -32,8 +32,13 @@ fun interface AgentToolHost {
  * The loop is the boring shape, on purpose: system prompt and prior turns, the user's new
  * message, then repeat - send the conversation, and if the reply asks for tools, run them,
  * append their results and send again; stop when the reply is a message with no tool calls.
- * [maxToolRounds] is the bound: a model that keeps asking for tools stops with a named error
- * instead of looping for the life of the battery.
+ *
+ * There is no tool-round limit. A turn ends when the model answers, when the user stops it, or
+ * when the endpoint or the network gives up - a round count is not a good proxy for a runaway,
+ * and a legitimate build (sketch, extrude, fillet, a dozen bodies, a save, an export, a slice
+ * check) can want more rounds than any number picked in advance. What bounds the cost is that
+ * the whole loop runs in front of the user: every tool call is a row in the transcript, the
+ * Stop button is one tap away, and the turn holds a foreground notification while it runs.
  *
  * Two tool sources meet here. The engine's tools go through [toolHost] (in process, no bridge);
  * the app's own web_search and web_fetch go through [WebToolClient], which calls the same
@@ -52,7 +57,6 @@ fun interface AgentToolHost {
 class CadAgent(
     private val toolHost: AgentToolHost,
     private val runbook: String,
-    private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     /** How long to wait before the one safe retry of a model call. */
     private val retryDelayMillis: Long = RETRY_DELAY_MILLIS,
     private val log: (String) -> Unit = {},
@@ -364,15 +368,9 @@ class CadAgent(
                 return content
             }
             rounds++
-            if (rounds > maxToolRounds) {
-                throw AgentException(
-                    "tool-round-limit",
-                    "The agent ran " + maxToolRounds + " tool rounds without settling on an " +
-                        "answer, so it stopped after round " + maxToolRounds + ". You can send " +
-                        "one more message - 'continue' - and it will carry on from where it " +
-                        "stopped, or split the request into a smaller one.",
-                )
-            }
+            // No round limit, but a visible heartbeat: a long build logs every tenth round so a
+            // transcript or a logcat can tell "still working" from "silently stuck".
+            if (rounds % 10 == 0) log("agent is on tool round " + rounds + " this turn")
             messages.put(assistantEcho(content, toolCalls))
             val capturedImages = ArrayList<PlateImage>()
             var askedThisRound = false
@@ -961,9 +959,6 @@ class CadAgent(
     }
 
     companion object {
-        /** Tool rounds one user turn may take before the loop calls it a runaway. */
-        const val DEFAULT_MAX_TOOL_ROUNDS = 8
-
         /** The one retry line the chat transcript records before re-sending a model call. */
         const val RETRY_NOTICE = "the endpoint did not answer; retrying once"
 
@@ -981,8 +976,15 @@ class CadAgent(
         /** How long the one retry waits before re-sending the same request. */
         const val RETRY_DELAY_MILLIS = 1_500L
 
-        /** Text turns kept for context: ten exchanges is plenty for one document's edits. */
-        const val MAX_REMEMBERED_TURNS = 10
+        /**
+         * Text turns kept for context.
+         *
+         * Not an agentic limit - the model's own context window is the real bound - but a cap
+         * keeps a long session from re-sending an unbounded conversation on every round. Forty
+         * exchanges is far past one document's edits, and a session that outgrows it can still
+         * be driven by the transcript the user sees.
+         */
+        const val MAX_REMEMBERED_TURNS = 40
 
         /** Marks a result the model should read as "this call did not work". */
         const val TOOL_ERROR = "tool error: "

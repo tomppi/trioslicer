@@ -35,11 +35,11 @@ data class AgentQuestion(
             "and do not repeat the question."
 
     companion object {
-        /** A chat card is a glance, not a form; a longer list is a prose question's job. */
-        const val MAX_OPTIONS = 6
+        /** A chat card shows one chip per option; twelve still wrap on a phone. */
+        const val MAX_OPTIONS = 12
 
         /** A question longer than this is not a question the chat can show; it is an essay. */
-        const val MAX_QUESTION_LENGTH = 400
+        const val MAX_QUESTION_LENGTH = 1_000
 
         /**
          * Parses the tool's arguments, or returns null when they cannot describe a question.

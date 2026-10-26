@@ -3497,7 +3497,7 @@ private class ModelRenderer(
         const val GRID_Z = -0.08f
 
         /** Long side of a plate render, in pixels: the size the agent's picture is drawn at. */
-        const val PLATE_CAPTURE_LONG_SIDE = 768
+        const val PLATE_CAPTURE_LONG_SIDE = 1_536
 
         /** The plate's own background, so an offscreen render looks like the screen. */
         val PLATE_BACKGROUND = floatArrayOf(0.055f, 0.065f, 0.08f)

@@ -52,10 +52,10 @@ class PlateImage(
 
     companion object {
         /** The longest side a plate render may have, in pixels. */
-        const val MAX_LONG_SIDE = 768
+        const val MAX_LONG_SIDE = 1_536
 
-        /** JPEG quality: legible at 768 px, and small enough to send on a phone connection. */
-        const val JPEG_QUALITY = 82
+        /** JPEG quality: legible at 1,536 px, and still a sane size on a phone connection. */
+        const val JPEG_QUALITY = 85
     }
 }
 

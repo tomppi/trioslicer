@@ -4,6 +4,42 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.9] - 2026-10-26
+
+### Changed
+
+- **The in-app CAD agent has no tool-round limit.** It used to stop after eight rounds of tool
+  calls with a named error and a "send 'continue'" sentence. That count was a guess dressed as a
+  safety rule: a legitimate build - sketch, extrude, fillet, a dozen bodies, a save, an export, a
+  slice check - can want more rounds than any number picked in advance, and the limit made the
+  agent give up in the middle of one. A turn now ends when the model answers, when the user
+  presses Stop, or when the endpoint or network gives up. What bounds the cost is that the loop
+  runs in front of the user: every tool call is a row in the transcript, Stop is one tap away,
+  and the turn holds a foreground notification. A long turn logs a heartbeat every tenth round so
+  "still working" is distinguishable from "stuck".
+- **Conversation memory is forty exchanges, not ten.** The context window sent on every round is
+  still capped - the model's own window is the real bound and an unbounded conversation would be
+  re-sent on every round - but ten was short enough that the agent could forget the start of a
+  build inside one session.
+- **The turn's wake lock is held for the turn, not leased for thirty minutes.** With no round
+  limit there is no honest figure for how long a turn may last; the lock is released on every
+  exit path (answer, error, cancel, service stop) and dies with the process, and the foreground
+  notification is the visible proof it is held.
+- **The other caps are raised.** Web search passes on up to **ten** results with **2,000**-character
+  snippets, and a fetched page is cut at **32,000** characters instead of 8,000. An `ask_user` card
+  takes **twelve** options and a **1,000**-character question. The agent's plate render goes from
+  768 px to **1,536 px** on its long side (and a higher JPEG quality), so it can actually read the
+  part it is looking at. The only caps left are the model's context window, the endpoint's own
+  limits, and the image/response byte guards that keep a phone from running out of memory.
+
+### Fixed
+
+- **The bridge-proxy release test could fail the whole build.** `AgentBridgeProxyTest` asserted
+  that the port was bindable again immediately after the listener was closed, and the kernel can
+  take a moment to release a listening socket - 1.9.8's release build failed on exactly that
+  ("Address already in use") while every local run passed. The check now waits up to two seconds
+  for the OS to let go: a genuine leak still fails, a slow release does not fail the release.
+
 ## [1.9.8] - 2026-10-26
 
 ### Added

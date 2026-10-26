@@ -85,11 +85,21 @@ class InAppTurnResilienceSourceTest {
     }
 
     @Test
-    fun theKeeperIsAForegroundServiceWithABoundedPartialWakeLock() {
+    fun theKeeperIsAForegroundServiceWithAWakeLockHeldForTheTurn() {
         val service = source("com/tomppi/enderslicer/cadagent/InAppAgentTurnService.kt")
         assertTrue(service.contains("startForeground("))
         assertTrue(service.contains("PARTIAL_WAKE_LOCK"))
-        assertTrue("the lease is bounded", service.contains("acquire(WAKE_LOCK_TIMEOUT_MS)"))
+        // No lease any more: the in-app agent has no tool-round limit, so a fixed lease would
+        // lapse under a long, legitimate turn. It is held for the turn and released on every
+        // exit path; the foreground notification is the visible proof it is held.
+        assertTrue(
+            "the lock is armed without a lease time",
+            Regex("""acquire\(\)""").containsMatchIn(service),
+        )
+        assertTrue(
+            "the reason for holding it unbounded is written down",
+            service.contains("No lease"),
+        )
         assertTrue("the notification names the work", service.contains("CAD agent working"))
         assertTrue("destroy releases the lock", service.contains("releaseWakeLock()"))
         assertTrue(

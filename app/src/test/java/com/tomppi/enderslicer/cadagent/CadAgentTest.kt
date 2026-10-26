@@ -91,11 +91,9 @@ class CadAgentTest {
     private fun agent(
         host: AgentToolHost,
         runbook: String = "RUNBOOK-MARKER",
-        maxToolRounds: Int = 8,
     ): CadAgent = CadAgent(
         toolHost = host,
         runbook = runbook,
-        maxToolRounds = maxToolRounds,
         log = { message -> logs += message },
     )
 
@@ -309,26 +307,28 @@ class CadAgentTest {
         assertTrue(reported.contains("plate is the viewport"))
     }
 
-    // --- bounds ---------------------------------------------------------------------------
+    // --- no round limit -------------------------------------------------------------------
 
+    /**
+     * A build can legitimately want more tool rounds than any number picked in advance, so the
+     * loop has no round count at all: it keeps going until the model answers or the user stops
+     * it. This pins a chain longer than the old limit of eight - the exact case the limit broke.
+     */
     @Test
-    fun aModelThatKeepsCallingToolsStopsAtTheConfiguredRoundLimit() {
-        server.responder = { FakeOpenAiServer.toolCall("list_commands", "{}") }
-        try {
-            agent(RecordingHost(), maxToolRounds = 3)
-                .run(settings(), syntheticCatalog("list_commands"), "list everything")
-            fail("expected the runaway loop to be stopped")
-        } catch (error: AgentException) {
-            assertEquals("tool-round-limit", error.code)
-            val message = error.message.orEmpty()
-            assertTrue("names how many rounds ran: " + message, message.contains("3 tool rounds"))
-            assertTrue(
-                "says one more message can continue it: " + message,
-                message.contains("'continue'"),
-            )
+    fun aTurnKeepsRunningPastTheOldRoundLimitUntilTheModelAnswers() {
+        var calls = 0
+        server.responder = { request ->
+            calls++
+            if (calls <= 12) {
+                FakeOpenAiServer.toolCall("list_commands", "{}")
+            } else {
+                FakeOpenAiServer.Reply(200, FakeOpenAiServer.finalAnswer("Twelve rounds later, done.").body)
+            }
         }
-        // One request, then one per tool round up to the limit; no fourth answer was asked for.
-        assertEquals(4, server.requests.size)
+        val answer = agent(RecordingHost())
+            .run(settings(), syntheticCatalog("list_commands"), "build something big")
+        assertEquals("Twelve rounds later, done.", answer)
+        assertEquals("one request per round plus the answer", 13, server.requests.size)
     }
 
     @Test

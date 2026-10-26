@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.BindException
 import java.net.ConnectException
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -159,7 +160,31 @@ class AgentBridgeProxyTest {
         // The listener is really gone: its own address and port are bindable again. This is
         // the check that cannot be fooled by another process on the host holding that port at
         // the moment (a plain connect can be answered by anything, and was, once).
-        ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")).close()
+        //
+        // Bounded rather than one shot: the kernel can take a moment to release a closed
+        // listening socket, and a single bind raced with that on CI ("Address already in use",
+        // 1.9.8's release build). A genuine leak still fails - this only waits up to two
+        // seconds for the OS to let go, which no leak ever does.
+        val deadline = System.currentTimeMillis() + 2_000
+        var bindable = false
+        var lastRefusal: Exception? = null
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                ServerSocket().use { socket ->
+                    socket.reuseAddress = true
+                    socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+                }
+                bindable = true
+                break
+            } catch (error: BindException) {
+                lastRefusal = error
+                Thread.sleep(25)
+            }
+        }
+        assertTrue(
+            "the port is bindable again once the listener is gone: " + lastRefusal,
+            bindable,
+        )
     }
 
     @Test
