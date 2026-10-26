@@ -39,10 +39,12 @@ internal enum class EngineMode(
         scope = "the live CAD document the main plate viewport draws: parametric features, " +
             "exact geometry, STEP in and out, every change visible on the plate as it is made",
         bridge = "The engine is this phone's own SolidCraft process: its MCP bridge is on " +
-            "127.0.0.1:9878 (forward it with adb forward tcp:9878 tcp:9878) and the user has " +
-            "the token on the clipboard from Copy SolidCraft MCP token. The app renders the " +
-            "document itself - never use the engine's screenshot tool - and the plate follows " +
-            "every edit live.",
+            "port 9878 and the user copies the token from Copy SolidCraft MCP token. The CAD " +
+            "agent sheet prints a connect line for every engine when Reachable on the network " +
+            "is on - use the SolidCraft line it prints (tcp://<device address>:9878) as the " +
+            "address; with the switch off the bridge is loopback only (127.0.0.1:9878, reached " +
+            "through adb forward tcp:9878 tcp:9878). The app renders the document itself - " +
+            "never use the engine's screenshot tool - and the plate follows every edit live.",
     ),
     ;
 

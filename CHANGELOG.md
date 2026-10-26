@@ -40,6 +40,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the biometric-gated MCP token copy, a composer that asks the harness agent for changes, the
   STEP/STL/3MF exports, and Close/Rebuild. It is the only human surface that asks for a
   document change; the document itself has no editing UI.
+- **Every agent bridge can be reached on the network, and the app prints the line to paste.** A
+  **Reachable on the network** switch in the CAD agent sheet, off by default, has the app
+  republish all three of its agent engines on the device's own network address: Blender MCP
+  (9876), the Python CAD engine (9877) and SolidCraft (9878). The engines and their payloads are
+  untouched - each still binds 127.0.0.1 - and a small forwarding proxy (`agent/AgentBridgeProxy`)
+  listens on the device address at the same port number and copies bytes both ways, so the line
+  stays simple: `tcp://<this device's address>:9876` (and `:9877`, `:9878`). No adb forward, no
+  serial and no tailnet serve rule is needed. The sheet lists one row per engine with its
+  copyable line and its state - **app bridge up** or **engine not running** - so a stopped engine
+  reads as a stopped engine, not as a dead network. The address is chosen from the device's own
+  interfaces, not from a device or network name: a tailnet address (100.64.0.0/10) first, then a
+  private LAN address (10/8, 172.16/12, 192.168/16) on a real interface, then the mobile data
+  address only when there is no Wi-Fi or Ethernet one, and a named sentence - naming both
+  ranges - when there is none. The choice is stored in the app's own preferences file, the
+  listeners follow a changed address, and turning the switch off closes every listener before it
+  returns. The proxy is transport only: each engine's token, file and per-message check are
+  unchanged, the proxy checks no token and logs no message content, and the sheet says that what
+  turning it on exposes is bounded by the network (a tailnet's ACL, or the LAN) plus those tokens.
 - `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
   release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
   asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the

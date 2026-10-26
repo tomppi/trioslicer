@@ -2833,6 +2833,8 @@ fun EnderSlicerApp(
                         },
                     )
                 },
+                onNetworkReachableChange = viewModel::setCadBridgeNetworkReachable,
+                onCopyConnectLine = { line -> copyBridgeConnectLine(context, line) },
                 onExport = { format ->
                     when (format) {
                         "step" -> cadStepExportPicker.launch(exportBase + ".step")
@@ -3121,6 +3123,20 @@ private fun requestMcpTokenCopy(
             .setAllowedAuthenticators(authenticators)
             .build(),
     )
+}
+
+/**
+ * Puts the CAD bridge's connect line on the clipboard.
+ *
+ * The line is a scheme, this device's address and the port - it is not a secret, so unlike the
+ * token there is no biometric gate and nothing to redact from the clipboard preview. It is the
+ * address half of the hand-over; the token is still copied separately through its own gated
+ * action, and the sheet says both are needed.
+ */
+private fun copyBridgeConnectLine(context: Context, line: String) {
+    val clip = ClipData.newPlainText("SolidCraft CAD bridge address", line)
+    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+    Toast.makeText(context, "Connect line copied", Toast.LENGTH_SHORT).show()
 }
 
 /**

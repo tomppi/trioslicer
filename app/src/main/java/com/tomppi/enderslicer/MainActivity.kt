@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.tomppi.enderslicer.agent.AgentBridges
 import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
@@ -101,6 +102,10 @@ class MainActivity : FragmentActivity() {
         MeshTriangleLimits.initialize(this)
         UiScale.initialize(this)
         Diagnostics.initialize(this)
+        // The agent bridges' network reach is a saved choice: with it on, the listeners go up
+        // at app start, not when the CAD agent sheet is first opened. Binding and address
+        // lookup are socket work, so they are not on the UI thread.
+        Thread { runCatching { AgentBridges.ensureStarted(applicationContext) } }.start()
         enableEdgeToEdge()
         requestNotificationPermission()
         startKlipperHostIfPrinterAttached(intent)

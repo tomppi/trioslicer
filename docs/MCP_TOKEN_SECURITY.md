@@ -1,9 +1,11 @@
 # The MCP engine tokens
 
-Two of the app's engines are driven over a loopback socket by an agent that is not the app: the
-Blender engine on **9876** and the CAD engine on **9877**. Each refuses every request - `ping`
-included - without a shared secret, and each keeps that secret in a plain file in the app's private
-storage. This document is that boundary: what the token is, what holding one grants, how to check
+The app's engines are driven over a socket by an agent that is not the app: the Blender engine on
+**9876**, the CAD engine on **9877**, and - since 1.9.5 - the SolidCraft engine on **9878**. All
+three bind loopback only; the CAD agent sheet's **Reachable on the network** switch can have the
+app republish all three on the device's own network address through a forwarding proxy (section
+4). Each engine refuses every request - `ping` included - without a shared secret, and each keeps
+that secret in a plain file in the app's private storage. This document is that boundary: what the token is, what holding one grants, how to check
 one, how it rotates, and what was deliberately not built. It is a **bearer credential**. There is
 no second factor, no signature and no expiry; whoever holds the value can do everything it
 authorizes.
@@ -14,6 +16,7 @@ authorizes.
 |---|---|---|
 | Blender | `files/blender/scripts/startup/blender_mcp_token.txt` (`BlenderEngine.kt:66`, `:260`) | 9876 (`BlenderEngine.kt:41`) |
 | CAD | `files/cad/cad_mcp_token.txt` (`CadEngine.kt:48`, `:132`) | 9877 (`CadEngine.kt:43-44`) |
+| SolidCraft | `files/solidcraft/solidcraft_mcp_token.txt` (`SolidCraftEngine.kt:44`, `:92`, `:131`) | 9878 (`SolidCraftBridge.DEFAULT_PORT`, `SolidCraftBridge.kt:320`) |
 
 `files/` is the app's private directory, `/data/user/0/com.tomppi.enderslicercura/files` on the
 device. The app writes the file when it is missing and reuses the value otherwise
@@ -31,6 +34,12 @@ Each engine reads the file once at startup, before it opens the port
 serve` and never binds (`blender_mcp_slim.py:181-192`, `cad_mcp_slim.py:1163-1174`). The app
 fails closed too: if it cannot write the token it does not start the engine
 (`BlenderEngine.kt:143-147`, `CadEngine.kt:201-204`).
+
+SolidCraft is the app's own bridge rather than a token check inside the engine: the app writes
+the file (`SolidCraftEngine.ensureToken`) and hands the value to `SolidCraftBridge`, while the
+engine process never reads it. The bridge is the gate, and it compares the token on every
+message. The network side is a plain forwarder (`agent/AgentBridgeProxy`): it copies bytes and
+checks, adds and logs nothing.
 
 ## 2. What holding it grants
 
@@ -78,15 +87,28 @@ with the phone locked.
 
 ## 4. Why a plain file is acceptable
 
-Four things are true at once; none of them is "the secret is well protected":
+None of the following is "the secret is well protected"; together they are what is true:
 
 - **The file is in the app's private directory.** The kernel's uid isolation and SELinux keep every
   other app out; the directory is 0700 and the file 0600, owned by the app's uid
   (`-rw-------`). Crossing that needs root.
-- **The socket is loopback-only.** Blender binds `localhost` (`BlenderEngine.kt:138-139`,
+- **The sockets are loopback-only by default.** Blender binds `localhost` (`BlenderEngine.kt:138-139`,
   `:159`; `native/blender/blender_exec.cpp:48`; `start_blender_mcp.py:111`); CAD defaults to
-  it and nothing sets `CAD_MCP_HOST` (`cad_mcp_slim.py:2199`). Off the device the port is
-  reachable only through an `adb forward`.
+  it and nothing sets `CAD_MCP_HOST` (`cad_mcp_slim.py:2199`). Off the device those two ports
+  are reachable only through an `adb forward`.
+- **The app can deliberately republish all three sockets on the network.** The CAD agent
+  sheet's **Reachable on the network** switch, off by default, has `agent/AgentBridgeProxy`
+  listen on the device's own network address at 9876, 9877 and 9878 - the same ports the
+  engines hold on loopback - and forward each connection's bytes to 127.0.0.1 at that port
+  (`agent/AgentBridges.kt`; the address rule is `BridgeAccess.select` in
+  `agent/BridgeNetwork.kt`). A specific network address and 127.0.0.1 can hold the same port,
+  which is why the engines and the payloads are untouched: the Blender addon and the Python CAD
+  engine still bind loopback, and the forwarder checks nothing and logs no message content.
+  Each engine's token is still required on every message, and it is still the only
+  **application-level** gate: the forwarder adds no authentication of its own, so what also
+  gates the published ports is whatever the network provides - a tailnet's ACL, or the LAN's
+  own boundary. The sheet says exactly that beside the lines, and turning the switch off closes
+  every listener before it returns.
 - **The engine only listens while it runs.** It binds in `start()`
   (`blender_mcp_slim.py:195-198`, `cad_mcp_slim.py:1177-1180`) and closes the socket when it
   stops (`blender_mcp_slim.py:293-298`; the CAD process is destroyed, `CadEngine.kt:518-530`).
@@ -110,11 +132,13 @@ Two limits worth stating in the same breath:
 - **Root, or a root-capable adb.** `adb shell su -c 'cat <path>'` on the dev phone, and a plain
   `cat` where adbd already runs as root (`docs/skills/blender-mcp-engine.md:20-22`, `:44-45`;
   `docs/skills/cad-engine.md:93-99`).
-- **The user, in the app.** *Blender → Copy MCP token* (`EnderSlicerApp.kt:1345-1366`) and
-  *CAD → Copy MCP token* (`EnderSlicerApp.kt:1420-1435`; CAD since 1.8.8, `CHANGELOG.md:19-20`).
-  Both go through `requestMcpTokenCopy` (`EnderSlicerApp.kt:2516-2587`), which requires the
+- **The user, in the app.** *Blender → Copy MCP token* (`EnderSlicerApp.kt:1345-1366`),
+  *CAD → Copy MCP token* (`EnderSlicerApp.kt:1420-1435`; CAD since 1.8.8, `CHANGELOG.md:19-20`),
+  and *Copy MCP token* in the CAD agent sheet for SolidCraft. All go through
+  `requestMcpTokenCopy` (`EnderSlicerApp.kt:2516-2587`), which requires the
   fingerprint or the device credential and copies nothing if that fails; the clip is marked
-  sensitive so Android does not preview it (`:2605-2618`).
+  sensitive so Android does not preview it (`:2605-2618`). The CAD agent sheet's connect
+  lines are copied separately and are not sensitive - they name an address, not a secret.
 - **A debug build only.** `adb run-as` reaches the app's files when the APK is debuggable, and the
   released APK is not (`TECHNICAL.md:110-112`).
 - **On a non-rooted phone an agent cannot read it at all.** There is no read path an agent can use;
@@ -215,6 +239,10 @@ re-serves with the value it already has:
 
 - **CAD**: *Stop CAD engine* destroys the child process (`CadEngine.kt:518-530`); the next start
   writes and reads the file. Delete the file, stop, start.
+- **SolidCraft**: the app writes and reads this file itself (`SolidCraftEngine.ensureToken`), and
+  its bridge holds the value it was started with. Delete the file, *Stop CAD agent*, connect
+  again: the next start mints a new value. A bridge that is already listening keeps the old one
+  until the engine is stopped.
 - **Blender**: *Stop Blender engine* only parks the in-process engine (`BlenderEngine.kt:193-207`),
   and the serve loop recreates the server with the same token it read at process start
   (`start_blender_mcp.py:140-145`). Delete the file and end the app process - force-stop the app -

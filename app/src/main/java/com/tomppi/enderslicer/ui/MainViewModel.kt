@@ -14,6 +14,7 @@ import com.tomppi.enderslicer.annotation.AnnotationKind
 import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
 import com.tomppi.enderslicer.annotation.WorkPlane
+import com.tomppi.enderslicer.agent.AgentBridges
 import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.data.AppStateStore
 import com.tomppi.enderslicer.data.BuiltInGcode
@@ -656,6 +657,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "export it and the agent can be connected again"
                     } else {
                         "CAD agent stopped"
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * Applies the CAD agent sheet's **Reachable on the network** switch.
+     *
+     * The app publishes Blender's, the CAD engine's and SolidCraft's loopback MCP ports on the
+     * device's network address (see [AgentBridges]); each engine's own token check is
+     * unchanged and the forwarder adds none. This only reports what happened to the sheet.
+     */
+    fun setCadBridgeNetworkReachable(enabled: Boolean) {
+        viewModelScope.launch {
+            val problem = withContext(Dispatchers.IO) { AgentBridges.setEnabled(app, enabled) }
+            _uiState.update {
+                it.copy(
+                    statusMessage = problem ?: if (enabled) {
+                        "Agent bridges published on this device's network address · each " +
+                            "engine's token is still the only check"
+                    } else {
+                        "Agent bridges back on 127.0.0.1 only · this device only"
                     },
                 )
             }

@@ -51,11 +51,27 @@ asset is published separately from the source commit (CI has no Rust cross toolc
   still have changed, the same honesty the engine's own protocol asks for.
 - **solidcraft/SolidCraftSession.kt** is the typed tool surface the app uses itself (export a
   body, save the design, open a file, inspect bodies) - not the agent's path.
-- **solidcraft/SolidCraftBridge.kt** is the agent's door: the same token boundary the Blender
-  (9876) and Python CAD (9877) engines use, on 9878, bound to loopback, refusing the engine's
-  screenshot tool because this app's viewport is the only renderer. Every tools/call that
-  may have changed the design is turned into a DocumentDelta for the live view.
+- **solidcraft/SolidCraftBridge.kt** is SolidCraft's agent door: the same token boundary the
+  Blender (9876) and Python CAD (9877) engines use, on 9878, refusing the engine's screenshot
+  tool because this app's viewport is the only renderer. It binds 127.0.0.1 like the other two
+  engines; the network side is the app's forwarder (below), not this socket. Every tools/call
+  that may have changed the design is turned into a DocumentDelta for the live view.
+- **agent/AgentBridgeProxy.kt** is the network side of all three agent engines. It listens on
+  the device's own network address at 9876, 9877 and 9878 - the engines' loopback ports, kept
+  identical - and forwards each connection's bytes both ways to 127.0.0.1 at that port. A
+  specific network address and 127.0.0.1 can both hold the same port, which is why the numbers
+  do not change. It is transport only: each engine still checks its token on every message, the
+  forwarder checks nothing, and it never logs message content.
+- **agent/AgentBridges.kt** owns the CAD agent sheet's **Reachable on the network** switch: the
+  stored choice, the three targets, the watcher that follows the device's address (so a Wi-Fi
+  change rebinds instead of leaving a stale line), and the per-engine status rows
+  ("app bridge up" / "engine not running"). Turning the switch off closes every listener
+  before it returns.
+- **agent/BridgeNetwork.kt** holds the stored preference and the IPv4 address rule behind the
+  connect lines, and it is the one place the app enumerates the device's interfaces
+  (java.net.NetworkInterface only - no WifiManager, no connectivity service, no interface names).
 - **solidcraft/CadDocument.kt** holds the document record, the per-body tessellation composer,
+  the workspace path rules and the Slice-export handoff.
   the workspace path rules and the Slice-export handoff.
 
 ## The live view
@@ -111,12 +127,42 @@ never used.
 
 ## The agent
 
-The agent's MCP client connects to 127.0.0.1:9878 with the token from
-**Copy SolidCraft MCP token** (the app's biometric-gated clipboard action). On the dev machine
-that is reached through adb forward tcp:9878 tcp:9878; the token is sent as a top-level
-"token" field on every JSON-RPC message (or inside params). The app's own status badge shows
-whether the engine is up; the agent's edits appear on the plate as they happen.
+All three of the app's agent engines speak newline-delimited JSON-RPC 2.0 on loopback, each
+with its own bearer token: Blender MCP on 9876, the Python CAD engine on 9877, and SolidCraft
+on 9878. The token is sent as a top-level "token" field on every message (or inside params);
+for SolidCraft it is copied with **Copy SolidCraft MCP token** (the app's biometric-gated
+clipboard action), for the other two from their own menus.
 
+The CAD agent sheet owns how those ports are reached from outside the phone:
+
+| switch | listeners | how another device connects |
+|---|---|---|
+| **Reachable on the network** off (default) | 127.0.0.1 only, in each engine | nothing off the phone reaches them; an adb forward or a tailnet serve rule publishes a port by hand |
+| **Reachable on the network** on | the app's forwarder listens on this device's network address at 9876, 9877 and 9878, forwarding to 127.0.0.1 at the same ports | the sheet prints one copyable line per engine - `tcp://<this device's address>:<port>` - and any device that can route to that address connects with that engine's token |
+
+Each line has its own state under it. **app bridge up** means the listener answers and the
+engine's loopback port does too; **engine not running** means the listener is up but nothing
+answers behind it (start the engine - that is a dead target, not a dead network); **off - this
+device only** is the switch-off state. While the listeners are being moved to a new address
+the sheet says **address changed - rebinding**.
+
+The address is not configured anywhere and is not a device name: the app enumerates its own
+IPv4 interfaces and picks, in order, an address inside the tailnet range 100.64.0.0/10, else a
+private LAN address (10/8, 172.16/12, 192.168/16) on a real interface (the mobile data
+interface is only used when no Wi-Fi or Ethernet address exists), else nothing - and then the
+sheet shows a named sentence saying which ranges it looked for instead of a dead line. The
+rule is in `BridgeAccess.select`, and `BridgeNetworkTest` pins it without a network.
+
+The switch is stored in the app's own preferences file; [AgentBridges.ensureStarted] puts the
+listeners back at app start, a watcher re-reads the device address every few seconds, and a
+flip of the switch binds or closes them immediately. No listener survives the switch being
+turned off, and no engine process restarts for either direction.
+
+**The forwarder is not a gate.** Each engine's token file and per-message check are exactly
+what they were on loopback; the forwarder adds no authentication of its own, keeps no state
+between connections and never logs the bytes it copies. What else gates the network reach is
+what the network itself provides - a tailnet's ACL, or the LAN's own boundary - and the sheet
+says so next to the lines.
 The engine is the upstream solidcraft-cli; its tool list, parameter docs and command catalog
 are the upstream ones (docs/mcp.md in the SolidCraft repository). Two rules are ours:
 
@@ -126,6 +172,12 @@ are the upstream ones (docs/mcp.md in the SolidCraft repository). Two rules are 
 
 ## Known limitations
 
+- **The published listeners are plain TCP.** Each engine's token authorizes every message;
+  nothing encrypts the stream and nothing is signed. On loopback that is the same boundary the
+  other engines have always had; with the network switch on, anyone who can reach an address
+  and has that engine's token can drive that engine, which is exactly what the sheet says. The
+  forwarder logs no message content, so a token does not become a log line. Use a tailnet or a
+  LAN you trust.
 - One live CAD document per plate. Opening another from the app needs the current one closed;
   the agent can open files inside its own session.
 - A document change after a split or a snap joint marks the plate stale (with a named reason and a

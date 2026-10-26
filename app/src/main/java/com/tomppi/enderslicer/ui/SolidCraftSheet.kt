@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,10 +33,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.agent.AgentBridgeLine
+import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.agent.BridgeLinkState
+import com.tomppi.enderslicer.agent.BridgeNetworkPreference
 import com.tomppi.enderslicer.solidcraft.CadDocument
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * The CAD agent sheet: what a SolidCraft CAD document is, and the whole human surface on it.
@@ -60,6 +68,10 @@ internal fun SolidCraftSheet(
     /** Re-derives the plate from the document's current shape (the way out of a stale plate). */
     onRebuild: () -> Unit,
     onCopyToken: () -> Unit,
+    /** Turns the network bind on or off; the setting is persisted by the engine's owner. */
+    onNetworkReachableChange: (Boolean) -> Unit,
+    /** Puts the connect line on the clipboard; it holds no secret, so there is no gate here. */
+    onCopyConnectLine: (String) -> Unit,
     onExport: (format: String) -> Unit,
     onOpenFile: () -> Unit,
     onAsk: (String) -> Unit,
@@ -78,6 +90,24 @@ internal fun SolidCraftSheet(
             ready = SolidCraftEngine.isReady()
             starting = SolidCraftEngine.isStarting()
             delay(400)
+        }
+    }
+    // The app's three agent bridges, published together by the switch. Off is the loopback
+    // reach they have always had; on republishes Blender (9876), the Python CAD engine (9877)
+    // and SolidCraft (9878) on this device's network address. The rows are read from the app's
+    // publisher, so their state is the sockets' real state, not what the switch asked for.
+    var networkEnabled by remember { mutableStateOf(BridgeNetworkPreference.isEnabled(context)) }
+    var bridgeLines by remember { mutableStateOf(AgentBridges.lines()) }
+    LaunchedEffect(networkEnabled) {
+        if (!networkEnabled) {
+            bridgeLines = AgentBridges.lines()
+            return@LaunchedEffect
+        }
+        while (true) {
+            // Cheap: the publisher follows the device's address on its own and keeps the
+            // state; this only copies the current rows for the sheet.
+            bridgeLines = withContext(Dispatchers.IO) { AgentBridges.lines() }
+            delay(1_000)
         }
     }
     var draft by remember { mutableStateOf("") }
@@ -156,13 +186,73 @@ internal fun SolidCraftSheet(
                 modifier = Modifier.weight(1f),
             ) { Text("Stop engine") }
         }
-        Text(
-            "The agent drives the engine over MCP on 127.0.0.1:" + SolidCraftEngine.DEFAULT_PORT +
-                ". Copy the token and give it to the agent together with the skill; its " +
-                "geometry changes appear on the plate as they happen.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // How an agent reaches this app's engines. Blender's MCP addon, the Python CAD engine
+        // and SolidCraft all bind 127.0.0.1; this switch has the app republish all three on
+        // the device's network address at their own ports, so a laptop on the same network has
+        // a line to paste and needs nothing else but the token for the engine it drives.
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(EnderSlicerDimens.Space8)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Reachable on the network", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (networkEnabled) "On · this device's address" else "Off · this device only",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = networkEnabled,
+                        onCheckedChange = { wanted ->
+                            networkEnabled = wanted
+                            onNetworkReachableChange(wanted)
+                        },
+                    )
+                }
+                if (!networkEnabled) {
+                    Text(
+                        "Off - this device only. The Blender MCP addon (9876), the CAD engine " +
+                            "(9877) and SolidCraft (9878) listen on 127.0.0.1 inside this phone; " +
+                            "another device reaches them only through an adb forward or a tailnet " +
+                            "serve rule. Copy the token for the engine you are driving and give it " +
+                            "to the agent together with the skill.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    val noAddress = bridgeLines.firstOrNull { it.state == BridgeLinkState.NO_ADDRESS }
+                    if (noAddress != null) {
+                        Text(
+                            noAddress.status,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        bridgeLines.forEach { line -> BridgeLineRow(line, onCopyConnectLine) }
+                    }
+                    Text(
+                        "Turning this on publishes Blender's, the CAD engine's and SolidCraft's " +
+                            "MCP ports on this device's network address. Any device that can reach " +
+                            "an address and has that engine's token can drive it: every engine's " +
+                            "own token check is unchanged, the forwarder adds no authentication of " +
+                            "its own and never logs message content.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Turning it off closes every published listener again; the engines keep " +
+                            "running. Tokens are copied per engine: SolidCraft with the button " +
+                            "below, Blender and the CAD engine from their own menus.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
             OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -276,6 +366,52 @@ internal fun SolidCraftSheet(
     }
 }
 
+
+/**
+ * One published bridge in the sheet: its name and port, the line to paste, and the state of
+ * the socket behind it - "app bridge up" and "engine not running" are different problems.
+ */
+@Composable
+private fun BridgeLineRow(line: AgentBridgeLine, onCopy: (String) -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = EnderSlicerDimens.Space8, top = EnderSlicerDimens.Space4, bottom = EnderSlicerDimens.Space4),
+            ) {
+                Text(
+                    line.target.name + " · " + line.target.port,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                line.line?.let { address ->
+                    Text(
+                        address,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Text(
+                    line.status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when (line.state) {
+                        BridgeLinkState.UP -> MaterialTheme.colorScheme.primary
+                        BridgeLinkState.ENGINE_NOT_RUNNING -> MaterialTheme.colorScheme.onSurfaceVariant
+                        BridgeLinkState.NO_ADDRESS, BridgeLinkState.REBINDING -> MaterialTheme.colorScheme.error
+                        BridgeLinkState.OFF -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            line.line?.let { address ->
+                TextButton(onClick = { onCopy(address) }) { Text("Copy") }
+            }
+        }
+    }
+}
 /**
  * The plate's CAD badge: what the viewport is showing and whether the agent is working.
  *

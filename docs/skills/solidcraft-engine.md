@@ -21,28 +21,51 @@ its own MCP token on 9877). Do not mix them up: this one holds the document the 
 ## 1. Connect
 
 The engine is a child process of the app, speaking MCP over its own stdio; the app exposes that
-session on **127.0.0.1:9878** on the phone, behind a bearer token.
+session on **port 9878** on the phone, behind a bearer token. How another device reaches it is
+the **Reachable on the network** switch in the CAD agent sheet:
 
-**Reach it over the tailnet, not adb.** The phone (or any device with a Tailscale CLI - TailSocks in
-root mode works) publishes that loopback port once:
+- **Off (the default)** - the bridge listens on 127.0.0.1 only, and nothing off the phone reaches
+  it. A development machine can still reach it through `adb forward tcp:9878 tcp:9878`.
+- **On** - the app republishes **all three agent engines** on this device's network address at
+  their own loopback ports: Blender MCP 9876, the Python CAD engine 9877, and SolidCraft 9878.
+  The sheet lists one row per engine with its **connect line** and a Copy button; SolidCraft's
+  is `tcp://<this device's address>:9878`. The address is chosen from the phone's own interfaces
+  (a tailnet address first, then a private LAN one), so it is not a device name and not a
+  setting. **That line is the connection** - no adb, no serve rule, no forward, and no device
+  serial anywhere in the loop, which matters because a serial is exactly how an agent ends up
+  poking the wrong phone.
+
+Each row also says what is behind the line: **app bridge up** means the listener and the engine
+both answer; **engine not running** means the address is published but nothing is listening
+behind it - ask the user to open TrioSlicer and press Connect agent. A dead engine must never
+be read as a dead network: the line is good, the engine is not started.
+
+If the sheet says there is no network address to show, the phone has neither a tailnet nor a
+private LAN IPv4 address: ask the user to join Wi-Fi or the tailnet. Do not ask them to run a
+publish rule first - the switch already did the publishing.
+
+A phone on an older build, or a set-up where the user keeps the switch off, can still be
+reached by publishing its loopback port from that phone (TailSocks in root mode works):
 
     tailscale serve --bg --tcp 9878 127.0.0.1:9878
     # -> tcp://<phone>.<tailnet>.ts.net:9878
 
-That URL is the connection. No adb, no forward, and no device serial anywhere in the loop - which
-matters, because a serial is exactly how an agent ends up poking the wrong phone.
-
-1. **Probe first.** Connect to tcp://<phone>.<tailnet>.ts.net:9878 and send an initialize frame with
-   no token. Three answers, three meanings:
+1. **Probe first.** Connect to the line the user gave you (or 127.0.0.1:9878 through a forward on
+   a development phone) and send an initialize frame with no token. Three answers, three meanings:
    - `{"error":{"code":-32001,"message":"unauthorized: send the token ..."}}` - the bridge is up and
      reachable. Good; add the token.
-   - connection reset straight after accept - the serve is forwarding but the app's bridge is not
-     listening: the CAD agent is not connected. Ask the user to open TrioSlicer, CAD agent, Connect.
-     The engine is a child of the app and dies with it; say that, do not retry in a loop.
-   - timeout - the serve is not running, or the node is off the tailnet.
+   - connection reset straight after accept - the app's forwarder is answering, but the SolidCraft
+     engine is not running: the CAD agent is not connected. Ask the user to open TrioSlicer, CAD
+     agent, Connect agent. The engine is a child of the app and dies with it; say that, do not
+     retry in a loop.
+   - timeout or connection refused - the network reach is not published: the switch is off, or
+     the phone is not reachable at that address (Wi-Fi or tailnet down).
 2. **Token.** The user taps **Copy MCP token** in the CAD agent sheet (the clipboard gesture is
    biometric-gated on purpose; the app is the only place a token can be handed over on a phone
-   without root). It is one tap. Treat it as a bearer credential: not in logs, not in chat history.
+   without root). It is one tap. Each engine has its own token: Blender's and the Python CAD
+   engine's are copied from their own menus, SolidCraft's from the CAD agent sheet. Treat every
+   one as a bearer credential: not in logs, not in chat history. The app's forwarder copies
+   bytes and logs nothing, so the token does not become an app log line.
 3. Speak newline-delimited JSON-RPC 2.0 on that socket. Every message carries the token as a
    top-level "token" field (or inside params):
 

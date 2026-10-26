@@ -23,6 +23,14 @@ Rule of thumb:
 The engine is a plain TCP socket on **localhost:9877** inside the app process. It is **not**
 Blender's port (9876) — the two can run at once and each has its own.
 
+**New in 1.9.5 - no adb forward needed.** The CAD agent sheet's **Reachable on the network**
+switch publishes this bridge (and Blender's 9876 and SolidCraft's 9878) on the phone's own
+network address at the same port, and the sheet prints a copyable line:
+`tcp://<phone address>:9877`. With that switch on, use the line and the app's *CAD → Copy MCP
+token* value; the adb forward below is the fallback for a phone with the switch off, or for a
+development phone. The app's forwarder is transport only: it checks no token, adds no
+authentication and logs no message content.
+
 ### Getting the token without root
 
 **The token is in app-private storage, and `adb shell` cannot read it** - even a shell on a
