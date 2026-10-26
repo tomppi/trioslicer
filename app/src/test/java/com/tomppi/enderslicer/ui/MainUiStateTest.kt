@@ -7,11 +7,13 @@ import com.tomppi.enderslicer.model.ModelPlacement
 import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerEngine
+import com.tomppi.enderslicer.solidcraft.CadDocument
 import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -215,5 +217,76 @@ class MainUiStateTest {
 
         assertEquals(listOf("a", "b"), added.models.map { it.id })
         assertEquals("b", added.selectedModelId)
+    }
+
+    /** The plate state before a new_design: the document's own object, and a published slice. */
+    private fun drawnCadState(vararg otherObjects: PlateObject): MainUiState {
+        val drawn = plateObject("cad-display", "/models/solidcraft-untitled-display.stl")
+        return MainUiState(
+            printer = printer,
+            models = listOf(drawn) + otherObjects.toList(),
+            selectedModelId = drawn.id,
+            cadDocument = CadDocument(
+                name = "Untitled",
+                designPath = "/data/cad/untitled.solidcraft",
+                displayObjectId = drawn.id,
+                displayMeshPath = drawn.sourcePath,
+                displayRevision = 7,
+                triangleCount = 1,
+                bodyCount = 1,
+            ),
+            sliceResultId = "artifact-1",
+            gcodePath = "/tmp/slice-results/artifact-1/model.gcode",
+            gcodeComplete = true,
+        )
+    }
+
+    @Test
+    fun anEmptyCadDocumentTakesThePreviousDocumentsPictureOffThePlate() {
+        val before = drawnCadState()
+        assertNotNull("the plate starts with the document's picture", before.mesh)
+        assertTrue("and a published slice of it", before.hasCurrentGcode())
+
+        val after = before.withoutCadBodies(
+            displayObjectId = "cad-display",
+            name = "Untitled",
+            designPath = "/data/cad/untitled.solidcraft",
+            sourcePath = null,
+            editMillis = 5L,
+        )
+
+        // A new_design with no bodies must not leave the old part standing on the plate while
+        // the status says the engine has nothing to draw - that reads as a crash.
+        assertEquals(emptyList<PlateObject>(), after.models)
+        assertNull(after.mesh)
+        assertNull(after.selectedModel)
+        assertNull(after.cadDocument?.displayObjectId)
+        assertNull(after.cadDocument?.displayMeshPath)
+        assertEquals(0, after.cadDocument?.triangleCount)
+        assertEquals(0, after.cadDocument?.bodyCount)
+        assertEquals(8L, after.cadDocument?.displayRevision)
+        assertEquals(1, after.cadDocument?.editCount)
+        assertEquals(
+            "the sentence the app shows when a design has no bodies",
+            "CAD document: the engine has no bodies to draw yet",
+            after.statusMessage,
+        )
+        assertFalse("the slice was of the previous shape", after.hasCurrentGcode())
+    }
+
+    @Test
+    fun anEmptyCadDocumentLeavesTheHumansOwnImportedMeshOnThePlate() {
+        val after = drawnCadState(plateObject("imported", "/models/part.stl")).withoutCadBodies(
+            displayObjectId = "cad-display",
+            name = "Untitled",
+            designPath = "/data/cad/untitled.solidcraft",
+            sourcePath = null,
+            editMillis = null,
+        )
+
+        assertEquals(listOf("imported"), after.models.map { it.id })
+        assertEquals("imported", after.selectedModelId)
+        assertNotNull("the human's mesh is not the document's picture", after.mesh)
+        assertEquals(0, after.cadDocument?.editCount)
     }
 }

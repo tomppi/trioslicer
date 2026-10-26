@@ -941,9 +941,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // The honest fallback for the edits that do not name bodies (undo, a parameter
             // rebuild, an opened file): re-read the document body by body.
             if (refreshCadAllBodies(session, workspace, name) == null) {
-                markCadUpdating(false)
-                _uiState.update {
-                    it.copy(statusMessage = "CAD document: the engine has no bodies to draw yet")
+                if (cadDocumentHasNoBodies(session)) {
+                    // An empty document is a real state (an agent's new_design, or an opened
+                    // file with nothing in it): the previous design's picture must not stay on
+                    // the plate under a status that says there is nothing to draw.
+                    dropCadPictureForEmptyDocument(previous, name, design.absolutePath, delta, receivedAt)
+                } else {
+                    // The engine did not answer the re-read (a timeout, a busy session): keep
+                    // the last picture rather than taking a working plate down for it.
+                    markCadUpdating(false)
+                    _uiState.update {
+                        it.copy(
+                            statusMessage = "CAD document: the engine did not answer the " +
+                                "document re-read; the plate keeps the last picture",
+                        )
+                    }
                 }
                 return
             }
@@ -991,6 +1003,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         scheduleCadPersist()
     }
+
+    /**
+     * Takes the document's picture off the plate when the engine reports it holds no bodies.
+     *
+     * The status sentence stays ("the engine has no bodies to draw yet"), the document record
+     * survives one display revision further, and the plate object the document was drawn in is
+     * dropped - so a new_design (or an empty open) leaves a clean plate instead of the previous
+     * part standing there with a message about a document that is gone.
+     */
+    private fun dropCadPictureForEmptyDocument(
+        previous: CadDocument?,
+        name: String,
+        designPath: String,
+        delta: DocumentDelta,
+        receivedAt: Long,
+    ) {
+        val dropped = cadDisplayObjectId ?: previous?.displayObjectId
+        cadBodies.clear()
+        cadDisplayObjectId = null
+        cadDisplayMeshPath = null
+        cadRevisionAtMillis = System.currentTimeMillis()
+        _uiState.update {
+            it.withoutCadBodies(
+                displayObjectId = dropped,
+                name = name,
+                designPath = designPath,
+                sourcePath = delta.openedPath ?: previous?.sourcePath,
+                editMillis = if (delta.fullRefresh) System.currentTimeMillis() - receivedAt else null,
+            )
+        }
+        scheduleCadPersist()
+    }
+
+    /**
+     * True when the engine's design holds no bodies, as opposed to a re-read that failed.
+     *
+     * [refreshCadAllBodies] answers null both for an empty document and for an engine that did
+     * not answer; the plate is cleared only for the first. This is the one extra engine question
+     * on that cold path, and only after the re-read has already failed.
+     */
+    private fun cadDocumentHasNoBodies(session: SolidCraftSession): Boolean =
+        runCatching { cadBodyNames(session).isEmpty() }.getOrDefault(false)
 
     /** Marks the document as being repainted, without touching the picture or the camera. */
     private fun markCadUpdating(updating: Boolean) {

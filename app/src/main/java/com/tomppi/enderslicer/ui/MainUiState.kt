@@ -1108,4 +1108,44 @@ data class MainUiState(
         sliceDurationMilliseconds = null,
         statusMessage = statusMessage,
     )
+
+    /**
+     * The plate after the engine reports the document has no bodies - an agent's new_design, or
+     * an opened file with nothing in it.
+     *
+     * The picture on the plate belongs to the design that is gone, so the document's own plate
+     * object goes with it: a part standing there under "the engine has no bodies to draw yet"
+     * reads as a crash. The human's imported meshes are not the document and stay. The published
+     * slice is dropped because the geometry changed, and the document record survives one display
+     * revision further (same name and design path) so the next edit paints it back as a fresh
+     * plate object.
+     */
+    fun withoutCadBodies(
+        displayObjectId: String?,
+        name: String,
+        designPath: String,
+        sourcePath: String?,
+        editMillis: Long?,
+    ): MainUiState {
+        val dropped = displayObjectId ?: cadDocument?.displayObjectId
+        val previous = cadDocument
+        val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
+            name = name,
+            designPath = designPath,
+            sourcePath = sourcePath ?: previous?.sourcePath,
+            displayObjectId = null,
+            displayMeshPath = null,
+            displayRevision = (previous?.displayRevision ?: 0L) + 1L,
+            triangleCount = 0,
+            bodyCount = 0,
+            updating = false,
+            lastEditMillis = editMillis ?: previous?.lastEditMillis,
+            editCount = (previous?.editCount ?: 0) + if (editMillis != null) 1 else 0,
+        )
+        return copy(
+            models = models.filterNot { it.id == dropped },
+            selectedModelId = models.firstOrNull { it.id != dropped }?.id,
+            cadDocument = document,
+        ).withoutPublishedSlice("CAD document: the engine has no bodies to draw yet")
+    }
 }
