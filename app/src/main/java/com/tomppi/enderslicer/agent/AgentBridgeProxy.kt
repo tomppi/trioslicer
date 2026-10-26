@@ -8,10 +8,16 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
-/** One engine's loopback MCP port, and the name the CAD agent sheet shows for it. */
+/** One engine's loopback MCP port, and the names used for it. */
 data class AgentBridgeTarget(
+    /** The row label (and the toast's subject): "Blender MCP", "CAD engine", "SolidCraft". */
     val name: String,
     val port: Int,
+    /**
+     * The engine as a sentence names it - "the app's <engineName> engine" - which is why
+     * "CAD engine" cannot be used here unchanged (it would read "CAD engine engine").
+     */
+    val engineName: String = name,
 )
 
 /** How one published engine bridge is doing, in the words the sheet prints. */
@@ -37,6 +43,8 @@ data class AgentBridgeLine(
     val target: AgentBridgeTarget,
     /** `tcp://<device address>:<port>`, or null when there is no line to show. */
     val line: String?,
+    /** The device address behind [line]; null with it. Never the token - that is not in this model. */
+    val address: String? = null,
     val state: BridgeLinkState,
     /** The sentence under the line: "app bridge up", "engine not running", the named reason... */
     val status: String,
@@ -147,26 +155,28 @@ class AgentBridgeProxy(
     fun lines(): List<AgentBridgeLine> = synchronized(lock) {
         targets.map { target ->
             when {
-                !enabled -> AgentBridgeLine(target, null, BridgeLinkState.OFF, "off - this device only")
+                !enabled -> AgentBridgeLine(target, null, state = BridgeLinkState.OFF, status = "off - this device only")
                 address == null -> AgentBridgeLine(
                     target,
                     null,
-                    BridgeLinkState.NO_ADDRESS,
-                    noAddressReason ?: BridgeAccess.NO_ADDRESS_REASON,
+                    state = BridgeLinkState.NO_ADDRESS,
+                    status = noAddressReason ?: BridgeAccess.NO_ADDRESS_REASON,
                 )
                 listeners[target.port]?.isClosed != false -> AgentBridgeLine(
                     target,
                     BridgeAccess.connectLine(address!!, target.port),
-                    BridgeLinkState.REBINDING,
-                    bindProblem ?: "address changed - rebinding…",
+                    address = address,
+                    state = BridgeLinkState.REBINDING,
+                    status = bindProblem ?: "address changed - rebinding…",
                 )
                 else -> {
                     val up = engineRunning[target.port] == true
                     AgentBridgeLine(
                         target,
                         BridgeAccess.connectLine(address!!, target.port),
-                        if (up) BridgeLinkState.UP else BridgeLinkState.ENGINE_NOT_RUNNING,
-                        if (up) "app bridge up" else "engine not running",
+                        address = address,
+                        state = if (up) BridgeLinkState.UP else BridgeLinkState.ENGINE_NOT_RUNNING,
+                        status = if (up) "app bridge up" else "engine not running",
                     )
                 }
             }

@@ -29,7 +29,7 @@ object AgentBridges {
     /** The engines and the loopback ports they listen on; the sheet lists one line each. */
     val TARGETS = listOf(
         AgentBridgeTarget("Blender MCP", BlenderEngine.DEFAULT_MCP_PORT),
-        AgentBridgeTarget("CAD engine", CadEngine.DEFAULT_PORT),
+        AgentBridgeTarget("CAD engine", CadEngine.DEFAULT_PORT, engineName = "CAD"),
         AgentBridgeTarget("SolidCraft", SolidCraftBridge.DEFAULT_PORT),
     )
 
@@ -81,7 +81,9 @@ object AgentBridges {
 
     /** The sheet's rows: one per engine, with its connect line and honest state. */
     fun lines(): List<AgentBridgeLine> = proxy?.lines()
-        ?: TARGETS.map { AgentBridgeLine(it, null, BridgeLinkState.OFF, "off - this device only") }
+        ?: TARGETS.map {
+            AgentBridgeLine(it, null, state = BridgeLinkState.OFF, status = "off - this device only")
+        }
 
     fun isEnabled(context: Context): Boolean = BridgeNetworkPreference.isEnabled(context)
 

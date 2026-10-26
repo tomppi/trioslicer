@@ -58,6 +58,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returns. The proxy is transport only: each engine's token, file and per-message check are
   unchanged, the proxy checks no token and logs no message content, and the sheet says that what
   turning it on exposes is bounded by the network (a tailnet's ACL, or the LAN) plus those tokens.
+- **One Copy is the whole hand-over: the line and that engine's token.** Each row's **Copy** in
+  the CAD agent sheet now puts a single ready-to-paste line on the clipboard -
+  `tcp://<this device's address>:<port> token=<token>` - instead of the address alone, so
+  connecting an agent is one fingerprint prompt and one paste instead of copying the address and
+  the token separately and combining them by hand. Each row reads that engine's own token file
+  (Blender's, the Python CAD engine's, SolidCraft's); a row whose engine has never run has no
+  token file yet, so it says **start the engine first - its token is created when it starts**
+  and its Copy is disabled - it never copies a line without a token. The token is read only
+  after the prompt, the clipboard item is marked sensitive so Android does not preview it, the
+  toast names the engine and never the token, and the token is never rendered in the sheet or
+  logged. The token-only **Copy MCP token** button remains only as the fallback when no
+  published row can offer the one-line form (the switch is off, or there is no network
+  address); while a row is copying the address and the token together it is hidden rather than
+  being a second path to the same credential.
 - `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
   release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
   asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the

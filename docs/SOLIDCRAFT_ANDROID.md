@@ -129,22 +129,35 @@ never used.
 
 All three of the app's agent engines speak newline-delimited JSON-RPC 2.0 on loopback, each
 with its own bearer token: Blender MCP on 9876, the Python CAD engine on 9877, and SolidCraft
-on 9878. The token is sent as a top-level "token" field on every message (or inside params);
-for SolidCraft it is copied with **Copy SolidCraft MCP token** (the app's biometric-gated
-clipboard action), for the other two from their own menus.
+on 9878. The token is sent as a top-level "token" field on every message (or inside params).
+The CAD agent sheet's row **Copy** is the hand-over: it puts one ready-to-paste line on the
+clipboard - `tcp://<this device's address>:<port> token=<that engine's token>` - after the
+app's biometric prompt, so connecting an agent is one copy and one paste. The line and the
+clipboard handling are in `agent/AgentBridgeHandoff.kt` (AgentBridgeCopy, AgentBridgeTokens).
 
 The CAD agent sheet owns how those ports are reached from outside the phone:
 
 | switch | listeners | how another device connects |
 |---|---|---|
 | **Reachable on the network** off (default) | 127.0.0.1 only, in each engine | nothing off the phone reaches them; an adb forward or a tailnet serve rule publishes a port by hand |
-| **Reachable on the network** on | the app's forwarder listens on this device's network address at 9876, 9877 and 9878, forwarding to 127.0.0.1 at the same ports | the sheet prints one copyable line per engine - `tcp://<this device's address>:<port>` - and any device that can route to that address connects with that engine's token |
+| **Reachable on the network** on | the app's forwarder listens on this device's network address at 9876, 9877 and 9878, forwarding to 127.0.0.1 at the same ports | the sheet shows one row per engine; its **Copy** puts `tcp://<this device's address>:<port> token=<token>` on the clipboard in one line, and any device that can route to that address connects with that line |
 
 Each line has its own state under it. **app bridge up** means the listener answers and the
 engine's loopback port does too; **engine not running** means the listener is up but nothing
 answers behind it (start the engine - that is a dead target, not a dead network); **off - this
 device only** is the switch-off state. While the listeners are being moved to a new address
-the sheet says **address changed - rebinding**.
+the sheet says **address changed - rebinding**. A row whose engine has never started has no
+token file yet, so it says **start the engine first - its token is created when it starts** and
+its Copy is disabled: nothing puts a line without a token on the clipboard.
+
+The row Copy is gated like the token-only copies always were: the token is read after the
+fingerprint (or device-credential) prompt, the clip is marked sensitive so Android does not
+preview it, and the toast names the engine, never the token. The token is never rendered in
+the sheet - `AgentBridgeLine` carries only the name, URL, state and sentence - and the
+forwarder logs no content. The sheet's standalone **Copy MCP token** is kept only as the
+fallback for when no published row can offer the one-line form (the switch is off, or there is
+no network address to publish on); while a row is copying address + token together it is hidden
+rather than being a second, weaker path to the same credential.
 
 The address is not configured anywhere and is not a device name: the app enumerates its own
 IPv4 interfaces and picks, in order, an address inside the tailnet range 100.64.0.0/10, else a
@@ -163,6 +176,7 @@ what they were on loopback; the forwarder adds no authentication of its own, kee
 between connections and never logs the bytes it copies. What else gates the network reach is
 what the network itself provides - a tailnet's ACL, or the LAN's own boundary - and the sheet
 says so next to the lines.
+
 The engine is the upstream solidcraft-cli; its tool list, parameter docs and command catalog
 are the upstream ones (docs/mcp.md in the SolidCraft repository). Two rules are ours:
 

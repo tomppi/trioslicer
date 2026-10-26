@@ -155,10 +155,10 @@ class AgentBridgeProxyTest {
         assertNull(proxy.boundAddress())
         assertEquals(BridgeLinkState.OFF, lineOf(proxy).state)
         assertNull("off has no line to paste", lineOf(proxy).line)
-        val refused = runCatching { Socket("127.0.0.1", port).close() }.exceptionOrNull()
-        assertTrue("a closed proxy must refuse connections", refused is ConnectException)
 
-        // Nothing leaked: the proxy's own port is bindable again.
+        // The listener is really gone: its own address and port are bindable again. This is
+        // the check that cannot be fooled by another process on the host holding that port at
+        // the moment (a plain connect can be answered by anything, and was, once).
         ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")).close()
     }
 

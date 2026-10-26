@@ -28,12 +28,17 @@ the **Reachable on the network** switch in the CAD agent sheet:
   it. A development machine can still reach it through `adb forward tcp:9878 tcp:9878`.
 - **On** - the app republishes **all three agent engines** on this device's network address at
   their own loopback ports: Blender MCP 9876, the Python CAD engine 9877, and SolidCraft 9878.
-  The sheet lists one row per engine with its **connect line** and a Copy button; SolidCraft's
-  is `tcp://<this device's address>:9878`. The address is chosen from the phone's own interfaces
-  (a tailnet address first, then a private LAN one), so it is not a device name and not a
-  setting. **That line is the connection** - no adb, no serve rule, no forward, and no device
-  serial anywhere in the loop, which matters because a serial is exactly how an agent ends up
-  poking the wrong phone.
+  The sheet lists one row per engine. Each row's **Copy** puts ONE line on the clipboard, after
+  the fingerprint prompt - the connect line together with that engine's own token:
+
+      tcp://<this device's address>:<port> token=<that engine's token>
+
+  For SolidCraft that is `tcp://<address>:9878 token=<token>`. So connecting is one copy and one
+  paste, not a separate address and token. The address is chosen from the phone's own
+  interfaces (a tailnet address first, then a private LAN one), so it is not a device name and
+  not a setting. **That line is the connection** - no adb, no serve rule, no forward, and no
+  device serial anywhere in the loop, which matters because a serial is exactly how an agent
+  ends up poking the wrong phone.
 
 Each row also says what is behind the line: **app bridge up** means the listener and the engine
 both answer; **engine not running** means the address is published but nothing is listening
@@ -60,12 +65,14 @@ reached by publishing its loopback port from that phone (TailSocks in root mode 
      retry in a loop.
    - timeout or connection refused - the network reach is not published: the switch is off, or
      the phone is not reachable at that address (Wi-Fi or tailnet down).
-2. **Token.** The user taps **Copy MCP token** in the CAD agent sheet (the clipboard gesture is
-   biometric-gated on purpose; the app is the only place a token can be handed over on a phone
-   without root). It is one tap. Each engine has its own token: Blender's and the Python CAD
-   engine's are copied from their own menus, SolidCraft's from the CAD agent sheet. Treat every
-   one as a bearer credential: not in logs, not in chat history. The app's forwarder copies
-   bytes and logs nothing, so the token does not become an app log line.
+2. **The line.** The user taps **Copy** on the engine's row in the CAD agent sheet; it copies
+   the address AND that engine's token as the one line above (the prompt is biometric because
+   the line carries a credential; the app is the only place a token can be handed over on a
+   phone without root). If the row says **start the engine first - its token is created when it
+   starts**, ask the user to open the sheet and press Connect agent (SolidCraft) or start the
+   engine from its own menu (Blender, CAD), then Copy again. Treat the token as a bearer
+   credential: not in logs, not in chat history. The app's forwarder copies bytes and logs
+   nothing, so the token does not become an app log line.
 3. Speak newline-delimited JSON-RPC 2.0 on that socket. Every message carries the token as a
    top-level "token" field (or inside params):
 

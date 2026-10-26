@@ -145,13 +145,9 @@ import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.Vec3
 import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ViewerOrientation
-import android.content.ClipData
-import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.app.KeyguardManager
 import android.content.Context
-import android.os.Build
-import android.os.PersistableBundle
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -166,6 +162,9 @@ import com.tomppi.enderslicer.modelling.CadViewerSettings
 import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
+import com.tomppi.enderslicer.agent.AgentBridgeCopy
+import com.tomppi.enderslicer.agent.AgentBridgeTarget
+import com.tomppi.enderslicer.agent.AgentBridgeTokens
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
@@ -2834,7 +2833,9 @@ fun EnderSlicerApp(
                     )
                 },
                 onNetworkReachableChange = viewModel::setCadBridgeNetworkReachable,
-                onCopyConnectLine = { line -> copyBridgeConnectLine(context, line) },
+                onCopyConnectLine = { target, address ->
+                    requestConnectLineCopy(context, target, address)
+                },
                 onExport = { format ->
                     when (format) {
                         "step" -> cadStepExportPicker.launch(exportBase + ".step")
@@ -3036,27 +3037,28 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
 
 /** More hub: grouped navigation to everything outside the plate. */
 /**
- * The only way to an engine's MCP token: ask for the user's fingerprint - or, on a
+ * The only way an engine's credential leaves the app: ask for the user's fingerprint - or, on a
  * phone with no reader, their screen lock - and copy nothing unless that succeeds.
  *
- * The token is a credential for an engine that runs code inside this app, so a stray
- * tap must not be able to hand it to whoever is holding the phone. That is the same
- * gesture a banking app puts in front of a payment.
+ * Both hand-overs go through here: the token-only copy in the Blender and CAD menus, and the
+ * CAD agent sheet row's one-line copy that carries the connect line AND that engine's token. The
+ * token is a credential for an engine that runs code inside this app, so a stray tap must not be
+ * able to hand it to whoever is holding the phone. That is the same gesture a banking app puts
+ * in front of a payment.
  *
- * Cancelling or failing the prompt copies nothing and says so. A phone with no screen
- * lock at all has nothing to authenticate with, so it is refused with what to do about
- * it; a phone whose lock carries no fingerprint is not refused - the prompt asks for
- * the PIN, pattern or password instead, which is why DEVICE_CREDENTIAL is allowed here.
- *
- * [tokenFile] is evaluated after authentication, never before it: Blender's token is
- * generated on first use, so asking the engine for it stays on the far side of the
- * prompt along with the read.
+ * [content] is evaluated after authentication, never before it: the token file is read (and the
+ * ready-to-paste line built) only on the far side of the prompt. The clip is marked sensitive so
+ * Android keeps it out of the clipboard preview, and nothing here logs the value.
  */
-private fun requestMcpTokenCopy(
+private fun requestSensitiveClipCopy(
     context: Context,
     clipLabel: String,
+    promptTitle: String,
     engineName: String,
-    tokenFile: () -> File,
+    copiedMessage: String,
+    cancelledMessage: String,
+    unavailableMessage: String,
+    content: (Context) -> String?,
 ) {
     // BiometricPrompt hosts itself in a fragment, so its host has to be a
     // FragmentActivity - MainActivity is one. Anything else cannot be asked, so it
@@ -3065,7 +3067,7 @@ private fun requestMcpTokenCopy(
     if (activity == null) {
         Toast.makeText(
             context,
-            "The MCP token needs the app's own screen to unlock",
+            "This needs the app's own screen to unlock",
             Toast.LENGTH_SHORT,
         ).show()
         return
@@ -3102,19 +3104,28 @@ private fun requestMcpTokenCopy(
         ContextCompat.getMainExecutor(activity),
         object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                copyMcpToken(activity, tokenFile(), clipLabel)
+                val text = runCatching { content(activity) }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    Toast.makeText(activity, unavailableMessage, Toast.LENGTH_SHORT).show()
+                    return
+                }
+                // Marked sensitive: the clipboard holds a credential, and the OS must not
+                // preview it in the clipboard overlay or the share sheet.
+                val clip = AgentBridgeCopy.sensitiveClip(clipLabel, text)
+                activity.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+                Toast.makeText(activity, copiedMessage, Toast.LENGTH_SHORT).show()
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                 // Cancel, back, a locked-out sensor, nothing enrolled: every one of them
                 // leaves the clipboard alone and says so.
-                Toast.makeText(activity, "MCP token not copied", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, cancelledMessage, Toast.LENGTH_SHORT).show()
             }
         },
     )
     prompt.authenticate(
         BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Copy MCP token")
+            .setTitle(promptTitle)
             .setSubtitle("Anyone you give this to can run code in the app's $engineName engine")
             // No setNegativeButtonText: with DEVICE_CREDENTIAL among the allowed
             // authenticators the builder rejects one ("Negative text must not be set if
@@ -3126,49 +3137,64 @@ private fun requestMcpTokenCopy(
 }
 
 /**
- * Puts the CAD bridge's connect line on the clipboard.
+ * Copies an engine's token alone: the Blender and CAD menus' **Copy MCP token** items.
  *
- * The line is a scheme, this device's address and the port - it is not a secret, so unlike the
- * token there is no biometric gate and nothing to redact from the clipboard preview. It is the
- * address half of the hand-over; the token is still copied separately through its own gated
- * action, and the sheet says both are needed.
+ * [tokenFile] is evaluated after authentication, never before it, because Blender's token is
+ * generated on first use - asking the engine for it stays on the far side of the prompt.
  */
-private fun copyBridgeConnectLine(context: Context, line: String) {
-    val clip = ClipData.newPlainText("SolidCraft CAD bridge address", line)
-    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
-    Toast.makeText(context, "Connect line copied", Toast.LENGTH_SHORT).show()
+private fun requestMcpTokenCopy(
+    context: Context,
+    clipLabel: String,
+    engineName: String,
+    tokenFile: () -> File,
+) {
+    requestSensitiveClipCopy(
+        context = context,
+        clipLabel = clipLabel,
+        promptTitle = "Copy MCP token",
+        engineName = engineName,
+        copiedMessage = "MCP token copied",
+        cancelledMessage = "MCP token not copied",
+        unavailableMessage = "The MCP token is not available yet",
+    ) {
+        runCatching { tokenFile().takeIf { it.isFile }?.readText()?.trim() }.getOrNull()
+    }
 }
 
 /**
- * Puts an engine's MCP token on the clipboard so a modelling agent can be given
- * it directly. Reached only through [requestMcpTokenCopy], never directly: the
- * clipboard write below happens after the user has authenticated.
+ * Copies one CAD agent sheet row's hand-over: the connect line AND that engine's own token, one
+ * line, so the user authenticates once and pastes once.
  *
- * The token file sits in app-private storage and the engine refuses every
- * command, ping included, without it. On a phone without root there is no way
- * to read that file from outside, which is exactly what the token is for, so the
- * app hands it over instead - marked sensitive so Android keeps it out of the
- * clipboard preview.
- *
- * Only the file named by the caller is read, and nothing is created here:
- * BlenderEngine.ensureToken generates Blender's token on demand while CadEngine
- * writes the CAD one when it starts, so an engine that never started has none,
- * which is what "not available yet" reports.
+ * The token is read here - after the prompt, never before - and [AgentBridgeCopy] builds the
+ * single line. An engine that has never run has no token file, so there is nothing honest to
+ * copy: the toast names that instead of putting half a line on the clipboard. The sheet already
+ * disables Copy for that row, so this is the race-path answer.
  */
-private fun copyMcpToken(context: Context, tokenFile: File, clipLabel: String) {
-    val token = runCatching { tokenFile.takeIf { it.isFile }?.readText()?.trim() }.getOrNull()
-    if (token.isNullOrBlank()) {
-        Toast.makeText(context, "The MCP token is not available yet", Toast.LENGTH_SHORT).show()
-        return
-    }
-    val clip = ClipData.newPlainText(clipLabel, token)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        clip.description.extras = PersistableBundle().apply {
-            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+private fun requestConnectLineCopy(
+    context: Context,
+    target: AgentBridgeTarget,
+    address: String,
+) {
+    requestSensitiveClipCopy(
+        context = context,
+        clipLabel = target.name + " connect line",
+        promptTitle = "Copy connect line",
+        engineName = target.engineName,
+        copiedMessage = "Connect line and token for " + target.name + " copied",
+        cancelledMessage = "Connect line not copied",
+        unavailableMessage = AgentBridgeCopy.MISSING_TOKEN_REASON,
+    ) { ctx ->
+        when (
+            val ready = AgentBridgeCopy.line(
+                address,
+                target.port,
+                AgentBridgeTokens.read(ctx, target.port),
+            )
+        ) {
+            is AgentBridgeCopy.Ready.Line -> ready.text
+            is AgentBridgeCopy.Ready.MissingToken -> null
         }
     }
-    context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
-    Toast.makeText(context, "MCP token copied", Toast.LENGTH_SHORT).show()
 }
 
 @Composable

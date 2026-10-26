@@ -132,13 +132,15 @@ Two limits worth stating in the same breath:
 - **Root, or a root-capable adb.** `adb shell su -c 'cat <path>'` on the dev phone, and a plain
   `cat` where adbd already runs as root (`docs/skills/blender-mcp-engine.md:20-22`, `:44-45`;
   `docs/skills/cad-engine.md:93-99`).
-- **The user, in the app.** *Blender → Copy MCP token* (`EnderSlicerApp.kt:1345-1366`),
-  *CAD → Copy MCP token* (`EnderSlicerApp.kt:1420-1435`; CAD since 1.8.8, `CHANGELOG.md:19-20`),
-  and *Copy MCP token* in the CAD agent sheet for SolidCraft. All go through
-  `requestMcpTokenCopy` (`EnderSlicerApp.kt:2516-2587`), which requires the
+- **The user, in the app.** *Blender → Copy MCP token* and *CAD → Copy MCP token* in their own
+  menus (token only), and the CAD agent sheet row's **Copy**, which puts the connect line AND
+  that engine's token on the clipboard as one line:
+  `tcp://<address>:<port> token=<token>` (`AgentBridgeCopy`, `agent/AgentBridgeHandover.kt`).
+  All go through `requestSensitiveClipCopy` (`EnderSlicerApp.kt:3053`), which requires the
   fingerprint or the device credential and copies nothing if that fails; the clip is marked
-  sensitive so Android does not preview it (`:2605-2618`). The CAD agent sheet's connect
-  lines are copied separately and are not sensitive - they name an address, not a secret.
+  sensitive so Android does not preview it. The row's token is read only after the prompt, from
+  that engine's own file (`AgentBridgeTokens`), and a row whose engine has never run has no
+  token file: it disables Copy and says so instead of copying half a hand-over.
 - **A debug build only.** `adb run-as` reaches the app's files when the APK is debuggable, and the
   released APK is not (`TECHNICAL.md:110-112`).
 - **On a non-rooted phone an agent cannot read it at all.** There is no read path an agent can use;
@@ -153,9 +155,9 @@ device, and the token beside each is written anew.
 
 ## 6. The biometric gate on the in-app copy
 
-Both *Copy MCP token* items authenticate the phone's owner first: from the Blender menu
-(`EnderSlicerApp.kt:1345-1366`, the call at `:1355`) and from the CAD menu (`:1420-1435`, the call
-at `:1425`). Each hands its work to `requestMcpTokenCopy` (`EnderSlicerApp.kt:2516-2587`), which
+Every copy path authenticates the phone's owner first: the Blender menu's *Copy MCP token*, the
+CAD menu's, and the CAD agent sheet row's *Copy*, which carries the connect line and the token
+together. Each hands its work to `requestSensitiveClipCopy` (`EnderSlicerApp.kt:3053`), which
 raises `androidx.biometric`'s `BiometricPrompt` (`app/build.gradle.kts:1090-1091` -
 androidx.biometric **1.1.0** and androidx.fragment **1.9.1**; `USE_BIOMETRIC` is declared at
 `AndroidManifest.xml:12`; `MainActivity` extends `FragmentActivity`, `MainActivity.kt:41`, which the
@@ -164,13 +166,13 @@ DEVICE_CREDENTIAL` (`EnderSlicerApp.kt:2538-2540`) - any fingerprint or face, or
 PIN, pattern or password behind it - so a lock without an enrolled fingerprint is not refused: the
 prompt offers the credential instead.
 
-The prompt states the stakes before anything is read - *Copy MCP token*, with the subtitle "Anyone
-you give this to can run code in the app's Blender engine" (CAD's says the same;
-`EnderSlicerApp.kt:2578-2579`). The token file is not read until authentication succeeds: the
-caller's `tokenFile` lambda and the file read both happen on the success path
-(`EnderSlicerApp.kt:2565-2567`, `:2605-2606`), which for Blender means the token is not even
-generated on first use until then. A failure or a cancellation copies nothing and answers "MCP token
-not copied" (`:2569-2573`).
+The prompt states the stakes before anything is read - *Copy MCP token* for a token-only copy, or
+*Copy connect line* for a sheet row - with the subtitle "Anyone you give this to can run code in
+the app's <engine> engine", naming that row's engine. The token file is not read until
+authentication succeeds: the content lambda runs on the success path only, which for Blender
+means the token is not even generated on first use until then. A failure or a cancellation copies
+nothing and answers "MCP token not copied" or "Connect line not copied"; the successful toast
+names the engine and never the token.
 
 Three states, three answers, none of them silent:
 
@@ -179,9 +181,11 @@ Three states, three answers, none of them silent:
   (`EnderSlicerApp.kt:2546-2558`), and nothing is read or copied.
 - **A lock without an enrolled fingerprint.** Not a refusal: with `DEVICE_CREDENTIAL` allowed, the
   prompt asks for the PIN, pattern or password instead of a fingerprint.
-- **No token file yet.** The read happens only after authentication, so the existing "The MCP token
-  is not available yet" (`EnderSlicerApp.kt:2605-2610`) is now what a successful authentication
-  finds when the engine has not written its token.
+- **No token file yet.** The read happens only after authentication, so the token-only copy finds
+  "The MCP token is not available yet" when the engine has not written its token. A sheet row
+  checks the file's existence before offering Copy: it says "start the engine first - its token
+  is created when it starts" and disables the button, so no prompt appears for a copy that
+  could not contain a token.
 
 The platform forbids a custom negative button once `DEVICE_CREDENTIAL` is among the allowed
 authenticators (`EnderSlicerApp.kt:2580-2583`), so the Cancel shown is the system prompt's own; it

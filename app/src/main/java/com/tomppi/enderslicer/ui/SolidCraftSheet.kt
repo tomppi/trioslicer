@@ -35,8 +35,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.agent.AgentBridgeCopy
 import com.tomppi.enderslicer.agent.AgentBridgeLine
 import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.agent.AgentBridgeTarget
+import com.tomppi.enderslicer.agent.AgentBridgeTokens
 import com.tomppi.enderslicer.agent.BridgeLinkState
 import com.tomppi.enderslicer.agent.BridgeNetworkPreference
 import com.tomppi.enderslicer.solidcraft.CadDocument
@@ -70,8 +73,12 @@ internal fun SolidCraftSheet(
     onCopyToken: () -> Unit,
     /** Turns the network bind on or off; the setting is persisted by the engine's owner. */
     onNetworkReachableChange: (Boolean) -> Unit,
-    /** Puts the connect line on the clipboard; it holds no secret, so there is no gate here. */
-    onCopyConnectLine: (String) -> Unit,
+    /**
+     * Copies one row's ready-to-paste line (address AND that engine's token). The token read and
+     * the clipboard write sit behind the sheet's biometric gate in the caller; the token is
+     * never a value this sheet renders.
+     */
+    onCopyConnectLine: (AgentBridgeTarget, String) -> Unit,
     onExport: (format: String) -> Unit,
     onOpenFile: () -> Unit,
     onAsk: (String) -> Unit,
@@ -98,15 +105,25 @@ internal fun SolidCraftSheet(
     // publisher, so their state is the sockets' real state, not what the switch asked for.
     var networkEnabled by remember { mutableStateOf(BridgeNetworkPreference.isEnabled(context)) }
     var bridgeLines by remember { mutableStateOf(AgentBridges.lines()) }
+    // Which engines have written their token file yet. A row may only copy a line that carries
+    // a token, so an engine that has never started offers no Copy and says why. This is the
+    // only token state the sheet holds: the token itself is read after the fingerprint prompt,
+    // on the copy path, and never enters composition or the rendered model.
+    var tokenPorts by remember { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(networkEnabled) {
         if (!networkEnabled) {
             bridgeLines = AgentBridges.lines()
+            tokenPorts = withContext(Dispatchers.IO) { AgentBridgeTokens.available(context) }
             return@LaunchedEffect
         }
         while (true) {
             // Cheap: the publisher follows the device's address on its own and keeps the
-            // state; this only copies the current rows for the sheet.
-            bridgeLines = withContext(Dispatchers.IO) { AgentBridges.lines() }
+            // state; this only copies the current rows and token availability for the sheet.
+            val snapshot = withContext(Dispatchers.IO) {
+                AgentBridges.lines() to AgentBridgeTokens.available(context)
+            }
+            bridgeLines = snapshot.first
+            tokenPorts = snapshot.second
             delay(1_000)
         }
     }
@@ -232,7 +249,13 @@ internal fun SolidCraftSheet(
                             color = MaterialTheme.colorScheme.error,
                         )
                     } else {
-                        bridgeLines.forEach { line -> BridgeLineRow(line, onCopyConnectLine) }
+                        bridgeLines.forEach { line ->
+                            BridgeLineRow(
+                                line = line,
+                                tokenReady = line.target.port in tokenPorts,
+                                onCopy = onCopyConnectLine,
+                            )
+                        }
                     }
                     Text(
                         "Turning this on publishes Blender's, the CAD engine's and SolidCraft's " +
@@ -244,22 +267,42 @@ internal fun SolidCraftSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
+                        "Copy puts ONE line on the clipboard - the address and that engine's own " +
+                            "token - so one fingerprint prompt and one paste are enough. The token " +
+                            "is never shown on this screen, and a row says so when its engine has " +
+                            "not been started yet and the token does not exist.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
                         "Turning it off closes every published listener again; the engines keep " +
-                            "running. Tokens are copied per engine: SolidCraft with the button " +
-                            "below, Blender and the CAD engine from their own menus.",
+                            "running.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
+        // The token-only copy is the fallback hand-over: it is the only way to copy a token
+        // when no published row can offer the one-line form - the switch is off, or there is
+        // no network address. While a row IS copying address + token together, this button
+        // would be a second, weaker path to the same credential, so it is hidden then.
+        val rowsCarryToken = networkEnabled && bridgeLines.any { line ->
+            line.line != null && line.address != null && line.target.port in tokenPorts
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                Text("Copy MCP token")
+            if (!rowsCarryToken) {
+                OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                    Text("Copy MCP token")
+                }
             }
-            OutlinedButton(onClick = onOpenFile, enabled = document == null, modifier = Modifier.weight(1f)) {
+            OutlinedButton(
+                onClick = onOpenFile,
+                enabled = document == null,
+                modifier = if (rowsCarryToken) Modifier.fillMaxWidth() else Modifier.weight(1f),
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(EnderSlicerDimens.Space4))
                 Text("Open CAD file")
@@ -370,9 +413,16 @@ internal fun SolidCraftSheet(
 /**
  * One published bridge in the sheet: its name and port, the line to paste, and the state of
  * the socket behind it - "app bridge up" and "engine not running" are different problems.
+ *
+ * Copy is offered only once that engine has written its token, because the line it puts on the
+ * clipboard carries the token too (after the fingerprint prompt) - never a line without one.
  */
 @Composable
-private fun BridgeLineRow(line: AgentBridgeLine, onCopy: (String) -> Unit) {
+private fun BridgeLineRow(
+    line: AgentBridgeLine,
+    tokenReady: Boolean,
+    onCopy: (AgentBridgeTarget, String) -> Unit,
+) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = MaterialTheme.shapes.small,
@@ -396,18 +446,24 @@ private fun BridgeLineRow(line: AgentBridgeLine, onCopy: (String) -> Unit) {
                     )
                 }
                 Text(
-                    line.status,
+                    if (tokenReady) line.status else AgentBridgeCopy.MISSING_TOKEN_REASON,
                     style = MaterialTheme.typography.labelSmall,
-                    color = when (line.state) {
-                        BridgeLinkState.UP -> MaterialTheme.colorScheme.primary
-                        BridgeLinkState.ENGINE_NOT_RUNNING -> MaterialTheme.colorScheme.onSurfaceVariant
-                        BridgeLinkState.NO_ADDRESS, BridgeLinkState.REBINDING -> MaterialTheme.colorScheme.error
-                        BridgeLinkState.OFF -> MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        !tokenReady -> MaterialTheme.colorScheme.onSurfaceVariant
+                        line.state == BridgeLinkState.UP -> MaterialTheme.colorScheme.primary
+                        line.state == BridgeLinkState.ENGINE_NOT_RUNNING ->
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        line.state == BridgeLinkState.NO_ADDRESS ||
+                            line.state == BridgeLinkState.REBINDING -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
             }
-            line.line?.let { address ->
-                TextButton(onClick = { onCopy(address) }) { Text("Copy") }
+            val address = line.address
+            if (address != null && line.line != null) {
+                TextButton(onClick = { onCopy(line.target, address) }, enabled = tokenReady) {
+                    Text("Copy")
+                }
             }
         }
     }

@@ -16,10 +16,13 @@ The app bundle (package `com.tomppi.enderslicercura`) runs Blender 3.6 **inside 
 
 **New in 1.9.5 - no adb forward needed.** The CAD agent sheet's **Reachable on the network**
 switch publishes this bridge (and the CAD engine's 9877 and SolidCraft's 9878) on the phone's
-own network address at the same port, and the sheet prints a copyable line:
-`tcp://<phone address>:9876`. With that switch on, use the line and the *Blender → Copy MCP
-token* value; the adb forward below is the fallback for a phone with the switch off, or for a
-development phone. The app's forwarder is transport only: it checks no token, adds no
+own network address at the same port. With the switch on, the row's **Copy** puts the address
+AND Blender's token on the clipboard as one line, after the app's fingerprint prompt:
+`tcp://<phone address>:9876 token=<token>`. Use that line directly - the token is already in it,
+so there is no separate token copy. A row whose engine has never started has no token file yet
+and says so; start the Blender engine, then Copy. The adb forward below is the fallback for a
+phone with the switch off, or for a development phone (there, *Blender → Copy MCP token* is the
+token-only path). The app's forwarder is transport only: it checks no token, adds no
 authentication and logs no message content.
 
 - **Device: `<phone-tailscale-ip>:5555` - the tailnet address, and the one to use.** It works from
