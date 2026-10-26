@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -185,7 +186,7 @@ internal fun SolidCraftSheet(
             delay(1_000)
         }
     }
-    var draft by remember { mutableStateOf("") }
+    var draft by rememberSaveable { mutableStateOf("") }
     val scroll = rememberScrollState()
 
     Column(
@@ -653,9 +654,13 @@ private fun InAppAgentSettings(
     onWebSearchChange: (Boolean) -> Unit,
     onLendViewChange: (Boolean) -> Unit,
 ) {
-    var baseUrl by remember { mutableStateOf(settings.baseUrl) }
-    var model by remember { mutableStateOf(settings.model) }
-    // Never the stored value: this holds only what the user is typing in this session.
+    // Unsaved endpoint edits survive a rotation, so typing a base URL and turning the phone
+    // does not throw the field away.
+    var baseUrl by rememberSaveable { mutableStateOf(settings.baseUrl) }
+    var model by rememberSaveable { mutableStateOf(settings.model) }
+    // Never the stored value: this holds only what the user is typing in this session, and it is
+    // deliberately NOT rememberSaveable - a typed credential must not be handed to the saved
+    // instance state (which Android may write to disk for a process death).
     var key by remember { mutableStateOf("") }
     Column(
         modifier = Modifier.fillMaxWidth(),

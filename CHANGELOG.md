@@ -61,6 +61,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same way. Orbiting never does - a face is not a screen position.
 - **The sheet's endpoint save no longer resets the new switch.** `saveAgentSettings` carries the
   stored **Lend the agent my view** choice forward, the same way it carries the web-search one.
+- **Rotating the phone no longer deletes the conversation.** The CAD conversation, the modelling
+  chat's messages and their status/busy flags were composable `remember`s, and the manifest has no
+  `android:configChanges`, so the activity recreate behind a rotation threw them away. They are
+  ViewModel state now (`MainViewModel`: `cadConversations`, `cadBusy`/`cadStatus`, the harness
+  chat's own `harnessCadBusy`/`harnessCadStatus`, `modellingMessages`,
+  `modellingBusy`/`modellingStatus`, the web-tool notice and the chat's selected source), which
+  the Activity's ViewModelStore keeps across the recreate: the sheet and the chat overlay read the
+  same state, so the transcript, the **Working…** state and the selected source are still there
+  after a rotation. The two backends' statuses are separate, so a harness reconnect after a
+  rotation cannot show its failure in the in-app conversation's status line. The in-app turn itself now runs in the ViewModel's
+  scope instead of the composition's, so a rotation neither cancels it nor loses the tool rows it
+  already produced; the harness chats are re-adopted from their stored session ids and reload their
+  transcripts from `messages()`, and the in-app conversation is left untouched. This is
+  configuration-change survival only - deliberately not persisted to disk, so a process death
+  starts an empty conversation. The harness connection flags, the sheet's unsaved endpoint fields
+  and its draft also survive a rotation (the API-key field deliberately does not: a typed
+  credential is not put in saved instance state).
 
 ### Tested
 

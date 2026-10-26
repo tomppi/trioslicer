@@ -4,6 +4,9 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tomppi.enderslicer.BuildConfig
@@ -15,6 +18,8 @@ import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
 import com.tomppi.enderslicer.annotation.WorkPlane
 import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.cadagent.AgentToolTrace
+import com.tomppi.enderslicer.cadagent.CadAgent
 import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.data.AppStateStore
 import com.tomppi.enderslicer.data.BuiltInGcode
@@ -589,6 +594,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The agent sheet: the only place a human asks for a change to a CAD document. */
     val solidCraftSheetOpen: StateFlow<Boolean> = _solidCraftSheetOpen.asStateFlow()
+
+    // --- The chat conversations, held across configuration changes --------------------------
+    //
+    // Rotating the phone recreates the activity, and these used to be composable `remember`s, so
+    // the reported bug was "rotating the phone deletes the conversation". They live in the
+    // ViewModel now, which survives a configuration change.
+    //
+    // Deliberately NOT persisted to disk: a conversation survives a rotation, not a process
+    // death. It is session state, not saved state - writing a transcript to disk would outlive
+    // the turn and the document it belongs to.
+
+    /** The CAD document's two conversations: the in-app agent's and the harness session's. */
+    var cadConversations by mutableStateOf(CadConversations())
+
+    /** The in-app agent's status line and turn flag, both surviving a rotation. */
+    var cadStatus: String? by mutableStateOf(null)
+    var cadBusy by mutableStateOf(false)
+
+    // The harness session is its own backend with its own status and busy flag: an in-app turn
+    // must not make the harness source look busy, and a harness reconnect must not put its
+    // failure into the in-app conversation's status line.
+    var harnessCadStatus: String? by mutableStateOf(null)
+    var harnessCadBusy by mutableStateOf(false)
+
+    /** The in-app agent's endpoint notice, when it removed the web tools for this conversation. */
+    var inAppWebNotice: String? by mutableStateOf(null)
+
+    /** The chat's selected source; the sheet's mode chips and the rail door read the same state. */
+    var chatSource by mutableStateOf(ChatSource.IN_APP)
+
+    /** The live in-app agent, kept here so a turn survives - and can be cancelled across - a rotation. */
+    var inAppCadAgent: CadAgent? by mutableStateOf(null)
+
+    /** The modelling chat's conversation, the Blender screen's own. */
+    var modellingMessages by mutableStateOf(listOf<AiChatMessage>())
+    var modellingStatus: String? by mutableStateOf(null)
+    var modellingBusy by mutableStateOf(false)
+
+    /** Bumped when a CAD turn ends, so the plate asks for a fresh frame and scene read. */
+    var cadRefreshTick by mutableStateOf(0)
+        private set
+
+    /**
+     * Runs one chat turn in the ViewModel's scope.
+     *
+     * This is what keeps a running in-app turn alive across a rotation: a composition's
+     * rememberCoroutineScope is cancelled when the activity is recreated, while this scope
+     * belongs to the ViewModel and outlives it. The turn's state is all ViewModel state, so the
+     * next composition draws the rows it already produced.
+     */
+    fun runChatTurn(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit): Job =
+        viewModelScope.launch(block = block)
+
+    /** Posts one chat-state update from an agent callback running off the UI thread. */
+    fun postChatUpdate(block: () -> Unit) {
+        viewModelScope.launch { block() }
+    }
+
+    /** A tool row's start or end, in the in-app conversation only. */
+    fun applyCadToolTrace(trace: AgentToolTrace) {
+        cadConversations = cadConversations.withToolTrace(trace)
+    }
+
+    /** Stops the in-app turn (the chat's Stop and the CAD agent sheet's Cancel, in-app mode). */
+    fun cancelInAppTurn() {
+        inAppCadAgent?.cancel()
+    }
+
+    /** Marks one CAD turn finished; the plate re-reads the frame and the scene on the next frame. */
+    fun noteCadTurnFinished() {
+        cadRefreshTick++
+    }
 
     fun openSolidCraftSheet() {
         _solidCraftSheetOpen.value = true

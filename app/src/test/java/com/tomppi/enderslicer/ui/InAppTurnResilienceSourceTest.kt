@@ -60,12 +60,15 @@ class InAppTurnResilienceSourceTest {
         // One turn function: begin before the try, end inside its finally.
         val turn = app.substringAfter("fun askInAppAgent(text: String, stored: StoredAgentSettings)")
             .substringBefore("fun askInAppAgentFromChat")
-        val begin = turn.indexOf("InAppTurnKeeper.begin(context)")
+        val begin = turn.indexOf("InAppTurnKeeper.begin(context.applicationContext)")
         val tryIndex = turn.indexOf("try {")
         val finallyBody = turn.substringAfter("finally {")
         assertTrue("the keeper begins with the turn", begin >= 0)
         assertTrue("it begins before any request leaves the phone", begin < tryIndex)
-        assertTrue("the keeper ends in the turn's finally", finallyBody.contains("InAppTurnKeeper.end(context)"))
+        assertTrue(
+            "the keeper ends in the turn's finally",
+            finallyBody.contains("InAppTurnKeeper.end(context.applicationContext)"),
+        )
     }
 
     @Test

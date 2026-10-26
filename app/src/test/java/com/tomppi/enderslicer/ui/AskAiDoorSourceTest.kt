@@ -58,7 +58,7 @@ class AskAiDoorSourceTest {
         // The in-app loop appends to the in-app list, tool rows included.
         assertTrue(
             "a tool row goes through the in-app list only",
-            app.contains("cadConversations.withToolTrace(trace)"),
+            app.contains("viewModel.applyCadToolTrace(trace)"),
         )
         assertTrue("in-app messages are appended to the in-app list", app.contains("cadConversations.appendInApp("))
         // The harness session's writes go to the harness list and nowhere else.
@@ -68,21 +68,23 @@ class AskAiDoorSourceTest {
 
         // One shared selection: the overlay's source is the sheet's own mode, and the sheet reads
         // the list belonging to that same mode.
-        assertTrue(app.contains("source = agentSettings.mode.chatSource()"))
-        assertTrue(app.contains("onSourceChange = { setAgentMode(it.agentMode()) }"))
+        assertTrue(app.contains("source = viewModel.chatSource"))
+        assertTrue(app.contains("setAgentMode(it.agentMode())"))
         assertTrue(
             app.contains(
-                "messages = cadConversations.messagesFor(agentSettings.mode.chatSource())",
+                "messages = viewModel.cadConversations.messagesFor(agentSettings.mode.chatSource())",
             ),
         )
 
         // Every harness poll in the app repopulates the harness list - never the in-app one.
         val polls = Regex(
-            "pollForReply\\(\\s*chat,\\s*\\{ cadConversations = cadConversations\\.replaceHarness\\(it\\) \\}",
+            "pollForReply\\(\\s*chat,\\s*\\{ viewModel\\.cadConversations = " +
+                "viewModel\\.cadConversations\\.replaceHarness\\(it\\) \\}",
         ).findAll(app).count()
         assertEquals("both harness ask paths poll into the harness list", 2, polls)
         val resume = Regex(
-            "resumeReplyIfRunning\\(\\s*cad,\\s*\\{ cadConversations = cadConversations\\.replaceHarness\\(it\\) \\}",
+            "resumeReplyIfRunning\\(\\s*cad,\\s*\\{ viewModel\\.cadConversations = " +
+                "viewModel\\.cadConversations\\.replaceHarness\\(it\\) \\}",
         ).findAll(app).count()
         assertEquals("the restored CAD session repopulates the harness list", 1, resume)
     }
@@ -94,7 +96,7 @@ class AskAiDoorSourceTest {
         // replaced document must not leave its transcript on screen: both user lifecycle paths
         // clear the in-app list, and only that list.
         val clears = Regex(
-            "cadConversations = cadConversations\\.copy\\(inApp = emptyList\\(\\)\\)",
+            "viewModel\\.cadConversations = viewModel\\.cadConversations\\.copy\\(inApp = emptyList\\(\\)\\)",
         ).findAll(app).count()
         assertTrue("the document's close and replace paths clear the in-app list: " + clears, clears >= 2)
         assertTrue(app.contains("viewModel.closeCadDocument()"))

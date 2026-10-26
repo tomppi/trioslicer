@@ -250,6 +250,18 @@ sheet's mode chips: typing in either box always reaches the backend the chat is 
 - **Copy transcript** puts the messages and the tool rows on the clipboard as plain text
   (`You: …`, `tool: solid.box … 12 ms · 1 body created (Body1)`, `Agent: …`) so a bad turn can
   be handed to a human or another agent. Nothing secret is in it.
+- **A rotation keeps the conversation.** The manifest leaves `android:configChanges` unset, so
+  rotating the phone recreates the activity. The CAD conversation, the modelling chat's messages,
+  their busy/status flags and the chat's selected source live in `MainViewModel` (Compose state on
+  the ViewModel, which the activity's ViewModelStore keeps across the recreate), and the in-app
+  turn runs in the ViewModel's scope, not a composition scope - so the transcript, a running
+  turn's **Working…**/Stop and the source survive a rotation, and the tool rows produced before it
+  are still there when the answer lands after it. The harness chats re-adopt their stored session
+  ids and reload their transcripts from `messages()`; the in-app list is untouched by that
+  re-adoption. This is configuration-change survival only: nothing is persisted to disk, so a
+  process death starts an empty conversation. Unsaved sheet endpoint fields and the draft are
+  rememberSaveable; the API-key field is not, because a typed credential is not put in saved
+  instance state.
 - **Three sizes.** The bubble, the floating panel and **full screen** (`ui/ChatSize.kt`): the
   header's expand button (diagonal arrows) takes the panel to full screen, its collapse button or
   the Back gesture returns to the panel (a second Back closes the chat), and the bubble stays
