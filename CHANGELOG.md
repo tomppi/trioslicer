@@ -4,6 +4,45 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.8] - 2026-10-26
+
+### Added
+
+- **The in-app CAD agent can ask the user a question, and the app makes sure it is seen.**
+  `ask_user` is the app's own tool (like `plate_screenshot` and `web_search`, not an engine
+  tool): a question string, optional short options, and `allow_text` (default true). Executing it
+  shows the question as its own **card** in the in-app conversation - not a normal agent bubble -
+  with one chip per option, the composer for a free answer when allowed, and *The agent is
+  waiting on you.* It also **ends the turn cleanly**: there is no blocking wait anywhere, nothing
+  is spinning, the engine is not held, and the tool result says the answer arrives as the next
+  user message and starts the next turn. The runbook gains the rule for when to ask (ambiguous
+  requirements, a destructive or irreversible edit, a dimension or material the user has not
+  given) and that asking ends the turn.
+- **Attention when the chat is closed** - the user's "blinking ai bubble if its closed and the
+  agent wants some answers". While a question is unanswered and the chat is not open, the rail's
+  **Ask AI** action carries the one badge it can have: a small pulsing dot (idle it stays a plain
+  action with no badge). If the app is in the background, a notification - *CAD agent is asking a
+  question* - opens the chat on tap; if POST_NOTIFICATIONS was denied the rail pulse is the
+  fallback, so a question is never silent.
+- **No stuck wait state.** The pending question clears on answer, on Dismiss on the card, on any
+  new prompt, and when the CAD document is closed or converted; once cleared nothing is left
+  waiting or spinning.
+
+### Tested
+
+- New `AgentQuestionTest` (required question, trimmed/bounded options, closed-set `allow_text`),
+  `CadAgentAskUserTest` (the tool ends the turn with one completion and no second request, the
+  question is exposed with its options, no ask tool row, and a malformed question is a tool
+  failure the model can correct), `AskUserFlowTest` (Robolectric compose: the card and chips and
+  waiting line, a chip answers and clears the wait, Dismiss clears it without a prompt, a closed
+  option set closes the composer), `CadQuestionNotificationTest` (posted once, title and text,
+  cancelled on answer, can post the next question), `AskUserSourceTest` (only the ask_user path
+  sets the waiting flag; every dismissal path clears it; the rail badge and notification
+  conditions; the shipped runbook explains when to ask) and the catalogue test for the tool
+  definition and its "END THE TURN" description. Transcript copy includes the question and its
+  options; the rail badge is asserted shown only when asked. The harness's own ask-user remains
+  untouched - this is the in-app agent's version of the same idea.
+
 ## [1.9.7] - 2026-10-26
 
 ### Added

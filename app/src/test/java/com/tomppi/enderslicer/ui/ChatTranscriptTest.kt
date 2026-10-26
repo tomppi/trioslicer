@@ -157,6 +157,26 @@ class ChatTranscriptTest {
     }
 
     @Test
+    fun aQuestionCardIsPartOfTheCopiedTranscript() {
+        val text = chatTranscriptText(
+            listOf(
+                AiChatMessage(fromUser = true, text = "make me a lid"),
+                AiChatMessage(
+                    fromUser = false,
+                    text = "Which material should the lid use?",
+                    kind = AiChatEntryKind.QUESTION,
+                    question = com.tomppi.enderslicer.cadagent.AgentQuestion(
+                        "Which material should the lid use?",
+                        listOf("PLA", "PETG"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue("the question is copied: " + text, text.contains("question: Which material should the lid use?"))
+        assertTrue("the options are copied", text.contains("(options: PLA / PETG)"))
+    }
+
+    @Test
     fun nothingShapedLikeACredentialAppears() {
         // The rows are redacted where they are built; this pins the second half - the builder
         // adds no header, key or Authorization text of its own.

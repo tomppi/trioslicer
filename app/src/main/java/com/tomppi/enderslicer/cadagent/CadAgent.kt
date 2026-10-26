@@ -87,6 +87,17 @@ class CadAgent(
     @Volatile
     private var cancelled = false
 
+    /**
+     * The question the last turn asked with the app's `ask_user` tool, or null.
+     *
+     * Asking ends the turn (there is no blocking wait): [run] returns an empty reply with this
+     * set, and the UI shows the card and waits for the user. The answer arrives as the next user
+     * message and starts a new turn.
+     */
+    @Volatile
+    var lastQuestion: AgentQuestion? = null
+        private set
+
     /** What the endpoint has said about the web tool routes. */
     @Volatile
     var webAvailability: AgentWebTools.Availability = AgentWebTools.Availability.UNKNOWN
@@ -188,6 +199,7 @@ class CadAgent(
         }
         synchronized(lock) {
             cancelled = false
+            lastQuestion = null
             val chat = clientFactory(settings)
             client = chat
             val web = if (catalog.includesWebTools) webClientFactory(settings).also { webClient = it } else null
@@ -363,6 +375,7 @@ class CadAgent(
             }
             messages.put(assistantEcho(content, toolCalls))
             val capturedImages = ArrayList<PlateImage>()
+            var askedThisRound = false
             for (index in 0 until toolCalls.length()) {
                 if (cancelled) throw AgentException("cancelled", "Stopped")
                 val call = toolCalls.optJSONObject(index) ?: continue
@@ -374,14 +387,22 @@ class CadAgent(
                     is String -> arguments
                     else -> arguments.toString()
                 }
-                val callId = ++callIds
-                var produced: PlateImage? = null
-                val result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
-                    val outcome = executeTool(catalog, web, name, argumentsText, onActivity, view)
-                    produced = outcome.image
-                    outcome.result
+                val result: AgentToolHost.Result
+                if (name == AgentToolCatalog.ASK_USER) {
+                    // The question card is this call's entry in the transcript; a tool row on
+                    // top of it would only repeat the question.
+                    result = executeTool(catalog, web, name, argumentsText, onActivity, view).result
+                    askedThisRound = lastQuestion != null
+                } else {
+                    val callId = ++callIds
+                    var produced: PlateImage? = null
+                    result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
+                        val outcome = executeTool(catalog, web, name, argumentsText, onActivity, view)
+                        produced = outcome.image
+                        outcome.result
+                    }
+                    produced?.let(capturedImages::add)
                 }
-                produced?.let(capturedImages::add)
                 toolsRunInTurn++
                 messages.put(
                     JSONObject()
@@ -390,6 +411,16 @@ class CadAgent(
                         .put("content", result.text),
                 )
                 if (cancelled) throw AgentException("cancelled", "Stopped")
+                // Asking ends the turn: whatever else the model bundled into this reply is not
+                // run, and no further model request is made - the user's answer starts the next
+                // turn as a normal user message.
+                if (askedThisRound) break
+            }
+            if (lastQuestion != null) {
+                val asked = lastQuestion ?: AgentQuestion("")
+                remember(userText, content?.takeIf { it.isNotBlank() } ?: ("I asked the user: " + asked.question))
+                log("agent asked the user a question; the turn ended")
+                return ""
             }
             if (capturedImages.isNotEmpty() && !visionUnsupported) {
                 // The picture a plate_screenshot call asked for, attached to the next user-role
@@ -556,6 +587,7 @@ class CadAgent(
         view: AgentView,
     ): ToolOutcome {
         if (name == AgentToolCatalog.PLATE_SCREENSHOT) return runPlateScreenshot(view)
+        if (name == AgentToolCatalog.ASK_USER) return runAskUser(argumentsText)
         return ToolOutcome(
             executeCatalogTool(catalog, web, name, argumentsText, onActivity),
         )
@@ -605,6 +637,43 @@ class CadAgent(
                 outcome = outcome,
             ),
             image = image,
+        )
+    }
+
+    /**
+     * The app's question, as the model's `ask_user` call.
+     *
+     * There is no wait here: the question becomes [lastQuestion], the reply's tool result states
+     * that the question was asked and the turn is over, and `converse` returns at once. What the
+     * user answers arrives as the next user message and starts a new turn - the model that asked
+     * is told exactly that.
+     */
+    private fun runAskUser(argumentsText: String): ToolOutcome {
+        val arguments = runCatching { JSONObject(argumentsText) }.getOrNull()
+            ?: return ToolOutcome(
+                AgentToolHost.Result(
+                    TOOL_ERROR + "the arguments for ask_user were not a JSON object:\n" +
+                        argumentsText.take(400) + "\nSend one JSON object with a question.",
+                    failed = true,
+                    outcome = "arguments were not JSON",
+                ),
+            )
+        val question = AgentQuestion.fromArguments(arguments)
+            ?: return ToolOutcome(
+                AgentToolHost.Result(
+                    TOOL_ERROR + "ask_user needs a non-empty question string (at most " +
+                        AgentQuestion.MAX_QUESTION_LENGTH + " characters), an optional array of " +
+                        "short options strings, and an optional allow_text boolean.",
+                    failed = true,
+                    outcome = "no usable question",
+                ),
+            )
+        lastQuestion = question
+        return ToolOutcome(
+            AgentToolHost.Result(
+                text = question.resultText,
+                outcome = "asked the user: " + question.question.take(80),
+            ),
         )
     }
 

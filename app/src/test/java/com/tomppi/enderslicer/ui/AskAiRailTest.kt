@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -56,7 +57,7 @@ class AskAiRailTest {
     )
 
     @androidx.compose.runtime.Composable
-    private fun rail() {
+    private fun rail(badge: Boolean = false) {
         SessionRail(
             selected = selected,
             onSelect = { selected = it },
@@ -68,6 +69,7 @@ class AskAiRailTest {
             onExportGcode = {},
             onTools = {},
             onAskAi = { asks++ },
+            askAiBadge = badge,
             onSettings = { _, _ -> },
             onPrusaSettings = { _, _ -> },
             onOrcaSettings = { _, _ -> },
@@ -110,6 +112,30 @@ class AskAiRailTest {
 
         assertEquals(1, asks)
         assertEquals(AppTab.PLATE, selected)
+    }
+
+    @Test
+    fun theRailCarriesTheWaitingBadgeOnlyWhenTheAgentAskedAQuestion() {
+        compose.setContent {
+            Row(modifier = Modifier.fillMaxSize()) {
+                rail(badge = true)
+                Box(modifier = Modifier.weight(1f))
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("CAD agent is waiting for an answer").assertIsDisplayed()
+    }
+
+    @Test
+    fun theRailIsSilentWhenThereIsNoQuestion() {
+        compose.setContent {
+            Row(modifier = Modifier.fillMaxSize()) {
+                rail(badge = false)
+                Box(modifier = Modifier.weight(1f))
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("CAD agent is waiting for an answer").assertDoesNotExist()
     }
 
     @Test

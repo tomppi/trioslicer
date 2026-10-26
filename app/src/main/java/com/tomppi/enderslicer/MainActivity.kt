@@ -33,6 +33,7 @@ import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import com.tomppi.enderslicer.ui.ChatOpenRequest
 import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
 import com.tomppi.enderslicer.ui.EngineSetupScreen
@@ -66,7 +67,20 @@ class MainActivity : FragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        consumeOpenChatIntent(intent)
         startKlipperHostIfPrinterAttached(intent)
+    }
+
+    /**
+     * The question notification's tap asks for the AI chat, not just for the app.
+     *
+     * The extra is consumed here so a rotation or a restored intent does not open the chat
+     * again; the composition observes [ChatOpenRequest] and opens the chat on the next tick.
+     */
+    private fun consumeOpenChatIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(ChatOpenRequest.EXTRA_OPEN_AI_CHAT, false) != true) return
+        intent.removeExtra(ChatOpenRequest.EXTRA_OPEN_AI_CHAT)
+        ChatOpenRequest.request()
     }
 
     /**
@@ -99,6 +113,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        consumeOpenChatIntent(intent)
         MeshTriangleLimits.initialize(this)
         UiScale.initialize(this)
         Diagnostics.initialize(this)

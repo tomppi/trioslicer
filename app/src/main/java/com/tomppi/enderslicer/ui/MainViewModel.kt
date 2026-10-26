@@ -18,6 +18,7 @@ import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
 import com.tomppi.enderslicer.annotation.WorkPlane
 import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.cadagent.CadAgent
 import com.tomppi.enderslicer.conical.ConicalRuntime
@@ -642,6 +643,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var modellingMessages by mutableStateOf(listOf<AiChatMessage>())
     var modellingStatus: String? by mutableStateOf(null)
     var modellingBusy by mutableStateOf(false)
+
+    /**
+     * The in-app agent's question the user has not answered yet, or null.
+     *
+     * A question is asked with the app's `ask_user` tool, which ends the turn - nothing is
+     * running while this is non-null. The chat shows the question card, the rail's Ask AI item
+     * carries the one badge it can have, and the user's answer (or Dismiss) clears this and, for
+     * an answer, starts the next turn. It is cleared by every new prompt and by closing the
+     * document, so a dismissed question can never leave a stuck "waiting" state.
+     */
+    var pendingQuestion: AgentQuestion? by mutableStateOf(null)
+        private set
+
+    /** Shows a question card and marks the agent as waiting on the user's answer. */
+    fun onInAppQuestion(question: AgentQuestion) {
+        cadConversations = cadConversations.appendInApp(
+            AiChatMessage(
+                fromUser = false,
+                text = question.question,
+                kind = AiChatEntryKind.QUESTION,
+                question = question,
+            ),
+        )
+        pendingQuestion = question
+    }
+
+    /**
+     * Clears the waiting question: on answer, on Dismiss, on any new prompt, and when the
+     * document is closed or converted. Nothing else depends on it - the turn already ended.
+     */
+    fun clearPendingQuestion() {
+        pendingQuestion = null
+    }
 
     /** Bumped when a CAD turn ends, so the plate asks for a fresh frame and scene read. */
     var cadRefreshTick by mutableStateOf(0)

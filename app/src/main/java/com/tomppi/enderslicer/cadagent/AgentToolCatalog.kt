@@ -26,6 +26,8 @@ class AgentToolCatalog private constructor(
     private val plateTools: JSONArray,
     /** The app's own tools that call the configured endpoint (web search and fetch). */
     private val webTools: JSONArray,
+    /** The app's own tool that asks the user a question (see [ASK_USER]). */
+    private val askTools: JSONArray,
     /** Engine tools deliberately not offered here. */
     val hiddenNames: Set<String>,
     /** Engine tools skipped because their name is not a legal function name. */
@@ -38,7 +40,7 @@ class AgentToolCatalog private constructor(
     val names: Set<String> = LinkedHashSet()
 
     init {
-        for (source in listOf(engineTools, plateTools, webTools)) {
+        for (source in listOf(engineTools, plateTools, webTools, askTools)) {
             for (index in 0 until source.length()) {
                 val definition = source.optJSONObject(index) ?: continue
                 tools.put(definition)
@@ -57,9 +59,12 @@ class AgentToolCatalog private constructor(
     /** True when the app's plate-render tool is part of this catalogue. */
     val includesPlateScreenshot: Boolean get() = plateTools.length() > 0
 
+    /** True when the app's ask-the-user tool is part of this catalogue. */
+    val includesAskUser: Boolean get() = askTools.length() > 0
+
     /** A copy with the app's web tools removed, for an endpoint that does not offer them. */
     fun withoutWebTools(): AgentToolCatalog =
-        AgentToolCatalog(engineTools, plateTools, JSONArray(), hiddenNames, skippedNames)
+        AgentToolCatalog(engineTools, plateTools, JSONArray(), askTools, hiddenNames, skippedNames)
 
     companion object {
         /**
@@ -92,6 +97,77 @@ class AgentToolCatalog private constructor(
          * to the next message of the same turn.
          */
         const val PLATE_SCREENSHOT = "plate_screenshot"
+
+        /**
+         * The app's own question tool: it shows the user a question card and ends the turn.
+         *
+         * Asking is not an engine call and there is no wait on it. The answer starts the next
+         * turn as a normal user message; the model that asked is told exactly that in the tool
+         * result so it never blocks or repeats the question in the same turn.
+         */
+        const val ASK_USER = "ask_user"
+
+        /** The question as an OpenAI function tool: question, optional options, allow_text. */
+        fun askUserDefinition(): JSONObject = JSONObject()
+            .put("type", "function")
+            .put(
+                "function",
+                JSONObject()
+                    .put("name", ASK_USER)
+                    .put(
+                        "description",
+                        "Ask the user a question and END THE TURN. Use it when a requirement is " +
+                            "genuinely ambiguous, when an edit is destructive or irreversible, " +
+                            "or when a dimension or material the user has not given is needed to " +
+                            "proceed. The question shows as a card with one chip per option and a " +
+                            "composer for free text. The user's answer arrives as the next user " +
+                            "message and starts the next turn: never wait for it, never repeat " +
+                            "the question in the same turn, and do not ask for anything you can " +
+                            "read from inspect_design or measure.",
+                    )
+                    .put(
+                        "parameters",
+                        JSONObject()
+                            .put("type", "object")
+                            .put(
+                                "properties",
+                                JSONObject()
+                                    .put(
+                                        "question",
+                                        JSONObject()
+                                            .put("type", "string")
+                                            .put(
+                                                "description",
+                                                "The question, one sentence, in the user's words.",
+                                            ),
+                                    )
+                                    .put(
+                                        "options",
+                                        JSONObject()
+                                            .put("type", "array")
+                                            .put("items", JSONObject().put("type", "string"))
+                                            .put(
+                                                "description",
+                                                "Optional short answers as chips; use them for a " +
+                                                    "choice, and keep each to a few words.",
+                                            ),
+                                    )
+                                    .put(
+                                        "allow_text",
+                                        JSONObject()
+                                            .put("type", "boolean")
+                                            .put(
+                                                "description",
+                                                "Whether the user may also type a free answer " +
+                                                    "(default true). Set false only when the " +
+                                                    "options are the whole answer set.",
+                                            ),
+                                    ),
+                            )
+                            .put("required", JSONArray().put("question"))
+                            .put("additionalProperties", false),
+                    ),
+            )
 
         /** The plate render as an OpenAI function tool; no parameters, nothing to get wrong. */
         fun plateScreenshotDefinition(): JSONObject = JSONObject()
@@ -135,6 +211,7 @@ class AgentToolCatalog private constructor(
             engineTools: JSONArray,
             includeWebTools: Boolean = true,
             includePlateScreenshot: Boolean = true,
+            includeAskUser: Boolean = true,
         ): AgentToolCatalog {
             val converted = JSONArray()
             val hidden = LinkedHashSet<String>()
@@ -178,6 +255,7 @@ class AgentToolCatalog private constructor(
                     JSONArray()
                 },
                 webTools = if (includeWebTools) AgentWebTools.definitions() else JSONArray(),
+                askTools = if (includeAskUser) JSONArray().put(askUserDefinition()) else JSONArray(),
                 hiddenNames = hidden,
                 skippedNames = skipped,
             )

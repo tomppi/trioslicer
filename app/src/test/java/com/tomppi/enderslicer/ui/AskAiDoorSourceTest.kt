@@ -33,8 +33,8 @@ class AskAiDoorSourceTest {
             app.contains("MenuSectionLabel(\"Assistant\")") || app.contains("Text(\"Ask AI\")"),
         )
         assertEquals(
-            "only the rail opens the chat",
-            1,
+            "the rail opens the chat, and the question notification opens it too",
+            2,
             Regex("aiChatOpen = true").findAll(app).count(),
         )
         assertTrue(
@@ -42,8 +42,14 @@ class AskAiDoorSourceTest {
             app.contains("onAskAi = { aiChatOpen = true }"),
         )
         assertTrue(
+            "the notification tap asks for the chat itself",
+            app.contains("if (chatOpenTicks > 0) aiChatOpen = true"),
+        )
+        assertTrue(
             "the rail item is drawn like the other destinations",
-            app.contains("RailAction(icon = AppIcons.Sparkle, label = \"Ask AI\", onClick = onAskAi)"),
+            app.contains("icon = AppIcons.Sparkle,") &&
+                app.contains("label = \"Ask AI\"") &&
+                app.contains("badge = askAiBadge"),
         )
         assertFalse(
             "opening the chat must not be gated on the Plate tab: the rail is there on every tab",

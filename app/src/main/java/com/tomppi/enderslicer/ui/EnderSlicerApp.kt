@@ -9,6 +9,11 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -90,6 +95,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
@@ -471,6 +478,37 @@ fun EnderSlicerApp(
             chatAuthorship = SolidCraftEngine.authorship().state()
             delay(500)
         }
+    }
+
+    // The question notification is only right while the app is in the background: in the
+    // foreground the rail's Ask AI pulse is the attention, and a notification would be noise.
+    val appLifecycle = LocalLifecycleOwner.current.lifecycle
+    var appResumed by remember {
+        mutableStateOf(appLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    DisposableEffect(appLifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> appResumed = true
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> appResumed = false
+                else -> Unit
+            }
+        }
+        appLifecycle.addObserver(observer)
+        onDispose { appLifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(viewModel.pendingQuestion, aiChatOpen, appResumed) {
+        val waiting = viewModel.pendingQuestion
+        if (waiting != null && !aiChatOpen && !appResumed) {
+            CadQuestionNotification.post(context, waiting)
+        } else {
+            CadQuestionNotification.cancel(context)
+        }
+    }
+    // A tap on that notification asks for the chat itself, not only for the app.
+    val chatOpenTicks by ChatOpenRequest.ticks.collectAsStateWithLifecycle()
+    LaunchedEffect(chatOpenTicks) {
+        if (chatOpenTicks > 0) aiChatOpen = true
     }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
@@ -930,6 +968,9 @@ fun EnderSlicerApp(
         // rotation - nor may the rows it already produced be lost. The conversation itself lives
         // in the ViewModel (see MainViewModel.cadConversations).
         viewModel.runChatTurn {
+            // A new prompt ends any wait: the pending question is history once the user writes
+            // again (the card stays in the transcript as what the agent asked).
+            viewModel.clearPendingQuestion()
             // A turn may run for minutes of model time and longer still of tool time; a
             // foreground service keeps this process from being cached and frozen if the user
             // puts the phone down or leaves the app. It holds its own bounded partial wake
@@ -1067,9 +1108,17 @@ fun EnderSlicerApp(
                         },
                     )
                 }
-                viewModel.cadConversations = viewModel.cadConversations.appendInApp(
-                    AiChatMessage(fromUser = false, text = reply),
-                )
+                val question = agent.lastQuestion
+                if (question != null) {
+                    // The app's ask_user tool ended the turn: show its card and mark the agent
+                    // as waiting. No turn is running and nothing is spinning - the answer starts
+                    // the next turn as a normal user message.
+                    viewModel.onInAppQuestion(question)
+                } else {
+                    viewModel.cadConversations = viewModel.cadConversations.appendInApp(
+                        AiChatMessage(fromUser = false, text = reply),
+                    )
+                }
                 viewModel.inAppWebNotice = agent.webToolsNotice
             } catch (error: AgentException) {
                 if (error.code == "cancelled") {
@@ -1147,6 +1196,8 @@ fun EnderSlicerApp(
      * each backend's messages live in their own list ([CadConversations]).
      */
     fun askSolidCraftAgent(text: String) {
+        // Any new prompt ends a wait, whichever backend it goes to.
+        viewModel.clearPendingQuestion()
         val stored = agentSettingsStore.load()
         if (stored.settings.mode == AgentMode.IN_APP) {
             askInAppAgent(text, stored)
@@ -1728,7 +1779,10 @@ fun EnderSlicerApp(
                 sliceBlockedReason = effectiveSliceBlockedReason,
                 sliceTappable = state.cadNeedsConversion,
                 cadConvertLabel = state.cadConvertLabel,
-                onConvertCad = viewModel::convertCadToStl,
+                onConvertCad = {
+                    viewModel.clearPendingQuestion()
+                    viewModel.convertCadToStl()
+                },
                 onSlice = viewModel::sliceModel,
                 onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                 onTools = { modelToolsOpen = true },
@@ -1740,8 +1794,10 @@ fun EnderSlicerApp(
                     viewModel.openSolidCraftSheet()
                 },
                 // The chat's only door. It opens the overlay at the size last chosen and
-                // leaves the selected tab alone.
+                // leaves the selected tab alone. The badge is the one time it is not silent:
+                // the in-app agent is waiting on an answer and the chat is closed.
                 onAskAi = { aiChatOpen = true },
+                askAiBadge = viewModel.pendingQuestion != null && !aiChatOpen,
                 onSettings = viewModel::updateSettings,
                 onPrusaSettings = viewModel::updatePrusaSettings,
                 onOrcaSettings = viewModel::updateOrcaSettings,
@@ -2057,6 +2113,7 @@ fun EnderSlicerApp(
                                             leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
                                             onClick = {
                                                 solidCraftMenuExpanded = false
+                                                viewModel.clearPendingQuestion()
                                                 viewModel.convertCadToStl()
                                             },
                                             enabled = state.cadDocument != null && !state.isBusy,
@@ -2207,7 +2264,10 @@ fun EnderSlicerApp(
                             sliceBlockedReason = effectiveSliceBlockedReason,
                             sliceTappable = state.cadNeedsConversion,
                             cadConvertLabel = state.cadConvertLabel,
-                            onConvertCad = viewModel::convertCadToStl,
+                            onConvertCad = {
+                                viewModel.clearPendingQuestion()
+                                viewModel.convertCadToStl()
+                            },
                             onSlice = viewModel::sliceModel,
                             onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                             onTools = { modelToolsOpen = true },
@@ -3364,6 +3424,14 @@ fun EnderSlicerApp(
                 backendLine = "In-app - " + agentSettings.endpointLabel(),
                 configured = agentSettings.isConfigured,
                 onSend = ::askInAppAgentFromChat,
+                // The question card: while waiting, a chip or a typed answer becomes the next
+                // user message and clears the wait; Dismiss clears it without a turn.
+                question = viewModel.pendingQuestion,
+                onAnswerQuestion = { answer ->
+                    viewModel.clearPendingQuestion()
+                    askInAppAgentFromChat(answer)
+                },
+                onDismissQuestion = { viewModel.clearPendingQuestion() },
             ),
             onCopyTranscript = ::copyChatTranscript,
             // The three sizes live here so they survive the chat being closed and reopened; a
@@ -3432,6 +3500,7 @@ fun EnderSlicerApp(
                 onConnect = viewModel::connectCadAgent,
                 onStop = viewModel::stopCadAgent,
                 onCloseDocument = {
+                    viewModel.clearPendingQuestion()
                     viewModel.closeCadDocument()
                     // The in-app conversation belongs to the document that is now closed; it
                     // is not persisted, so it is cleared rather than carried into the next one.
@@ -4900,6 +4969,11 @@ internal fun SessionRail(
     onCadAgent: () -> Unit = {},
     /** Opens the AI chat overlay. An action, not a destination: the tab stays put. */
     onAskAi: () -> Unit = {},
+    /**
+     * The one time Ask AI carries a badge: the in-app agent asked a question and the chat is
+     * closed. Idle it is a plain action with no badge, by design.
+     */
+    askAiBadge: Boolean = false,
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onPrusaSettings: (String, (PrusaSliceSettings) -> PrusaSliceSettings) -> Unit,
     onOrcaSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
@@ -4983,7 +5057,12 @@ internal fun SessionRail(
             // The AI chat's own door: in the same list as the destinations, drawn the same
             // way, but an action - it opens the chat overlay and never changes the tab or
             // shows a selected state.
-            RailAction(icon = AppIcons.Sparkle, label = "Ask AI", onClick = onAskAi)
+            RailAction(
+                icon = AppIcons.Sparkle,
+                label = "Ask AI",
+                onClick = onAskAi,
+                badge = askAiBadge,
+            )
             HorizontalDivider(
                 modifier = Modifier.padding(
                     horizontal = EnderSlicerDimens.Space8,
@@ -5370,7 +5449,12 @@ private fun RailButtonLabel(text: String) {
  * chat is a door, not a place the app is standing in.
  */
 @Composable
-private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun RailAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    badge: Boolean = false,
+) {
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         modifier = Modifier
@@ -5382,7 +5466,31 @@ private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
     ) {
-        Icon(icon, contentDescription = null, tint = color)
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = color)
+            if (badge) {
+                // The user's "blinking ai bubble": a small pulsing dot, the one state that
+                // earns a badge. Accessibility is told what it means; there is no text on it.
+                val transition = rememberInfiniteTransition(label = "ask-ai-pulse")
+                val alpha by transition.animateFloat(
+                    initialValue = 0.35f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+                    label = "ask-ai-pulse-alpha",
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 2.dp, y = (-2).dp)
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = alpha))
+                        .semantics {
+                            contentDescription = "CAD agent is waiting for an answer"
+                        },
+                )
+            }
+        }
         Text(label, style = MaterialTheme.typography.labelMedium, color = color)
     }
 }

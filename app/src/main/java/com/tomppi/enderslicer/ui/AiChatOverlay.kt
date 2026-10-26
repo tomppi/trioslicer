@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,12 +55,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.harness.HarnessClient
 import kotlin.math.roundToInt
 
 /** What one entry of a chat transcript is: prose, a tool row, or a plain-words activity line. */
-enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY, ERROR }
+enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY, ERROR, QUESTION }
 
 /** One turn in the AI conversation. */
 data class AiChatMessage(
@@ -68,6 +70,8 @@ data class AiChatMessage(
     val kind: AiChatEntryKind = AiChatEntryKind.MESSAGE,
     /** Non-null for a [AiChatEntryKind.TOOL] row: the call this row is showing. */
     val tool: AgentToolTrace? = null,
+    /** Non-null for a [AiChatEntryKind.QUESTION] entry: the question card's content. */
+    val question: AgentQuestion? = null,
 )
 
 /** Which backend the floating chat is showing. */
@@ -97,6 +101,12 @@ data class InAppChat(
     /** False until the endpoint has a URL and a model; the composer says so. */
     val configured: Boolean = true,
     val onSend: (String) -> Unit = {},
+    /** The question the agent is waiting on, or null; the waiting card and composer follow it. */
+    val question: AgentQuestion? = null,
+    /** The user's answer (a chip or free text): clears the wait and starts the next turn. */
+    val onAnswerQuestion: (String) -> Unit = {},
+    /** Dismiss the waiting question; the agent's next message starts a fresh turn. */
+    val onDismissQuestion: () -> Unit = {},
 )
 
 /**
@@ -340,7 +350,14 @@ fun AiChatOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    app.messages.forEach { message -> ChatEntry(message) }
+                    app.messages.forEach { message ->
+                        ChatEntry(
+                            message = message,
+                            pendingQuestion = app.question,
+                            onAnswerQuestion = app.onAnswerQuestion,
+                            onDismissQuestion = app.onDismissQuestion,
+                        )
+                    }
                     if (app.busy) {
                         Text(
                             text = "Working…",
@@ -457,6 +474,32 @@ fun AiChatOverlay(
         }
     }
 
+    // A pending question changes what the composer does: a typed answer is the next user
+    // message and clears the wait, and a closed option set closes the composer entirely.
+    val pendingQuestion = if (showInApp) app?.question else null
+    val answering = pendingQuestion != null
+    val canTypeAnswer = !answering || pendingQuestion?.allowText == true
+    val submitComposer: () -> Unit = {
+        if (draft.isNotBlank()) {
+            when {
+                answering && pendingQuestion?.allowText == true -> {
+                    app?.onAnswerQuestion?.invoke(draft.trim())
+                    draft = ""
+                }
+                !answering && canSend(showInApp, app, activeBusy, authorPausedReason) -> {
+                    sendDraft(showInApp, draft, app, onSend)
+                    draft = ""
+                }
+            }
+        }
+    }
+    val composerPlaceholder: String = when {
+        !showInApp -> "Ask about the model"
+        answering && canTypeAnswer -> "Type your answer"
+        answering -> "Pick an option above"
+        else -> "Ask for a CAD change"
+    }
+
     val composer: @Composable () -> Unit = {
         Row(
             verticalAlignment = Alignment.Bottom,
@@ -471,35 +514,18 @@ fun AiChatOverlay(
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                placeholder = {
-                    Text(if (showInApp) "Ask for a CAD change" else "Ask about the model")
-                },
+                placeholder = { Text(composerPlaceholder) },
+                enabled = canTypeAnswer,
                 maxLines = 3,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        if (draft.isNotBlank() &&
-                            canSend(showInApp, app, activeBusy, authorPausedReason)
-                        ) {
-                            sendDraft(showInApp, draft, app, onSend)
-                            draft = ""
-                        }
-                    },
-                ),
+                keyboardActions = KeyboardActions(onSend = { submitComposer() }),
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(EnderSlicerDimens.Space4))
             FilledIconButton(
-                onClick = {
-                    if (draft.isNotBlank() &&
-                        canSend(showInApp, app, activeBusy, authorPausedReason)
-                    ) {
-                        sendDraft(showInApp, draft, app, onSend)
-                        draft = ""
-                    }
-                },
+                onClick = submitComposer,
                 enabled = draft.isNotBlank() &&
-                    canSend(showInApp, app, activeBusy, authorPausedReason),
+                    (if (answering) canTypeAnswer else canSend(showInApp, app, activeBusy, authorPausedReason)),
             ) {
                 Icon(AppIcons.Send, contentDescription = "Send")
             }
@@ -747,12 +773,29 @@ private fun sendDraft(showInApp: Boolean, text: String, app: InAppChat?, onSendH
     if (showInApp) app?.onSend?.invoke(text.trim()) else onSendHarness(text.trim())
 }
 
-/** One transcript entry: a prose bubble, or a tool row when the entry carries a call. */
+/** One transcript entry: a prose bubble, a tool row, or the agent's question card. */
 @Composable
-private fun ChatEntry(message: AiChatMessage) {
+private fun ChatEntry(
+    message: AiChatMessage,
+    pendingQuestion: AgentQuestion? = null,
+    onAnswerQuestion: (String) -> Unit = {},
+    onDismissQuestion: () -> Unit = {},
+) {
     val tool = message.tool
     if (tool != null) {
         AiChatToolRow(tool)
+        return
+    }
+    val question = message.question
+    if (question != null) {
+        // Waiting is per question instance, not per position: an older answered card must not
+        // look live just because a later question happens to have the same words.
+        AiQuestionCard(
+            question = question,
+            waiting = question === pendingQuestion,
+            onAnswer = onAnswerQuestion,
+            onDismiss = onDismissQuestion,
+        )
         return
     }
     // The plain-words activity lines exist for the sheet, which has no tool rows; the chat's
@@ -770,6 +813,83 @@ private fun ChatEntry(message: AiChatMessage) {
         return
     }
     AiChatBubble(message)
+}
+
+/**
+ * The agent's question, as a card of its own rather than a normal agent bubble.
+ *
+ * While it is the pending question the card says the agent is waiting and offers its options as
+ * one-tap chips; a free-text answer goes through the chat's own composer. Once answered (or
+ * dismissed) the card stays in the transcript as history and says `Answered.` - it is never
+ * live again.
+ */
+@Composable
+private fun AiQuestionCard(
+    question: AgentQuestion,
+    waiting: Boolean,
+    onAnswer: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(EnderSlicerDimens.Space12),
+            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+        ) {
+            Text(
+                text = if (waiting) "The agent asks" else "The agent asked",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Text(
+                text = question.question,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            if (question.options.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+                ) {
+                    question.options.forEach { option ->
+                        TextButton(
+                            onClick = { if (waiting) onAnswer(option) },
+                            enabled = waiting,
+                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space12),
+                        ) { Text(option) }
+                    }
+                }
+            }
+            if (waiting) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "The agent is waiting on you.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = onDismiss,
+                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                    ) { Text("Dismiss") }
+                }
+            } else {
+                Text(
+                    text = if (question.allowText) "Answered." else "Answered from the options.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
 }
 
 /**

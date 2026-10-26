@@ -250,6 +250,21 @@ sheet's mode chips: typing in either box always reaches the backend the chat is 
 - **Copy transcript** puts the messages and the tool rows on the clipboard as plain text
   (`You: …`, `tool: solid.box … 12 ms · 1 body created (Body1)`, `Agent: …`) so a bad turn can
   be handed to a human or another agent. Nothing secret is in it.
+- **The agent can ask a question - and the app makes sure it is seen.** `ask_user` is the
+  app's own tool beside `plate_screenshot` and the web tools: a required question, optional
+  short options, and `allow_text` (default true). Running it appends a **question card** to the
+  in-app conversation (question, one chip per option, the composer for a free answer, *The agent
+  is waiting on you.*) and **ends the turn**: there is no blocking wait, nothing spins and the
+  engine is not held; the answer arrives as the next user message and starts a new turn, which
+  the tool description and the runbook both say. The runbook tells the agent when to ask -
+  ambiguous requirements, a destructive or irreversible edit, a dimension or material the user
+  has not given - and never to ask for something `inspect_design`/`measure` can read. While a
+  question is unanswered and the chat is closed, the rail's **Ask AI** action shows the one badge
+  it can have (a small pulsing dot); if the app is in the background a notification *CAD agent is
+  asking a question* opens the chat, and a denied POST_NOTIFICATIONS leaves the rail pulse as the
+  fallback. The pending question clears on answer, Dismiss, any new prompt, and on closing or
+  converting the document - a dismissed question cannot leave a stuck wait. The harness has its
+  own ask-user on the harness side; this is the in-app agent's version of the same idea.
 - **A rotation keeps the conversation.** The manifest leaves `android:configChanges` unset, so
   rotating the phone recreates the activity. The CAD conversation, the modelling chat's messages,
   their busy/status flags and the chat's selected source live in `MainViewModel` (Compose state on

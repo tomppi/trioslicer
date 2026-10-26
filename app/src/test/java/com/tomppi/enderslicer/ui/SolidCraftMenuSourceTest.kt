@@ -74,7 +74,10 @@ class SolidCraftMenuSourceTest {
         assertTrue(text.contains("state.cadSliceBlockedReason"))
         assertTrue(text.contains("sliceTappable = state.cadNeedsConversion"))
         assertTrue(text.contains("cadConvertLabel = state.cadConvertLabel"))
-        assertTrue(text.contains("onConvertCad = viewModel::convertCadToStl"))
+        // Convert is the human's press; the callback clears any pending question first.
+        assertTrue(
+            text.contains("onConvertCad = {") && text.contains("viewModel.convertCadToStl()"),
+        )
         // The greyed-but-tappable Slice is the live document only.
         assertTrue(state().contains("val cadSliceBlockedReason"))
         assertTrue(state().contains("val cadNeedsConversion"))

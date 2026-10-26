@@ -41,7 +41,8 @@ class AgentToolCatalogTest {
         "list_commands", "describe_command", "execute", "batch", "inspect_design", "measure",
         "body_topology", "set_parameter", "export", "undo", "redo", "new_design", "open", "save",
     )
-    private val expectedNames = engineOnlyNames + setOf("plate_screenshot")
+    // The app's own tools: the plate render and the question the agent can ask the user.
+    private val expectedNames = engineOnlyNames + setOf("plate_screenshot", "ask_user")
 
     @Test
     fun theEngineCatalogueYieldsTheToolsThePlateCanUse() {
@@ -104,6 +105,7 @@ class AgentToolCatalogTest {
                 .put(engineTool("weird.name")),
             includeWebTools = false,
             includePlateScreenshot = false,
+            includeAskUser = false,
         )
         assertEquals(setOf("execute"), catalog.names)
         assertEquals(setOf("weird.name"), catalog.skippedNames)
@@ -115,6 +117,7 @@ class AgentToolCatalogTest {
             JSONArray(),
             includeWebTools = true,
             includePlateScreenshot = false,
+            includeAskUser = false,
         )
         assertEquals(setOf("web_search", "web_fetch"), catalog.names)
         val search = catalog.tools.getJSONObject(0).getJSONObject("function")
@@ -151,13 +154,36 @@ class AgentToolCatalogTest {
     }
 
     @Test
+    fun theAskUserToolIsAnAppToolThatEndsTheTurn() {
+        val catalog = AgentToolCatalog.fromEngine(engineCatalog(), includeWebTools = false)
+        assertTrue("the question tool is offered beside the engine's tools", "ask_user" in catalog.names)
+        assertTrue(catalog.includesAskUser)
+        val definition = (0 until catalog.tools.length())
+            .map { catalog.tools.getJSONObject(it).getJSONObject("function") }
+            .first { it.getString("name") == "ask_user" }
+        val description = definition.getString("description")
+        assertTrue("asking ends the turn: " + description, description.contains("END THE TURN"))
+        assertTrue("the answer starts the next turn: " + description, description.contains("next user"))
+        val parameters = definition.getJSONObject("parameters")
+        assertEquals("object", parameters.getString("type"))
+        val properties = parameters.getJSONObject("properties")
+        assertEquals("string", properties.getJSONObject("question").getString("type"))
+        assertEquals("array", properties.getJSONObject("options").getString("type"))
+        assertEquals("boolean", properties.getJSONObject("allow_text").getString("type"))
+        assertEquals(1, parameters.getJSONArray("required").length())
+        assertEquals("question", parameters.getJSONArray("required").getString(0))
+    }
+
+    @Test
     fun aCatalogueBuiltWithoutTheAppToolsIsTheEnginesAlone() {
         val catalog = AgentToolCatalog.fromEngine(
             engineCatalog(),
             includeWebTools = false,
             includePlateScreenshot = false,
+            includeAskUser = false,
         )
         assertEquals(engineOnlyNames, catalog.names)
         assertFalse(catalog.includesPlateScreenshot)
+        assertFalse(catalog.includesAskUser)
     }
 }

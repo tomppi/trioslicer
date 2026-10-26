@@ -37,6 +37,13 @@ fun chatTranscriptText(messages: List<AiChatMessage>): String = buildString {
                 }
                 if (tool.failed) append(" · FAILED")
             }
+            message.question != null -> {
+                append('\n')
+                append("question: ").append(message.question!!.question)
+                if (message.question!!.options.isNotEmpty()) {
+                    append(" (options: ").append(message.question!!.options.joinToString(" / ")).append(')')
+                }
+            }
             message.kind == AiChatEntryKind.ACTIVITY -> Unit
             message.kind == AiChatEntryKind.ERROR -> {
                 append('\n')

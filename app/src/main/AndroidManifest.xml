@@ -83,9 +83,12 @@
                 android:value="Klipper printer host: drives a 3D printer over USB while the screen is off" />
         </service>
 
+        <!-- singleTop: a notification tap delivers onNewIntent to the running activity instead
+             of stacking a second MainActivity with its own (empty) ViewModel state. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

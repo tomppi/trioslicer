@@ -71,6 +71,10 @@ answers 401, 403, 404 or 405 on those routes, the tools are removed for the conv
 agent says once that search is unavailable - never a silent failure and never a fake empty
 result.
 
+The app also offers **`ask_user`** - a question card the user answers with a chip or free text.
+It is the one safe way to ask rather than guess; it ends the turn, and the answer starts the next
+one. When to use it, and the rules for it, are in "Asking the user" below.
+
 ### The plate's selection, and what the agent can see
 
 Two things the app can hand you that a desk agent never gets. Both are about the plate the user
@@ -98,6 +102,30 @@ is looking at, and both are true statements from the app, not guesses:
   description instead*. The conversation remembers it: no further render is attached that
   session. If a message tells you that, work from the SELECTED FACE block and the geometry -
   never say you saw a render that was not sent.
+
+### Asking the user: the `ask_user` tool
+
+The app offers one more tool that is not the engine's: **`ask_user`**. It shows the user a
+question card in the chat, with one chip per option and - unless `allow_text` is false - the
+composer for a free answer. The user's answer arrives as the **next user message**, which starts
+the next turn.
+
+**Asking ends the turn.** There is no wait on it and nothing blocks: the tool result says the
+question was asked and the turn is over, and the app stops the turn there. Do not wait for an
+answer in the same turn, do not repeat the question, and do not chain several questions in one
+turn - ask the one question that matters and stop.
+
+Ask when:
+
+- a requirement is genuinely ambiguous and the wrong guess would change the part;
+- an edit is destructive or irreversible (clearing a document, replacing a part the user may
+  still need) and has not been explicitly asked for;
+- a dimension, material, tolerance or thread the user has not given is needed to proceed.
+
+Do not ask for something `inspect_design` or `measure` can tell you - read the document first.
+Put the likely answers in `options` as short chips; keep `allow_text` true when the user may
+want to answer in their own words, and set it false only when the listed options really are the
+whole answer set. The question itself is one sentence in the user's words.
 
 ## 2. Connect (external agents only)
 
