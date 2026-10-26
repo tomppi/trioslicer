@@ -404,6 +404,24 @@ jobs:
           echo "CAD payload staged: $count files"
 
 
+
+      - name: Fetch and validate the SolidCraft engine
+        run: |
+          chmod +x scripts/fetch-solidcraft-engine-android.sh
+          scripts/fetch-solidcraft-engine-android.sh 2>&1 | tee solidcraft-engine-fetch.log
+          # The Plate's live CAD document runs in this binary. jniLibs/ is gitignored, so
+          # before this step existed CI built an APK carrying six engines and a CAD menu whose
+          # only possible answer was "the SolidCraft engine binary is not packaged" - that is
+          # exactly what 1.9.5 shipped. verifyReleaseApkEngines now checks it as the seventh.
+          f=app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so
+          [ -s "$f" ] || { echo "SolidCraft engine missing: $f" >&2; exit 1; }
+          size=$(stat -c %s "$f")
+          [ "$size" -gt 20000000 ] || { echo "$f is only $size bytes" >&2; exit 1; }
+          [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] ||
+            { echo "$f is not an ELF binary" >&2; exit 1; }
+          echo "SolidCraft engine staged: $(du -h "$f" | cut -f1)"
+
+
       - name: Build pinned host CuraEngine fixture binary
         run: |
           chmod +x scripts/build-curaengine-host-tests.sh
