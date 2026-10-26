@@ -448,6 +448,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Declared before the init block on purpose: the collectors that block starts can emit
+    // before the property initializers further down the class have run, and one of them
+    // drains this queue. A field declared after the init block was still null there, which
+    // is an NPE inside synchronized() the moment the view model is built on a direct
+    // dispatcher (the snapshot tests did exactly that).
+    private val pendingEngineImports = ArrayDeque<Pair<File, String>>()
+    private val pendingEngineImportLock = Any()
+
     init {
         _uiState.update { it.copy(platePreferences = platePreferencesStore.load()) }
         restorePersistedState()
@@ -7966,11 +7974,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * the swap is guarded: a plain check-then-null dropped a write that landed
      * between the two statements, and the engine had already claimed that export.
      */
-    // A queue, not one slot: one "All to plate" writes one file per shape and the watcher hands
-    // them over back to back. The second export used to overwrite the first, and the watcher
-    // claims a file before it calls, so the overwritten one was never offered again.
-    private val pendingEngineImports = ArrayDeque<Pair<File, String>>()
-    private val pendingEngineImportLock = Any()
+    // The queue itself is declared above init: its collector can run before this point.
 
     /** Holds a claimed export with the engine it came from, so the drain can name it right. */
     private fun queueEngineImport(file: File, engine: String) {
