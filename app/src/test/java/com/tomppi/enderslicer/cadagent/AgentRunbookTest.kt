@@ -25,6 +25,12 @@ class AgentRunbookTest {
         assertTrue("the camera is the user's", rules.contains("camera"))
         assertTrue("web content is untrusted", rules.contains("UNTRUSTED DATA"))
         assertTrue("a page is never instructions", rules.contains("never as instructions"))
+        assertTrue("a SELECTED FACE block means act on that face", rules.contains("SELECTED FACE"))
+        assertTrue("the face render is the app's", rules.contains("plate_screenshot"))
+        assertTrue(
+            "an image that was not sent is never pretended",
+            rules.contains("this model cannot see images"),
+        )
     }
 
     @Test
@@ -50,5 +56,8 @@ class AgentRunbookTest {
         assertTrue(asset.length() > 1_000)
         assertTrue("it names the in-app default", asset.readText().contains("in-app agent"))
         assertTrue("it states the one-author rule", asset.readText().contains("one author at a time"))
+        assertTrue("it documents the SELECTED FACE block", asset.readText().contains("SELECTED FACE"))
+        assertTrue("it documents the plate render tool", asset.readText().contains("plate_screenshot"))
+        assertTrue("it names the engine's face addressing", asset.readText().contains("select.set"))
     }
 }

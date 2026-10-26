@@ -64,6 +64,25 @@ class AgentSettingsTest {
         assertFalse(settings.hasApiKey)
         assertTrue("an endpoint plus a model is enough to call", settings.isConfigured)
         assertTrue("search is on by default", settings.webSearch)
+        assertTrue("lending the agent my view is on by default", settings.lendView)
+    }
+
+    @Test
+    fun theLendViewSwitchIsStoredAndCarriedForward() {
+        val store = fakeStore()
+        val saved = AgentSettings(
+            baseUrl = "https://api.example.test/v1",
+            model = "some-model",
+            lendView = false,
+        )
+        assertTrue(store.save(saved, "sk-the-secret-key"))
+        assertFalse("the switch is persisted", store.loadSettings().lendView)
+        assertFalse(store.load().settings.lendView)
+        // Saving the endpoint again without touching the switch keeps the user's choice, which is
+        // what the sheet's save does with the value it read.
+        assertTrue(store.save(store.loadSettings().copy(model = "another-model")))
+        assertFalse(store.loadSettings().lendView)
+        assertTrue(store.loadSettings().model == "another-model")
     }
 
     @Test

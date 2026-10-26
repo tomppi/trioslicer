@@ -195,7 +195,11 @@ class CadAgentTest {
 
         val tools = body.getJSONArray("tools")
         val names = (0 until tools.length()).map { tools.getJSONObject(it).getJSONObject("function").getString("name") }
-        assertEquals(listOf("execute", "batch", "inspect_design"), names)
+        assertEquals(
+            "the engine's tools, then the app's own plate render",
+            listOf("execute", "batch", "inspect_design", AgentToolCatalog.PLATE_SCREENSHOT),
+            names,
+        )
         assertEquals("function", tools.getJSONObject(0).getString("type"))
         assertEquals(
             "the engine's own schema is passed through",

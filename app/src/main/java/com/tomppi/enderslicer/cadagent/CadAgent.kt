@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.cadagent
 
+import com.tomppi.enderslicer.viewer.PlateImage
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -96,6 +97,17 @@ class CadAgent(
     var webToolsNotice: String? = null
         private set
 
+    /**
+     * True once this conversation's endpoint has refused an image with a 400 naming it.
+     *
+     * Remembered for the session: every later request of this conversation is text-only, and
+     * [VISION_NOTICE] is what the transcript already said about it. A different endpoint (or
+     * key) resets the conversation and the memory with it. Never pretend an image was seen.
+     */
+    @Volatile
+    var visionUnsupported: Boolean = false
+        private set
+
     /** How many text turns the agent remembers across runs. */
     val rememberedTurns: Int
         get() = synchronized(conversation) { conversation.size }
@@ -123,6 +135,7 @@ class CadAgent(
         synchronized(conversation) { conversation.clear() }
         webAvailability = AgentWebTools.Availability.UNKNOWN
         webToolsNotice = null
+        visionUnsupported = false
     }
 
     /**
@@ -145,9 +158,19 @@ class CadAgent(
         settings: StoredAgentSettings,
         catalog: AgentToolCatalog,
         userText: String,
+        /**
+         * What the app hands the agent beyond the user's words: the SELECTED FACE block, the
+         * plate renderer the plate_screenshot tool calls, and whether this message should carry
+         * a render of a tinted selected face.
+         */
+        view: AgentView = AgentView(),
         onActivity: (String) -> Unit = {},
         onToolTrace: (AgentToolTrace) -> Unit = {},
         onRetry: (String) -> Unit = {},
+        /** One transcript line when the endpoint has refused an image: it cannot see pictures. */
+        onVisionNotice: (String) -> Unit = {},
+        /** One transcript line naming an attached plate render by its size and dimensions. */
+        onImageAttached: (String) -> Unit = {},
     ): String {
         val problem = settings.settings.baseUrlProblem()
         if (problem != null) {
@@ -176,9 +199,12 @@ class CadAgent(
                     userText = userText,
                     apiKey = settings.apiKey,
                     endpointHost = endpointHost(settings.settings.baseUrl),
+                    view = view,
                     onActivity = onActivity,
                     onToolTrace = onToolTrace,
                     onRetry = onRetry,
+                    onVisionNotice = onVisionNotice,
+                    onImageAttached = onImageAttached,
                 )
             } finally {
                 client = null
@@ -194,17 +220,42 @@ class CadAgent(
         userText: String,
         apiKey: String,
         endpointHost: String,
+        view: AgentView,
         onActivity: (String) -> Unit,
         onToolTrace: (AgentToolTrace) -> Unit,
         onRetry: (String) -> Unit,
+        onVisionNotice: (String) -> Unit,
+        onImageAttached: (String) -> Unit,
     ): String {
         val messages = JSONArray()
         messages.put(
             JSONObject().put("role", "system").put("content", AgentRunbook.systemPrompt(runbook)),
         )
         synchronized(conversation) { conversation.forEach { messages.put(it) } }
-        val userMessage = JSONObject().put("role", "user").put("content", userText)
-        messages.put(userMessage)
+        // A message that carries a face selection carries the block above the user's own words,
+        // and - when the sheet's "Lend the agent my view" switch is on - a render of that face.
+        // The picture is taken before the request, so the model's first look at the message
+        // already has it: "make this face thicker" is shown, not only described.
+        val composed = view.selectionBlock + userText
+        var firstImage: PlateImage? = null
+        if (view.attachPlateToSelection && view.hasSelection && view.plate != null && !visionUnsupported) {
+            firstImage = runCatching { view.plate.renderPlate() }.getOrNull()
+            firstImage?.let { runCatching { onImageAttached(PLATE_IMAGE_NOTICE + it.sizeLine) } }
+        }
+        messages.put(
+            JSONObject()
+                .put("role", "user")
+                // The caption states the tint only when the picture carries it (see
+                // PlateImage.tintVisible), never from the selection alone.
+                .put(
+                    "content",
+                    userContent(
+                        composed,
+                        firstImage,
+                        view.faceTinted && firstImage?.tintVisible == true,
+                    ),
+                ),
+        )
 
         var rounds = 0
         var callIds = 0
@@ -224,42 +275,67 @@ class CadAgent(
             }
             modelRound++
             val roundStartedAt = System.currentTimeMillis()
-            val reply = try {
-                chat.complete(messages, activeCatalog.tools)
+            fun completeOnce(): JSONObject = chat.complete(messages, activeCatalog.tools)
+            val reply: JSONObject = try {
+                completeOnce()
             } catch (error: AgentException) {
                 if (error.code == "cancelled") throw error
-                // One safe retry: only for a transport failure or a timeout, only before any
-                // tool of this turn has run, and only once. A re-sent request cannot repeat an
-                // edit the app has not executed; once a tool has run, the same rule protects the
-                // design.
-                val safeToRetry = (error.code == "timeout" || error.code == "transport") &&
-                    toolsRunInTurn == 0 && !retried
-                if (!safeToRetry) {
-                    throw namedFailure(
-                        error = error,
-                        host = endpointHost,
-                        round = modelRound,
-                        startedAt = roundStartedAt,
-                        toolsRunInTurn = toolsRunInTurn,
-                        retried = retried,
-                    )
-                }
-                retried = true
-                runCatching { onRetry(RETRY_NOTICE) }
-                log("chat completion failed (" + error.code + "); retrying once")
-                Thread.sleep(retryDelayMillis)
-                try {
-                    chat.complete(messages, activeCatalog.tools)
-                } catch (second: AgentException) {
-                    if (second.code == "cancelled") throw second
-                    throw namedFailure(
-                        error = second,
-                        host = endpointHost,
-                        round = modelRound,
-                        startedAt = roundStartedAt,
-                        toolsRunInTurn = toolsRunInTurn,
-                        retried = true,
-                    )
+                if (!visionUnsupported && hasImageParts(messages) && isImageRefusal(error)) {
+                    // The endpoint answered 400 naming the image: this model cannot see pictures.
+                    // Strip them, say so once in the transcript, and re-send the SAME request
+                    // text-only once. Remember it for the session; never pretend an image was
+                    // seen, and never retry this fallback a second time.
+                    visionUnsupported = true
+                    stripImageParts(messages)
+                    runCatching { onVisionNotice(VISION_NOTICE) }
+                    log("the endpoint refused an image; retrying once without it")
+                    try {
+                        completeOnce()
+                    } catch (second: AgentException) {
+                        if (second.code == "cancelled") throw second
+                        throw namedFailure(
+                            error = second,
+                            host = endpointHost,
+                            round = modelRound,
+                            startedAt = roundStartedAt,
+                            toolsRunInTurn = toolsRunInTurn,
+                            retried = true,
+                        )
+                    }
+                } else {
+                    // One safe retry: only for a transport failure or a timeout, only before any
+                    // tool of this turn has run, and only once. A re-sent request cannot repeat an
+                    // edit the app has not executed; once a tool has run, the same rule protects the
+                    // design.
+                    val safeToRetry = (error.code == "timeout" || error.code == "transport") &&
+                        toolsRunInTurn == 0 && !retried
+                    if (!safeToRetry) {
+                        throw namedFailure(
+                            error = error,
+                            host = endpointHost,
+                            round = modelRound,
+                            startedAt = roundStartedAt,
+                            toolsRunInTurn = toolsRunInTurn,
+                            retried = retried,
+                        )
+                    }
+                    retried = true
+                    runCatching { onRetry(RETRY_NOTICE) }
+                    log("chat completion failed (" + error.code + "); retrying once")
+                    Thread.sleep(retryDelayMillis)
+                    try {
+                        completeOnce()
+                    } catch (second: AgentException) {
+                        if (second.code == "cancelled") throw second
+                        throw namedFailure(
+                            error = second,
+                            host = endpointHost,
+                            round = modelRound,
+                            startedAt = roundStartedAt,
+                            toolsRunInTurn = toolsRunInTurn,
+                            retried = true,
+                        )
+                    }
                 }
             }
             val content = (reply.opt("content") as? String)?.trim()?.takeIf { it.isNotEmpty() }
@@ -286,6 +362,7 @@ class CadAgent(
                 )
             }
             messages.put(assistantEcho(content, toolCalls))
+            val capturedImages = ArrayList<PlateImage>()
             for (index in 0 until toolCalls.length()) {
                 if (cancelled) throw AgentException("cancelled", "Stopped")
                 val call = toolCalls.optJSONObject(index) ?: continue
@@ -298,9 +375,13 @@ class CadAgent(
                     else -> arguments.toString()
                 }
                 val callId = ++callIds
+                var produced: PlateImage? = null
                 val result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
-                    executeTool(catalog, web, name, argumentsText, onActivity)
+                    val outcome = executeTool(catalog, web, name, argumentsText, onActivity, view)
+                    produced = outcome.image
+                    outcome.result
                 }
+                produced?.let(capturedImages::add)
                 toolsRunInTurn++
                 messages.put(
                     JSONObject()
@@ -309,6 +390,26 @@ class CadAgent(
                         .put("content", result.text),
                 )
                 if (cancelled) throw AgentException("cancelled", "Stopped")
+            }
+            if (capturedImages.isNotEmpty() && !visionUnsupported) {
+                // The picture a plate_screenshot call asked for, attached to the next user-role
+                // message of this turn as the OpenAI-compatible content array - the tool result
+                // above said it follows, and this is it.
+                messages.put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put(
+                            "content",
+                            userContent(
+                                PLATE_IMAGE_CAPTION,
+                                capturedImages,
+                                view.faceTinted && capturedImages.any { it.tintVisible },
+                            ),
+                        ),
+                )
+                capturedImages.forEach { image ->
+                    runCatching { onImageAttached(PLATE_IMAGE_NOTICE + image.sizeLine) }
+                }
             }
         }
     }
@@ -431,15 +532,91 @@ class CadAgent(
         return result
     }
 
+    /** One tool call's result, plus the plate picture it produced when it asked for one. */
+    private data class ToolOutcome(
+        val result: AgentToolHost.Result,
+        val image: PlateImage? = null,
+    )
+
     /**
-     * Runs one tool call.
+     * Runs one tool call, the app's own plate render first and the engine's or the web tools
+     * after it.
+     *
+     * `plate_screenshot` is the app's, not the engine's: it draws the plate the user is looking
+     * at and hands the picture back here, where [converse] attaches it to the next message. It is
+     * never forwarded to the engine - the engine has no window and its own `screenshot` stays
+     * hidden.
+     */
+    private fun executeTool(
+        catalog: AgentToolCatalog,
+        web: WebToolClient?,
+        name: String,
+        argumentsText: String,
+        onActivity: (String) -> Unit,
+        view: AgentView,
+    ): ToolOutcome {
+        if (name == AgentToolCatalog.PLATE_SCREENSHOT) return runPlateScreenshot(view)
+        return ToolOutcome(
+            executeCatalogTool(catalog, web, name, argumentsText, onActivity),
+        )
+    }
+
+    /**
+     * The app's plate render, as the model's `plate_screenshot` call.
+     *
+     * The result text is the one line the model reads first; the plate is rendered here, on the
+     * tool thread, and the image itself travels with the next message - the OpenAI-compatible
+     * content-array form, never inside the tool result. A model whose endpoint refused images
+     * earlier is told so rather than sent an unreadable part.
+     */
+    private fun runPlateScreenshot(view: AgentView): ToolOutcome {
+        if (visionUnsupported) {
+            return ToolOutcome(
+                AgentToolHost.Result(
+                    TOOL_ERROR + "this endpoint refused an image earlier in this conversation, " +
+                        "so no picture can be sent. Work from the plate's geometry description " +
+                        "and the user's own words instead.",
+                    failed = true,
+                    outcome = "this endpoint cannot see images",
+                ),
+            )
+        }
+        val source = view.plate ?: return ToolOutcome(
+            AgentToolHost.Result(
+                TOOL_ERROR + "the plate is not drawing right now, so there is no picture to " +
+                    "send. Ask for the change in words, or open the Plate tab and ask again.",
+                failed = true,
+                outcome = "no plate on screen",
+            ),
+        )
+        val image = runCatching { source.renderPlate() }.getOrNull() ?: return ToolOutcome(
+            AgentToolHost.Result(
+                TOOL_ERROR + "the plate did not answer with a frame, so there is no picture to " +
+                    "send. The plate view may be hidden or just rebuilding; describe the change " +
+                    "in words and try the render again next turn.",
+                failed = true,
+                outcome = "no frame came back",
+            ),
+        )
+        val outcome = "rendered the plate: " + image.geometryLine + " · " + image.sizeLine
+        return ToolOutcome(
+            result = AgentToolHost.Result(
+                "rendered the plate: " + image.geometryLine + ", current camera; the image follows",
+                outcome = outcome,
+            ),
+            image = image,
+        )
+    }
+
+    /**
+     * Runs one non-app tool call.
      *
      * A malformed call is reported *to the model* rather than thrown at the UI: wrong JSON in
      * the arguments, a name the app does not offer, a name it deliberately hides. The model can
      * read that and correct itself on the next round, which is the whole point of the loop; the
      * same call's row is red.
      */
-    private fun executeTool(
+    private fun executeCatalogTool(
         catalog: AgentToolCatalog,
         web: WebToolClient?,
         name: String,
@@ -615,6 +792,84 @@ class CadAgent(
         }
     }
 
+    // --- images and the one honest fallback ------------------------------------------------
+
+    /**
+     * One user-role message's content: the text alone, or the OpenAI content array with the
+     * provided plate renders attached.
+     *
+     * [faceTinted] adds the caption line when the picture has the selected face tinted, so the
+     * image says "this face" and the text says why it is amber.
+     */
+    private fun userContent(text: String, image: PlateImage?, faceTinted: Boolean): Any =
+        if (image == null) text else userContent(text, listOf(image), faceTinted)
+
+    private fun userContent(text: String, images: List<PlateImage>, faceTinted: Boolean): Any {
+        if (images.isEmpty()) return text
+        val caption = buildString {
+            append(text)
+            if (faceTinted) append('\n').append(TINT_CAPTION)
+        }
+        val content = JSONArray()
+        content.put(JSONObject().put("type", "text").put("text", caption))
+        for (image in images) {
+            content.put(
+                JSONObject()
+                    .put("type", "image_url")
+                    .put("image_url", JSONObject().put("url", image.dataUrl)),
+            )
+        }
+        return content
+    }
+
+    /** True when any message of the request carries a picture. */
+    private fun hasImageParts(messages: JSONArray): Boolean {
+        for (index in 0 until messages.length()) {
+            val content = messages.optJSONObject(index)?.opt("content") as? JSONArray ?: continue
+            for (part in 0 until content.length()) {
+                if (content.optJSONObject(part)?.optString("type") == "image_url") return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Removes every picture from the request, keeping the text.
+     *
+     * A message that was a content array becomes the plain text it carried, so the endpoint that
+     * refused the image is re-sent the same words without one - the geometry description the
+     * whole fallback exists to preserve.
+     */
+    private fun stripImageParts(messages: JSONArray) {
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            val content = message.opt("content") as? JSONArray ?: continue
+            var removed = false
+            val texts = ArrayList<String>()
+            for (part in 0 until content.length()) {
+                val item = content.optJSONObject(part) ?: continue
+                when (item.optString("type")) {
+                    "image_url" -> removed = true
+                    "text" -> texts += item.optString("text")
+                }
+            }
+            if (removed) message.put("content", texts.joinToString("\n"))
+        }
+    }
+
+    /**
+     * True when a 400 names an image: the provider refused the content part, not the request.
+     *
+     * Providers word it "image_url is not supported", "invalid content type: image", "vision is
+     * not available for this model" - the three markers cover the families. A 400 that is not
+     * about the image keeps its own named failure, so this never rewrites an unrelated refusal.
+     */
+    private fun isImageRefusal(error: AgentException): Boolean {
+        if (error.code != "http-error") return false
+        val text = error.message ?: return false
+        return IMAGE_REFUSAL_MARKERS.any { text.contains(it, ignoreCase = true) }
+    }
+
     /**
      * The assistant turn echoed back to the endpoint.
      *
@@ -662,5 +917,29 @@ class CadAgent(
 
         /** Marks a result the model should read as "this call did not work". */
         const val TOOL_ERROR = "tool error: "
+
+        /**
+         * The one line the transcript carries when the endpoint has refused an image.
+         *
+         * It is the honest sentence: the pictures were stripped, the request went again as the
+         * geometry description, and this model will not be shown a render again this session.
+         */
+        const val VISION_NOTICE = "this model cannot see images; sent the geometry description instead"
+
+        /** What a plate render's caption says when the selected face is tinted in it. */
+        const val TINT_CAPTION = "the selected face is tinted"
+
+        /** The transcript line naming an attached plate render by size and dimensions. */
+        const val PLATE_IMAGE_NOTICE = "the plate render is attached: "
+
+        /** The caption text of a render the agent asked for with plate_screenshot. */
+        const val PLATE_IMAGE_CAPTION =
+            "The plate render you asked for follows; it is the plate at the user's current camera."
+
+        /**
+         * How a provider words an image refusal in a 400 body, so the fallback can tell it from
+         * every other malformed request.
+         */
+        private val IMAGE_REFUSAL_MARKERS = listOf("image", "vision", "multimodal")
     }
 }

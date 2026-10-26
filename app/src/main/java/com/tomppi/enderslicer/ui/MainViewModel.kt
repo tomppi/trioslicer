@@ -98,7 +98,9 @@ import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.MeshSolidBuilder
 import com.tomppi.enderslicer.viewer.MeshVolume
 import com.tomppi.enderslicer.viewer.StlMesh
+import com.tomppi.enderslicer.viewer.ViewerOrientation
 import com.tomppi.enderslicer.viewer.PaintedMeshWriter
+import com.tomppi.enderslicer.viewer.PlateModes
 import com.tomppi.enderslicer.viewer.PlateThreeMfWriter
 import com.tomppi.enderslicer.viewer.SnapApply
 import com.tomppi.enderslicer.viewer.SnapFacing
@@ -147,6 +149,11 @@ import com.tomppi.enderslicer.solidcraft.CadLiveUpdate
 import com.tomppi.enderslicer.solidcraft.CadSliceHandoff
 import com.tomppi.enderslicer.solidcraft.CadWorkspace
 import com.tomppi.enderslicer.solidcraft.DocumentDelta
+import com.tomppi.enderslicer.solidcraft.EngineFaceQuery
+import com.tomppi.enderslicer.solidcraft.FaceSelectionFlow
+import com.tomppi.enderslicer.solidcraft.FaceReapply
+import com.tomppi.enderslicer.solidcraft.FaceSelectionKeeper
+import com.tomppi.enderslicer.solidcraft.SelectedFace
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import com.tomppi.enderslicer.solidcraft.SolidCraftSession
 import com.tomppi.enderslicer.solidcraft.ToolStep
@@ -736,6 +743,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "SolidCraft workspace and the plate can import a mesh again",
                 )
             }
+            dropFaceSelection("the CAD document was closed")
         }
     }
 
@@ -782,6 +790,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 Diagnostics.info("cad", "plate rebuilt from " + document.name)
+                dropFaceSelection("the plate was rebuilt from the document")
             } catch (error: Throwable) {
                 showOperationFailure(error)
             }
@@ -852,6 +861,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 scheduleCadPersist(force = true)
+                dropFaceSelection("a different CAD document was opened")
             } catch (error: Throwable) {
                 showOperationFailure(error)
             }
@@ -971,6 +981,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val mesh = cadBodies.compose(name)
         if (mesh == null) {
             markCadUpdating(false)
+            dropFaceSelection("the design has no bodies now")
             _uiState.update { it.copy(statusMessage = "CAD document: the design is empty") }
             return
         }
@@ -1041,6 +1052,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 editMillis = if (delta.fullRefresh) System.currentTimeMillis() - receivedAt else null,
             )
         }
+        dropFaceSelection("the document has no bodies to draw")
         scheduleCadPersist()
     }
 
@@ -1184,6 +1196,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "display " + name + ": " + composed.triangleCount + " triangles from " +
                 cadBodies.count + " bodies, revision " + document.displayRevision,
         )
+        // Every republish renumbers the plate's triangles - an edit's repaint, a reconnect that
+        // rereads the design, a rebuild. A selected face is re-resolved by NAME against the
+        // body that now exists: a name that survived re-tints its new triangles, a name the
+        // republish removed drops the selection and says which face went. Doing it here rather
+        // than in the edit path alone is what keeps the amber on the face the user picked when
+        // the plate is republished for any other reason.
+        if (_uiState.value.selectedFace != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val live = SolidCraftEngine.session()
+                if (live != null) reapplySelectedFace(live)
+            }
+        }
         return true
     }
 
@@ -2976,6 +3000,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     releasePairSources(state.liveSnapRecord, next.liveSnapRecord)
                 }
                 _uiState.update { commit(it) }
+                dropFaceSelection(removed.name + " was removed from the plate")
             }.onFailure(::showOperationFailure)
         }
     }
@@ -3174,6 +3199,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // button; this is what makes the forgotten step unreachable.
                 placementHistory.clear()
                 _uiState.update { commit(it) }
+                dropFaceSelection("the plate was split into two halves")
                 // The split is what defines the assembly axis, so the flow lands in
                 // the joint maker with the pair the split just made - on this line
                 // only, where the plate really did change. A split that was refused
@@ -5778,6 +5804,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // with them, exactly as it does for a split.
                 placementHistory.clear()
                 _uiState.update { commit(it) }
+                dropFaceSelection("a snap fit was applied to the plate")
             }.onFailure { error ->
                 runCatching { staged.forEach { it.delete() } }
                 // The pair files this apply wrote are not referenced by any state yet, so
@@ -5890,8 +5917,318 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setPaintMode(mode: SupportPaintMode) {
-        _uiState.update { it.copy(paintMode = mode) }
+        // One tool owns a touch: arming a paint mode disarms face selection, so a stroke can
+        // never pick a face. The selection itself (its tint and prompt block) is a different
+        // fact and stays until the user clears it or the document changes under it.
+        _uiState.update { state ->
+            val modes = PlateModes(paint = state.paintMode, faceSelect = state.faceSelectMode)
+                .withPaint(mode)
+            state.copy(paintMode = modes.paint, faceSelectMode = modes.faceSelect)
+        }
     }
+
+    // ---- Face selection: a tap on the plate says which face the agent acts on ---------------
+    //
+    // The plate's tap is resolved against the engine's own B-rep: the picker answers in plate
+    // coordinates, the plate object's placement is undone to the document's coordinates, and
+    // model.faces says which face is there. The same face is then (a) selected in the engine
+    // with select.set so the engine and the plate agree, (b) tinted amber by the plate's own
+    // renderer, and (c) written into the next message's SELECTED FACE block.
+
+    /**
+     * The camera the face was picked through.
+     *
+     * A face is not a screen position, so an orbit keeps the selection; the words describing
+     * which way it faces are re-derived from this orientation when the HUD or the prompt block
+     * asks, and the tinted triangles never move with the camera.
+     */
+    @Volatile
+    private var faceSelectionOrientation: ViewerOrientation? = null
+
+    /** True while a tap's face is being resolved against the engine. */
+    @Volatile
+    private var faceSelectionBusy = false
+
+    /**
+     * Arms face picking on the plate.
+     *
+     * Only a live CAD document has engine faces. A mesh, a stale plate or a stopped engine each
+     * get a sentence that names the reason, so the mode is never simply missing. Arming ends any
+     * support-paint mode through [PlateModes]: a tap is one tool or the other, never both.
+     */
+    fun startFaceSelectMode() {
+        val state = _uiState.value
+        val document = state.cadDocument
+        if (document == null) {
+            val what = state.selectedModel?.name?.let { "the imported mesh \"" + it + "\"" }
+                ?: "an empty plate"
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Face selection needs a live CAD document; the plate holds " +
+                        what + ", and an imported mesh has no engine faces. Import > Open CAD " +
+                        "document opens one.",
+                )
+            }
+            return
+        }
+        if (document.derivedStale) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Face selection needs the current document shape: " +
+                        (document.staleReason ?: "press Rebuild plate in the CAD agent sheet first"),
+                )
+            }
+            return
+        }
+        if (!SolidCraftEngine.isReady()) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Face selection needs the CAD engine: press Connect agent " +
+                        "in the CAD agent sheet, then select the face again.",
+                )
+            }
+            return
+        }
+        document.displayObjectId?.let { id -> if (state.models.any { it.id == id }) selectModel(id) }
+        _uiState.update {
+            it.copy(
+                faceSelectMode = true,
+                paintMode = SupportPaintMode.NONE,
+                smartInfillPicking = false,
+                statusMessage = "Face selection: tap a face of " + document.name +
+                    " on the plate - the agent will be told which one it is",
+            )
+        }
+    }
+
+    /** Ends face picking. A selected face stays selected: its tint and its prompt block remain. */
+    fun exitFaceSelectMode() {
+        _uiState.update { it.copy(faceSelectMode = false) }
+    }
+
+    /** Drops the selected face with one tap, tint and engine selection together. */
+    fun clearFaceSelection() {
+        val previous = _uiState.value.selectedFace ?: return
+        _uiState.update { it.copy(selectedFace = null, faceTintTriangles = null, faceTintMesh = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { EngineFaceQuery { SolidCraftEngine.session() }.clear() }
+        }
+        _uiState.update {
+            it.copy(
+                statusMessage = "Face selection cleared: " + previous.name + " on " +
+                    previous.body + " is no longer selected",
+            )
+        }
+    }
+
+    /**
+     * Resolves one tap on the plate to the engine face under it.
+     *
+     * Runs off the main thread: model.faces and select.set are engine calls. The tap's triangle
+     * names the body, the plate object's placement is undone to the document's coordinates, and
+     * the matched face is tinted and selected. A tap on another object is named rather than
+     * silently treated as the document.
+     */
+    fun selectFaceAt(hit: MeshPicker.Hit, orientation: ViewerOrientation?) {
+        val state = _uiState.value
+        if (!state.faceSelectMode || faceSelectionBusy) return
+        val document = state.cadDocument ?: return
+        val objectId = document.displayObjectId ?: return
+        val objectIndex = state.models.indexOfFirst { it.id == objectId }
+        if (objectIndex < 0) return
+        if (hit.objectIndex != objectIndex) {
+            val other = state.models.getOrNull(hit.objectIndex)?.name
+            _uiState.update {
+                it.copy(
+                    statusMessage = if (other != null) {
+                        "That tap was on " + other + ", not on the CAD document " +
+                            document.name + ". Select a face on the document itself."
+                    } else {
+                        "That tap did not land on the CAD document " + document.name + "."
+                    },
+                )
+            }
+            return
+        }
+        val plateObject = state.models[objectIndex]
+        val sceneOffset = state.models.take(objectIndex).sumOf { it.mesh.triangleCount }
+        val located = cadBodies.locate(hit.triangleIndex - sceneOffset)
+        if (located == null) {
+            _uiState.update {
+                it.copy(statusMessage = "That tap did not land on a body of the CAD document.")
+            }
+            return
+        }
+        faceSelectionBusy = true
+        faceSelectionOrientation = orientation
+        viewModelScope.launch {
+            try {
+                val query = EngineFaceQuery { SolidCraftEngine.session() }
+                val pick = withContext(Dispatchers.IO) {
+                    FaceSelectionFlow.select(
+                        query = query,
+                        body = located.body,
+                        bodyMesh = located.mesh,
+                        displayMesh = plateObject.sourceMesh,
+                        placement = plateObject.placement,
+                        hit = hit,
+                        localTriangleIndex = located.triangleIndex,
+                        orientation = orientation,
+                    )
+                } ?: throw IllegalStateException(
+                    "the engine's face list has no face under that point",
+                )
+                val confirmed = pick.engineAgreed
+                val bodyFirst = cadBodies.firstTriangleOf(located.body) ?: 0
+                val sceneTriangles = IntArray(pick.triangles.size) { index ->
+                    sceneOffset + bodyFirst + pick.triangles[index]
+                }
+                _uiState.update {
+                    it.copy(
+                        selectedFace = pick.face,
+                        faceTintTriangles = sceneTriangles,
+                        faceTintMesh = plateObject.sourceMesh,
+                        faceSelectMode = true,
+                        statusMessage = if (confirmed) {
+                            "Selected " + pick.face.hudLine()
+                        } else {
+                            "Selected " + pick.face.hudLine() +
+                                " - the engine did not confirm its own selection, so the plate " +
+                                "and the engine may disagree about it"
+                        },
+                    )
+                }
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "Could not select that face: " +
+                            (error.message ?: error.javaClass.simpleName).take(200),
+                    )
+                }
+            } finally {
+                faceSelectionBusy = false
+            }
+        }
+    }
+
+    /**
+     * Re-resolves the selected face after a repaint, by the engine's own face NAME.
+     *
+     * A name that survived the edit (a box's top face after a taller box) keeps the selection:
+     * its new index, area and centroid are taken from the engine's new report and its triangles
+     * are re-tinted. A name the edit removed - or a body that went with it - drops the selection
+     * with [FaceSelectionKeeper.goneSentence], so the plate never keeps an amber tint on
+     * triangles that now belong to something else and never silently points at a different face.
+     */
+    private suspend fun reapplySelectedFace(session: SolidCraftSession) {
+        val state = _uiState.value
+        val previous = state.selectedFace ?: return
+        val document = state.cadDocument ?: return
+        val objectId = document.displayObjectId ?: return
+        val plateObject = state.models.firstOrNull { it.id == objectId }
+        if (plateObject == null) {
+            dropSelectedFace(previous, "the CAD object left the plate")
+            return
+        }
+        val bodyMesh = cadBodies.mesh(previous.body)
+        if (bodyMesh == null) {
+            dropSelectedFace(previous, "the body " + previous.body + " is no longer in the document")
+            return
+        }
+        val faces = withContext(Dispatchers.IO) {
+            runCatching { EngineFaceQuery { session }.faces(previous.body) }.getOrNull()
+        }
+        if (faces == null) {
+            // The engine did not answer the one question that could clear or keep the tint.
+            // Keeping it would tint triangles the edit already replaced; drop it and say so.
+            dropSelectedFace(previous, "the engine did not answer the face list after the edit")
+            return
+        }
+        val map = plateObject.placement.documentPlacement(plateObject.sourceMesh)
+        when (val outcome = FaceSelectionKeeper.reapply(
+            previous = previous,
+            body = previous.body,
+            bodyMesh = bodyMesh,
+            faces = faces,
+            map = map,
+            orientation = faceSelectionOrientation,
+        )) {
+            is FaceReapply.Retinted -> {
+                val objectIndex = state.models.indexOfFirst { it.id == objectId }.coerceAtLeast(0)
+                val sceneOffset = state.models.take(objectIndex).sumOf { it.mesh.triangleCount }
+                val bodyFirst = cadBodies.firstTriangleOf(outcome.face.body) ?: 0
+                val sceneTriangles = IntArray(outcome.triangles.size) { index ->
+                    sceneOffset + bodyFirst + outcome.triangles[index]
+                }
+                _uiState.update {
+                    it.copy(
+                        selectedFace = outcome.face,
+                        faceTintTriangles = sceneTriangles,
+                        faceTintMesh = plateObject.sourceMesh,
+                    )
+                }
+                // The engine's selection follows its own face to its new index.
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        EngineFaceQuery { session }.select(
+                            outcome.face.body,
+                            outcome.face.index,
+                            outcome.face.pickPoint,
+                        )
+                    }
+                }
+            }
+            is FaceReapply.Dropped -> _uiState.update {
+                it.copy(
+                    selectedFace = null,
+                    faceTintTriangles = null,
+                    faceTintMesh = null,
+                    statusMessage = outcome.sentence,
+                )
+            }
+        }
+    }
+
+    /** Drops a selection whose face did not survive, with the sentence naming it. */
+    private fun dropSelectedFace(previous: SelectedFace, reason: String) {
+        _uiState.update {
+            it.copy(
+                selectedFace = null,
+                faceTintTriangles = null,
+                faceTintMesh = null,
+                statusMessage = faceClearedSentence(previous, reason),
+            )
+        }
+    }
+
+    /** Drops any face selection because the plate or the document changed under it. */
+    private fun dropFaceSelection(reason: String) {
+        val previous = _uiState.value.selectedFace
+        _uiState.update { state ->
+            val sentence = previous?.let { faceClearedSentence(it, reason) }
+            state.copy(
+                selectedFace = null,
+                faceTintTriangles = null,
+                faceTintMesh = null,
+                faceSelectMode = false,
+                statusMessage = when {
+                    sentence == null -> state.statusMessage
+                    state.statusMessage.isNullOrBlank() -> sentence
+                    state.statusMessage.contains(sentence) -> state.statusMessage
+                    else -> state.statusMessage + " " + sentence
+                },
+            )
+        }
+        if (previous != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { EngineFaceQuery { SolidCraftEngine.session() }.clear() }
+            }
+        }
+    }
+
+    /** The one shape a cleared selection's status line takes: it names the face and the reason. */
+    private fun faceClearedSentence(face: SelectedFace, reason: String): String =
+        "Face selection cleared: " + face.name + " on " + face.body + " - " + reason + "."
 
     // ---- Smart Infill surface picking -------------------------------------
     //
@@ -7747,6 +8084,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * the descriptor has to describe the arranged plate rather than the pre-arrangement one.
      */
     private fun onPlateImported() {
+        // An imported model is a different plate: a face picked on the previous CAD document is
+        // not a face of anything on this one, so the selection goes with a sentence naming it.
+        dropFaceSelection("a model was imported")
         placementHistory.clear()
         persistPlateSoon()
     }

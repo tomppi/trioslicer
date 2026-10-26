@@ -33,14 +33,18 @@ class AgentToolCatalogTest {
         ).forEach { put(engineTool(it)) }
     }
 
-    /** The tools the brief names: the engine's 19 minus the five that do not apply here. */
-    private val expectedNames = setOf(
+    /**
+     * The tools the brief names: the engine's 19 minus the five that do not apply here, plus the
+     * app's own plate render.
+     */
+    private val engineOnlyNames = setOf(
         "list_commands", "describe_command", "execute", "batch", "inspect_design", "measure",
         "body_topology", "set_parameter", "export", "undo", "redo", "new_design", "open", "save",
     )
+    private val expectedNames = engineOnlyNames + setOf("plate_screenshot")
 
     @Test
-    fun theEngineCatalogueYieldsTheFourteenToolsThePlateCanUse() {
+    fun theEngineCatalogueYieldsTheToolsThePlateCanUse() {
         val catalog = AgentToolCatalog.fromEngine(engineCatalog(), includeWebTools = false)
         assertEquals(expectedNames, catalog.names)
         assertEquals(expectedNames.size, catalog.tools.length())
@@ -62,8 +66,9 @@ class AgentToolCatalogTest {
         assertTrue(withWeb.includesWebTools)
         // Removing them for an endpoint that does not offer the routes keeps the engine's tools.
         val without = withWeb.withoutWebTools()
-        assertEquals(expectedNames, without.names)
+        assertEquals("the engine's tools and the plate render stay", expectedNames, without.names)
         assertFalse(without.includesWebTools)
+        assertTrue("the plate render is the app's, not the endpoint's", without.includesPlateScreenshot)
     }
 
     @Test
@@ -98,6 +103,7 @@ class AgentToolCatalogTest {
                 .put(engineTool("execute"))
                 .put(engineTool("weird.name")),
             includeWebTools = false,
+            includePlateScreenshot = false,
         )
         assertEquals(setOf("execute"), catalog.names)
         assertEquals(setOf("weird.name"), catalog.skippedNames)
@@ -105,7 +111,11 @@ class AgentToolCatalogTest {
 
     @Test
     fun theWebToolDefinitionsAreFunctionToolsWithTypedArguments() {
-        val catalog = AgentToolCatalog.fromEngine(JSONArray(), includeWebTools = true)
+        val catalog = AgentToolCatalog.fromEngine(
+            JSONArray(),
+            includeWebTools = true,
+            includePlateScreenshot = false,
+        )
         assertEquals(setOf("web_search", "web_fetch"), catalog.names)
         val search = catalog.tools.getJSONObject(0).getJSONObject("function")
         assertEquals("web_search", search.getString("name"))
@@ -118,5 +128,36 @@ class AgentToolCatalogTest {
         val fetch = catalog.tools.getJSONObject(1).getJSONObject("function")
         assertEquals("web_fetch", fetch.getString("name"))
         assertTrue(fetch.getJSONObject("parameters").getJSONObject("properties").has("url"))
+    }
+
+    @Test
+    fun thePlateRenderIsAnAppToolWithNoParameters() {
+        val catalog = AgentToolCatalog.fromEngine(engineCatalog(), includeWebTools = false)
+        assertTrue("the render is offered beside the engine's tools", "plate_screenshot" in catalog.names)
+        assertTrue(catalog.includesPlateScreenshot)
+        val definition = (0 until catalog.tools.length())
+            .map { catalog.tools.getJSONObject(it).getJSONObject("function") }
+            .first { it.getString("name") == "plate_screenshot" }
+        val parameters = definition.getJSONObject("parameters")
+        assertEquals("object", parameters.getString("type"))
+        assertEquals(0, parameters.getJSONObject("properties").length())
+        assertFalse("nothing to fill in, so nothing to get wrong", parameters.getBoolean("additionalProperties"))
+        val description = definition.getString("description")
+        assertTrue(description, description.contains("current camera"))
+        assertTrue("the selected face is in the picture", description.contains("tinted"))
+        // The engine's own screenshot stays hidden: this is the app's renderer, not the engine's.
+        assertFalse("screenshot" in catalog.names)
+        assertTrue("screenshot" in catalog.hiddenNames)
+    }
+
+    @Test
+    fun aCatalogueBuiltWithoutTheAppToolsIsTheEnginesAlone() {
+        val catalog = AgentToolCatalog.fromEngine(
+            engineCatalog(),
+            includeWebTools = false,
+            includePlateScreenshot = false,
+        )
+        assertEquals(engineOnlyNames, catalog.names)
+        assertFalse(catalog.includesPlateScreenshot)
     }
 }

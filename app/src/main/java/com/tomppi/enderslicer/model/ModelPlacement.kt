@@ -172,6 +172,24 @@ data class ModelPlacement(
         )
     }
 
+    /**
+     * The document-to-plate map this placement draws a source mesh through.
+     *
+     * The translation is not a field: [transformed] derives it from the transformed mesh's own
+     * bounds, so the map has to be built from the mesh too. Built once and reused, it is what
+     * lets a face pick turn a tap back into a document point and a face highlight forward into
+     * the plate's coordinates without re-measuring the mesh per point.
+     */
+    fun documentPlacement(sourceMesh: StlMesh): DocumentPlacementMap {
+        val raw = boundsFor(sourceMesh, linear)
+        return DocumentPlacementMap(
+            linear = linear,
+            translationXmm = centerXmm - raw.centerX,
+            translationYmm = centerYmm - raw.centerY,
+            translationZmm = baseZmm - raw.minZ,
+        )
+    }
+
     fun moved(
         centerXmm: Double = this.centerXmm,
         centerYmm: Double = this.centerYmm,

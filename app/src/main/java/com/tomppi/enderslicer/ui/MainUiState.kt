@@ -17,6 +17,7 @@ import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.profile.CuraEngineProfile
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.SelectedFace
 import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
@@ -170,6 +171,38 @@ data class MainUiState(
      * place as the agent works.
      */
     val cadDocument: CadDocument? = null,
+    /**
+     * True while the plate is picking a face for the agent: one tap on the plate selects the
+     * engine face under it. Only a live CAD document has faces, and the mode only exists while
+     * [cadDocument] is not null and its plate is not stale.
+     */
+    val faceSelectMode: Boolean = false,
+    /**
+     * The face the user picked on the live CAD document, or null.
+     *
+     * It is what a message's SELECTED FACE block and the HUD chip are made of, and it survives
+     * the agent's own edits while the engine's face NAME survives: a repaint re-resolves the
+     * name against the new body, and a face the edit removed drops the selection with a named
+     * sentence. The camera never clears it - a face is not a screen position.
+     */
+    val selectedFace: SelectedFace? = null,
+    /**
+     * The plate triangles the renderer tints for [selectedFace], as scene indices.
+     *
+     * Separate from the support paint by construction: the viewer draws it from its own buffer,
+     * so selecting writes nothing a paint stroke reads and a paint stroke never tints.
+     */
+    val faceTintTriangles: IntArray? = null,
+    /**
+     * The display mesh [faceTintTriangles] was computed against.
+     *
+     * A repaint replaces the document's source mesh and renumbers every triangle, so triangle
+     * indices from before it are meaningless after it. The viewer tints only while this is the
+     * mesh on the plate; a repaint therefore drops the tint for the frame or two the face is
+     * being re-resolved, and a stale index can never tint a triangle that now belongs to
+     * something else.
+     */
+    val faceTintMesh: StlMesh? = null,
     /** How the plate is laid out and printed. A workflow choice, not a slicing setting. */
     val platePreferences: PlatePreferences = PlatePreferences(),
     /** True while there is a placement change to take back. */

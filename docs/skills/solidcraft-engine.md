@@ -71,6 +71,34 @@ answers 401, 403, 404 or 405 on those routes, the tools are removed for the conv
 agent says once that search is unavailable - never a silent failure and never a fake empty
 result.
 
+### The plate's selection, and what the agent can see
+
+Two things the app can hand you that a desk agent never gets. Both are about the plate the user
+is looking at, and both are true statements from the app, not guesses:
+
+- **A message may begin with a `SELECTED FACE` block.** The user tapped a face of the live CAD
+  document on the plate; the app resolved the engine face under the fingertip with `model.faces`,
+  set the engine's selection with `select.set` (a face item is `{type:"face", body, index,
+  point}`), and tinted that face amber in its own renderer. The block carries body, face name,
+  index, surface (planar / cylindrical r=… / curved), area, centroid, outward normal, a point on
+  the face, and which way it faces from the camera the user is looking through. **Act on that
+  face.** `solid.offset_face` and `solid.shell` take its name or its point; `plastic.*` features
+  take a point on the face the same way; and your answer should quote the face's name and area so
+  the user knows the same face was used. Do not re-derive "the top" from a description when the
+  block names the face.
+- **`plate_screenshot` may be offered as a tool.** It is not the engine's `screenshot` (that one
+  is refused: the plate is the viewport and the engine's camera is not the user's). It renders
+  the plate at the user's camera with the app's own renderer, includes the amber selection tint,
+  and the runtime attaches the picture to the next message of the same turn. Use it when what the
+  part **looks like** matters; use `inspect_design` / `measure` for numbers. Its result is one
+  line ("rendered the plate: 1 body, 12,000 triangles, current camera; the image follows") and
+  the image arrives as a standard OpenAI content part.
+- **If the endpoint refuses an image**, the app strips the pictures, re-sends the same request
+  once as text, and the transcript says *this model cannot see images; sent the geometry
+  description instead*. The conversation remembers it: no further render is attached that
+  session. If a message tells you that, work from the SELECTED FACE block and the geometry -
+  never say you saw a render that was not sent.
+
 ## 2. Connect (external agents only)
 
 The engine is a child process of the app, speaking MCP over its own stdio; the app exposes that

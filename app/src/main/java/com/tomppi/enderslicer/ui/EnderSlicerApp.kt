@@ -87,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -112,7 +113,9 @@ import com.tomppi.enderslicer.cadagent.AgentSettings
 import com.tomppi.enderslicer.cadagent.AgentSettingsStore
 import com.tomppi.enderslicer.cadagent.AgentToolCatalog
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
+import com.tomppi.enderslicer.cadagent.AgentView
 import com.tomppi.enderslicer.cadagent.CadAgent
+import com.tomppi.enderslicer.cadagent.PlateImageSource
 import com.tomppi.enderslicer.cadagent.InAppTurnKeeper
 import com.tomppi.enderslicer.cadagent.StoredAgentSettings
 import com.tomppi.enderslicer.conical.ConicalSettingsStore
@@ -141,6 +144,8 @@ import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelCutPlane
 import com.tomppi.enderslicer.viewer.ModelSurfaceView
+import com.tomppi.enderslicer.viewer.PlateImage
+import com.tomppi.enderslicer.viewer.PlateImageCodec
 import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.SnapFacing
 import com.tomppi.enderslicer.viewer.SnapFit
@@ -176,7 +181,9 @@ import com.tomppi.enderslicer.nativebridge.CadEngine
 import com.tomppi.enderslicer.agent.AgentBridgeCopy
 import com.tomppi.enderslicer.agent.AgentBridgeTarget
 import com.tomppi.enderslicer.agent.AgentBridgeTokens
+import com.tomppi.enderslicer.solidcraft.SelectedFace
 import com.tomppi.enderslicer.solidcraft.SolidCraftAgentHost
+import com.tomppi.enderslicer.solidcraft.rewordedFor
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
@@ -384,6 +391,15 @@ fun EnderSlicerApp(
     var cadConversations by remember { mutableStateOf(CadConversations()) }
     var cadStatus by remember { mutableStateOf<String?>(null) }
     var cadBusy by remember { mutableStateOf(false) }
+    // The plate's own GL view. The agent's plate_screenshot tool renders the picture the user is
+    // looking at from it - the app's renderer, the user's camera, never the engine's screenshot.
+    var plateView by remember { mutableStateOf<ModelSurfaceView?>(null) }
+    // The user's camera, kept with the plate state: the agent's plate render and the face
+    // selection's plain-words description both need the orientation the user is looking through.
+    var modelOrientation by rememberSaveable(stateSaver = ViewerOrientationSaver) {
+        mutableStateOf<ViewerOrientation?>(null)
+    }
+
     // The CAD screen is the harness CAD session's view; it opens on its own.
     var cadOpen by rememberSaveable { mutableStateOf(false) }
     // How this device draws the CAD viewport. Read once per composition and handed to the
@@ -830,6 +846,63 @@ fun EnderSlicerApp(
     }
 
     /**
+     * The face the next message carries, worded for the camera the user is looking through now.
+     *
+     * The selection is a face, not a screen position: an orbit keeps it, and only the plain-word
+     * description ("the face facing you") follows the camera. Recomputed when the message is
+     * built, so the block never says "top" about a face the user has since orbited to the side.
+     */
+    fun faceForNextMessage(): SelectedFace? {
+        val current = viewModel.uiState.value
+        val face = current.selectedFace ?: return null
+        val objectId = current.cadDocument?.displayObjectId ?: return face
+        val plateObject = current.models.firstOrNull { it.id == objectId } ?: return face
+        val map = plateObject.placement.documentPlacement(plateObject.sourceMesh)
+        return face.rewordedFor(map, modelOrientation)
+    }
+
+    /**
+     * The plate as the agent will see it: the frame at the user's current camera, the selected
+     * face's amber tint included, encoded small enough to travel in a chat message.
+     *
+     * [view] is passed in rather than read from the composition here because this runs on the
+     * tool thread during a turn; the view is captured when the message is sent. A null view (the
+     * Plate tab is not showing a model) and a plate that is not drawing both answer null, and
+     * the tool says so rather than sending a picture that would not be the truth.
+     */
+    fun platePicture(view: ModelSurfaceView? = plateView): PlateImage? {
+        if (view == null) return null
+        val current = viewModel.uiState.value
+        val bitmap = view.capturePlate() ?: return null
+        return PlateImageCodec.encode(
+            bitmap = bitmap,
+            bodies = current.cadDocument?.bodyCount ?: current.models.size,
+            triangles = current.models.sumOf { it.mesh.triangleCount },
+        )
+    }
+
+    /**
+     * Opens face picking from the CAD agent sheet.
+     *
+     * The sheet closes because the plate's tap is the input from here on, and every other tool
+     * that owns the plate's touches closes with it - one tool at a time is what keeps a selection
+     * from painting and a stroke from selecting.
+     */
+    fun beginFaceSelect() {
+        viewModel.closeSolidCraftSheet()
+        modelToolsOpen = false
+        supportPaintUiOpen = false
+        annotationUiOpen = false
+        // The next input is a tap on the model, so the phone's rail folds away: the plate is the
+        // subject and the face chip must not stand under the rail.
+        showPlatePanels(platePanels.closedRail())
+        viewModel.setAnnotationActive(false)
+        viewModel.setCutActive(false)
+        viewModel.setSnapActive(false)
+        viewModel.startFaceSelectMode()
+    }
+
+    /**
      * Runs one turn of the in-app agent against the live engine.
      *
      * The tool catalogue is the engine's own `tools/list` answer, read over its stdio every turn -
@@ -917,11 +990,23 @@ fun EnderSlicerApp(
                             ?: "An external agent is editing this document; press Take over first.",
                     )
                 }
+                // What this message carries beyond the user's words: the SELECTED FACE block,
+                // and - with the sheet's switch on - a render of the plate with that face tinted.
+                // Both are read now, on the UI thread, so the turn carries the state the user
+                // sent from.
+                val faceForTurn = faceForNextMessage()
+                val captureView = plateView
                 val reply = withContext(Dispatchers.IO) {
                     agent.run(
                         settings = stored,
                         catalog = catalog,
                         userText = text,
+                        view = AgentView(
+                            selectionBlock = faceForTurn?.promptBlock().orEmpty(),
+                            plate = PlateImageSource { platePicture(captureView) },
+                            attachPlateToSelection = stored.settings.lendView,
+                            faceTinted = faceForTurn != null,
+                        ),
                         onActivity = { activity ->
                             // Plain words for the sheet's compact transcript, which has no rows
                             // of its own; the floating chat shows the tool rows instead.
@@ -942,6 +1027,24 @@ fun EnderSlicerApp(
                             aiScope.launch {
                                 cadConversations = cadConversations.appendInApp(
                                     AiChatMessage(fromUser = false, text = notice),
+                                )
+                            }
+                        },
+                        // The model could not see the picture and the request went again as text:
+                        // one line, once, in the transcript - never a claim that it saw a render.
+                        onVisionNotice = { notice ->
+                            aiScope.launch {
+                                cadConversations = cadConversations.appendInApp(
+                                    AiChatMessage(fromUser = false, text = notice),
+                                )
+                            }
+                        },
+                        // A render was attached: named by its size and dimensions, so a copied
+                        // transcript says which picture went without carrying its bytes.
+                        onImageAttached = { line ->
+                            aiScope.launch {
+                                cadConversations = cadConversations.appendInApp(
+                                    AiChatMessage(fromUser = false, text = line),
                                 )
                             }
                         },
@@ -1028,13 +1131,15 @@ fun EnderSlicerApp(
             askInAppAgent(text, stored)
             return
         }
+        val faceForTurn = faceForNextMessage()
+        val outgoing = faceForTurn?.promptBlock().orEmpty() + text
         aiScope.launch {
             cadBusy = true
             cadStatus = null
             try {
                 val chat = cadChat.get()
                     ?: error("Connect the harness first - Ask AI is in the sidebar rail")
-                withContext(Dispatchers.IO) { chat.send(EngineMode.SOLIDCRAFT.prompt(text)) }
+                withContext(Dispatchers.IO) { chat.send(EngineMode.SOLIDCRAFT.prompt(outgoing)) }
                 cadConversations = cadConversations.appendHarness(
                     AiChatMessage(fromUser = true, text = text),
                 )
@@ -1090,6 +1195,7 @@ fun EnderSlicerApp(
                 model = model.trim(),
                 hasApiKey = previous.hasApiKey,
                 webSearch = previous.webSearch,
+                lendView = previous.lendView,
             ),
             apiKey,
         )
@@ -1129,6 +1235,19 @@ fun EnderSlicerApp(
         inAppCadAgent.get()?.reset()
         inAppWebNotice = null
         cadStatus = null
+    }
+
+    /**
+     * Persists **Lend the agent my view**.
+     *
+     * On, a message that carries a face selection also carries the plate render of that tinted
+     * face; off, the message carries the SELECTED FACE block alone. The next turn follows it -
+     * nothing is re-sent and no conversation is reset.
+     */
+    fun setAgentLendView(enabled: Boolean) {
+        val current = agentSettingsStore.loadSettings()
+        agentSettingsStore.save(current.copy(lendView = enabled))
+        agentSettings = agentSettingsStore.loadSettings()
     }
 
     /** Cancels the turn in flight, whichever agent is driving it. */
@@ -1395,6 +1514,8 @@ fun EnderSlicerApp(
         viewModel.setPaintMode(SupportPaintMode.NONE)
         supportPaintUiOpen = false
     }
+    // Face select mode owns the plate's taps; Back ends it and leaves the selected face alone.
+    BackHandler(enabled = state.faceSelectMode) { viewModel.exitFaceSelectMode() }
     BackHandler(enabled = annotationUiOpen) {
         viewModel.setAnnotationActive(false)
         annotationUiOpen = false
@@ -1405,9 +1526,6 @@ fun EnderSlicerApp(
     BackHandler(enabled = state.snapActive) { viewModel.setSnapActive(false) }
     var viewerMode by rememberSaveable { mutableStateOf(ViewerMode.MODEL) }
     var selectedLayerIndex by rememberSaveable { mutableStateOf(0) }
-    var modelOrientation by rememberSaveable(stateSaver = ViewerOrientationSaver) {
-        mutableStateOf<ViewerOrientation?>(null)
-    }
     var lastAutoSelectedResultId by rememberSaveable { mutableStateOf<String?>(null) }
     val nonPlanarStore = remember(context) { NonPlanarSettingsStore(context.applicationContext) }
     var nonPlanarSettings by remember(nonPlanarStore) { mutableStateOf(nonPlanarStore.load()) }
@@ -2276,6 +2394,10 @@ fun EnderSlicerApp(
                             onPaintHit = viewModel::paintAt,
                             onSurfacePick = viewModel::brushSurfaceAt,
                             onSurfacePickEnd = viewModel::endSmartInfillStroke,
+                            onFacePick = { hit -> viewModel.selectFaceAt(hit, modelOrientation) },
+                            onClearFaceSelection = viewModel::clearFaceSelection,
+                            onExitFaceSelectMode = viewModel::exitFaceSelectMode,
+                            onPlateViewChanged = { plateView = it },
                             onModelPicked = { index ->
                                 state.models.getOrNull(index)?.let { model -> viewModel.selectModel(model.id) }
                             },
@@ -3108,6 +3230,12 @@ fun EnderSlicerApp(
                 ?: "cad-document"
             SolidCraftSheet(
                 document = state.cadDocument,
+                selectedFace = state.selectedFace,
+                faceSelectMode = state.faceSelectMode,
+                plateObjectName = state.selectedModel?.name,
+                onStartFaceSelect = ::beginFaceSelect,
+                onClearFaceSelection = viewModel::clearFaceSelection,
+                onAgentLendViewChange = ::setAgentLendView,
                 // The same shared selection the chat's source switch drives.
                 messages = cadConversations.messagesFor(agentSettings.mode.chatSource()),
                 agentSettings = agentSettings,
@@ -3888,6 +4016,14 @@ private fun ViewerPanel(
     onPaintHit: (MeshPicker.Hit) -> Unit,
     onSurfacePick: (MeshPicker.Hit) -> Unit,
     onSurfacePickEnd: () -> Unit,
+    /** A tap that picked a face of the live CAD document (select mode). */
+    onFacePick: (MeshPicker.Hit) -> Unit,
+    /** One tap: the amber tint, the HUD chip and the prompt block all go. */
+    onClearFaceSelection: () -> Unit,
+    /** Ends select mode; a selected face stays selected, tint and all. */
+    onExitFaceSelectMode: () -> Unit,
+    /** The plate's GL view, for the agent's plate render; null when it goes. */
+    onPlateViewChanged: (ModelSurfaceView?) -> Unit,
     /** A tap on a part: the index in the plate's model list the viewer was given. */
     onModelPicked: (Int) -> Unit,
     /** A tap while the Snap fit tool is open: the model point the ray hit. */
@@ -3943,6 +4079,20 @@ private fun ViewerPanel(
 ) {
     val effectivePrinter = state.printer.withSettings(state.settings)
     val gcodeAvailable = state.hasCurrentGcode()
+    // The selection is a face, not a screen position: an orbit keeps it, and only the plain-word
+    // description changes, so the HUD is re-worded for the camera the user has now.
+    val hudFace = state.selectedFace?.let { face ->
+        val objectId = state.cadDocument?.displayObjectId
+        val plateObject = state.models.firstOrNull { it.id == objectId }
+        if (plateObject == null || modelOrientation == null) {
+            face
+        } else {
+            face.rewordedFor(
+                plateObject.placement.documentPlacement(plateObject.sourceMesh),
+                modelOrientation,
+            )
+        }
+    }
     Box(modifier = modifier) {
         val preview = state.layerPreview.takeIf { gcodeAvailable }
         when {
@@ -4010,6 +4160,10 @@ private fun ViewerPanel(
                 LaunchedEffect(state.isBusy, modelView) {
                     if (!state.isBusy) modelView?.clearDragPreview()
                 }
+                DisposableEffect(modelView) {
+                    onPlateViewChanged(modelView)
+                    onDispose { onPlateViewChanged(null) }
+                }
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner, modelView) {
                     val view = modelView
@@ -4036,8 +4190,25 @@ private fun ViewerPanel(
                         }
                     }
                 }
+                // The plate's face tint is state (a face and its triangles), and the renderer
+                // holds the buffer that draws it. Re-applying it on every layout as well as on
+                // every recomposition is what keeps it on screen when the plate RESIZES - the
+                // agent sheet opening and closing changes the viewport, and a frame the agent
+                // renders during that must show the tint the user sees.
+                fun applyFaceTint(view: ModelSurfaceView) {
+                    val tintMesh = state.selectedModel?.sourceMesh
+                    view.setFaceTint(
+                        if (state.selectedFace != null && state.faceTintMesh === tintMesh) {
+                            state.faceTintTriangles
+                        } else {
+                            null
+                        },
+                    )
+                }
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { modelView?.let(::applyFaceTint) },
                     factory = { context ->
                         ModelSurfaceView(context, effectivePrinter).also { modelView = it }
                     },
@@ -4090,7 +4261,10 @@ private fun ViewerPanel(
                         view.onJointAxisRelease = onJointAxisRelease
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
-                        view.surfacePickActive = state.smartInfillPicking
+                        // One tap is either a face pick or a Smart Infill surface, never both;
+                        // the face pick is reported once per gesture (see faceSelectActive).
+                        view.surfacePickActive = state.smartInfillPicking || state.faceSelectMode
+                        view.faceSelectActive = state.faceSelectMode
                         view.setSmartInfillOverlay(state.smartInfillOverlay)
                         // Every object's paint, not just the selected one's: the viewer draws the whole plate.
                         view.setPaintStates(state.models.map { it.supportPaint })
@@ -4106,8 +4280,13 @@ private fun ViewerPanel(
                         view.onRotatePreview = onRotatePreview
                         view.onRotateCommitted = onRotateCommitted
                         view.onPaintHit = onPaintHit
-                        view.onSurfacePick = onSurfacePick
+                        view.onSurfacePick = if (state.faceSelectMode) onFacePick else onSurfacePick
                         view.onSurfacePickEnd = onSurfacePickEnd
+                        // The face tint is the renderer's own buffer; the paint state beside it
+                        // is untouched by a selection. It is only drawn for the mesh whose
+                        // triangles it names: a repaint replaces that mesh, so a stale index can
+                        // never tint a triangle that now belongs to something else.
+                        applyFaceTint(view)
                         view.annotationActive = state.annotationActive
                         view.onAnnotationTap = onAnnotationTap
                         view.onAnnotationAdjust = onAnnotationAdjust
@@ -4130,6 +4309,21 @@ private fun ViewerPanel(
                     },
                 )
             }
+        }
+
+        if (viewerMode == ViewerMode.MODEL && (state.faceSelectMode || hudFace != null)) {
+            FaceSelectHud(
+                face = hudFace,
+                picking = state.faceSelectMode,
+                onClear = onClearFaceSelection,
+                onDone = onExitFaceSelectMode,
+                // Top-right, below the CAD badge and the status chevrons: the badge opens the
+                // agent sheet and owns the top-start corner, and the phone's sidebar can stand
+                // open down the left edge - the chip must be readable under either.
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 88.dp, start = 12.dp, end = 12.dp),
+            )
         }
 
         if (supportPaintUiOpen && viewerMode == ViewerMode.MODEL) {

@@ -4,6 +4,79 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.6] - 2026-10-26
+
+### Added
+
+- **Tap a face on the plate and the agent knows which one.** With a live CAD document on the
+  plate, the CAD agent sheet's **Select a face on the plate** arms a pick mode: the tap goes
+  through the plate's existing surface-pick hook and `MeshPicker` (one pick per gesture), the
+  plate object's placement is undone to the document's coordinates, and the point is resolved
+  against the engine's own `model.faces` report - planar when it lies on the face's plane,
+  cylindrical when it lies on the cylinder, otherwise the nearest area centre. The face is then
+  selected in the engine with `select.set {items:[{type:"face", body, index, point}]}`, so the
+  engine's selection and the plate agree. A tap on a different object is named instead of being
+  treated as the document. Select mode exists only for a CAD document: on an imported mesh the
+  sheet says by name that an STL has triangles, not engine faces.
+- **The selected face is tinted in the plate's own renderer.** `SelectionTintBuffer` is one byte
+  per scene vertex - the paint buffer's shape, a buffer of its own - and the mesh shader mixes a
+  warm amber over the shaded colour of every triangle that satisfies the face's predicate. It is
+  outside the support palette (interface cyan, supports magenta) and the layer preview's range,
+  it rides the face through an orbit, and it is independent of painting in both directions:
+  selecting never writes a paint buffer, a paint stroke never tints, and arming either mode
+  disarms the other. A HUD chip over the plate names body, face and index, surface, area and
+  which way it faces from the camera, with **Clear** one tap away.
+- **The next prompt carries a SELECTED FACE block.** Body, face name and index, surface, area,
+  centroid, outward normal (from the picked triangle, so a hole faces into the hole), the point on
+  the face that a face command takes, and a view-relative description ("top", "the face facing
+  you"). The shipped runbook gains the rule: act on that face - `solid.offset_face`,
+  `solid.shell`, `plastic.*` - rather than guessing from a description, and quote its name and
+  area. A message that carries a face selection carries a plate render of it too, behind the
+  sheet's new **Lend the agent my view** switch (default on).
+- **The agent can see the plate.** `plate_screenshot` is the app's own tool beside the engine's
+  (`AgentToolCatalog`/`CadAgent`, no engine call): `ModelSurfaceView.capturePlate` asks the
+  renderer for the next frame, the frame is read back from the plate's own frame buffer at the
+  user's camera, scaled so the long side is at most 768 px and encoded as a JPEG. The picture is
+  the plate view alone, the amber selected-face tint included - never the app around it and never
+  the engine's `screenshot`, which is still refused. Its result is one line ("rendered the
+  plate: 1 body, 12,000 triangles, current camera; the image follows") and the runtime attaches
+  the image to the next user-role message of the same turn as the standard OpenAI content part
+  (`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`), with a caption saying
+  the selected face is tinted when it is.
+- **Vision capability is handled honestly.** A 400 whose body names the image (image/vision/
+  multimodal) means the model cannot see pictures: the app strips the images, re-sends the same
+  request once text-only, records *this model cannot see images; sent the geometry description
+  instead* in the transcript and remembers it for the session - no further render is attached and
+  the transcript never claims one was seen. A 400 that is not about the image keeps its own named
+  failure. **Copy transcript** never carries an image payload: a render is named by its size and
+  dimensions, and a data URL that ever reached a message is replaced with a marker.
+
+### Fixed
+
+- **A selected face survives the agent's own edits.** A repaint re-tessellates the document and
+  renumbers every triangle, so the selection is not carried as indices: the face's engine NAME is
+  looked up again in the new body's `model.faces`, its triangles are re-tinted and the engine's
+  selection moves to its new index. A name the edit removed drops the selection with a sentence
+  that names it; a new document, an import, a split, a snap fit or a Rebuild plate drops it the
+  same way. Orbiting never does - a face is not a screen position.
+- **The sheet's endpoint save no longer resets the new switch.** `saveAgentSettings` carries the
+  stored **Lend the agent my view** choice forward, the same way it carries the web-search one.
+
+### Tested
+
+- The face mapping (a tap on a known triangle resolves to the expected face name and centroid with
+  the plate placement undone), the tint covering exactly the face's triangles, the tint buffer
+  being separate from the paint buffer, `select.set` being called with the body/index/point, the
+  prompt block's numbers, the no-paint rule, the repaint re-resolution and the dropped-face
+  sentence, the plate render attached as a content array with a `data:` URL, the text-only
+  fallback with one retry and one transcript line, and the transcript copy carrying no base64 -
+  all hermetic against `FakeOpenAiServer`.
+- Walked on the dev phone against a scripted endpoint (version 123, the walk in
+  `.build/walk-123/`): a tap on a face, the HUD chip and the amber tint, "make this face 2 mm
+  thicker" answered with the face's name and area and the plate showing the thicker face, the
+  image arriving at the endpoint (decoded back to a PNG in that directory), and the text-only
+  fallback once.
+
 ## [1.9.5] - 2026-10-26
 
 ### Added

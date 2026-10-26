@@ -131,6 +131,9 @@ data class DocumentDelta(
  *
  * Not thread-safe; the view model owns one and touches it from one coroutine at a time.
  */
+/** One body of the document, and which of its own triangles a scene triangle is. */
+data class BodyTriangle(val body: String, val mesh: StlMesh, val triangleIndex: Int)
+
 class CadBodyMeshes {
 
     private val bodies = LinkedHashMap<String, StlMesh>()
@@ -140,6 +143,34 @@ class CadBodyMeshes {
     fun names(): List<String> = bodies.keys.toList()
 
     fun mesh(name: String): StlMesh? = bodies[name]
+
+    /**
+     * Which body a triangle of [compose]'s concatenation belongs to, and its index there.
+     *
+     * [compose] walks the bodies in insertion order, so a scene triangle is its body's own index
+     * plus that body's place in the run - which is what turns a tap's triangle into "the face of
+     * Body2" instead of a number nothing can name.
+     */
+    fun locate(sceneTriangleIndex: Int): BodyTriangle? {
+        if (sceneTriangleIndex < 0) return null
+        var first = 0
+        for ((name, mesh) in bodies) {
+            val next = first + mesh.triangleCount
+            if (sceneTriangleIndex < next) return BodyTriangle(name, mesh, sceneTriangleIndex - first)
+            first = next
+        }
+        return null
+    }
+
+    /** Where [name]'s triangles start in [compose]'s concatenation, or null if it is not there. */
+    fun firstTriangleOf(name: String): Int? {
+        var first = 0
+        for ((body, mesh) in bodies) {
+            if (body == name) return first
+            first += mesh.triangleCount
+        }
+        return null
+    }
 
     fun put(name: String, mesh: StlMesh) {
         bodies[name] = mesh

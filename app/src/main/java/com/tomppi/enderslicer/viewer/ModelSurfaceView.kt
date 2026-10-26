@@ -1,9 +1,11 @@
 package com.tomppi.enderslicer.viewer
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.os.Looper
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ViewConfiguration
@@ -20,6 +22,8 @@ import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.max
@@ -67,6 +71,9 @@ class ModelSurfaceView(
     private val pendingPaintCoordinates = java.util.concurrent.atomic.AtomicReference<FloatArray?>(null)
     private val paintPickLock = Any()
     private var paintPickScheduled = false
+
+    /** True once this gesture's face pick has been reported, so a drag reports only the first. */
+    private var facePickReported = false
 
     /** When not [SupportPaintMode.NONE], a single-finger drag paints instead of rotating. */
     var paintMode: SupportPaintMode = SupportPaintMode.NONE
@@ -291,6 +298,16 @@ class ModelSurfaceView(
     var surfacePickActive: Boolean = false
 
     /**
+     * True when a surface pick is a face selection rather than a Smart Infill brush stroke.
+     *
+     * Both use [onSurfacePick], but they want different gestures: a stroke paints on every
+     * sample it passes over, and a face pick is the one point the user tapped. With this set the
+     * pick is reported once per finger-down, so a drag across the model cannot fire a selection
+     * per sample at the engine.
+     */
+    var faceSelectActive: Boolean = false
+
+    /**
      * The finger came up after a stroke. The host commits what the samples
      * collected here rather than on every one of them.
      */
@@ -503,6 +520,47 @@ class ModelSurfaceView(
         requestRender()
     }
 
+    /**
+     * Tints one face of the selected CAD object, as scene triangle indices.
+     *
+     * The plate draws the tint itself, in the mesh shader, from a per-triangle buffer that is
+     * separate from the support paint's: selecting writes nothing a paint stroke reads, and a
+     * paint stroke tints nothing. Null or an empty array clears it. The camera is not touched -
+     * a face is not a screen position, so orbiting keeps the tint on the face.
+     */
+    fun setFaceTint(triangles: IntArray?) {
+        val copy = triangles?.copyOf()
+        queueEvent { modelRenderer.setFaceTint(copy) }
+        requestRender()
+    }
+
+    /** The view's current orientation, or the plate's default before the first gesture. */
+    fun plateOrientation(): ViewerOrientation = modelRenderer.orientation
+
+    /**
+     * Renders the plate at the camera the user is looking through, into an offscreen frame.
+     *
+     * Blocking, on purpose: the caller is the agent's tool thread, and the picture that answers
+     * has to be the scene the user sees now - the selected face's tint included - not whatever
+     * the on-screen surface happened to hold on some frame (a resizing plate, a sheet over it, a
+     * frame drawn before the tint arrived). The renderer draws the same scene through the same
+     * camera into its own frame buffer, so nothing about the window can change what the agent
+     * is shown. Never call it on the UI or GL thread - a blocking wait there would freeze the
+     * frame that produces it. Returns null when there is no surface to render into (another
+     * tab, the app in the background): there is no honest picture to send then.
+     */
+    fun capturePlate(timeoutMillis: Long = CAPTURE_TIMEOUT_MILLIS): Bitmap? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return null
+        if (!isAttachedToWindow || !isShown) return null
+        val pending = CompletableFuture<Bitmap?>()
+        post { queueEvent { pending.complete(modelRenderer.renderOffscreen()) } }
+        return try {
+            pending.get(timeoutMillis, TimeUnit.MILLISECONDS)
+        } catch (error: Throwable) {
+            null
+        }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!cameraInteractive) return false
         val painting = paintMode != SupportPaintMode.NONE
@@ -571,6 +629,7 @@ class ModelSurfaceView(
                 if (surfacePickActive) {
                     // Ask whether this gesture began on the model. Until the answer
                     // arrives the touch is held rather than guessed at.
+                    facePickReported = false
                     brushDeciding = true
                     brushDragging = false
                     brushAccumDx = 0f
@@ -989,7 +1048,14 @@ class ModelSurfaceView(
             // spent on the question and the paint only starts on the next sample.
             // The handler expands the brush off the UI thread, exactly as it does
             // for every later sample, so nothing here waits for that expansion.
-            if (surfacePickActive) onSurfacePick?.invoke(hit) else onPaintHit?.invoke(hit)
+            if (surfacePickActive) {
+                if (!faceSelectActive || !facePickReported) {
+                    facePickReported = true
+                    onSurfacePick?.invoke(hit)
+                }
+            } else {
+                onPaintHit?.invoke(hit)
+            }
             return
         }
         brushDragging = false
@@ -1105,8 +1171,12 @@ class ModelSurfaceView(
                     val picked = hit.objectIndex == currentSelectedIndex
                     post {
                         if (surfacePickActive) {
-                            // Smart Infill reports on the selected object only.
-                            if (picked) onSurfacePick?.invoke(hit)
+                            // Smart Infill reports on the selected object only; a face pick is
+                            // the tap's own point, reported once however far the finger drags.
+                            if (picked && (!faceSelectActive || !facePickReported)) {
+                                facePickReported = true
+                                onSurfacePick?.invoke(hit)
+                            }
                         } else {
                             // Support paint follows the finger: the host paints the object this
                             // hit names and selects it, so one stroke can cross the plate.
@@ -1339,6 +1409,10 @@ class ModelSurfaceView(
          */
         const val HANDLE_TOUCH_RADIUS_PX = 44f
 
+        /** How long a plate capture waits for the frame it asked for, before saying none came. */
+        const val CAPTURE_TIMEOUT_MILLIS = 5_000L
+
+
         /**
          * How long a handle must be held to switch to height adjustment.
          *
@@ -1448,6 +1522,17 @@ private class ModelRenderer(
     private var uploadedMesh: StlMesh? = null
     private var colorUploaded = false
 
+    /**
+     * The selected face's tint, one byte per scene vertex: the paint buffer's shape for a
+     * different fact. It is a buffer of its own on purpose - selecting a face writes nothing the
+     * paint path reads and a paint stroke never tints - and the mesh shader mixes it over the
+     * shaded colour, so the tint rides the face through an orbit.
+     */
+    private var faceTint: SelectionTintBuffer? = null
+    private var faceTintVbo = 0
+    private var faceTintUploaded: SelectionTintBuffer? = null
+
+
     /** One state per object, in the same order as the plate's meshes. */
     private var paintStates: List<SupportPaintState> = emptyList()
     private var paintActive = false
@@ -1522,6 +1607,129 @@ private class ModelRenderer(
     /** Replaces the previewed objects; an empty map returns the plate to its own meshes. */
     fun setPreviewObjects(previews: Map<Int, StlMesh>) {
         previewObjects = previews
+    }
+
+    /**
+     * Fills the face tint from scene triangle indices, or clears it with null.
+     *
+     * Runs on the GL thread. The buffer is sized to the scene the plate currently draws; a scene
+     * that changed since (a repaint) has already cleared it in [setMeshes], so a stale index can
+     * never tint a triangle that now belongs to something else.
+     */
+    fun setFaceTint(triangles: IntArray?) {
+        val count = sceneTriangleCount()
+        faceTint = if (triangles == null || triangles.isEmpty() || count <= 0) {
+            null
+        } else {
+            SelectionTintBuffer(count).also { it.select(triangles) }
+        }
+        releaseFaceTintBuffer()
+    }
+
+    /** How many triangles the plate's scene holds, or 0 when it is empty. */
+    private fun sceneTriangleCount(): Int {
+        if (objectMeshes.isEmpty()) return 0
+        val last = objectMeshes.size - 1
+        return objectFirstTriangle.getOrElse(last) { 0 } + objectMeshes[last].triangleCount
+    }
+
+    /**
+     * Renders the plate into an offscreen frame buffer at the camera the user is looking
+     * through, and returns it as a bitmap.
+     *
+     * This is a real offscreen render, not a read of the on-screen frame: the same scene is
+     * drawn by the same shaders (the selection tint included) through the same camera into a
+     * texture of [PLATE_CAPTURE_LONG_SIDE] pixels on its long side, whatever size the surface
+     * happens to be. That is what makes the picture the user's view rather than whatever the
+     * window looked like on some frame, and it means the plate render cannot depend on the
+     * on-screen surface being resized, covered or mid-animation.
+     *
+     * Runs on the GL thread; returns null when there is no GL context to draw into yet.
+     */
+    fun renderOffscreen(): Bitmap? {
+        if (meshProgram == 0) return null
+        val aspect = viewportWidth.toFloat() / viewportHeight.toFloat()
+        if (!aspect.isFinite() || aspect <= 0f) return null
+        val captureWidth: Int
+        val captureHeight: Int
+        if (aspect >= 1f) {
+            captureWidth = PLATE_CAPTURE_LONG_SIDE
+            captureHeight = (PLATE_CAPTURE_LONG_SIDE / aspect).toInt().coerceAtLeast(1)
+        } else {
+            captureHeight = PLATE_CAPTURE_LONG_SIDE
+            captureWidth = (PLATE_CAPTURE_LONG_SIDE * aspect).toInt().coerceAtLeast(1)
+        }
+        val frameBufferIds = IntArray(1)
+        val textureIds = IntArray(1)
+        val renderBufferIds = IntArray(1)
+        GLES20.glGenFramebuffers(1, frameBufferIds, 0)
+        if (frameBufferIds[0] == 0) return null
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frameBufferIds[0])
+        GLES20.glGenTextures(1, textureIds, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureIds[0])
+        GLES20.glTexImage2D(
+            GLES20.GL_TEXTURE_2D,
+            0,
+            GLES20.GL_RGBA,
+            captureWidth,
+            captureHeight,
+            0,
+            GLES20.GL_RGBA,
+            GLES20.GL_UNSIGNED_BYTE,
+            null,
+        )
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glFramebufferTexture2D(
+            GLES20.GL_FRAMEBUFFER,
+            GLES20.GL_COLOR_ATTACHMENT0,
+            GLES20.GL_TEXTURE_2D,
+            textureIds[0],
+            0,
+        )
+        GLES20.glGenRenderbuffers(1, renderBufferIds, 0)
+        GLES20.glBindRenderbuffer(GLES20.GL_RENDERBUFFER, renderBufferIds[0])
+        GLES20.glRenderbufferStorage(
+            GLES20.GL_RENDERBUFFER,
+            GLES20.GL_DEPTH_COMPONENT16,
+            captureWidth,
+            captureHeight,
+        )
+        GLES20.glFramebufferRenderbuffer(
+            GLES20.GL_FRAMEBUFFER,
+            GLES20.GL_DEPTH_ATTACHMENT,
+            GLES20.GL_RENDERBUFFER,
+            renderBufferIds[0],
+        )
+        val complete = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) ==
+            GLES20.GL_FRAMEBUFFER_COMPLETE
+        if (!complete) {
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glDeleteRenderbuffers(1, renderBufferIds, 0)
+            GLES20.glDeleteTextures(1, textureIds, 0)
+            GLES20.glDeleteFramebuffers(1, frameBufferIds, 0)
+            return null
+        }
+        // The screen's own viewport and size are put back at the end: the drawing code sizes a
+        // few things from them, and none of it may change because a picture was taken.
+        val screenWidth = viewportWidth
+        val screenHeight = viewportHeight
+        viewportWidth = captureWidth
+        viewportHeight = captureHeight
+        GLES20.glViewport(0, 0, captureWidth, captureHeight)
+        GLES20.glClearColor(PLATE_BACKGROUND[0], PLATE_BACKGROUND[1], PLATE_BACKGROUND[2], 1f)
+        drawScene(captureWidth, captureHeight, publishForPicker = false)
+        val bitmap = readPixels(captureWidth, captureHeight)
+        viewportWidth = screenWidth
+        viewportHeight = screenHeight
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, screenWidth, screenHeight)
+        GLES20.glDeleteRenderbuffers(1, renderBufferIds, 0)
+        GLES20.glDeleteTextures(1, textureIds, 0)
+        GLES20.glDeleteFramebuffers(1, frameBufferIds, 0)
+        // The screen keeps the plate's own background, which the next frame also clears with.
+        GLES20.glClearColor(PLATE_BACKGROUND[0], PLATE_BACKGROUND[1], PLATE_BACKGROUND[2], 1f)
+        return bitmap
     }
 
     /**
@@ -1677,6 +1885,11 @@ private class ModelRenderer(
                 built.interleavedVertices.directOrNull()
                     ?: built.interleavedVertices.arrayOrNull()?.let(::floatBuffer)
             }
+            // A rebuilt scene renumbers every triangle, so the selection's tint is dropped
+            // with it: the caller re-applies a surviving face by name. The buffer is a GL
+            // object of the old scene and goes with it.
+            faceTint = null
+            releaseFaceTintBuffer()
             // Written last: the volatile field is what publishes the scene and the
             // bookkeeping beside it to a pick running on the executor thread.
             mesh = scene?.mesh
@@ -2187,7 +2400,7 @@ private class ModelRenderer(
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        GLES20.glClearColor(0.055f, 0.065f, 0.08f, 1f)
+        GLES20.glClearColor(PLATE_BACKGROUND[0], PLATE_BACKGROUND[1], PLATE_BACKGROUND[2], 1f)
         GLES20.glClearDepthf(1f)
         GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
@@ -2206,6 +2419,12 @@ private class ModelRenderer(
         colorVbo = 0
         uploadedMesh = null
         colorUploaded = false
+        // The tint's VBO died with the old context too. The CPU-side selection survives (the
+        // renderer keeps the buffer), so the next drawn frame re-uploads it - but only if the
+        // stale id is forgotten here, or the draw would ask for a buffer that no longer exists
+        // and silently draw no tint at all.
+        faceTintVbo = 0
+        faceTintUploaded = null
         regionProgram = 0
         regionVbo = 0
         regionColorVbo = 0
@@ -2220,8 +2439,21 @@ private class ModelRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        drawScene(viewportWidth, viewportHeight, publishForPicker = true)
+    }
+
+    /**
+     * Draws the whole plate: the frame the screen shows, and the same scene an offscreen plate
+     * render is taken from.
+     *
+     * [width] and [height] are the frame buffer being drawn into, so the projection and the fit
+     * follow the size of the picture rather than the size of the window; [publishForPicker] is
+     * true only for the on-screen frame, because the picker's camera is the surface's own and an
+     * offscreen pass must not move it.
+     */
+    private fun drawScene(width: Int, height: Int, publishForPicker: Boolean) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-        val aspect = viewportWidth.toFloat() / viewportHeight.toFloat()
+        val aspect = width.toFloat() / height.toFloat()
         val fit = sceneFit(aspect)
         val distance = fit.distance
         Matrix.perspectiveM(projection, 0, FIELD_OF_VIEW_DEGREES, aspect, fit.nearPlane, fit.farPlane)
@@ -2243,7 +2475,7 @@ private class ModelRenderer(
         // out different: taps landed past the model and selected nothing.
         Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
-        MeshPicker.publish(mvp, viewportWidth, viewportHeight)
+        if (publishForPicker) MeshPicker.publish(mvp, width, height)
 
         // The preview belongs to one object: the one the tools act on, which is
         // the one every commit transforms. Putting it in the scene moved the
@@ -2271,6 +2503,35 @@ private class ModelRenderer(
         drawAxisTriad()
         drawAnnotation()
         drawGizmo()
+    }
+
+    /**
+     * Reads one frame buffer of the plate into a bitmap.
+     *
+     * The frame is RGBA bytes from the bottom-left corner up, while a bitmap is ARGB from the
+     * top-left down: both are undone here, and the swap is also where R and B are put back (GL
+     * hands over R,G,B,A bytes and an ARGB int wants B,G,R,A in memory order).
+     */
+    private fun readPixels(width: Int, height: Int): Bitmap? {
+        if (width <= 0 || height <= 0) return null
+        // A direct buffer, because glReadPixels writes through the native address; it is read
+        // with absolute gets, so the whole-resolution copy never becomes a Java array.
+        val raw = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+        GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, raw)
+        val target = IntArray(width * height)
+        for (y in 0 until height) {
+            // Bitmap row 0 is the TOP of the picture; the frame buffer row 0 is its bottom.
+            val frameRow = height - 1 - y
+            for (x in 0 until width) {
+                val at = (frameRow * width + x) * 4
+                val red = raw.get(at).toInt() and 0xFF
+                val green = raw.get(at + 1).toInt() and 0xFF
+                val blue = raw.get(at + 2).toInt() and 0xFF
+                val alpha = raw.get(at + 3).toInt() and 0xFF
+                target[y * width + x] = (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+            }
+        }
+        return Bitmap.createBitmap(target, width, height, Bitmap.Config.ARGB_8888)
     }
 
     /**
@@ -2696,6 +2957,7 @@ private class ModelRenderer(
     fun releaseGpuBuffers() {
         releaseMeshBuffer()
         releasePreviewBuffers()
+        releaseFaceTintBuffer()
         if (colorVbo != 0) {
             GLES20.glDeleteBuffers(1, intArrayOf(colorVbo), 0)
             colorVbo = 0
@@ -2707,6 +2969,15 @@ private class ModelRenderer(
             regionColorVbo = 0
         }
         regionUploaded = false
+    }
+
+    /** Deletes the tint buffer and forgets which selection it held; the shape is kept. */
+    private fun releaseFaceTintBuffer() {
+        if (faceTintVbo != 0) {
+            GLES20.glDeleteBuffers(1, intArrayOf(faceTintVbo), 0)
+            faceTintVbo = 0
+        }
+        faceTintUploaded = null
     }
 
     /** Deletes the mesh buffer and forgets which model it held. */
@@ -2844,6 +3115,45 @@ private class ModelRenderer(
             GLES20.glDisableVertexAttribArray(color)
         }
 
+        // The selected face's tint: an attribute of its own, one byte per scene vertex, so it is
+        // mixed over whatever colour the paint path above already chose instead of replacing it.
+        // With no selection the array is disabled and its constant value is 0, which the shader
+        // reads as "no tint".
+        val tintLocation = GLES20.glGetAttribLocation(meshProgram, "aFaceTint")
+        val tint = faceTint
+        if (tint != null && tintLocation >= 0 && tint.byteCount > 0) {
+            if (faceTintVbo == 0) {
+                val ids = IntArray(1)
+                GLES20.glGenBuffers(1, ids, 0)
+                faceTintVbo = ids[0]
+            }
+            if (faceTintVbo != 0) {
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, faceTintVbo)
+                if (faceTintUploaded !== tint) {
+                    tint.buffer.position(0)
+                    GLES20.glBufferData(
+                        GLES20.GL_ARRAY_BUFFER,
+                        tint.byteCount,
+                        tint.buffer,
+                        GLES20.GL_DYNAMIC_DRAW,
+                    )
+                    faceTintUploaded = tint
+                }
+                GLES20.glEnableVertexAttribArray(tintLocation)
+                GLES20.glVertexAttribPointer(
+                    tintLocation,
+                    1,
+                    GLES20.GL_UNSIGNED_BYTE,
+                    true,
+                    0,
+                    0,
+                )
+            }
+        } else if (tintLocation >= 0) {
+            GLES20.glDisableVertexAttribArray(tintLocation)
+            GLES20.glVertexAttrib1f(tintLocation, 0f)
+        }
+
         // One draw per object, each starting at its own first scene vertex and
         // through its own model matrix: only the object being transformed carries
         // the preview, so a neighbour cannot even appear to move before the commit
@@ -2893,6 +3203,12 @@ private class ModelRenderer(
                     val rgb = objectColor(index)
                     GLES20.glVertexAttrib3f(color, rgb[0], rgb[1], rgb[2])
                     if (colors != null && data != null) GLES20.glDisableVertexAttribArray(color)
+                    // A preview mesh has no slice of the scene's tint buffer: its vertices are
+                    // boolean output, so they draw untinted.
+                    if (tintLocation >= 0) {
+                        GLES20.glDisableVertexAttribArray(tintLocation)
+                        GLES20.glVertexAttrib1f(tintLocation, 0f)
+                    }
                     bindTraits(
                         buffer = previewBuffers.getOrNull(slot),
                         vbo = previewVbo,
@@ -2920,6 +3236,11 @@ private class ModelRenderer(
                     GLES20.glVertexAttribPointer(position, 3, GLES20.GL_FLOAT, false, 6 * 4, 0)
                     GLES20.glEnableVertexAttribArray(normal)
                     GLES20.glVertexAttribPointer(normal, 3, GLES20.GL_FLOAT, false, 6 * 4, 12)
+                    if (tint != null && tintLocation >= 0 && faceTintVbo != 0) {
+                        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, faceTintVbo)
+                        GLES20.glEnableVertexAttribArray(tintLocation)
+                        GLES20.glVertexAttribPointer(tintLocation, 1, GLES20.GL_UNSIGNED_BYTE, true, 0, 0)
+                    }
                     continue
                 }
             }
@@ -2935,6 +3256,7 @@ private class ModelRenderer(
         GLES20.glDisableVertexAttribArray(position)
         GLES20.glDisableVertexAttribArray(normal)
         GLES20.glDisableVertexAttribArray(color)
+        if (tintLocation >= 0) GLES20.glDisableVertexAttribArray(tintLocation)
 
         // The optimized volumes are the selected object's own meshes and draw
         // through the matrix the loop left behind - the last object's, which is
@@ -3174,6 +3496,12 @@ private class ModelRenderer(
         const val GIZMO_IDLE_DIM = 0.45f
         const val GRID_Z = -0.08f
 
+        /** Long side of a plate render, in pixels: the size the agent's picture is drawn at. */
+        const val PLATE_CAPTURE_LONG_SIDE = 768
+
+        /** The plate's own background, so an offscreen render looks like the screen. */
+        val PLATE_BACKGROUND = floatArrayOf(0.055f, 0.065f, 0.08f)
+
         /** The plate marker: its arm on screen, in dp, and how thick it draws. */
         const val TRIAD_ARM_DP = 27f
         const val TRIAD_STROKE_DP = 3f
@@ -3234,14 +3562,17 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
             attribute vec3 aPosition;
             attribute vec3 aNormal;
             attribute vec3 aColor;
+            attribute float aFaceTint;
             varying vec3 vNormal;
             varying vec3 vColor;
             varying vec3 vPlatePosition;
+            varying float vFaceTint;
             void main() {
                 gl_Position = uMvpMatrix * vec4(aPosition, 1.0);
                 vPlatePosition = (uPlateMatrix * vec4(aPosition, 1.0)).xyz;
                 vNormal = normalize(mat3(uModelMatrix) * aNormal);
                 vColor = aColor;
+                vFaceTint = aFaceTint;
             }
         """
         const val MESH_FRAGMENT_SHADER = """
@@ -3251,6 +3582,10 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
             varying vec3 vNormal;
             varying vec3 vColor;
             varying vec3 vPlatePosition;
+            varying float vFaceTint;
+            // The selected face: warm amber, deliberately outside the support palette (its
+            // interface is cyan and its supports magenta) and the layer view's speed ramp.
+            const vec3 FACE_TINT_COLOR = vec3(1.0, 0.78, 0.22);
             void main() {
                 if (uClipEnabled > 0.5 &&
                     dot(uClipPlane.xyz, vPlatePosition) > uClipPlane.w) {
@@ -3265,7 +3600,12 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
                 float key = max(dot(normal, keyLight), 0.0);
                 float fill = max(dot(normal, fillLight), 0.0);
                 float lighting = 0.28 + key * 0.62 + fill * 0.22;
-                gl_FragColor = vec4(vColor * min(lighting, 1.12), 1.0);
+                vec3 shaded = vColor * min(lighting, 1.12);
+                // The tint is mixed over the shaded colour rather than replacing it, so the
+                // face keeps its shape while it reads warm; support paint underneath it stays
+                // where it was and simply shades through.
+                vec3 color = mix(shaded, FACE_TINT_COLOR, vFaceTint * 0.85);
+                gl_FragColor = vec4(color, 1.0);
             }
         """
         const val LINE_VERTEX_SHADER = """

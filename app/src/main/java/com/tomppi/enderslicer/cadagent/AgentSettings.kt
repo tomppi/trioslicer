@@ -49,6 +49,15 @@ data class AgentSettings(
     val hasApiKey: Boolean = false,
     /** Whether the agent may search the web and read pages through the same endpoint. */
     val webSearch: Boolean = true,
+    /**
+     * Whether a message that carries a face selection also carries a render of the plate.
+     *
+     * On by default: "make this face 2 mm thicker" is a request about a face the user picked, and
+     * the picked face is tinted amber in the picture, so the model sees which one instead of
+     * inferring it from the words. It is a switch because an endpoint that charges per image, or
+     * a slow connection, may make the extra pixels a bad trade.
+     */
+    val lendView: Boolean = true,
 ) {
     /**
      * True when the endpoint can be called: a base URL that parses and a model name. The key is
@@ -175,6 +184,7 @@ class AgentSettingsStore internal constructor(
             ?.takeIf { it.isNotBlank() } ?: AgentSettings.DEFAULT_MODEL,
         hasApiKey = preferences.getString(KEY_API_KEY, "").orEmpty().isNotBlank(),
         webSearch = preferences.getBoolean(KEY_WEB_SEARCH, true),
+        lendView = preferences.getBoolean(KEY_LEND_VIEW, true),
     )
 
     /**
@@ -190,6 +200,7 @@ class AgentSettingsStore internal constructor(
             .putString(KEY_BASE_URL, settings.baseUrl.trim())
             .putString(KEY_MODEL, settings.model.trim())
             .putBoolean(KEY_WEB_SEARCH, settings.webSearch)
+            .putBoolean(KEY_LEND_VIEW, settings.lendView)
         if (apiKey != null) {
             val wanted = apiKey.trim()
             if (wanted.isEmpty()) {
@@ -229,6 +240,7 @@ class AgentSettingsStore internal constructor(
         internal const val KEY_MODEL = "cad-agent-model"
         internal const val KEY_API_KEY = "cad-agent-api-key"
         internal const val KEY_WEB_SEARCH = "cad-agent-web-search"
+        internal const val KEY_LEND_VIEW = "cad-agent-lend-view"
 
         /** The Keystore entry the key is sealed with: one per use, never shared. */
         private const val KEY_ALIAS = "enderslicercura_cad_agent_api_key"

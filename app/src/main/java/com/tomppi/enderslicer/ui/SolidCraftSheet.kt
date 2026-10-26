@@ -50,6 +50,7 @@ import com.tomppi.enderslicer.agent.BridgeNetworkPreference
 import com.tomppi.enderslicer.cadagent.AgentMode
 import com.tomppi.enderslicer.cadagent.AgentSettings
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.SelectedFace
 import com.tomppi.enderslicer.solidcraft.SolidCraftAuthorship
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +69,18 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun SolidCraftSheet(
     document: CadDocument?,
+    /** The face the plate has selected, or null; its amber tint is on the plate already. */
+    selectedFace: SelectedFace?,
+    /** True while the plate is picking a face: a tap on the plate selects one. */
+    faceSelectMode: Boolean,
+    /** The plate object's name when it is an imported mesh, so the no-document line can name it. */
+    plateObjectName: String?,
+    /** Closes the sheet and arms face picking on the plate. */
+    onStartFaceSelect: () -> Unit,
+    /** Drops the selected face, its tint and the engine's selection. */
+    onClearFaceSelection: () -> Unit,
+    /** **Lend the agent my view**: attach a plate render to a message with a face selection. */
+    onAgentLendViewChange: (Boolean) -> Unit,
     messages: List<AiChatMessage>,
     /**
      * Which agent drives the document, and - for the in-app one - the endpoint it calls.
@@ -395,6 +408,53 @@ internal fun SolidCraftSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         HorizontalDivider()
+        Text("Select a face on the plate", style = MaterialTheme.typography.titleSmall)
+        if (document == null) {
+            // The mode is not offered for a mesh, and this says so by name: an imported STL has
+            // triangles, not the engine's faces, so there is nothing for select.set to select.
+            Text(
+                if (plateObjectName != null) {
+                    "Face selection needs a live CAD document. The plate holds the imported " +
+                        "mesh \"" + plateObjectName + "\", whose triangles are not the engine's " +
+                        "faces. Import > Open CAD document opens a STEP, IGES, 3MF, OBJ or glTF " +
+                        "file as one."
+                } else {
+                    "Face selection needs a live CAD document, and the plate holds no model yet. " +
+                        "Import > Open CAD document opens a STEP, IGES, 3MF, OBJ or glTF file as " +
+                        "one, or ask the agent to build something first."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            if (selectedFace != null) {
+                Text(selectedFace.hudLine(), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Tap Clear to drop it, or Select to pick a different face.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                    OutlinedButton(onClick = onClearFaceSelection) { Text("Clear selection") }
+                    Button(onClick = onStartFaceSelect) {
+                        Text(if (faceSelectMode) "Picking a face…" else "Select a face")
+                    }
+                }
+            } else {
+                Text(
+                    "A tap on the plate names the engine face under it: the plate tints it amber, " +
+                        "the engine's selection follows it, and the agent's next message carries " +
+                        "its body, name, area, centroid and normal. Face select and support paint " +
+                        "are separate: a selection never paints, and a paint stroke never selects.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = onStartFaceSelect, enabled = !faceSelectMode) {
+                    Text(if (faceSelectMode) "Picking a face…" else "Select a face on the plate")
+                }
+            }
+        }
+        HorizontalDivider()
         Text("Ask the agent to change it", style = MaterialTheme.typography.titleSmall)
         // Which agent authors the document, said plainly. In-app is the default: the model
         // endpoint is called straight from this phone, so nothing has to be running on a desk.
@@ -431,6 +491,7 @@ internal fun SolidCraftSheet(
                 onSave = onAgentSettingsSave,
                 onClearKey = onAgentKeyClear,
                 onWebSearchChange = onAgentWebSearchChange,
+                onLendViewChange = onAgentLendViewChange,
             )
         }
         // An external agent is attached to this document: the in-app agent is paused, and Take
@@ -590,6 +651,7 @@ private fun InAppAgentSettings(
     onSave: (baseUrl: String, model: String, apiKey: String?) -> Unit,
     onClearKey: () -> Unit,
     onWebSearchChange: (Boolean) -> Unit,
+    onLendViewChange: (Boolean) -> Unit,
 ) {
     var baseUrl by remember { mutableStateOf(settings.baseUrl) }
     var model by remember { mutableStateOf(settings.model) }
@@ -663,6 +725,24 @@ private fun InAppAgentSettings(
                 )
             }
             Switch(checked = settings.webSearch, onCheckedChange = onWebSearchChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Lend the agent my view", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (settings.lendView) {
+                        "On · a message about a face you picked also carries a render of the " +
+                            "plate at your camera, with that face tinted amber. The agent can " +
+                            "see which face you mean instead of inferring it from the words."
+                    } else {
+                        "Off · the agent is told the face's body, name, area and direction in " +
+                            "words, and no picture is sent."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = settings.lendView, onCheckedChange = onLendViewChange)
         }
         webNotice?.let {
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)

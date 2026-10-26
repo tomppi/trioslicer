@@ -198,3 +198,24 @@ human plate function - move, rotate, scale, split, snap fit, paint, Slice, Expor
 - Open CAD files (STEP/IGES/3MF/OBJ/glTF) through `Import > Open CAD document`, which uses the
   engine's own io crate and keeps a document. `Import model` keeps the mesh routes, including
   OpenCASCADE's STEP/IGES conversion. The menu item is the route choice.
+
+## A face selection is a face, not a paint stroke
+
+The plate can tint the engine face the user picked, name it in a HUD chip, put it in the agent's
+next message and draw it in the plate render. Two mechanisms must not converge:
+
+- **The tint is its own buffer.** `SelectionTintBuffer` holds one value per scene vertex and the
+  mesh shader mixes it over the shaded colour; it is not the support paint's
+  (`PaintColorBuffer`), and selecting must never write a paint state. Arming select mode
+  disarms paint and arming paint disarms select through `PlateModes`; `ModelSurfaceView`'s
+  surface-pick and paint-hit callbacks are exclusive, and `faceSelectActive` makes a face pick
+  one per finger-down.
+- **The selection is a face NAME across an edit.** A repaint re-tessellates and renumbers every
+  triangle, so the selection is never carried as indices: `FaceSelectionKeeper.reapply` looks the
+  name up in the new `model.faces` and re-tints its triangles. A name that is gone drops the
+  selection with the sentence naming it - never a tint left on triangles that now belong to
+  something else, and never a silent switch to a nearer face.
+- **The plate render is the app's.** `plate_screenshot` reads back the plate's own frame at the
+  user's camera; the engine's `screenshot` stays refused. An endpoint that refuses images is
+  told the truth: strip, retry once as text, say so in the transcript, remember it for the
+  session. Copying a transcript must never carry a data URL.

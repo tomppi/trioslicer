@@ -153,6 +153,62 @@ against the engine session the app already owns - no bridge, no socket, no token
   mid-answer), a context-length HTTP 400 is named as the model's context window, and a 429 keeps
   its wait-and-ask-again advice.
 
+### Pointing at a face, and letting the agent look
+
+The plate can be **asked about a face** and can **show the agent the picture**, and both are the
+app's own - the engine's `screenshot` is still refused.
+
+- **Select mode.** The CAD agent sheet's **Select a face on the plate** closes the sheet and arms
+  the plate. A tap then goes through `ModelSurfaceView`'s existing surface-pick hook and the same
+  `MeshPicker` the brush and the joint use (`faceSelectActive` makes it one pick per gesture).
+  The picker answers in plate coordinates, so the plate object's placement is undone
+  (`ModelPlacement.documentPlacement`) and the tap is matched against the engine's own
+  `model.faces {body}` report: planar when it lies on the face's plane, cylindrical when it lies
+  on the cylinder, otherwise the nearest area centre. The resolved face is addressed all three
+  ways the engine accepts - name, index and a point on it - and `select.set {items:[{type:"face",
+  body, index, point}]}` makes the engine's selection agree; the engine refused any face item
+  missing one of the three, which is why all three are sent.
+- **The tint is the renderer's, not the chip's.** `SelectionTintBuffer` is a byte per scene
+  vertex, the paint buffer's shape but a buffer of its own: the mesh shader mixes the selected
+  face's warm amber (outside the support palette and the layer preview's ramp) over the shaded
+  colour. Selecting never writes the paint path and a paint stroke never tints - arming one mode
+  disarms the other through `PlateModes`, and the viewer's two pick callbacks are exclusive. The
+  HUD chip names body, face, surface, area and which way it faces from the current camera, with
+  **Clear** one tap away. Orbiting keeps the tint (a face is not a screen position); the words
+  are recomputed for the camera at the moment the HUD or a prompt is built.
+- **The next message carries `SELECTED FACE`.** body, face name and index, surface, area,
+  centroid, outward normal (from the picked triangle, so a hole reads as facing into it), the
+  point on the face, and the view-relative description. The runbook
+  (`docs/skills/solidcraft-engine.md`) tells the agent to act on that face - `solid.offset_face`,
+  `solid.shell`, `plastic.*` - rather than infer one from the words, and to quote its name and
+  area.
+- **A repaint re-resolves the face by NAME.** After an agent edit the whole document is
+  re-tessellated and every triangle is renumbered, so the selection is not carried as indices: the
+  face's engine name is looked up again in the new body's `model.faces`, its triangles are
+  re-tinted and the engine's selection is moved to its new index. A name the edit removed or
+  replaced drops the selection with a sentence that names it (`Face selection cleared: F1:-y on
+  Body1 …`); a new document, an import, a split, a snap fit or a Rebuild plate drops it the same
+  way. A camera-only change never does.
+- **The plate render.** `plate_screenshot` is the app's own tool beside the engine's in
+  `AgentToolCatalog`/CadAgent (no engine call): `ModelSurfaceView.capturePlate` asks for the next
+  frame, the renderer reads its own frame buffer back at the user's camera, scales the long side
+  to 768 px and encodes a JPEG. It is the plate view alone, never the app around it and never the
+  engine's `screenshot`. The runtime attaches it to the next user-role message of the turn as the
+  standard OpenAI content part (`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`).
+  Its tool result is one line ("rendered the plate: 1 body, 12,000 triangles, current camera; the
+  image follows"), a caption states the selected face is tinted when it is, and the transcript
+  names the picture by size and dimensions - `ChatTranscript` replaces any data URL rather than
+  copying its bytes.
+- **"Lend the agent my view", default on.** The CAD agent sheet's switch attaches a fresh plate
+  render to any message that carries a face selection, so "make this face 2 mm thicker" arrives
+  with the tinted face in the picture rather than only in words. Off, the block alone goes.
+- **Vision is a capability, not an assumption.** A 400 whose body names the image (image/vision/
+  multimodal) means this model cannot see pictures: the app strips the images, re-sends the same
+  request once as text, records the sentence *this model cannot see images; sent the geometry
+  description instead* in the transcript, and remembers it for the session - no further render is
+  attached, and the transcript never claims one was seen. A 400 that is not about the image keeps
+  its own named failure.
+
 ### Watching it: the chat surface
 
 The AI chat (the floating `ui/AiChatOverlay.kt` the harness chat always used) is now the
@@ -340,6 +396,11 @@ are the upstream ones (docs/mcp.md in the SolidCraft repository). Two rules are 
 
 ## Known limitations
 
+- **A real provider's vision support is untested until the user enters a key.** The
+  `SELECTED FACE` block, the plate render, the image content part and the text-only fallback were
+  walked against a scripted OpenAI-compatible endpoint on this host (the walk in
+  `.build/walk-123/`); whether a given hosted model accepts images is answered by the endpoint and
+  named in the transcript, never assumed.
 - **A real model provider is untested in this build until the user enters a key.** The in-app
   agent's loop, tool calls and the web tools were walked against a scripted OpenAI-compatible
   endpoint on this host (the walk in `.build/walk-117/`); no call has been made to a real

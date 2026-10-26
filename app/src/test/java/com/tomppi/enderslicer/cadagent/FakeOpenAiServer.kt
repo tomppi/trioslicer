@@ -110,6 +110,24 @@ class FakeOpenAiServer : Closeable {
         /** Close the connection without answering: a transport failure the agent may retry. */
         fun dropConnection(): Reply = Reply(status = 0, body = "", dropConnection = true)
 
+        /**
+         * A 400 that names the image content, as a text-only model words it.
+         *
+         * The app must read this as "this model cannot see pictures": strip the images, re-send
+         * the same request once as text, and say so in the transcript instead of pretending a
+         * render was seen.
+         */
+        fun imageRefused(): Reply = Reply(
+            400,
+            JSONObject().put(
+                "error",
+                JSONObject().put(
+                    "message",
+                    "Invalid content type: image_url is not supported by this model.",
+                ),
+            ).toString(),
+        )
+
         /** A 400 naming the model's context window, as providers word it. */
         fun contextLengthExceeded(): Reply = Reply(
             400,

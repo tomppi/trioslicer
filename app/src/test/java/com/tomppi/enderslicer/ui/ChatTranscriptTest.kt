@@ -122,6 +122,41 @@ class ChatTranscriptTest {
     }
 
     @Test
+    fun aPlateRenderIsNamedByItsSizeAndNeverByItsBytes() {
+        val text = chatTranscriptText(
+            listOf(
+                AiChatMessage(fromUser = true, text = "make this face 2 mm thicker"),
+                // The line the app writes when it attaches a render.
+                AiChatMessage(fromUser = false, text = "the plate render is attached: 768×1660 px, 84 KB"),
+                toolRow(
+                    name = "plate_screenshot",
+                    arguments = "",
+                    outcome = "rendered the plate: 1 body, 12 triangles · 768×1660 px, 84 KB",
+                ),
+            ),
+        )
+        assertTrue("the picture is named by size", text.contains("768×1660 px"))
+        assertTrue("and by its dimensions in the row", text.contains("rendered the plate"))
+        assertFalse("no payload in a copied transcript", text.contains("base64"))
+    }
+
+    @Test
+    fun aDataUrlThatReachedAMessageIsReplacedRatherThanCopied() {
+        // Belt and braces: a render is never carried as a message, but if one ever were, the
+        // copy must not be hundreds of kilobytes of base64.
+        val payload = "data:image/jpeg;base64," + "A".repeat(2048)
+        val text = chatTranscriptText(
+            listOf(
+                AiChatMessage(fromUser = false, text = "the plate render follows " + payload),
+                AiChatMessage(fromUser = true, text = payload),
+            ),
+        )
+        assertFalse(text.contains("base64"))
+        assertFalse(text.contains("A".repeat(2048)))
+        assertTrue(text.contains("[image data omitted]"))
+    }
+
+    @Test
     fun nothingShapedLikeACredentialAppears() {
         // The rows are redacted where they are built; this pins the second half - the builder
         // adds no header, key or Authorization text of its own.
