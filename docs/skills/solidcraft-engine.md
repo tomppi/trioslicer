@@ -56,6 +56,12 @@ same transcript: the two backends keep separate lists, so a harness turn never a
 in-app source (and the reverse). The chat also has three sizes (bubble, panel, full screen); none
 of them changes the document, the engine or a running turn.
 
+A turn holds a foreground **turn keeper** and a bounded partial wake lock, so the screen may
+sleep while the agent works - do not assume the user is watching. If a model call fails with a
+transport error or a timeout before any tool of that turn has run, the app re-sends it once and
+says so in the transcript; once a tool has run, a failed call is reported instead of re-sent so
+an edit is never repeated.
+
 The in-app agent can also **search the web and read pages** (`web_search`, `web_fetch`) when
 the configured endpoint offers DeepSeek's `/tools/search` and `/tools/fetch` routes and the
 user left the switch on. They use the same base URL and the same key as the chat: one endpoint,

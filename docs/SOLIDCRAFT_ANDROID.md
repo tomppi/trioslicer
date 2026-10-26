@@ -133,9 +133,25 @@ against the engine session the app already owns - no bridge, no socket, no token
   401 named at once) and the form that answered is remembered for the session.
 - **A turn is bounded and cancellable.** Cancel disconnects the request in flight and stops at
   the next boundary (a tool call already handed to the engine finishes, and the design may have
-  changed); a model that keeps asking for tools stops after 8 tool rounds with a named error.
-  HTTP, timeout and malformed-reply failures are named exceptions with the endpoint's own
-  sentence, redacted against the key, and reach the sheet as its error line - never silence.
+  changed); a model that keeps asking for tools stops after 8 tool rounds, and the sentence says
+  how many rounds ran and that one more message ("continue") carries on from there. HTTP,
+  timeout and malformed-reply failures are named exceptions with the endpoint's own sentence,
+  redacted against the key, and reach the conversation as an error row - never silence.
+- **A turn outlives the screen going off.** The screen is allowed to sleep: nothing in the agent
+  path sets a keep-screen-on flag. What keeps the work alive is
+  `cadagent/InAppAgentTurnService.kt`, a foreground service started with the turn, with a
+  low-importance notification naming the CAD agent as working, so Android cannot cache and
+  freeze the process when the app leaves the foreground; inside it, a **bounded partial wake
+  lock** is armed with the turn and released on every exit path (answer, error, cancel, service
+  stop), so no lease outlives the turn it was taken for. A transport failure or read timeout
+  *before any tool of the turn has run* is re-sent **once** after 1.5 s and the transcript says
+  "the endpoint did not answer; retrying once"; once a tool has run the request is never
+  re-sent, because that could repeat an edit. The final error row names the endpoint host, the
+  model round and the elapsed seconds, and points at the cause worth checking: the screen may be
+  off - that is fine - but a backgrounded app can be frozen by Android. A response body shorter
+  than its declared Content-Length is treated as a transport failure (the connection died
+  mid-answer), a context-length HTTP 400 is named as the model's context window, and a 429 keeps
+  its wait-and-ask-again advice.
 
 ### Watching it: the chat surface
 

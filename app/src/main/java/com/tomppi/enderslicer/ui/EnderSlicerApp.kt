@@ -113,6 +113,7 @@ import com.tomppi.enderslicer.cadagent.AgentSettingsStore
 import com.tomppi.enderslicer.cadagent.AgentToolCatalog
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.cadagent.CadAgent
+import com.tomppi.enderslicer.cadagent.InAppTurnKeeper
 import com.tomppi.enderslicer.cadagent.StoredAgentSettings
 import com.tomppi.enderslicer.conical.ConicalSettingsStore
 import com.tomppi.enderslicer.engine.GcodeDialect
@@ -842,6 +843,11 @@ fun EnderSlicerApp(
      */
     fun askInAppAgent(text: String, stored: StoredAgentSettings) {
         aiScope.launch {
+            // A turn may run for minutes of model time and longer still of tool time; a
+            // foreground service keeps this process from being cached and frozen if the user
+            // puts the phone down or leaves the app. It holds its own bounded partial wake
+            // lock, and ends on every exit path below. No screen-on flag: the screen may sleep.
+            InAppTurnKeeper.begin(context)
             cadBusy = true
             cadStatus = null
             inAppWebNotice = inAppCadAgent.get()?.webToolsNotice
@@ -930,6 +936,15 @@ fun EnderSlicerApp(
                             }
                         },
                         onToolTrace = { trace -> aiScope.launch { applyToolTrace(trace) } },
+                        // The endpoint went quiet before any tool ran and the call is about to be
+                        // re-sent once: say so in the transcript rather than looking frozen.
+                        onRetry = { notice ->
+                            aiScope.launch {
+                                cadConversations = cadConversations.appendInApp(
+                                    AiChatMessage(fromUser = false, text = notice),
+                                )
+                            }
+                        },
                     )
                 }
                 cadConversations = cadConversations.appendInApp(
@@ -937,12 +952,36 @@ fun EnderSlicerApp(
                 )
                 inAppWebNotice = agent.webToolsNotice
             } catch (error: AgentException) {
-                cadStatus = if (error.code == "cancelled") "Stopped" else error.message
+                if (error.code == "cancelled") {
+                    cadStatus = "Stopped"
+                } else {
+                    // The failure is a row of the conversation itself, not only a status line
+                    // that a copied transcript would not carry. Its text already names the
+                    // endpoint host and the round for model-call failures.
+                    cadConversations = cadConversations.appendInApp(
+                        AiChatMessage(
+                            fromUser = false,
+                            text = error.message ?: "The in-app agent failed.",
+                            kind = AiChatEntryKind.ERROR,
+                        ),
+                    )
+                    cadStatus = null
+                }
                 inAppWebNotice = inAppCadAgent.get()?.webToolsNotice ?: inAppWebNotice
             } catch (error: Throwable) {
-                cadStatus = "The in-app agent failed: " +
-                    (error.message ?: error.javaClass.simpleName).take(200)
+                cadConversations = cadConversations.appendInApp(
+                    AiChatMessage(
+                        fromUser = false,
+                        text = "The in-app agent failed: " +
+                            (error.message ?: error.javaClass.simpleName).take(200),
+                        kind = AiChatEntryKind.ERROR,
+                    ),
+                )
+                cadStatus = null
             } finally {
+                // Every exit path - answer, error, cancel, and a turn that never began - ends
+                // the keeper, so no wake lock can outlive its turn.
+                InAppTurnKeeper.end(context)
                 if (turnBegan) ownership.endInAppTurn()
                 cadBusy = false
             }

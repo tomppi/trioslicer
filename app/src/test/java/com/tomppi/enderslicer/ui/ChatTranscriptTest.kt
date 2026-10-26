@@ -102,6 +102,26 @@ class ChatTranscriptTest {
     }
 
     @Test
+    fun anErrorRowCarriesTheHostAndRoundIntoTheCopy() {
+        val text = chatTranscriptText(
+            listOf(
+                AiChatMessage(fromUser = true, text = "make the lid a snap fit"),
+                AiChatMessage(
+                    fromUser = false,
+                    text = "The endpoint did not answer after 183 s (round 3 at api.example.test). " +
+                        "The screen may be off, that is fine; the app must still be running.",
+                    kind = AiChatEntryKind.ERROR,
+                ),
+            ),
+        )
+        assertTrue("the failure is a line of the copy: " + text, text.contains("error: The endpoint did not answer"))
+        assertTrue("the host is in it: " + text, text.contains("api.example.test"))
+        assertTrue("the round is in it: " + text, text.contains("round 3"))
+        assertTrue("the seconds are in it: " + text, text.contains("183 s"))
+        assertTrue("the background hint is in it: " + text, text.contains("app must still be running"))
+    }
+
+    @Test
     fun nothingShapedLikeACredentialAppears() {
         // The rows are redacted where they are built; this pins the second half - the builder
         // adds no header, key or Authorization text of its own.

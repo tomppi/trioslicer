@@ -33,6 +33,10 @@ fun chatTranscriptText(messages: List<AiChatMessage>): String = buildString {
                 if (tool.failed) append(" · FAILED")
             }
             message.kind == AiChatEntryKind.ACTIVITY -> Unit
+            message.kind == AiChatEntryKind.ERROR -> {
+                append('\n')
+                append("error: ").append(message.text)
+            }
             message.fromUser -> append('\n').append("You: ").append(message.text)
             else -> append('\n').append("Agent: ").append(message.text)
         }

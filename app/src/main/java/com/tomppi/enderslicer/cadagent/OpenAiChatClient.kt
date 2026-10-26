@@ -157,7 +157,7 @@ class OpenAiChatClient(
      * slowly forever, and buffering that is an OOM on a phone. 16 MiB is far past any legitimate
      * completion and small enough to refuse before it hurts.
      */
-    internal fun readAll(stream: InputStream): String {
+    internal fun readAll(stream: InputStream): ByteArray {
         val buffer = ByteArrayOutputStream()
         val chunk = ByteArray(8192)
         var total = 0L
@@ -174,7 +174,7 @@ class OpenAiChatClient(
             }
             buffer.write(chunk, 0, read)
         }
-        return buffer.toString("UTF-8")
+        return buffer.toByteArray()
     }
 
     private fun readBody(connection: HttpURLConnection, success: Boolean): String {
@@ -187,7 +187,20 @@ class OpenAiChatClient(
             )
         }
         val stream = (if (success) connection.inputStream else connection.errorStream) ?: return ""
-        return stream.use { readAll(it) }
+        val bytes = stream.use { readAll(it) }
+        // A body shorter than the Content-Length it announced means the connection died
+        // mid-answer. That is a transport failure, not a malformed endpoint: naming it transport
+        // is what lets the one safe retry re-send the request, and what stops a half answer
+        // being parsed as if the endpoint had answered nonsense.
+        if (declared >= 0 && bytes.size.toLong() != declared) {
+            throw AgentException(
+                "transport",
+                "The endpoint's answer ended after " + bytes.size + " of " + declared +
+                    " bytes - the connection died mid-answer.",
+                IOException("premature end of response body"),
+            )
+        }
+        return String(bytes, Charsets.UTF_8)
     }
 
     /**
@@ -255,6 +268,26 @@ class OpenAiChatClient(
                 "The endpoint was not found (HTTP 404). The base URL is the API root - e.g. " +
                     "https://api.openai.com/v1 - and the app appends /chat/completions." + detail,
             )
+            400 -> {
+                // A provider says "context length" / "maximum context" in its own message. Name
+                // the real cause instead of leaving "HTTP 400" for the user to decode: the fix
+                // is a new conversation or a smaller request, not a different key or URL.
+                val contextLimit = CONTEXT_LENGTH_MARKERS.any { marker ->
+                    server.contains(marker, ignoreCase = true)
+                }
+                if (contextLimit) {
+                    AgentException(
+                        "context-length",
+                        "The request no longer fits the model's context window (HTTP 400). Start " +
+                            "a new conversation or ask for one smaller change." + detail,
+                    )
+                } else {
+                    AgentException(
+                        "http-error",
+                        "The endpoint refused the request as malformed (HTTP 400)." + detail,
+                    )
+                }
+            }
             429 -> AgentException(
                 "rate-limited",
                 "The endpoint is rate limiting (HTTP 429). Wait a moment and ask again." + detail,
@@ -299,5 +332,18 @@ class OpenAiChatClient(
         private const val READ_TIMEOUT_MILLIS = 180_000
 
         internal const val MAX_RESPONSE_BYTES = 16L * 1024L * 1024L
+
+        /**
+         * How providers word a context-length refusal, so a 400 can be named for what it is.
+         * OpenAI, DeepSeek and local servers all say one of these in `error.message`.
+         */
+        private val CONTEXT_LENGTH_MARKERS = listOf(
+            "context length",
+            "context_length",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "token limit",
+        )
     }
 }

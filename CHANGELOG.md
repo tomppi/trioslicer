@@ -93,6 +93,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (Cancel disconnects the request in flight); HTTP, timeout and malformed-reply failures are
   named errors on the sheet's error line. The harness path is kept as the advanced option: a
   segmented **Agent: In-app / Harness** choice in the sheet says which agent is driving.
+- **A long turn now outlives the screen going off, and a dropped model call is retried once.**
+  A turn runs inside a foreground **turn keeper** (`cadagent/InAppAgentTurnService.kt`: its own
+  low-importance notification naming the CAD agent as working) so Android cannot cache and
+  freeze the process when the app leaves the foreground, and the keeper holds a **bounded
+  partial wake lock**, armed with the turn and released on every exit path - answer, error,
+  cancel, service stop. Deliberately **no screen-on flag**: the screen may sleep. A model call
+  that fails with a transport error or a timeout *before any tool of the turn has run* is
+  re-sent **once** after 1.5 s and the transcript says **"the endpoint did not answer; retrying
+  once"**; a call after a tool has run is never retried, because re-sending it could repeat an
+  edit. When the retry fails too, the error row carries the endpoint host, the round number and
+  the elapsed seconds, and says the one thing that helps: **"The screen may be off, that is
+  fine; the app must still be running - a backgrounded app can be frozen by Android."** A body
+  shorter than its declared Content-Length is a transport failure (the connection died
+  mid-answer), not a malformed endpoint; a context-length **HTTP 400** is named as the context
+  window; and the tool-round limit now says how many rounds ran and that one more message
+  ("continue") carries on from where it stopped.
 - **The in-app agent can search the web and read pages, and treats all of it as untrusted.** With
   the sheet's **Web search & page fetch** switch on (the default) and an endpoint that offers
   DeepSeek's `/tools/search` and `/tools/fetch` routes, the model also gets `web_search` and

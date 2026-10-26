@@ -52,6 +52,8 @@ class CadAgent(
     private val toolHost: AgentToolHost,
     private val runbook: String,
     private val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
+    /** How long to wait before the one safe retry of a model call. */
+    private val retryDelayMillis: Long = RETRY_DELAY_MILLIS,
     private val log: (String) -> Unit = {},
     private val clientFactory: (StoredAgentSettings) -> OpenAiChatClient = { settings ->
         OpenAiChatClient(
@@ -134,6 +136,8 @@ class CadAgent(
      *   its duration and outcome - so a chat surface can draw the work as it happens. The same
      *   callback is safe to call from a router that marshals to the UI thread; exceptions from
      *   it never break the turn.
+     * @param onRetry called when a model call failed with a transport error or a timeout before
+     *   any tool ran, and is about to be retried once.
      * @throws AgentException with a named code when the conversation could not continue (not
      *   configured, refused, timeout, malformed reply, cancelled, tool-round limit).
      */
@@ -143,6 +147,7 @@ class CadAgent(
         userText: String,
         onActivity: (String) -> Unit = {},
         onToolTrace: (AgentToolTrace) -> Unit = {},
+        onRetry: (String) -> Unit = {},
     ): String {
         val problem = settings.settings.baseUrlProblem()
         if (problem != null) {
@@ -164,7 +169,17 @@ class CadAgent(
             client = chat
             val web = if (catalog.includesWebTools) webClientFactory(settings).also { webClient = it } else null
             try {
-                return converse(chat, web, catalog, userText, settings.apiKey, onActivity, onToolTrace)
+                return converse(
+                    chat = chat,
+                    web = web,
+                    catalog = catalog,
+                    userText = userText,
+                    apiKey = settings.apiKey,
+                    endpointHost = endpointHost(settings.settings.baseUrl),
+                    onActivity = onActivity,
+                    onToolTrace = onToolTrace,
+                    onRetry = onRetry,
+                )
             } finally {
                 client = null
                 webClient = null
@@ -178,8 +193,10 @@ class CadAgent(
         catalog: AgentToolCatalog,
         userText: String,
         apiKey: String,
+        endpointHost: String,
         onActivity: (String) -> Unit,
         onToolTrace: (AgentToolTrace) -> Unit,
+        onRetry: (String) -> Unit,
     ): String {
         val messages = JSONArray()
         messages.put(
@@ -191,6 +208,11 @@ class CadAgent(
 
         var rounds = 0
         var callIds = 0
+        // What the user-visible error row needs: which model round of this turn failed, and
+        // whether it is still safe to re-send the same request.
+        var modelRound = 0
+        var toolsRunInTurn = 0
+        var retried = false
         while (true) {
             if (cancelled) throw AgentException("cancelled", "Stopped")
             // A tool list that follows what the endpoint has told us: once the web routes are
@@ -200,7 +222,46 @@ class CadAgent(
             } else {
                 catalog
             }
-            val reply = chat.complete(messages, activeCatalog.tools)
+            modelRound++
+            val roundStartedAt = System.currentTimeMillis()
+            val reply = try {
+                chat.complete(messages, activeCatalog.tools)
+            } catch (error: AgentException) {
+                if (error.code == "cancelled") throw error
+                // One safe retry: only for a transport failure or a timeout, only before any
+                // tool of this turn has run, and only once. A re-sent request cannot repeat an
+                // edit the app has not executed; once a tool has run, the same rule protects the
+                // design.
+                val safeToRetry = (error.code == "timeout" || error.code == "transport") &&
+                    toolsRunInTurn == 0 && !retried
+                if (!safeToRetry) {
+                    throw namedFailure(
+                        error = error,
+                        host = endpointHost,
+                        round = modelRound,
+                        startedAt = roundStartedAt,
+                        toolsRunInTurn = toolsRunInTurn,
+                        retried = retried,
+                    )
+                }
+                retried = true
+                runCatching { onRetry(RETRY_NOTICE) }
+                log("chat completion failed (" + error.code + "); retrying once")
+                Thread.sleep(retryDelayMillis)
+                try {
+                    chat.complete(messages, activeCatalog.tools)
+                } catch (second: AgentException) {
+                    if (second.code == "cancelled") throw second
+                    throw namedFailure(
+                        error = second,
+                        host = endpointHost,
+                        round = modelRound,
+                        startedAt = roundStartedAt,
+                        toolsRunInTurn = toolsRunInTurn,
+                        retried = true,
+                    )
+                }
+            }
             val content = (reply.opt("content") as? String)?.trim()?.takeIf { it.isNotEmpty() }
             val toolCalls = reply.optJSONArray("tool_calls")
             if (toolCalls == null || toolCalls.length() == 0) {
@@ -218,8 +279,10 @@ class CadAgent(
             if (rounds > maxToolRounds) {
                 throw AgentException(
                     "tool-round-limit",
-                    "The agent asked to run tools " + maxToolRounds + " times without giving an " +
-                        "answer, so it was stopped. Ask again, or split the request into a smaller one.",
+                    "The agent ran " + maxToolRounds + " tool rounds without settling on an " +
+                        "answer, so it stopped after round " + maxToolRounds + ". You can send " +
+                        "one more message - 'continue' - and it will carry on from where it " +
+                        "stopped, or split the request into a smaller one.",
                 )
             }
             messages.put(assistantEcho(content, toolCalls))
@@ -238,6 +301,7 @@ class CadAgent(
                 val result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
                     executeTool(catalog, web, name, argumentsText, onActivity)
                 }
+                toolsRunInTurn++
                 messages.put(
                     JSONObject()
                         .put("role", "tool")
@@ -247,6 +311,62 @@ class CadAgent(
                 if (cancelled) throw AgentException("cancelled", "Stopped")
             }
         }
+    }
+
+    /**
+     * The host the error rows name: host and port, never the path or the key.
+     *
+     * A transcript is copied out of the chat and pasted somewhere else, so "which endpoint was
+     * this" has to be in the row itself.
+     */
+    internal fun endpointHost(baseUrl: String): String {
+        val address = baseUrl.trim().trimEnd('/')
+        val url = runCatching { java.net.URL(address) }.getOrNull() ?: return "the endpoint"
+        val host = url.host?.takeIf { it.isNotBlank() } ?: return "the endpoint"
+        return if (url.port == -1) host else host + ":" + url.port
+    }
+
+    /**
+     * One model-call failure, in the words a pasted transcript can be diagnosed from.
+     *
+     * The row itself carries the endpoint's host and the model round, because a transcript
+     * copied out of the chat has no logcat beside it. A timeout or a transport failure also
+     * names how long it waited and says the one thing that helps: a backgrounded app can be
+     * frozen by Android, while the screen being off is fine - the turn's own foreground
+     * service and wake lock keep the work alive.
+     */
+    private fun namedFailure(
+        error: AgentException,
+        host: String,
+        round: Int,
+        startedAt: Long,
+        toolsRunInTurn: Int,
+        retried: Boolean,
+    ): AgentException {
+        if (error.code == "cancelled") return error
+        val original = error.message?.takeIf { it.isNotBlank() } ?: "the request failed"
+        if (error.code != "timeout" && error.code != "transport") {
+            return AgentException(
+                error.code,
+                "Round " + round + " at " + host + ": " + original,
+                error.cause,
+            )
+        }
+        val elapsed = ((System.currentTimeMillis() - startedAt + 999) / 1000).coerceAtLeast(1)
+        val what = if (error.code == "timeout") "The endpoint did not answer" else "Could not reach the endpoint"
+        val retryPart = when {
+            toolsRunInTurn > 0 ->
+                " The turn had already changed the design, so it was not retried - re-sending " +
+                    "the same request could repeat an edit."
+            retried -> " The one retry failed too."
+            else -> ""
+        }
+        return AgentException(
+            error.code,
+            what + " after " + elapsed + " s (round " + round + " at " + host + ")." +
+                retryPart + " " + BACKGROUND_HINT + " (" + original + ")",
+            error.cause,
+        )
     }
 
     /**
@@ -519,6 +639,23 @@ class CadAgent(
     companion object {
         /** Tool rounds one user turn may take before the loop calls it a runaway. */
         const val DEFAULT_MAX_TOOL_ROUNDS = 8
+
+        /** The one retry line the chat transcript records before re-sending a model call. */
+        const val RETRY_NOTICE = "the endpoint did not answer; retrying once"
+
+        /**
+         * What a backgrounded turn must not be blamed on.
+         *
+         * The screen going off is fine: a turn holds its own foreground service and a bounded
+         * partial wake lock. The app being frozen by Android is the failure mode this sentence
+         * points at, and the fix is the user's - keep the app running.
+         */
+        const val BACKGROUND_HINT =
+            "The screen may be off, that is fine; the app must still be running - a backgrounded " +
+                "app can be frozen by Android."
+
+        /** How long the one retry waits before re-sending the same request. */
+        const val RETRY_DELAY_MILLIS = 1_500L
 
         /** Text turns kept for context: ten exchanges is plenty for one document's edits. */
         const val MAX_REMEMBERED_TURNS = 10

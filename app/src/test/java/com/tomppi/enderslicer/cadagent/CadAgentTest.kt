@@ -310,7 +310,12 @@ class CadAgentTest {
             fail("expected the runaway loop to be stopped")
         } catch (error: AgentException) {
             assertEquals("tool-round-limit", error.code)
-            assertTrue(error.message.orEmpty().contains("3"))
+            val message = error.message.orEmpty()
+            assertTrue("names how many rounds ran: " + message, message.contains("3 tool rounds"))
+            assertTrue(
+                "says one more message can continue it: " + message,
+                message.contains("'continue'"),
+            )
         }
         // One request, then one per tool round up to the limit; no fourth answer was asked for.
         assertEquals(4, server.requests.size)

@@ -30,6 +30,8 @@ class FakeOpenAiServer : Closeable {
         val status: Int,
         val body: String,
         val contentType: String = "application/json",
+        /** True to close the connection without any response - a transport failure. */
+        val dropConnection: Boolean = false,
     )
 
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -62,6 +64,18 @@ class FakeOpenAiServer : Closeable {
         )
         requests += request
         val reply = responder(request)
+        if (reply.dropConnection) {
+            // Headers promise 1024 bytes, sixteen arrive, then the connection goes away: the
+            // body dies mid-answer. The client names a body shorter than its Content-Length a
+            // transport failure (and does not silently re-send the POST the way it might after
+            // a connection that never answered at all).
+            exchange.responseHeaders.add("Content-Type", reply.contentType)
+            exchange.sendResponseHeaders(200, 1024)
+            exchange.responseBody.write("""{"choices":[{"ind""".toByteArray(Charsets.UTF_8))
+            exchange.responseBody.flush()
+            exchange.close()
+            return
+        }
         val bytes = reply.body.toByteArray(Charsets.UTF_8)
         exchange.responseHeaders.add("Content-Type", reply.contentType)
         exchange.sendResponseHeaders(reply.status, bytes.size.toLong())
@@ -92,6 +106,22 @@ class FakeOpenAiServer : Closeable {
                 .put("tool_calls", JSONArray().put(call))
             return Reply(200, envelope(message))
         }
+
+        /** Close the connection without answering: a transport failure the agent may retry. */
+        fun dropConnection(): Reply = Reply(status = 0, body = "", dropConnection = true)
+
+        /** A 400 naming the model's context window, as providers word it. */
+        fun contextLengthExceeded(): Reply = Reply(
+            400,
+            JSONObject().put(
+                "error",
+                JSONObject().put(
+                    "message",
+                    "This model's maximum context length is 128000 tokens. However, your " +
+                        "messages resulted in 131577 tokens.",
+                ),
+            ).toString(),
+        )
 
         /** A 401 whose body echoes the key, to prove the app does not repeat it. */
         fun unauthorized(echo: String): Reply = Reply(

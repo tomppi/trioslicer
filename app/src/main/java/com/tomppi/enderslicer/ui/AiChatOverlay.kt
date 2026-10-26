@@ -59,7 +59,7 @@ import com.tomppi.enderslicer.harness.HarnessClient
 import kotlin.math.roundToInt
 
 /** What one entry of a chat transcript is: prose, a tool row, or a plain-words activity line. */
-enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY }
+enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY, ERROR }
 
 /** One turn in the AI conversation. */
 data class AiChatMessage(
@@ -758,6 +758,17 @@ private fun ChatEntry(message: AiChatMessage) {
     // The plain-words activity lines exist for the sheet, which has no tool rows; the chat's
     // rows already say what is happening, so repeating it as a bubble is noise here.
     if (message.kind == AiChatEntryKind.ACTIVITY) return
+    // A turn that failed says so in the transcript itself - endpoint host, round number and
+    // what to do - so a copy of the conversation is diagnosable without a logcat.
+    if (message.kind == AiChatEntryKind.ERROR) {
+        Text(
+            text = message.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth().padding(EnderSlicerDimens.Space8),
+        )
+        return
+    }
     AiChatBubble(message)
 }
 
