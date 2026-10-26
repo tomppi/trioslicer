@@ -1,6 +1,6 @@
 package com.tomppi.enderslicer.ui
 
-import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,13 +9,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +30,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,14 +54,58 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.harness.HarnessClient
 import kotlin.math.roundToInt
+
+/** What one entry of a chat transcript is: prose, a tool row, or a plain-words activity line. */
+enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY }
 
 /** One turn in the AI conversation. */
 data class AiChatMessage(
     val fromUser: Boolean,
     val text: String,
+    val kind: AiChatEntryKind = AiChatEntryKind.MESSAGE,
+    /** Non-null for a [AiChatEntryKind.TOOL] row: the call this row is showing. */
+    val tool: AgentToolTrace? = null,
 )
+
+/** Which backend the floating chat is showing. */
+enum class ChatSource(val label: String) {
+    /** The app's own CAD agent: the same conversation the CAD agent sheet's ask box drives. */
+    IN_APP("CAD agent (in-app)"),
+
+    /** The DSH harness on a computer - the advanced path, unchanged. */
+    HARNESS("Harness"),
+}
+
+/**
+ * The in-app agent as the floating chat sees it.
+ *
+ * The messages are [com.tomppi.enderslicer.ui.AiChatMessage]s of the one CAD conversation the
+ * CAD agent sheet's ask box also writes - there is no second transcript. The tool rows are in
+ * that same list, in the order they happened, so the chat shows the work as it runs.
+ */
+data class InAppChat(
+    val messages: List<AiChatMessage>,
+    val busy: Boolean = false,
+    /** The last failure, in the agent's own words (endpoint, key, engine). */
+    val status: String? = null,
+    /** "Author: nobody" / "Author: in-app agent" / "Author: external agent on 9878". */
+    val authorLine: String = "",
+    /** Non-null when another author has the document; the in-app composer is paused. */
+    val pausedReason: String? = null,
+    /** False until the endpoint has a URL and a model; the composer says so. */
+    val configured: Boolean = true,
+    val onSend: (String) -> Unit = {},
+    /** The same cancel the sheet's Cancel uses: it stops this turn, not the engine. */
+    val onStop: () -> Unit = {},
+    /** Receives the transcript text (messages + tool rows); the caller owns the clipboard. */
+    val onCopyTranscript: (String) -> Unit = {},
+) {
+    /** The author line, as the chat header shows it. */
+    val headerLine: String get() = authorLine
+}
 
 /**
  * Address entry, shown until the harness has been reached once.
@@ -76,18 +125,33 @@ data class ChatSetup(
     val onWorkspaceChange: (String) -> Unit = {},
 )
 
-private val ExpandedWidth = 300.dp
-private val ExpandedHeight = 380.dp
+private val ExpandedWidth = 320.dp
+private val ExpandedHeight = 520.dp
 private val BubbleSize = 56.dp
 
+/** The full-screen transcript column's reading width; wider windows get margins, not a wall. */
+private val FullScreenReadingWidth = 760.dp
+
 /**
- * Floating AI chat for the Blender engine.
+ * Floating AI chat, with a source switch and three sizes: the bubble, the panel and full screen.
  *
  * Deliberately not an AppBottomSheet. The user paints a region onto the model to
  * show the AI what to work on, so the chat has to stay open and stay out of the
  * way while they do it - a bottom sheet covers the model and dismisses on the
  * first tap outside it. This floats, drags anywhere, and collapses to a bubble
- * so the plate stays usable.
+ * so the plate stays usable. Full screen is the same surface given the whole
+ * viewport for reading a long transcript; the plate keeps running underneath and
+ * the engine and the turn are untouched by a resize.
+ *
+ * **Two backends, one surface.** [ChatSource.IN_APP] shows the CAD conversation the
+ * CAD agent sheet also drives, with a row for every tool the agent runs (name, arguments,
+ * duration, outcome) so the user can watch it work; [ChatSource.HARNESS] is the harness chat
+ * exactly as it was. The header names the document's author in both, so an attached external
+ * agent reads as "in-app agent paused" instead of a chat that quietly does nothing.
+ *
+ * The size itself lives with the caller ([size], [lastExpandedSize], [onSizeChange]) so it
+ * survives the chat being closed and reopened in the same session, and so back and the header
+ * buttons cannot disagree about what a tap does - both use [ChatSizes].
  *
  * Position is intentionally not persisted: a saved offset from a different
  * window size or orientation would land off-screen, so it re-seats itself.
@@ -109,17 +173,417 @@ fun AiChatOverlay(
     status: String? = null,
     /** True while the session travels over plain HTTP to another machine. */
     insecure: Boolean = false,
+    /** The app's own CAD agent. Non-null enables the source switch and the in-app view. */
+    inApp: InAppChat? = null,
+    /** Which source the chat opens on; in-app is the default, the agent this app was built for. */
+    initialSource: ChatSource = ChatSource.IN_APP,
+    /** The remembered size; the overlay only asks the caller to change it. */
+    size: ChatSize = ChatSize.PANEL,
+    /** The last non-bubble size, so tapping the bubble returns where the user was. */
+    lastExpandedSize: ChatSize = ChatSize.PANEL,
+    onSizeChange: (ChatSize) -> Unit = {},
+    /**
+     * What the system Back gesture asks for. The chat registers its own handler while it is
+     * composed, so Back from full screen collapses instead of leaving the app or closing the
+     * chat; the caller applies the action ([ChatSizes.back] decides which one).
+     */
+    onBack: (ChatBackAction) -> Unit = {},
 ) {
-    var collapsed by rememberSaveable { mutableStateOf(false) }
+    // Back belongs to the chat while it is on screen: full screen collapses to the panel,
+    // anything smaller closes it. Registered here, inside the chat, so it beats the screen's
+    // own handlers and the two paths can never disagree.
+    BackHandler { onBack(ChatSizes.back(size)) }
+
     var draft by rememberSaveable { mutableStateOf("") }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var placed by remember { mutableStateOf(false) }
+    var source by rememberSaveable { mutableStateOf(initialSource) }
     val density = LocalDensity.current
     val scroll = rememberScrollState()
 
+    val showInApp = inApp != null && source == ChatSource.IN_APP
+    val app = if (showInApp) inApp else null
+    // The harness state and the in-app state are separate: whichever source is not on screen
+    // keeps its own messages untouched - switching source or size is not a new conversation.
+    val activeBusy = if (showInApp) app?.busy == true else busy
+    val activeMessages = if (showInApp) app?.messages.orEmpty() else messages
+    // A source switch and every streamed tool event should land at the newest line. A size
+    // change is deliberately not a key: scrolling while resizing keeps the user's position.
+    LaunchedEffect(showInApp, activeMessages) { scroll.animateScrollTo(scroll.maxValue) }
+
+    val expand: () -> Unit = { onSizeChange(ChatSizes.expanded()) }
+    val collapse: () -> Unit = { onSizeChange(ChatSizes.collapsed()) }
+    val minimise: () -> Unit = { onSizeChange(ChatSizes.minimised()) }
+    val openBubble: () -> Unit = { onSizeChange(ChatSizes.fromBubble(lastExpandedSize)) }
+
+    // --- the shared chrome: the panel and the full-screen surface render one layout ----------
+
+    val sourceChips: @Composable () -> Unit = {
+        if (inApp != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = EnderSlicerDimens.CardPadding),
+            ) {
+                ChatSource.entries.forEach { candidate ->
+                    FilterChip(
+                        selected = source == candidate,
+                        onClick = { source = candidate },
+                        label = { Text(candidate.label, style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
+            }
+        }
+    }
+
+    val authorRow: @Composable () -> Unit = {
+        // The one-author rule, in the chat's own header: an external agent holding the document
+        // must read as "in-app agent paused", never as a chat that is silently unable to send.
+        if (app != null) {
+            Text(
+                text = if (app.pausedReason != null) {
+                    app.headerLine + " · in-app agent paused"
+                } else {
+                    app.headerLine
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (app.pausedReason != null) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(
+                    start = EnderSlicerDimens.CardPadding,
+                    end = EnderSlicerDimens.CardPadding,
+                    top = EnderSlicerDimens.Space2,
+                ),
+            )
+        }
+    }
+
+    val insecureNote: @Composable () -> Unit = {
+        // Stays up for as long as the session does: the setup-time warning is gone the moment
+        // the chat is in use, which is when every prompt and photo is actually sent.
+        if (insecure && !showInApp) {
+            Text(
+                text = "Unencrypted connection: anyone on this network can read " +
+                    "this chat and the credentials it uses.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = EnderSlicerDimens.CardPadding,
+                        end = EnderSlicerDimens.CardPadding,
+                        top = EnderSlicerDimens.Space4,
+                    ),
+            )
+        }
+    }
+
+    val transcript: @Composable (Modifier) -> Unit = { transcriptModifier ->
+        Column(
+            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+            modifier = transcriptModifier
+                .verticalScroll(scroll)
+                .padding(EnderSlicerDimens.CardPadding),
+        ) {
+            when {
+                app != null -> {
+                    if (app.messages.isEmpty()) {
+                        Text(
+                            text = "Ask me to build or change the CAD document on the " +
+                                "plate. Every tool I run shows up here while I run it - " +
+                                "the box, the fillet, a web search - so you can watch " +
+                                "the work instead of waiting on a spinner.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    app.messages.forEach { message -> ChatEntry(message) }
+                    if (app.busy) {
+                        Text(
+                            text = "Working…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    app.pausedReason?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    app.status?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                setup != null -> {
+                    Text(
+                        text = "Paste the launch URL your harness printed - the " +
+                            "https://your-machine.your-tailnet.ts.net address with " +
+                            "?token=... on the end. It is the only copy of that token.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = setup.address,
+                        onValueChange = setup.onAddressChange,
+                        label = { Text("Launch URL") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { setup.onConnect() }),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    // Everything this chat sends - the launch token, the session cookie and any
+                    // photo uploaded with a prompt - travels in the clear over plain HTTP to
+                    // another machine, and the cookie is good for 30 days. The address is still
+                    // accepted, because a LAN or Tailscale harness is a legitimate answer, but
+                    // not without being asked.
+                    if (HarnessClient.isUnencryptedRemote(setup.address)) {
+                        Text(
+                            "Not HTTPS: the launch token, the session cookie and " +
+                                "anything you send would travel unencrypted. You will " +
+                                "be asked to confirm before connecting.",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedTextField(
+                        value = setup.workspace,
+                        onValueChange = setup.onWorkspaceChange,
+                        label = { Text("Workspace on the harness") },
+                        supportingText = {
+                            Text("Where your skills live. Without it the agent " +
+                                "cannot see them, however the prompt names them.")
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = setup.onConnect,
+                        enabled = setup.address.isNotBlank() && !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(if (busy) "Connecting…" else "Connect") }
+                    status?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                else -> {
+                    if (messages.isEmpty()) {
+                        Text(
+                            text = "Paint on the model to show me what to add or change, " +
+                                "then ask. I can also build a new model from an image.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    messages.forEach { message -> AiChatBubble(message) }
+                    if (busy) {
+                        Text(
+                            text = "Thinking…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // Surfaced here as well as during setup: "still running after 20 minutes"
+                    // and "stopped" are only useful if they are visible once the chat is in use.
+                    status?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val composer: @Composable () -> Unit = {
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = EnderSlicerDimens.Space8,
+                    end = EnderSlicerDimens.Space8,
+                    top = EnderSlicerDimens.Space8,
+                ),
+        ) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                placeholder = {
+                    Text(if (showInApp) "Ask for a CAD change" else "Ask about the model")
+                },
+                maxLines = 3,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        if (draft.isNotBlank() && canSend(showInApp, app, activeBusy)) {
+                            sendDraft(showInApp, draft, app, onSend)
+                            draft = ""
+                        }
+                    },
+                ),
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(EnderSlicerDimens.Space4))
+            FilledIconButton(
+                onClick = {
+                    if (draft.isNotBlank() && canSend(showInApp, app, activeBusy)) {
+                        sendDraft(showInApp, draft, app, onSend)
+                        draft = ""
+                    }
+                },
+                enabled = draft.isNotBlank() && canSend(showInApp, app, activeBusy),
+            ) {
+                Icon(AppIcons.Send, contentDescription = "Send")
+            }
+        }
+    }
+
+    val footer: @Composable (Modifier) -> Unit = { outerModifier ->
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = outerModifier
+                .fillMaxWidth()
+                .padding(
+                    start = EnderSlicerDimens.Space8,
+                    end = EnderSlicerDimens.Space8,
+                    bottom = EnderSlicerDimens.Space8,
+                ),
+        ) {
+            if (showInApp) {
+                TextButton(
+                    onClick = { app?.onCopyTranscript?.invoke(chatTranscriptText(app.messages)) },
+                    enabled = app != null && app.messages.isNotEmpty(),
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Copy transcript") }
+                if (app?.configured == false) {
+                    Text(
+                        text = "Set the endpoint in the CAD agent sheet.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                TextButton(
+                    onClick = onUploadImage,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) {
+                    Icon(
+                        imageVector = AppIcons.ImageUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(EnderSlicerDimens.Space6))
+                    Text("Build from image")
+                }
+            }
+            // Only while something is running. Stops this turn, not the engine: the in-app Stop
+            // is the same cancel the CAD agent sheet's Cancel uses.
+            if (activeBusy) {
+                Spacer(Modifier.weight(1f))
+                val stopTurn: () -> Unit = if (showInApp) {
+                    { app?.onStop?.invoke() }
+                } else {
+                    onStop
+                }
+                TextButton(
+                    onClick = stopTurn,
+                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+                ) { Text("Stop") }
+            }
+        }
+    }
+
+    // --- full screen: one surface over the plate, readable column on a wide window -----------
+
+    if (size == ChatSize.FULL) {
+        Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Box(contentAlignment = Alignment.TopCenter) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = FullScreenReadingWidth)
+                        .fillMaxWidth(),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // The full-screen surface draws behind the status bar, so its own
+                            // top bar starts below it instead of under the clock.
+                            .statusBarsPadding()
+                            .padding(
+                                start = EnderSlicerDimens.CardPadding,
+                                end = EnderSlicerDimens.Space4,
+                                top = EnderSlicerDimens.Space6,
+                                bottom = EnderSlicerDimens.Space6,
+                            ),
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.Sparkle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(EnderSlicerDimens.Space8))
+                        Text(
+                            text = "Ask AI",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = collapse) {
+                            Icon(
+                                imageVector = AppIcons.Collapse,
+                                contentDescription = "Collapse chat",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = minimise) {
+                            Icon(
+                                imageVector = AppIcons.Minimise,
+                                contentDescription = "Hide chat",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = onClose) { Text("Close") }
+                    }
+                    sourceChips()
+                    authorRow()
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    insecureNote()
+                    transcript(Modifier.weight(1f).fillMaxWidth())
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    if (showInApp || setup == null) {
+                        composer()
+                        // Pinned to the bottom and clear of the system navigation area.
+                        footer(Modifier.navigationBarsPadding())
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // --- the bubble and the floating panel ---------------------------------------------------
+
     BoxWithConstraints(modifier = modifier) {
-        val panelWidth = if (collapsed) BubbleSize else ExpandedWidth
-        val panelHeight = if (collapsed) BubbleSize else ExpandedHeight
+        val panelWidth = if (size == ChatSize.BUBBLE) BubbleSize else minOf(ExpandedWidth, maxWidth * 0.94f)
+        val panelHeight = if (size == ChatSize.BUBBLE) BubbleSize else minOf(ExpandedHeight, maxHeight * 0.92f)
         val widthPx = with(density) { panelWidth.toPx() }
         val heightPx = with(density) { panelHeight.toPx() }
         val boundsX = (constraints.maxWidth - widthPx).coerceAtLeast(0f)
@@ -140,8 +604,6 @@ fun AiChatOverlay(
         // A rotation can leave a stale offset outside the new bounds.
         LaunchedEffect(boundsX, boundsY) { offset = clamp(offset) }
 
-        LaunchedEffect(messages.size) { scroll.animateScrollTo(scroll.maxValue) }
-
         val dragHandle = Modifier.pointerInput(boundsX, boundsY) {
             detectDragGestures { change, dragAmount ->
                 change.consume()
@@ -149,9 +611,9 @@ fun AiChatOverlay(
             }
         }
 
-        if (collapsed) {
+        if (size == ChatSize.BUBBLE) {
             Surface(
-                onClick = { collapsed = false },
+                onClick = openBubble,
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primaryContainer,
                 tonalElevation = 6.dp,
@@ -207,7 +669,14 @@ fun AiChatOverlay(
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f),
                     )
-                    IconButton(onClick = { collapsed = true }) {
+                    IconButton(onClick = expand) {
+                        Icon(
+                            imageVector = AppIcons.Expand,
+                            contentDescription = "Expand chat",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = minimise) {
                         Icon(
                             imageVector = AppIcons.Minimise,
                             contentDescription = "Hide chat",
@@ -216,193 +685,105 @@ fun AiChatOverlay(
                     }
                     TextButton(onClick = onClose) { Text("Close") }
                 }
+                sourceChips()
+                authorRow()
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                // Stays up for as long as the session does: the setup-time
-                // warning is gone the moment the chat is in use, which is when
-                // every prompt and photo is actually sent.
-                if (insecure) {
-                    Text(
-                        text = "Unencrypted connection: anyone on this network can read " +
-                            "this chat and the credentials it uses.",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                start = EnderSlicerDimens.CardPadding,
-                                end = EnderSlicerDimens.CardPadding,
-                                top = EnderSlicerDimens.Space4,
-                            ),
-                    )
-                }
+                insecureNote()
+                transcript(Modifier.weight(1f).fillMaxWidth())
+                // The harness setup keeps the old behaviour: it replaces the composer until the
+                // harness has been reached once. The in-app view always has a composer.
+                if (!showInApp && setup != null) return@Column
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                composer()
+                footer(Modifier)
+            }
+        }
+    }
+}
 
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .verticalScroll(scroll)
-                        .padding(EnderSlicerDimens.CardPadding),
-                ) {
-                    if (setup != null) {
-                        Text(
-                            text = "Paste the launch URL your harness printed - the " +
-                                "https://your-machine.your-tailnet.ts.net address with " +
-                                "?token=... on the end. It is the only copy of that token.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        OutlinedTextField(
-                            value = setup.address,
-                            onValueChange = setup.onAddressChange,
-                            label = { Text("Launch URL") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(onDone = { setup.onConnect() }),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        // Everything this chat sends - the launch token, the
-                        // session cookie and any photo uploaded with a prompt -
-                        // travels in the clear over plain HTTP to another machine,
-                        // and the cookie is good for 30 days. The address is still
-                        // accepted, because a LAN or Tailscale harness is a
-                        // legitimate answer, but not without being asked.
-                        if (HarnessClient.isUnencryptedRemote(setup.address)) {
-                            Text(
-                                "Not HTTPS: the launch token, the session cookie and " +
-                                    "anything you send would travel unencrypted. You will " +
-                                    "be asked to confirm before connecting.",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        OutlinedTextField(
-                            value = setup.workspace,
-                            onValueChange = setup.onWorkspaceChange,
-                            label = { Text("Workspace on the harness") },
-                            supportingText = {
-                                Text("Where your skills live. Without it the agent " +
-                                    "cannot see them, however the prompt names them.")
-                            },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Button(
-                            onClick = setup.onConnect,
-                            enabled = setup.address.isNotBlank() && !busy,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(if (busy) "Connecting…" else "Connect") }
-                        status?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
+/** Whether the composer may send right now, for either backend. */
+private fun canSend(showInApp: Boolean, app: InAppChat?, busy: Boolean): Boolean {
+    if (busy) return false
+    if (!showInApp) return true
+    return app != null && app.configured && app.pausedReason == null
+}
+
+private fun sendDraft(showInApp: Boolean, text: String, app: InAppChat?, onSendHarness: (String) -> Unit) {
+    if (showInApp) app?.onSend?.invoke(text.trim()) else onSendHarness(text.trim())
+}
+
+/** One transcript entry: a prose bubble, or a tool row when the entry carries a call. */
+@Composable
+private fun ChatEntry(message: AiChatMessage) {
+    val tool = message.tool
+    if (tool != null) {
+        AiChatToolRow(tool)
+        return
+    }
+    // The plain-words activity lines exist for the sheet, which has no tool rows; the chat's
+    // rows already say what is happening, so repeating it as a bubble is noise here.
+    if (message.kind == AiChatEntryKind.ACTIVITY) return
+    AiChatBubble(message)
+}
+
+/**
+ * One tool call as a row: what the agent ran, on what, for how long, and how it went.
+ *
+ * A failure is a red row carrying the engine's or the endpoint's own sentence - the whole point
+ * of showing the work is that a bad turn is visible, not silent.
+ */
+@Composable
+private fun AiChatToolRow(trace: AgentToolTrace) {
+    val failed = trace.failed
+    val container = if (failed) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val onContainer = if (failed) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = container,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(EnderSlicerDimens.Space8)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = trace.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = if (trace.running) "running…" else trace.durationMillis.toString() + " ms",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = onContainer,
+                )
+            }
+            if (trace.arguments.isNotBlank()) {
+                Text(
+                    text = trace.arguments,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = onContainer,
+                    maxLines = 2,
+                )
+            }
+            if (!trace.running && trace.outcome.isNotBlank()) {
+                Text(
+                    text = trace.outcome,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (failed) {
+                        MaterialTheme.colorScheme.error
                     } else {
-                        if (messages.isEmpty()) {
-                            Text(
-                                text = "Paint on the model to show me what to add or change, " +
-                                    "then ask. I can also build a new model from an image.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        messages.forEach { message -> AiChatBubble(message) }
-                        if (busy) {
-                            Text(
-                                text = "Thinking…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // Surfaced here as well as during setup: "still running
-                        // after 20 minutes" and "stopped" are only useful if
-                        // they are visible once the chat is in use.
-                        status?.let {
-                            Text(
-                                text = it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
-                if (setup != null) return@Column
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            start = EnderSlicerDimens.Space8,
-                            end = EnderSlicerDimens.Space8,
-                            top = EnderSlicerDimens.Space8,
-                        ),
-                ) {
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        placeholder = { Text("Ask about the model") },
-                        maxLines = 3,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(
-                            onSend = {
-                                if (draft.isNotBlank()) {
-                                    onSend(draft.trim())
-                                    draft = ""
-                                }
-                            },
-                        ),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                    FilledIconButton(
-                        onClick = {
-                            if (draft.isNotBlank()) {
-                                onSend(draft.trim())
-                                draft = ""
-                            }
-                        },
-                        enabled = draft.isNotBlank(),
-                    ) {
-                        Icon(AppIcons.Send, contentDescription = "Send")
-                    }
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            start = EnderSlicerDimens.Space8,
-                            end = EnderSlicerDimens.Space8,
-                            bottom = EnderSlicerDimens.Space8,
-                        ),
-                ) {
-                    TextButton(
-                        onClick = onUploadImage,
-                        contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.ImageUpload,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(EnderSlicerDimens.Space6))
-                        Text("Build from image")
-                    }
-                    // Only while something is running. Cancelling stops the
-                    // agent, not the processes it started, so this is the one
-                    // control that ends work in progress.
-                    if (busy) {
-                        Spacer(Modifier.weight(1f))
-                        TextButton(
-                            onClick = onStop,
-                            contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                        ) { Text("Stop") }
-                    }
-                }
+                        MaterialTheme.colorScheme.primary
+                    },
+                    maxLines = 2,
+                )
             }
         }
     }

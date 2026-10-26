@@ -8,12 +8,21 @@ import org.json.JSONObject
  * [com.tomppi.enderslicer.solidcraft.SolidCraftAgentHost] over the running engine session; a fake
  * implements it in tests.
  *
- * The contract is one-way: [call] returns the text the model receives and never throws. A tool
+ * The contract is one-way: [call] returns what the model receives and never throws. A tool
  * failure is a result for the model, not an exception for the UI - the model is the thing that
- * can read the engine's sentence and try something else.
+ * can read the engine's sentence and try something else. [Result.failed] is what turns the same
+ * call into a red row on a chat surface; [Result.outcome] is the row's one line when the host
+ * already knows it (the web tools do), otherwise [AgentToolSummary] reads it from the text.
  */
 fun interface AgentToolHost {
-    fun call(name: String, arguments: JSONObject): String
+    fun call(name: String, arguments: JSONObject): Result
+
+    /** What a tool call produced: the model's text, whether it failed, and its row's line. */
+    data class Result(
+        val text: String,
+        val failed: Boolean = false,
+        val outcome: String? = null,
+    )
 }
 
 /**
@@ -30,6 +39,10 @@ fun interface AgentToolHost {
  * endpoint with the same key. The web tools are optional: a 401/403/404/405 on their route
  * removes them from the catalogue for the rest of the conversation and leaves one named
  * sentence - never a silent failure, and never a fake empty result.
+ *
+ * Every call is traced, start and end, through [run]'s `onToolTrace`: that is what a chat
+ * surface draws as a tool row while the turn is still running, so the user can watch the agent
+ * work instead of guessing from a spinner.
  *
  * Everything the model can see is a [JSONObject] in the OpenAI chat shape. Streaming is not
  * used: a non-streaming call is one request and one answer, and a cancel is a disconnect rather
@@ -113,10 +126,14 @@ class CadAgent(
     /**
      * Runs one turn and returns the agent's final message.
      *
-     * Blocking: call on a background thread. [onActivity] receives the plain-words lines the
-     * sheet shows while the agent works ("searching for …", "reading …"), so the user can see
-     * when the agent leaves the phone for the web.
+     * Blocking: call on a background thread.
      *
+     * @param onActivity plain-words lines for the sheet ("searching for …", "reading …"), the
+     *   places where the agent leaves the phone for the web.
+     * @param onToolTrace called twice per tool call - as it starts (running) and as it ends with
+     *   its duration and outcome - so a chat surface can draw the work as it happens. The same
+     *   callback is safe to call from a router that marshals to the UI thread; exceptions from
+     *   it never break the turn.
      * @throws AgentException with a named code when the conversation could not continue (not
      *   configured, refused, timeout, malformed reply, cancelled, tool-round limit).
      */
@@ -125,6 +142,7 @@ class CadAgent(
         catalog: AgentToolCatalog,
         userText: String,
         onActivity: (String) -> Unit = {},
+        onToolTrace: (AgentToolTrace) -> Unit = {},
     ): String {
         val problem = settings.settings.baseUrlProblem()
         if (problem != null) {
@@ -146,7 +164,7 @@ class CadAgent(
             client = chat
             val web = if (catalog.includesWebTools) webClientFactory(settings).also { webClient = it } else null
             try {
-                return converse(chat, web, catalog, userText, onActivity)
+                return converse(chat, web, catalog, userText, settings.apiKey, onActivity, onToolTrace)
             } finally {
                 client = null
                 webClient = null
@@ -159,7 +177,9 @@ class CadAgent(
         web: WebToolClient?,
         catalog: AgentToolCatalog,
         userText: String,
+        apiKey: String,
         onActivity: (String) -> Unit,
+        onToolTrace: (AgentToolTrace) -> Unit,
     ): String {
         val messages = JSONArray()
         messages.put(
@@ -170,6 +190,7 @@ class CadAgent(
         messages.put(userMessage)
 
         var rounds = 0
+        var callIds = 0
         while (true) {
             if (cancelled) throw AgentException("cancelled", "Stopped")
             // A tool list that follows what the endpoint has told us: once the web routes are
@@ -213,84 +234,178 @@ class CadAgent(
                     is String -> arguments
                     else -> arguments.toString()
                 }
-                val result = when (name) {
-                    AgentWebTools.SEARCH, AgentWebTools.FETCH ->
-                        runWebTool(web, name, argumentsText, onActivity)
-                    else -> runEngineTool(catalog, name, argumentsText)
+                val callId = ++callIds
+                val result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
+                    executeTool(catalog, web, name, argumentsText, onActivity)
                 }
                 messages.put(
                     JSONObject()
                         .put("role", "tool")
                         .put("tool_call_id", id)
-                        .put("content", result),
+                        .put("content", result.text),
                 )
+                if (cancelled) throw AgentException("cancelled", "Stopped")
             }
         }
     }
 
     /**
-     * Runs one engine tool call, returning the text the model sees.
+     * Runs one call between its start and end rows.
+     *
+     * The rows are emitted around the execution itself, so a slow boolean shows as a running
+     * row for as long as it really takes, and a failure shows as an ended red row. The trace
+     * callback is wrapped: a UI mistake must not take the agent's turn with it.
+     */
+    private fun traceCall(
+        callId: Int,
+        name: String,
+        argumentsText: String,
+        apiKey: String,
+        onToolTrace: (AgentToolTrace) -> Unit,
+        execute: () -> AgentToolHost.Result,
+    ): AgentToolHost.Result {
+        val parsed = objectOf(argumentsText)
+        val displayName = AgentToolSummary.displayName(name, parsed)
+        val summary = AgentToolSummary.redact(
+            AgentToolSummary.arguments(name, parsed, argumentsText),
+            apiKey,
+        )
+        val started = AgentToolTrace(
+            callId = callId,
+            tool = name,
+            name = displayName,
+            arguments = summary,
+            running = true,
+        )
+        runCatching { onToolTrace(started) }
+        val startedAt = System.currentTimeMillis()
+        val result = try {
+            execute()
+        } catch (error: AgentException) {
+            if (error.code == "cancelled") {
+                AgentToolHost.Result(TOOL_ERROR + "the turn was stopped.", failed = true, outcome = "stopped")
+            } else {
+                AgentToolHost.Result(TOOL_ERROR + (error.message ?: "the tool failed"), failed = true)
+            }
+        } catch (error: Throwable) {
+            AgentToolHost.Result(
+                TOOL_ERROR + "the app could not run " + name + ": " +
+                    (error.message ?: error.javaClass.simpleName),
+                failed = true,
+            )
+        }
+        val outcome = AgentToolSummary.redact(
+            result.outcome ?: AgentToolSummary.outcome(name, result.text, result.failed),
+            apiKey,
+        )
+        runCatching {
+            onToolTrace(
+                started.copy(
+                    running = false,
+                    durationMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0),
+                    outcome = outcome,
+                    failed = result.failed,
+                ),
+            )
+        }
+        return result
+    }
+
+    /**
+     * Runs one tool call.
      *
      * A malformed call is reported *to the model* rather than thrown at the UI: wrong JSON in
      * the arguments, a name the app does not offer, a name it deliberately hides. The model can
-     * read that and correct itself on the next round, which is the whole point of the loop.
+     * read that and correct itself on the next round, which is the whole point of the loop; the
+     * same call's row is red.
      */
-    private fun runEngineTool(catalog: AgentToolCatalog, name: String, argumentsText: String): String {
+    private fun executeTool(
+        catalog: AgentToolCatalog,
+        web: WebToolClient?,
+        name: String,
+        argumentsText: String,
+        onActivity: (String) -> Unit,
+    ): AgentToolHost.Result {
         if (name.isEmpty()) {
-            return TOOL_ERROR + "the reply contained a tool call with no function name."
+            return AgentToolHost.Result(
+                TOOL_ERROR + "the reply contained a tool call with no function name.",
+                failed = true,
+                outcome = "no function name",
+            )
         }
         if (name !in catalog.names) {
-            if (name in catalog.hiddenNames) {
-                return TOOL_ERROR + "this app does not offer " + name + " (the plate is the " +
-                    "viewport, so the engine's screenshot is never used). The tools available " +
-                    "are: " + catalog.names.joinToString(", ") + "."
+            val why = if (name in catalog.hiddenNames) {
+                "this app does not offer " + name + " (the plate is the viewport, so the " +
+                    "engine's screenshot is never used). The tools available are: " +
+                    catalog.names.joinToString(", ") + "."
+            } else {
+                "there is no tool named \"" + name + "\". The tools available are: " +
+                    catalog.names.joinToString(", ") + "."
             }
-            return TOOL_ERROR + "there is no tool named \"" + name + "\". The tools available " +
-                "are: " + catalog.names.joinToString(", ") + "."
+            return AgentToolHost.Result(TOOL_ERROR + why, failed = true, outcome = "not offered")
         }
-        val arguments = objectOf(argumentsText) ?: return TOOL_ERROR +
-            "the arguments for " + name + " were not a JSON object:\n" + argumentsText.take(400) +
-            "\nSend one JSON object."
+        val arguments = objectOf(argumentsText) ?: return AgentToolHost.Result(
+            TOOL_ERROR + "the arguments for " + name + " were not a JSON object:\n" +
+                argumentsText.take(400) + "\nSend one JSON object.",
+            failed = true,
+            outcome = "arguments were not JSON",
+        )
+        if (name == AgentWebTools.SEARCH || name == AgentWebTools.FETCH) {
+            return runWebTool(web, name, arguments, onActivity)
+        }
         return try {
             toolHost.call(name, arguments)
         } catch (error: Throwable) {
-            TOOL_ERROR + "the app could not run " + name + ": " +
-                (error.message ?: error.javaClass.simpleName)
+            AgentToolHost.Result(
+                TOOL_ERROR + "the app could not run " + name + ": " +
+                    (error.message ?: error.javaClass.simpleName),
+                failed = true,
+            )
         }
     }
 
     /**
      * Runs one web tool call.
      *
-     * The result is the tool's formatted, untrusted-wrapped text. A route the endpoint does not
-     * offer marks the capability unavailable - which removes the tools from the next request and
-     * leaves [webToolsNotice] for the sheet - and the model still gets a result it can act on.
-     * Transient failures stay tool errors and keep the capability.
+     * The result is the tool's formatted, untrusted-wrapped text plus the row's outcome (how
+     * many results, how much text). A route the endpoint does not offer marks the capability
+     * unavailable - which removes the tools from the next request, leaves [webToolsNotice] for
+     * the sheet and a red row naming the HTTP status - and the model still gets a result it can
+     * act on. Transient failures stay red tool rows and keep the capability.
      */
     private fun runWebTool(
         web: WebToolClient?,
         name: String,
-        argumentsText: String,
+        arguments: JSONObject,
         onActivity: (String) -> Unit,
-    ): String {
+    ): AgentToolHost.Result {
         if (webAvailability == AgentWebTools.Availability.UNAVAILABLE) {
-            return TOOL_ERROR + (webToolsNotice ?: "web search is not available on this endpoint") +
-                " Build from the user's own words instead."
+            return AgentToolHost.Result(
+                TOOL_ERROR + (webToolsNotice ?: "web search is not available on this endpoint") +
+                    " Build from the user's own words instead.",
+                failed = true,
+                outcome = webToolsNotice ?: "not available on this endpoint",
+            )
         }
         if (web == null) {
-            return TOOL_ERROR + "web search is not available: it is switched off in the CAD agent " +
-                "settings, or this turn was started without it."
+            return AgentToolHost.Result(
+                TOOL_ERROR + "web search is not available: it is switched off in the CAD agent " +
+                    "settings, or this turn was started without it.",
+                failed = true,
+                outcome = "switched off",
+            )
         }
-        val arguments = objectOf(argumentsText) ?: return TOOL_ERROR +
-            "the arguments for " + name + " were not a JSON object:\n" + argumentsText.take(400) +
-            "\nSend one JSON object."
         val started = System.currentTimeMillis()
         return try {
             when (name) {
                 AgentWebTools.SEARCH -> {
                     val query = arguments.optString("query").trim()
                     if (query.isEmpty()) {
-                        return TOOL_ERROR + "web_search needs a non-empty query string."
+                        return AgentToolHost.Result(
+                            TOOL_ERROR + "web_search needs a non-empty query string.",
+                            failed = true,
+                            outcome = "no query",
+                        )
                     }
                     onActivity("searching the web for \"" + query.take(120) + "\"…")
                     val results = web.search(
@@ -301,35 +416,74 @@ class CadAgent(
                     webAvailability = AgentWebTools.Availability.AVAILABLE
                     webToolsNotice = null
                     log("web search for \"" + query.take(80) + "\" in " + (System.currentTimeMillis() - started) + " ms")
-                    results
+                    AgentToolHost.Result(
+                        text = results.text,
+                        outcome = resultLine(results.resultCount),
+                    )
                 }
                 AgentWebTools.FETCH -> {
                     val url = arguments.optString("url").trim()
                     if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                        return TOOL_ERROR + "web_fetch needs an absolute http or https URL."
+                        return AgentToolHost.Result(
+                            TOOL_ERROR + "web_fetch needs an absolute http or https URL.",
+                            failed = true,
+                            outcome = "not a URL",
+                        )
                     }
                     onActivity("reading " + url.take(160) + " …")
                     val page = web.fetch(url)
                     webAvailability = AgentWebTools.Availability.AVAILABLE
                     webToolsNotice = null
                     log("web fetch of " + url.take(120) + " in " + (System.currentTimeMillis() - started) + " ms")
-                    page
+                    AgentToolHost.Result(
+                        text = page.text,
+                        outcome = page.characters.toString() + " characters read" +
+                            if (page.text.contains("page truncated at")) ", truncated" else "",
+                    )
                 }
-                else -> return TOOL_ERROR + "there is no web tool named \"" + name + "\"."
+                else -> AgentToolHost.Result(
+                    TOOL_ERROR + "there is no web tool named \"" + name + "\".",
+                    failed = true,
+                    outcome = "unknown tool",
+                )
             }
         } catch (error: AgentException) {
             if (error.code == "web-unavailable") {
                 webAvailability = AgentWebTools.Availability.UNAVAILABLE
                 webToolsNotice = error.message
                 log("web tools removed: " + (error.message ?: "the endpoint does not offer them"))
-                return TOOL_ERROR + (error.message ?: "web search is not available on this endpoint") +
-                    " The web tools were removed for this conversation; say in one line that " +
-                    "search is unavailable here and continue with the user's own dimensions."
+                return AgentToolHost.Result(
+                    TOOL_ERROR + (error.message ?: "web search is not available on this endpoint") +
+                        " The web tools were removed for this conversation; say in one line that " +
+                        "search is unavailable here and continue with the user's own dimensions.",
+                    failed = true,
+                    outcome = httpOutcome(error.message),
+                )
             }
-            TOOL_ERROR + (error.message ?: "the web tool failed")
+            if (error.code == "cancelled") throw error
+            AgentToolHost.Result(
+                TOOL_ERROR + (error.message ?: "the web tool failed"),
+                failed = true,
+            )
         } catch (error: Throwable) {
-            TOOL_ERROR + "the web tool failed: " + (error.message ?: error.javaClass.simpleName)
+            AgentToolHost.Result(
+                TOOL_ERROR + "the web tool failed: " + (error.message ?: error.javaClass.simpleName),
+                failed = true,
+            )
         }
+    }
+
+    /** "3 results" / "1 result", the search row's one line. */
+    private fun resultLine(count: Int): String =
+        count.toString() + (if (count == 1) " result" else " results")
+
+    /** "HTTP 404 - this endpoint does not offer web search", from the tool's own sentence. */
+    private fun httpOutcome(message: String?): String {
+        val text = (message ?: "").trim().ifEmpty { "this endpoint does not offer web search" }
+        val status = Regex("\\(HTTP (\\d{3})\\)").find(text)?.groupValues?.get(1)
+        if (status == null) return text.take(120)
+        val sentence = text.substringBefore(" (HTTP").trim()
+        return "HTTP " + status + " - " + sentence
     }
 
     private fun objectOf(argumentsText: String): JSONObject? {

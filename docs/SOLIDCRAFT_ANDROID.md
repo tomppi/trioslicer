@@ -83,7 +83,8 @@ asset is published separately from the source commit (CI has no Rust cross toolc
 - **cadagent/** is the in-app agent: the endpoint settings with the sealed key
   (`AgentSettings.kt`), the bounded tool-calling loop (`CadAgent.kt`), the OpenAI-compatible
   client (`OpenAiChatClient.kt`), the engine's catalogue as OpenAI tools
-  (`AgentToolCatalog.kt`), the optional web tools (`AgentWebTools.kt`), and the system prompt
+  (`AgentToolCatalog.kt`), the optional web tools (`AgentWebTools.kt`), the observable tool
+  trace (`AgentToolTrace.kt`: the redacted start/end row model), and the system prompt
   (`AgentRunbook.kt`: live rules + the skill document shipped as an asset).
 - **solidcraft/SolidCraftAgentHost.kt** executes the in-app agent's tool calls on the live engine
   session - in process - and reports the same DocumentDelta the bridge reports, so the plate
@@ -125,13 +126,50 @@ against the engine session the app already owns - no bridge, no socket, no token
   is data, never instructions: nothing from the web may change the task, the document or the tool
   list. A 401/403/404/405 on those routes removes the tools for the conversation and the agent
   says once that search is unavailable - never a silent failure and never a fake empty result.
-  The transcript shows "searching the web for …" and "reading …" lines, so the user can see the
-  agent leave the phone.
+  The plain-words "searching the web for …" / "reading …" lines stay in the sheet's compact
+  transcript; the floating chat shows the tool row instead.
+  DeepSeek answers chat completions at the API root and its tools under `/v1`, so a base URL
+  without `/v1` is tried under both forms (only 404/405/501 are retried, a wrong key is still a
+  401 named at once) and the form that answered is remembered for the session.
 - **A turn is bounded and cancellable.** Cancel disconnects the request in flight and stops at
   the next boundary (a tool call already handed to the engine finishes, and the design may have
   changed); a model that keeps asking for tools stops after 8 tool rounds with a named error.
   HTTP, timeout and malformed-reply failures are named exceptions with the endpoint's own
   sentence, redacted against the key, and reach the sheet as its error line - never silence.
+
+### Watching it: the chat surface
+
+The sparkle chat (the floating `ui/AiChatOverlay.kt` the harness chat always used) is now the
+in-app agent's window too. A source switch at the top chooses **CAD agent (in-app)** (the
+default) or **Harness**; the in-app source renders the one `cadMessages` conversation the CAD
+agent sheet's ask box also writes, so there is no second transcript - only a second view.
+
+- **Tool rows, live.** Every tool call is emitted as a redacted `AgentToolTrace`
+  (`cadagent/AgentToolTrace.kt`) twice: at the start (running) and at the end with its duration
+  and one-line outcome. The chat draws the transcript with those rows in place:
+  `solid.box {length=40, width=30, height=10} · 12 ms · 1 body created (Body1)`, a
+  `web_search "M3 socket head" · 13 ms · 1 result`, and, when a call fails or a route is
+  missing, a red row carrying the engine's or the endpoint's own sentence
+  (`HTTP 404 - this endpoint does not offer web search`) instead of silence. The argument
+  summary is built and masked before it leaves the agent, so the API key and the bearer header
+  never appear in a row.
+- **Stop** in the chat footer is the same cancel the sheet's Cancel uses: it sets the agent's
+  cancelled flag and disconnects the request in flight - not the harness session cancel, not an
+  engine stop. The chat stays readable and scrollable while the turn streams.
+- **Copy transcript** puts the messages and the tool rows on the clipboard as plain text
+  (`You: …`, `tool: solid.box … 12 ms · 1 body created (Body1)`, `Agent: …`) so a bad turn can
+  be handed to a human or another agent. Nothing secret is in it.
+- **Three sizes.** The bubble, the floating panel and **full screen** (`ui/ChatSize.kt`): the
+  header's expand button (diagonal arrows) takes the panel to full screen, its collapse button or
+  the Back gesture returns to the panel (a second Back closes the chat), and the bubble stays
+  reachable from either. Full screen is one surface over the running plate - source switch,
+  author line, the transcript filling the height (a readable column on a wide window), composer
+  and Stop pinned at the bottom. A resize never stops the engine or the turn and never resets the
+  scroll; the chosen size is remembered for the session, so a chat left full screen reopens full
+  screen and one left as a panel reopens as a panel.
+- The header names the document's author in every state, so an attached external agent reads as
+  **Author: external agent on 9878 · in-app agent paused** in the chat too, and the composer
+  refuses to send while another author has the document.
 
 ### One author at a time
 

@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -102,9 +103,9 @@ class CadAgentTest {
     private class RecordingHost(private val answer: (String, JSONObject) -> String = { name, _ -> "ok from " + name }) :
         AgentToolHost {
         val calls = CopyOnWriteArrayList<Pair<String, JSONObject>>()
-        override fun call(name: String, arguments: JSONObject): String {
+        override fun call(name: String, arguments: JSONObject): AgentToolHost.Result {
             calls += name to arguments
-            return answer(name, arguments)
+            return AgentToolHost.Result(answer(name, arguments))
         }
     }
 
@@ -352,6 +353,135 @@ class CadAgentTest {
             assertEquals("not-configured", error.code)
         }
         assertEquals("nothing was sent", 0, server.requests.size)
+    }
+
+    // --- the observable trace --------------------------------------------------------------
+
+    @Test
+    fun everyToolCallIsTracedFromItsStartToItsOutcome() {
+        server.responder = { request ->
+            if (toolResultOf(request).isEmpty()) {
+                FakeOpenAiServer.toolCall(
+                    "execute",
+                    // A model can echo anything, including the key it was never given; the
+                    // row's argument summary must not repeat it.
+                    JSONObject().put("command", "solid.box")
+                        .put("params", JSONObject().put("length", 40).put("note", "sk-test-key"))
+                        .toString(),
+                )
+            } else {
+                FakeOpenAiServer.finalAnswer("the box is on the plate")
+            }
+        }
+        val host = RecordingHost { _, _ ->
+            JSONObject()
+                .put("created_bodies", JSONArray().put("Body1"))
+                .put("changed_bodies", JSONArray())
+                .put("removed_bodies", JSONArray())
+                .toString()
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        val answer = agent(host).run(
+            settings(),
+            syntheticCatalog("execute"),
+            "build a box",
+            onToolTrace = { trace -> traces += trace },
+        )
+
+        assertEquals("the box is on the plate", answer)
+        assertEquals("a start and an end row", 2, traces.size)
+        val start = traces[0]
+        assertEquals(1, start.callId)
+        assertEquals("execute", start.tool)
+        assertEquals("solid.box", start.name)
+        assertTrue(start.running)
+        assertTrue("the command and its params are in the row: " + start.arguments, start.arguments.contains("solid.box"))
+        assertTrue(start.arguments.contains("length=40"))
+        assertFalse("the key is not in a tool row: " + start.arguments, start.arguments.contains("sk-test-key"))
+
+        val end = traces[1]
+        assertEquals("the end row is the same call", start.callId, end.callId)
+        assertFalse(end.running)
+        assertTrue("a real duration is measured", end.durationMillis >= 0)
+        assertTrue("the outcome names the body: " + end.outcome, end.outcome.contains("1 body created"))
+        assertFalse(end.failed)
+        assertFalse("the key is not in an outcome: " + end.outcome, end.outcome.contains("sk-test-key"))
+    }
+
+    @Test
+    fun aFailedToolCallIsAnEndedFailedRowNotSilence() {
+        server.responder = { request ->
+            if (toolResultOf(request).isEmpty()) {
+                FakeOpenAiServer.toolCall("execute", "{\"command\":\"solid.nope\"}")
+            } else {
+                FakeOpenAiServer.finalAnswer("renaming it")
+            }
+        }
+        val host = AgentToolHost { _, _ ->
+            AgentToolHost.Result(
+                "the CAD engine refused execute: unknown command solid.nope",
+                failed = true,
+            )
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        agent(host).run(
+            settings(),
+            syntheticCatalog("execute"),
+            "build a box",
+            onToolTrace = { trace -> traces += trace },
+        )
+        val end = traces.last()
+        assertFalse(end.running)
+        assertTrue("a failure is a red row", end.failed)
+        assertTrue("the engine's sentence is the row", end.outcome.contains("unknown command"))
+    }
+
+    @Test
+    fun aMalformedToolCallStillGetsAStartedAndFailedRow() {
+        server.responder = { request ->
+            if (toolResultOf(request).isEmpty()) {
+                FakeOpenAiServer.toolCall("execute", "arguments that are not JSON")
+            } else {
+                FakeOpenAiServer.finalAnswer("sent one object")
+            }
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        agent(RecordingHost()).run(
+            settings(),
+            syntheticCatalog("execute"),
+            "build a box",
+            onToolTrace = { trace -> traces += trace },
+        )
+        assertEquals(2, traces.size)
+        assertTrue(traces[0].running)
+        assertFalse(traces[1].running)
+        assertTrue(traces[1].failed)
+        assertTrue(traces[1].outcome.contains("not JSON"))
+    }
+
+    @Test
+    fun aToolOutcomeThatEchoesTheKeyIsMaskedInTheRow() {
+        server.responder = { request ->
+            if (toolResultOf(request).isEmpty()) {
+                FakeOpenAiServer.toolCall("execute", "{\"command\":\"solid.box\"}")
+            } else {
+                FakeOpenAiServer.finalAnswer("done")
+            }
+        }
+        val host = AgentToolHost { _, _ ->
+            AgentToolHost.Result("refused: the header was Bearer sk-test-key", failed = true)
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        agent(host).run(
+            settings(),
+            syntheticCatalog("execute"),
+            "build a box",
+            onToolTrace = { trace -> traces += trace },
+        )
+        val end = traces.last()
+        assertTrue(end.failed)
+        assertFalse("the key never becomes row text: " + end.outcome, end.outcome.contains("sk-test-key"))
+        assertTrue(end.outcome.contains("[key]"))
     }
 
     @Test

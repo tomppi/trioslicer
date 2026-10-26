@@ -9,6 +9,12 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 
+/** One web search, formatted for the model, with the count its row reports. */
+data class WebSearchResult(val text: String, val resultCount: Int)
+
+/** One fetched page, formatted for the model, with how much readable text it held. */
+data class WebFetchResult(val text: String, val characters: Int)
+
 /**
  * The two tools that leave the phone: web search and page fetch.
  *
@@ -167,10 +173,15 @@ object AgentWebTools {
         return builder.toString()
     }
 
-    /** One fetched page, formatted for the model and bounded. */
-    internal fun formatFetch(url: String, body: String): String {
+    /**
+     * The page's readable Markdown from the endpoint's answer.
+     *
+     * Split out of [formatFetch] so a row can report how much was read without formatting the
+     * page twice.
+     */
+    internal fun pageMarkdown(body: String): String {
         val parsed = runCatching { JSONObject(body) }.getOrNull()
-        val markdown = when {
+        return when {
             parsed == null -> body
             parsed.opt("content") is String -> parsed.optString("content")
             parsed.opt("markdown") is String -> parsed.optString("markdown")
@@ -189,6 +200,11 @@ object AgentWebTools {
             }
             else -> body
         }.trim()
+    }
+
+    /** One fetched page, formatted for the model and bounded. */
+    internal fun formatFetch(url: String, body: String): String {
+        val markdown = pageMarkdown(body)
         if (markdown.isEmpty()) {
             return UNTRUSTED_HEADER + "\nsource: web page " + url +
                 "\n\nThe page returned no readable text.\n" + UNTRUSTED_FOOTER
@@ -205,6 +221,10 @@ object AgentWebTools {
             append('\n').append(UNTRUSTED_FOOTER)
         }
     }
+
+    /** How many results the endpoint's own answer holds; the tool row's outcome. */
+    internal fun resultCount(body: String): Int =
+        runCatching { JSONObject(body).optJSONArray("results")?.length() ?: 0 }.getOrDefault(0)
 
     internal fun clip(value: String, max: Int): String =
         if (value.length <= max) value else value.take(max) + "…"
@@ -233,27 +253,60 @@ class WebToolClient(
     @Volatile
     private var cancelled = false
 
+    /** The base that answered the tools, remembered so the next call skips a 404. */
+    @Volatile
+    private var toolsPrefix: String? = null
+
     fun cancel() {
         cancelled = true
         runCatching { active?.disconnect() }
     }
 
-    fun search(query: String, count: Int, oriQuestion: String): String {
+    fun search(query: String, count: Int, oriQuestion: String): WebSearchResult {
         val wanted = count.coerceIn(1, AgentWebTools.MAX_RESULTS)
         val body = JSONObject().put("query", query).put("count", wanted)
         if (oriQuestion.isNotBlank()) body.put("ori_question", oriQuestion)
         val text = post("/tools/search", body)
-        return AgentWebTools.formatSearch(query, wanted, text)
+        return WebSearchResult(
+            text = AgentWebTools.formatSearch(query, wanted, text),
+            resultCount = AgentWebTools.resultCount(text),
+        )
     }
 
-    fun fetch(url: String): String {
+    fun fetch(url: String): WebFetchResult {
         val text = post("/tools/fetch", JSONObject().put("url", url))
-        return AgentWebTools.formatFetch(url, text)
+        return WebFetchResult(
+            text = AgentWebTools.formatFetch(url, text),
+            characters = AgentWebTools.pageMarkdown(text).length,
+        )
     }
 
     private fun post(path: String, body: JSONObject): String {
         if (cancelled) throw AgentException("cancelled", "Stopped")
-        val endpoint = endpointFor(path)
+        var last: HttpStatus? = null
+        for (candidate in endpointCandidates(path)) {
+            if (cancelled) throw AgentException("cancelled", "Stopped")
+            try {
+                val text = once(candidate, path, body)
+                // Remember the form that worked, so the next call does not spend a 404 first.
+                toolsPrefix = candidate.removeSuffix(path)
+                return text
+            } catch (status: HttpStatus) {
+                last = status
+                // A 404 is the path's, not the credential's: DeepSeek answers chat completions at
+                // the API root but serves its tools under /v1, so a base URL without /v1 must be
+                // allowed to look there before the tools are called missing.
+                if (status.status != 404 && status.status != 405 && status.status != 501) {
+                    throw failure(status.status, status.text, path)
+                }
+            }
+        }
+        throw failure(last?.status ?: 404, last?.text.orEmpty(), path)
+    }
+
+    /** One request against [endpoint]; a non-2xx answer is an [HttpStatus] so [post] can retry. */
+    private fun once(endpoint: String, path: String, body: JSONObject): String {
+        if (cancelled) throw AgentException("cancelled", "Stopped")
         val startedAt = System.currentTimeMillis()
         val connection = try {
             (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -280,11 +333,13 @@ class WebToolClient(
             val status = connection.responseCode
             val text = readBody(connection, status in 200..299)
             log(
-                "web tool " + path + ": HTTP " + status + " in " +
+                "web tool " + path + ": HTTP " + status + " from " + endpoint + " in " +
                     (System.currentTimeMillis() - startedAt) + " ms",
             )
-            if (status !in 200..299) throw failure(status, text, path)
+            if (status !in 200..299) throw HttpStatus(status, text)
             return text
+        } catch (status: HttpStatus) {
+            throw status
         } catch (error: AgentException) {
             throw error
         } catch (error: SocketTimeoutException) {
@@ -304,16 +359,35 @@ class WebToolClient(
         }
     }
 
-    /** `<base>/tools/search`, for a base URL that names either the API root or the chat endpoint. */
-    internal fun endpointFor(path: String): String {
+    /** A non-2xx answer, kept apart from [AgentException] so a wrong path can be retried. */
+    private class HttpStatus(val status: Int, val text: String) : Exception()
+
+    /** The base URL with the chat endpoint and trailing slashes removed, checked. */
+    private fun toolsRoot(): String {
         var root = baseUrl.trim().trimEnd('/')
         if (root.endsWith("/chat/completions")) root = root.removeSuffix("/chat/completions")
         val problem = AgentSettings(baseUrl = root).baseUrlProblem()
         if (problem != null) {
             throw AgentException("invalid-url", "The endpoint's base URL cannot be used: " + problem + ".")
         }
-        return root + path
+        return root
     }
+
+    /**
+     * The addresses [path] may live at, most likely first: the form that already worked this
+     * session, then `<base><path>`, then `<base>/v1<path>`. A base that already ends in /v1 has
+     * only one form, which is the common OpenAI-compatible case.
+     */
+    internal fun endpointCandidates(path: String): List<String> {
+        val root = toolsRoot()
+        val remembered = toolsPrefix?.let { it + path }
+        val plain = root + path
+        val versioned = if (root.endsWith("/v1")) null else root + "/v1" + path
+        return listOfNotNull(remembered, plain, versioned).distinct()
+    }
+
+    /** `<base><path>`: the first candidate, kept for callers that want a single address. */
+    internal fun endpointFor(path: String): String = endpointCandidates(path).first()
 
     private fun readBody(connection: HttpURLConnection, success: Boolean): String {
         val declared = connection.contentLengthLong

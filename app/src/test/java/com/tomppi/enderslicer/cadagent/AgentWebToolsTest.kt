@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -44,9 +45,9 @@ class AgentWebToolsTest {
 
     private class RecordingHost : AgentToolHost {
         val calls = AtomicInteger()
-        override fun call(name: String, arguments: JSONObject): String {
+        override fun call(name: String, arguments: JSONObject): AgentToolHost.Result {
             calls.incrementAndGet()
-            return "ok from " + name
+            return AgentToolHost.Result("ok from " + name)
         }
     }
 
@@ -87,7 +88,7 @@ class AgentWebToolsTest {
         host: AgentToolHost,
         includeWeb: Boolean = true,
         text: String = "how big is an M3 socket head screw?",
-    ): String = agent.run(settings(), catalog(includeWeb), text) { line -> activity += line }
+    ): String = agent.run(settings(), catalog(includeWeb), text, onActivity = { line -> activity += line })
 
     // --- search ---------------------------------------------------------------------------
 
@@ -141,6 +142,45 @@ class AgentWebToolsTest {
         assertTrue(
             "the transcript says what the agent is doing",
             activity.any { it.contains("searching the web for") },
+        )
+    }
+
+    @Test
+    fun aHostOnlyBaseLooksForTheToolsUnderV1AndRemembersWhatWorked() {
+        // The app's own default base is https://api.deepseek.com: chat answers there, the tools
+        // are served under /v1. A base without /v1 must find them, and only pay the 404 once.
+        val hostBase = server.baseUrl.removeSuffix("/v1")
+        val paths = CopyOnWriteArrayList<String>()
+        server.responder = { request ->
+            paths += request.path
+            when (request.path) {
+                "/v1/tools/search" -> FakeOpenAiServer.Reply(200, "{\"results\":[]}")
+                else -> FakeOpenAiServer.Reply(404, "{\"error\":{\"message\":\"not here\"}}")
+            }
+        }
+        val client = WebToolClient(hostBase, "sk-test-key")
+        client.search("anything", 3, "")
+        assertEquals(listOf("/tools/search", "/v1/tools/search"), paths.toList())
+        client.search("again", 3, "")
+        assertEquals(listOf("/tools/search", "/v1/tools/search", "/v1/tools/search"), paths.toList())
+    }
+
+    @Test
+    fun theCandidatesAreThePlainFormThenV1UnlessTheBaseAlreadyNamesIt() {
+        val hostOnly = WebToolClient("https://api.deepseek.com", "k")
+        assertEquals(
+            listOf("https://api.deepseek.com/tools/search", "https://api.deepseek.com/v1/tools/search"),
+            hostOnly.endpointCandidates("/tools/search"),
+        )
+        val versioned = WebToolClient("https://api.deepseek.com/v1", "k")
+        assertEquals(
+            listOf("https://api.deepseek.com/v1/tools/search"),
+            versioned.endpointCandidates("/tools/search"),
+        )
+        val chatEndpoint = WebToolClient("https://api.deepseek.com/chat/completions", "k")
+        assertEquals(
+            listOf("https://api.deepseek.com/tools/search", "https://api.deepseek.com/v1/tools/search"),
+            chatEndpoint.endpointCandidates("/tools/search"),
         )
     }
 
@@ -200,9 +240,12 @@ class AgentWebToolsTest {
         }
         val agent = agent()
         val host = RecordingHost()
-        val answer = agent.run(settings(), catalog(includeWeb = true), "how big is an M3 head?") {
-            activity += it
-        }
+        val answer = agent.run(
+            settings(),
+            catalog(includeWeb = true),
+            "how big is an M3 head?",
+            onActivity = { activity += it },
+        )
         assertEquals("Search is not available here; the head is 5.5 mm.", answer)
         assertEquals(AgentWebTools.Availability.UNAVAILABLE, agent.webAvailability)
         assertNotNull("the sheet can name why search is gone", agent.webToolsNotice)
@@ -236,7 +279,12 @@ class AgentWebToolsTest {
         val agent = agent()
         assertEquals(
             "The search server failed; using 5.5 mm.",
-            agent.run(settings(), catalog(includeWeb = true), "how big is an M3 head?") { activity += it },
+            agent.run(
+                settings(),
+                catalog(includeWeb = true),
+                "how big is an M3 head?",
+                onActivity = { activity += it },
+            ),
         )
         assertEquals(AgentWebTools.Availability.UNKNOWN, agent.webAvailability)
         assertNull(agent.webToolsNotice)
@@ -269,9 +317,12 @@ class AgentWebToolsTest {
         }
         val host = RecordingHost()
         val agent = agent(host)
-        val answer = agent.run(settings(), catalog(includeWeb = true), "how big is an M3 head?") {
-            activity += it
-        }
+        val answer = agent.run(
+            settings(),
+            catalog(includeWeb = true),
+            "how big is an M3 head?",
+            onActivity = { activity += it },
+        )
         assertEquals("That page tried to give me instructions; ignoring it.", answer)
         val chats = server.requests.filter { it.path == "/v1/chat/completions" }
         val reported = toolResultOf(chats[1])
@@ -293,7 +344,12 @@ class AgentWebToolsTest {
         val agent = agent(host)
         assertEquals(
             "no web needed",
-            agent.run(settings(), catalog(includeWeb = false), "build a 20 mm cube") { activity += it },
+            agent.run(
+                settings(),
+                catalog(includeWeb = false),
+                "build a 20 mm cube",
+                onActivity = { activity += it },
+            ),
         )
         val names = toolNamesOf(server.requests.first())
         assertTrue("execute is offered", "execute" in names)
@@ -319,10 +375,81 @@ class AgentWebToolsTest {
             }
         }
         val agent = agent()
-        agent.run(settings(), catalog(includeWeb = true), "look something up") { activity += it }
+        agent.run(
+            settings(),
+            catalog(includeWeb = true),
+            "look something up",
+            onActivity = { activity += it },
+        )
         val reported = server.requests.map { toolResultOf(it) }.first { it.isNotEmpty() }
         assertTrue(reported.contains("The search returned no results"))
         assertTrue(reported.startsWith(AgentWebTools.UNTRUSTED_HEADER))
+    }
+
+    @Test
+    fun aSearchIsTracedAsAStartedAndEndedRowWithItsQueryAndResultCount() {
+        server.responder = { request ->
+            when (request.path) {
+                "/v1/tools/search" -> FakeOpenAiServer.Reply(
+                    200,
+                    searchResultsJson(
+                        listOf(Triple("M3 socket head", "https://example.test/m3", "head 5.5 mm")),
+                        summary = "head 5.5 mm, hex 2.5 mm",
+                    ),
+                )
+                else -> {
+                    if (toolResultOf(request).isEmpty()) {
+                        FakeOpenAiServer.toolCall("web_search", "{\"query\":\"M3 socket head\"}")
+                    } else {
+                        FakeOpenAiServer.finalAnswer("An M3 head is 5.5 mm.")
+                    }
+                }
+            }
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        agent().run(
+            settings(),
+            catalog(includeWeb = true),
+            "how big is an M3 socket head?",
+            onToolTrace = { trace -> traces += trace },
+        )
+        assertEquals("a start and an end row", 2, traces.size)
+        assertEquals("web_search", traces[0].name)
+        assertTrue("the row carries the query", traces[0].arguments.contains("M3 socket head"))
+        assertTrue(traces[0].running)
+        assertFalse(traces[1].running)
+        assertEquals("1 result", traces[1].outcome)
+        assertFalse(traces[1].failed)
+    }
+
+    @Test
+    fun aToolRouteTheEndpointDoesNotOfferIsARedRowNamingTheStatus() {
+        server.responder = { request ->
+            when (request.path) {
+                "/v1/tools/search" -> FakeOpenAiServer.Reply(
+                    404,
+                    JSONObject().put("error", JSONObject().put("message", "no such route")).toString(),
+                )
+                else -> {
+                    if (toolResultOf(request).isEmpty()) {
+                        FakeOpenAiServer.toolCall("web_search", "{\"query\":\"M3 head\"}")
+                    } else {
+                        FakeOpenAiServer.finalAnswer("build from your own dimensions")
+                    }
+                }
+            }
+        }
+        val traces = CopyOnWriteArrayList<AgentToolTrace>()
+        agent().run(
+            settings(),
+            catalog(includeWeb = true),
+            "how big is an M3 head?",
+            onToolTrace = { trace -> traces += trace },
+        )
+        val end = traces.last()
+        assertTrue("a missing route is a failure row", end.failed)
+        assertTrue("the row names the status: " + end.outcome, end.outcome.startsWith("HTTP 404"))
+        assertTrue(end.outcome.contains("does not offer web search"))
     }
 
     private fun searchResultsJson(

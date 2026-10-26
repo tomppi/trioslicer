@@ -115,6 +115,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   queues the client and never disconnects an attached one to make room. The sheet always names
   the author in one line (**Author: nobody / in-app agent / external agent on 9878**), and the
   two author states are made mutually exclusive - and asserted - by the owner object.
+- **The in-app agent is a chat you can watch - with tool rows, a Stop, a transcript to copy,
+  and full screen.** The sparkle chat (the floating overlay the harness chat always used) now has
+  a source switch at the top: **CAD agent (in-app)** or **Harness**. The in-app source shows the
+  one CAD conversation the CAD agent sheet's ask box also writes - not a second transcript - and
+  every tool the agent runs is a row in it: **name, argument summary, duration and a one-line
+  outcome**, live while the turn runs (`solid.box {length=40} 12 ms - 1 body created (Body1)`,
+  `web_search "M3 socket head" 13 ms - 1 result`). A failed call is a red row carrying the
+  engine's or the endpoint's own sentence, not silence. The rows are built from a redacted
+  trace (`cadagent/AgentToolTrace.kt`): the API key never reaches a row, a transcript or the
+  copy. While a turn runs the chat shows **Stop**, which is the same cancel the sheet's Cancel
+  uses (the request in flight is disconnected and the loop stops at the next boundary - not the
+  harness's session cancel, not an engine stop); the sheet's compact ask box keeps working and
+  shows the prose only. **Copy transcript** puts the messages and the tool rows on the clipboard
+  as plain text ("You: …", "tool: solid.box … 12 ms · 1 body created (Body1)", "Agent: …") so a
+  bad turn can be handed to a human or another agent; no credential is in it. The header always
+  names the author (`Author: nobody / in-app agent / external agent on 9878`), and an attached
+  external agent reads as **in-app agent paused** there too. The chat has **three sizes**: the
+  bubble, the floating panel, and **full screen** via the new expand button (diagonal arrows) -
+  collapse it back with the header's collapse button or the Back gesture, which returns to the
+  panel rather than closing the chat (a second Back closes it). In full screen the chat is one
+  surface over the running plate with the source switch, the author line, the transcript filling
+  the height (a readable column on a wide window) and the composer and Stop pinned at the bottom;
+  a resize never stops the engine or the turn and never resets the scroll. The chosen size is
+  remembered for the session: a chat left full screen reopens full screen, one left as a panel
+  reopens as a panel, and the bubble is a size, not a close.
 - `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
   release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
   asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the
@@ -122,12 +147,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delivered twice from one file: to external agents as the skill, and to the in-app agent as an
   APK asset copied at build time.
 
+### Fixed
+
+- **DeepSeek's search and fetch are found when the base URL is the API host.** The shipped
+  default base is `https://api.deepseek.com`, which answers chat completions, but the search
+  and fetch tools live under `/v1/tools/...`: a base URL without `/v1` made the first
+  `web_search` come back 404 and removed the tools for the conversation. `WebToolClient` now
+  tries `<base><path>` and then `<base>/v1<path>` - only 404/405/501 are retried, so a wrong
+  key is still a 401 named immediately - and remembers the form that answered, so a session pays
+  the first 404 at most once. Tests pin both candidates, the remembered prefix, and that a base
+  already ending in `/v1` is not doubled.
+
 ### Notes
 
-- **The in-app agent's loop was walked against a scripted OpenAI-compatible endpoint, not a real
-  provider.** No key was entered for this build: a real hosted chat completion and DeepSeek's
-  `/tools/search` have not been called from the app. The endpoint's own errors are named on the
-  sheet, so a wrong key or URL reads as 401 or 404 rather than as silence.
+- **The in-app agent's loop and the chat surface were walked against a scripted
+  OpenAI-compatible endpoint, not a real provider.** No key was entered for this build: a real
+  hosted chat completion and DeepSeek's `/tools/search` have not been called from the app. The
+  endpoint's own errors are named on the sheet (and in a red tool row), so a wrong key or URL
+  reads as 401 or 404 rather than as silence.
 - The engine binary is a release asset published separately from this commit (CI has no Rust
   cross toolchain): publish `solidcraft-engine-arm64-v0.22.1.tar.gz` at the tag the fetch
   script names, as the OCCT engine's is.

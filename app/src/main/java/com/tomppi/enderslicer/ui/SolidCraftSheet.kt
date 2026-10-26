@@ -461,8 +461,11 @@ internal fun SolidCraftSheet(
         }
         // Both agents write the same transcript, so the conversation the user sees does not
         // change with the choice of author.
-        if (messages.isNotEmpty()) {
-            messages.takeLast(6).forEach { message ->
+        // Tool rows belong to the floating chat's transcript; this compact box shows the prose
+        // exchanges only, so it keeps reading as a conversation.
+        val prose = messages.filter { it.tool == null }
+        if (prose.isNotEmpty()) {
+            prose.takeLast(6).forEach { message ->
                 Text(
                     (if (message.fromUser) "You: " else "Agent: ") + message.text.take(400),
                     style = MaterialTheme.typography.bodySmall,

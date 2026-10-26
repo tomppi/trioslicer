@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.ui
 
 import android.util.Log
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -110,6 +111,7 @@ import com.tomppi.enderslicer.cadagent.AgentRunbook
 import com.tomppi.enderslicer.cadagent.AgentSettings
 import com.tomppi.enderslicer.cadagent.AgentSettingsStore
 import com.tomppi.enderslicer.cadagent.AgentToolCatalog
+import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.cadagent.CadAgent
 import com.tomppi.enderslicer.cadagent.StoredAgentSettings
 import com.tomppi.enderslicer.conical.ConicalSettingsStore
@@ -315,6 +317,10 @@ fun EnderSlicerApp(
     // lands in the same folder as every model - so they get the same screen.
     var cadFilesOpen by rememberSaveable { mutableStateOf(false) }
     var aiChatOpen by rememberSaveable { mutableStateOf(false) }
+    // The floating chat's size, remembered for the session: a chat left full screen reopens full
+    // screen, one left as a panel reopens as a panel, and the bubble is a size - not a close.
+    var chatSize by rememberSaveable { mutableStateOf(ChatSize.PANEL) }
+    var chatExpandedSize by rememberSaveable { mutableStateOf(ChatSize.PANEL) }
     // The floating Plate cards fold independently: one saveable key per card, so
     // each choice survives rotation and is still there after a tab switch. The
     // flags live here rather than inside the cards because selecting another tab
@@ -418,6 +424,42 @@ fun EnderSlicerApp(
     // What the endpoint has said about the web tool routes, once the agent has tried them.
     var inAppWebNotice by remember { mutableStateOf<String?>(null) }
     val inAppCadAgent = remember { java.util.concurrent.atomic.AtomicReference<CadAgent?>(null) }
+    // Who may edit the document, for the floating chat's header: polled only while that chat is
+    // open, so an external agent that attached reads there as "in-app agent paused".
+    var chatAuthorship by remember { mutableStateOf(SolidCraftEngine.authorship().state()) }
+
+    /**
+     * Puts one tool call's start or end into the CAD conversation.
+     *
+     * A tool row is not a second transcript: it is an entry of the same cadMessages the sheet's
+     * ask box writes (a chat message carrying its [AgentToolTrace]), so the sheet and the
+     * floating chat show one conversation. The row appears when the call starts and is replaced
+     * in place - same position, same turn - when it ends.
+     */
+    fun applyToolTrace(trace: AgentToolTrace) {
+        val index = cadMessages.indexOfLast { it.tool?.callId == trace.callId }
+        cadMessages = if (index >= 0) {
+            cadMessages.toMutableList().also { it[index] = it[index].copy(tool = trace) }
+        } else {
+            cadMessages + AiChatMessage(
+                fromUser = false,
+                text = "",
+                kind = AiChatEntryKind.TOOL,
+                tool = trace,
+            )
+        }
+    }
+
+    LaunchedEffect(aiChatOpen) {
+        if (!aiChatOpen) return@LaunchedEffect
+        // Reopening never lands on the bubble: minimising is not closing, and the bubble is a
+        // state you leave by tapping it - back to the size the user was at.
+        chatSize = ChatSizes.reopened(chatSize, chatExpandedSize)
+        while (true) {
+            chatAuthorship = SolidCraftEngine.authorship().state()
+            delay(500)
+        }
+    }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
     var modellingCameraRev by remember { mutableStateOf(0L) }
@@ -972,13 +1014,23 @@ fun EnderSlicerApp(
                     )
                 }
                 val reply = withContext(Dispatchers.IO) {
-                    agent.run(stored, catalog, text) { activity ->
-                        // Plain words while the agent leaves the phone for the web, so the user
-                        // sees the search/fetch happen.
-                        aiScope.launch {
-                            cadMessages = cadMessages + AiChatMessage(fromUser = false, text = activity)
-                        }
-                    }
+                    agent.run(
+                        settings = stored,
+                        catalog = catalog,
+                        userText = text,
+                        onActivity = { activity ->
+                            // Plain words for the sheet's compact transcript, which has no rows
+                            // of its own; the floating chat shows the tool rows instead.
+                            aiScope.launch {
+                                cadMessages = cadMessages + AiChatMessage(
+                                    fromUser = false,
+                                    text = activity,
+                                    kind = AiChatEntryKind.ACTIVITY,
+                                )
+                            }
+                        },
+                        onToolTrace = { trace -> aiScope.launch { applyToolTrace(trace) } },
+                    )
                 }
                 cadMessages = cadMessages + AiChatMessage(fromUser = false, text = reply)
                 inAppWebNotice = agent.webToolsNotice
@@ -993,6 +1045,33 @@ fun EnderSlicerApp(
                 cadBusy = false
             }
         }
+    }
+
+    /**
+     * Sends from the floating chat's in-app source.
+     *
+     * The same conversation, turn and cancel as the CAD agent sheet's ask box: the chat is
+     * another view of that agent, not a second one. The endpoint settings are read at send time,
+     * so a change made in the sheet applies to the next message here.
+     */
+    fun askInAppAgentFromChat(text: String) {
+        askInAppAgent(text, agentSettingsStore.load())
+    }
+
+    /**
+     * Copies the chat transcript - messages and tool rows, no credential - and says so.
+     *
+     * This is the thing to hand to a human or another agent when a turn looks wrong: what was
+     * asked, what the agent said, and every tool call with its arguments, duration and outcome.
+     */
+    fun copyChatTranscript(text: String) {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("CAD agent chat", text))
+        Toast.makeText(
+            context,
+            "Transcript copied · " + text.length + " characters",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     /**
@@ -1355,7 +1434,8 @@ fun EnderSlicerApp(
     BackHandler(
         enabled = layerEventsOpen && state.layerPreview != null && state.hasCurrentGcode(),
     ) { layerEventsOpen = false }
-    BackHandler(enabled = aiChatOpen && selectedTab == AppTab.PLATE) { aiChatOpen = false }
+    // The floating chat registers the Back handler itself while it is composed: full screen
+    // collapses to the panel, a second back closes it (see AiChatOverlay's onBack).
     BackHandler(enabled = modellingOpen) { modellingOpen = false }
     BackHandler(enabled = blenderFilesOpen && !modellingOpen) { blenderFilesOpen = false }
     // Back closes the CAD files screen when it is up, and the CAD screen itself otherwise: without
@@ -3026,6 +3106,43 @@ fun EnderSlicerApp(
             busy = aiBusy,
             status = aiStatus,
             insecure = aiInsecure,
+            // The same surface, two backends: in-app is the phone's own CAD agent and the
+            // default source; the harness above it is unchanged and still its own conversation.
+            inApp = InAppChat(
+                messages = cadMessages,
+                busy = cadBusy,
+                status = cadStatus,
+                authorLine = chatAuthorship.authorLine,
+                pausedReason = if (chatAuthorship.inAppPaused) {
+                    chatAuthorship.pausedLine + " - take the document back in the CAD agent sheet."
+                } else {
+                    null
+                },
+                configured = agentSettings.isConfigured,
+                onSend = ::askInAppAgentFromChat,
+                // The same stop the sheet's Cancel uses: this turn, not the engine.
+                onStop = { inAppCadAgent.get()?.cancel() },
+                onCopyTranscript = ::copyChatTranscript,
+            ),
+            // The three sizes live here so they survive the chat being closed and reopened; a
+            // resize is state only - the engine and a running turn are untouched by it.
+            size = chatSize,
+            lastExpandedSize = chatExpandedSize,
+            onSizeChange = { wanted ->
+                chatSize = wanted
+                chatExpandedSize = ChatSizes.rememberExpanded(chatExpandedSize, wanted)
+            },
+            // Back from full screen is a collapse; a second back closes the chat. The action
+            // comes from ChatSizes, the same transition the header buttons use.
+            onBack = { action ->
+                when (action) {
+                    ChatBackAction.TO_PANEL -> {
+                        chatSize = ChatSize.PANEL
+                        chatExpandedSize = ChatSize.PANEL
+                    }
+                    ChatBackAction.CLOSE -> aiChatOpen = false
+                }
+            },
             modifier = Modifier.fillMaxSize(),
         )
     }
