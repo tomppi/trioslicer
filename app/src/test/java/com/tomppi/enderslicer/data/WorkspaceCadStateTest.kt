@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.data
 
 import com.tomppi.enderslicer.model.ModelPlacement
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
@@ -126,6 +127,55 @@ class WorkspaceCadStateTest {
             val loaded = store.load()!!.cad!!
             assertTrue(loaded.derivedStale)
             assertEquals(stale.staleReason, loaded.staleReason)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun everyPartAndTheConvertedPlateSurviveARelaunch() {
+        val (store, root) = workspace()
+        try {
+            val cache = displayCache(root)
+            val parts = listOf(
+                WorkspaceStateStore.CadState.PartState("Case", "cad:Case"),
+                WorkspaceStateStore.CadState.PartState("Lid", "cad:Lid"),
+            )
+            val convertedParts = listOf(
+                WorkspaceStateStore.CadState.PartState("Case", "stl:Case"),
+                WorkspaceStateStore.CadState.PartState("Lid", "stl:Lid"),
+            )
+            val state = cadState(root).copy(
+                displayObjectId = null,
+                parts = parts,
+                converted = true,
+                convertedRevision = 7L,
+                convertedParts = convertedParts,
+            )
+            store.save(snapshot(root, cache, state))
+            val loaded = store.load()!!.cad!!
+            assertEquals(parts, loaded.parts)
+            assertEquals(convertedParts, loaded.convertedParts)
+            assertTrue(loaded.converted)
+            assertEquals(7L, loaded.convertedRevision)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aDescriptorWrittenBeforePerPartObjectsStillLoadsItsSingleObject() {
+        val (store, root) = workspace()
+        try {
+            val cache = displayCache(root)
+            // The 1.9.6 record: no parts, one display object and its cache, the print export.
+            val legacy = cadState(root)
+            store.save(snapshot(root, cache, legacy))
+            val loaded = store.load()!!.cad!!
+            assertEquals("cad-object", loaded.displayObjectId)
+            assertTrue(loaded.parts.isEmpty())
+            assertTrue(loaded.convertedParts.isEmpty())
+            assertFalse(loaded.converted)
         } finally {
             root.deleteRecursively()
         }

@@ -9,6 +9,19 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
+ * One engine body and the plate object that draws it.
+ *
+ * A document can hold several parts - a case and its lid - and the plate draws each as its own
+ * object, at the document's own coordinates and under the engine's own body name. [objectId]
+ * is the plate object's identity: it survives a repaint so the camera does not reset and an
+ * edit patches exactly the part it named.
+ */
+data class CadPart(
+    val body: String,
+    val objectId: String,
+)
+
+/**
  * What the plate is showing when the model is a CAD document rather than a mesh.
  *
  * The document's source of truth is [designPath] - a .solidcraft file the engine writes and
@@ -16,8 +29,18 @@ import java.nio.ByteOrder
  * own cache file: refreshing them is a view update, never a new model, and replacing them must
  * not touch the camera, the placement or the plate's selection.
  *
- * [displayRevision] moves once per applied edit and is what the slice handoff compares against:
- * a slice may reuse the last print export only while the revision has not changed.
+ * The plate holds **one object per part**: [parts] names the body each plate object draws, and
+ * every plate function - move, rotate, scale, split, snap fit, paint, arrange - acts on that
+ * part alone. The document stays one document (one engine session, one design file, one
+ * identity for the agent); it is the drawing of it that is per part. A single-body design looks
+ * exactly as it always did, because one body is one object.
+ *
+ * [converted] says the plate now holds the STLs a Slice takes, exported by the human's own
+ * Convert to STL press. The document stays open in the engine and the agent can keep editing
+ * it; the plate's converted objects are not live geometry, so an edit after conversion marks
+ * the plate stale ([derivedStale]) instead of painting under the human.
+ *
+ * [displayRevision] moves once per applied edit.
  */
 data class CadDocument(
     /** The design's name, shown on the plate and used for its files. */
@@ -26,10 +49,23 @@ data class CadDocument(
     val designPath: String,
     /** The STEP/IGES/3MF/OBJ/glTF file it was opened from, when it was opened from one. */
     val sourcePath: String? = null,
-    /** The plate object drawing the tessellation, so a repaint replaces it rather than adding one. */
+    /**
+     * The 1.9.6 single plate object that drew the whole tessellation.
+     *
+     * Legacy: a descriptor written before per-part objects restored a plate with one object for
+     * the entire document. The first republish replaces it with [parts]; nothing new writes it.
+     */
     val displayObjectId: String? = null,
-    /** The display tessellation currently on the plate; a cache, not the document. */
+    /** Legacy: the 1.9.6 display cache file; per-part objects carry their own source paths. */
     val displayMeshPath: String? = null,
+    /** One plate object per body of the live document, in the engine's body order. */
+    val parts: List<CadPart> = emptyList(),
+    /** True when the plate holds STLs made from this document by the human's Convert press. */
+    val converted: Boolean = false,
+    /** The display revision those STLs were exported from. */
+    val convertedRevision: Long = -1L,
+    /** One plate object per part of the converted plate, so Convert again replaces in place. */
+    val convertedParts: List<CadPart> = emptyList(),
     val displayRevision: Long = 0L,
     val triangleCount: Int = 0,
     val bodyCount: Int = 0,
@@ -54,10 +90,26 @@ data class CadDocument(
     val sliceExportAtMillis: Long = 0L,
     val sliceTriangles: Int = 0,
 ) {
+    /** Every plate object id this document owns, live parts and converted parts alike. */
+    fun objectIds(): Set<String> = parts.mapTo(LinkedHashSet()) { it.objectId }
+
+    /** True when [objectId] is one of the document's own plate objects. */
+    fun isCadObject(objectId: String): Boolean = parts.any { it.objectId == objectId }
+
+    /** The body a plate object draws, or null when the object is not this document's. */
+    fun bodyOf(objectId: String): String? = parts.firstOrNull { it.objectId == objectId }?.body
+
+    /** The converted object that draws [body], or null when it is not converted. */
+    fun convertedObjectOf(body: String): String? =
+        convertedParts.firstOrNull { it.body == body }?.objectId
+
     /**
-     * True when a slice must export the document again. The first slice always does; a later
-     * one reuses the workspace STL only while no edit has changed the document since.
+     * Legacy: true when the 1.9.6 slice handoff would export the document again.
+     *
+     * Kept only so the file compiles while the view model still names it; the slice handoff is
+     * gone in this release and nothing may convert or export the document to slice it.
      */
+    @Deprecated("Slice converts nothing; Convert to STL is the human's own press")
     val needsSliceExport: Boolean
         get() {
             val path = sliceStlPath ?: return true
@@ -289,8 +341,17 @@ class CadWorkspace(root: File) {
     val display = File(root, "display")
     val exports = File(root, "exports")
 
+    /**
+     * The STLs a Convert to STL press wrote.
+     *
+     * Converted parts are the plate's own models afterwards, so they live here rather than in
+     * [display]: deleting a design must not take them with it, and a Slice reads them like any
+     * imported mesh.
+     */
+    val converted = File(root, "converted")
+
     fun ensureDirectories(): CadWorkspace {
-        for (directory in listOf(root, designs, imports, display, exports)) {
+        for (directory in listOf(root, designs, imports, display, exports, converted)) {
             check(directory.isDirectory || directory.mkdirs()) {
                 "could not create " + directory.absolutePath
             }
@@ -298,7 +359,27 @@ class CadWorkspace(root: File) {
         return this
     }
 
-    fun designFile(name: String): File = File(designs, slug(name) + ".solidcraft")
+    fun designFile(name: String): File = File(designs, slug(name) + DESIGN_EXTENSION)
+
+    /** Every design the workspace holds, newest first. */
+    fun designFiles(): List<File> = designs.listFiles { file ->
+        file.isFile && file.name.endsWith(DESIGN_EXTENSION)
+    }.orEmpty().sortedByDescending { it.lastModified() }
+
+    /**
+     * The engine's display cache files for a design: its per-body tessellations and the old
+     * single-file cache. Derived from the design, so they go when it does.
+     */
+    fun designCacheFiles(name: String): List<File> {
+        val stem = slug(name)
+        return display.listFiles().orEmpty().filter { file ->
+            file.name == stem + "-display.stl" || file.name.startsWith(stem + "-body-")
+        }
+    }
+
+    /** One part's converted STL, named after the design and the body. */
+    fun convertedFile(document: String, body: String): File =
+        File(converted, slug(document) + "-" + slug(body) + ".stl")
 
     /** A staged copy of a file being opened; the engine can only read inside the workspace. */
     fun importFile(sourceName: String): File {
@@ -322,6 +403,9 @@ class CadWorkspace(root: File) {
         File(exports, slug(name) + "." + extension.lowercase().filter(Char::isLetterOrDigit))
 
     companion object {
+        /** The engine's design container: the source of truth for a document. */
+        const val DESIGN_EXTENSION = ".solidcraft"
+
         private const val MAX_SLUG = 48
 
         /** A file-safe, path-safe stem. Nothing here may contain a separator or climb a tree. */

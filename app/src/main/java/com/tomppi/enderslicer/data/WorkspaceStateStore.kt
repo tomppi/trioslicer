@@ -168,6 +168,14 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val bodyCount: Int = 0,
         /** The plate object drawing the display cache, so a repaint replaces it. */
         val displayObjectId: String? = null,
+        /** One plate object per body of the live document, in the engine's body order. */
+        val parts: List<PartState> = emptyList(),
+        /** True when the plate holds STLs the human converted the document into. */
+        val converted: Boolean = false,
+        /** The display revision those STLs were exported from. */
+        val convertedRevision: Long = -1L,
+        /** One STL-backed plate object per part of the converted plate. */
+        val convertedParts: List<PartState> = emptyList(),
         /** True when the plate held a split/snap layout made from the previous shape. */
         val derivedStale: Boolean = false,
         val staleReason: String? = null,
@@ -175,7 +183,13 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         val sliceExportRevision: Long = -1L,
         val sliceExportAtMillis: Long = 0L,
         val sliceTriangles: Int = 0,
-    )
+    ) {
+        /** One body of the document and the plate object that draws it. */
+        data class PartState(
+            val body: String,
+            val objectId: String,
+        )
+    }
 
     private val stateDirectory = File(filesDirectory, "persistent-state").apply { mkdirs() }
     private val workspaceFile = File(stateDirectory, "current-workspace.json")
@@ -428,6 +442,14 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                         cad.displayObjectId?.let { put("displayObjectId", it) }
                         cad.sliceStlPath?.let { put("sliceStlPath", it) }
                         cad.staleReason?.let { put("staleReason", it) }
+                        if (cad.parts.isNotEmpty()) put("parts", encodeParts(cad.parts))
+                        if (cad.converted) {
+                            put("converted", true)
+                            put("convertedRevision", cad.convertedRevision)
+                        }
+                        if (cad.convertedParts.isNotEmpty()) {
+                            put("convertedParts", encodeParts(cad.convertedParts))
+                        }
                     },
             )
         }
@@ -472,6 +494,10 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                 triangleCount = json.optInt("triangleCount", 0).coerceAtLeast(0),
                 bodyCount = json.optInt("bodyCount", 0).coerceAtLeast(0),
                 displayObjectId = json.optString("displayObjectId").takeIf { it.isNotBlank() },
+                parts = decodeParts(json.optJSONArray("parts")),
+                converted = json.optBoolean("converted", false),
+                convertedRevision = json.optLong("convertedRevision", -1L),
+                convertedParts = decodeParts(json.optJSONArray("convertedParts")),
                 derivedStale = json.optBoolean("derivedStale", false),
                 staleReason = json.optString("staleReason").takeIf { it.isNotBlank() },
                 sliceStlPath = json.optString("sliceStlPath").takeIf { it.isNotBlank() },
@@ -480,6 +506,23 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                 sliceTriangles = json.optInt("sliceTriangles", 0).coerceAtLeast(0),
             )
         }.getOrNull()
+    }
+
+    private fun encodeParts(parts: List<CadState.PartState>): JSONArray = JSONArray().apply {
+        for (part in parts) {
+            put(JSONObject().put("body", part.body).put("objectId", part.objectId))
+        }
+    }
+
+    /** Lenient: a damaged part row costs that row, never the document's other state. */
+    private fun decodeParts(array: JSONArray?): List<CadState.PartState> {
+        if (array == null) return emptyList()
+        return (0 until array.length()).mapNotNull { index ->
+            val json = array.optJSONObject(index) ?: return@mapNotNull null
+            val body = json.optString("body").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val objectId = json.optString("objectId").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            CadState.PartState(body, objectId)
+        }
     }
 
     private fun encodeEntry(entry: Entry): JSONObject = JSONObject()
