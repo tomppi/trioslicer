@@ -221,10 +221,20 @@ internal fun SolidCraftSheet(
                 )
                 document?.let { live ->
                     Text(
-                        "Document: " + live.name + " · " + live.bodyCount + " bodies · " +
-                            "%,d".format(live.triangleCount) + " triangles on screen" +
-                            (live.lastEditMillis?.let { " · last edit " + it + " ms" } ?: "") +
-                            if (live.updating) " · changing…" else "",
+                        if (live.converted) {
+                            "Document: " + live.name + " · converted to " +
+                                live.convertedParts.size + " STL part" +
+                                (if (live.convertedParts.size == 1) "" else "s") + " · " +
+                                "%,d".format(live.triangleCount) + " triangles on screen · " +
+                                "Slice can run" +
+                                (live.lastEditMillis?.let { " · last edit " + it + " ms" } ?: "")
+                        } else {
+                            "Document: " + live.name + " · " + live.parts.size + " part" +
+                                (if (live.parts.size == 1) "" else "s") + " · " +
+                                "%,d".format(live.triangleCount) + " triangles on screen" +
+                                (live.lastEditMillis?.let { " · last edit " + it + " ms" } ?: "") +
+                                if (live.updating) " · changing…" else ""
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -235,12 +245,10 @@ internal fun SolidCraftSheet(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    if (live.sliceExportAtMillis > 0L) {
+                    if (!live.converted) {
                         Text(
-                            "Last Slice export: " + "%,d".format(live.sliceTriangles) +
-                                " triangles, " +
-                                ((System.currentTimeMillis() - live.sliceExportAtMillis) / 1000)
-                                    .coerceAtLeast(0) + "s ago",
+                            "Slice needs an STL: press Convert to STL on the plate's actions, " +
+                                "or Convert in the SolidCraft menu",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

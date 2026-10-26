@@ -4,6 +4,55 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.7] - 2026-10-26
+
+### Added
+
+- **A CAD document's parts are separate plate objects.** The plate used to draw the whole live
+  document as one composed mesh: a case and its lid could not be moved, rotated, painted or
+  converted apart. It now publishes one plate object per engine body - the engine's own body
+  name as the plate name, `cad:<body>` as its identity, at the document's own coordinates - so
+  every plate function (move, rotate, scale, split, snap fit, paint, arrange) works per part. An
+  agent edit repaints only the bodies it named and re-applies each part's own placement and
+  paint, so a part that grows keeps the place and the turn the user gave it. One body is one
+  object, so a single-part design looks exactly as it did.
+- **Convert to STL is its own press.** Slice takes STL triangles, so a live CAD document now
+  greys the Slice button and tapping it names the reason - *Slice needs an STL - convert the CAD
+  document first* - and a **Convert to STL** action appears beside it (and in the new SolidCraft
+  menu). Convert exports one STL per part into the SolidCraft workspace's `converted/` folder and
+  replaces the document's plate objects with those meshes, at the arrangement the user had given
+  the parts; Slice can then run. Converting never happens as a side effect of Slice, Export or a
+  repaint: after a conversion an agent edit marks the plate stale with a named reason and offers
+  **Convert again**, and converting again replaces its own meshes in place.
+- **A SolidCraft menu in the top bar**, beside Blender and CAD: New design, Open
+  STEP/IGES/3MF/OBJ/glTF..., SolidCraft files, Save design, Export STEP/3MF/STL, Convert to
+  STL/Convert again, and the engine's state line with connect, copy-token and stop. The
+  SolidCraft items moved out of the CAD menu into it.
+- **A SolidCraft files screen**: every design in the workspace with its name, part count,
+  modified time and size, and two actions - **Load to plate** (asking first when another
+  document or plate content would be replaced) and **Delete** (confirming by name, and refusing
+  with *this design is on the plate; close or convert it first* when it is the plate's document).
+  The empty state says *No designs yet - New design, or open a STEP file.* Nothing on this screen
+  touches the plate except Load to plate.
+
+### Fixed
+
+- A converted plate keeps its STL parts after the CAD document is closed, instead of deleting
+  models the user converted on purpose.
+- The face-selection scene offsets and the plate render follow the per-part objects: a face is
+  still resolved by name after an edit, and the HUD names the part it belongs to.
+
+### Tested
+
+- New `CadPartPublishTest` (one object per body, per-part repaint, placement carry, paint rules,
+  id collisions, legacy object replacement), `CadConvertTest` (N converted mesh objects and no
+  document objects, arrangement kept, Convert again reuses its ids, removed parts dropped),
+  `CadSliceGateTest` (the three states and the stale reason), `CadDesignLibraryTest` (listing,
+  sidecar, on-plate refusal, deletes leave converted STLs), `SolidCraftFilesScreenTest`
+  (Robolectric compose: empty state, row, asking before Load, confirm-then-refuse Delete) and
+  `SolidCraftMenuSourceTest` (the menu's items, the plate's gate read from `MainUiState`, and
+  that Slice never converts). The workspace descriptor round-trips the per-part and converted
+  state and still reads a 1.9.6 descriptor.
 ## [1.9.6] - 2026-10-26
 
 ### Added

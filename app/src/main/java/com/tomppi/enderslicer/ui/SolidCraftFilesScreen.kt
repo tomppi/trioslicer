@@ -62,6 +62,8 @@ fun SolidCraftFilesScreen(
     workspace: CadWorkspace,
     plateDesignPath: String?,
     plateHasContent: Boolean,
+    /** The plate's own part count for [plateDesignPath], so a just-edited design is not stale. */
+    platePartCount: Int? = null,
     onBack: () -> Unit,
     onLoad: (CadDesignEntry) -> Unit,
     modifier: Modifier = Modifier,
@@ -173,6 +175,14 @@ fun SolidCraftFilesScreen(
                 verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
             ) {
                 items(entries, key = { it.designFile.absolutePath }) { entry ->
+                    val shownPartCount = if (
+                        plateDesignPath != null &&
+                        CadDesignLibrary.isOnPlate(plateDesignPath, entry.designFile)
+                    ) {
+                        platePartCount ?: entry.partCount
+                    } else {
+                        entry.partCount
+                    }
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -191,7 +201,7 @@ fun SolidCraftFilesScreen(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    text = partCountLabel(entry.partCount) + "  ·  " +
+                                    text = partCountLabel(shownPartCount) + "  ·  " +
                                         dateFormat.format(Date(entry.modifiedAtMillis)) + "  ·  " +
                                         formatBytes(entry.sizeBytes),
                                     style = MaterialTheme.typography.bodySmall,

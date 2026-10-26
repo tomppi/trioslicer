@@ -94,6 +94,29 @@ class SolidCraftFilesScreenTest {
     }
 
     @Test
+    fun thePlatesOwnDesignShowsThePlatesLivePartCount() {
+        val (workspace, root) = workspace()
+        try {
+            val file = design(workspace)
+            compose.setContent {
+                SolidCraftFilesScreen(
+                    workspace = workspace,
+                    plateDesignPath = file.absolutePath,
+                    plateHasContent = true,
+                    platePartCount = 5,
+                    onBack = {},
+                    onLoad = {},
+                )
+            }
+            awaitText("Bracket")
+            // The sidecar was written before a part was added; the plate knows better.
+            compose.onNodeWithText("5 parts", substring = true).assertExists()
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun loadOnAnEmptyPlateLoadsAtOnceAndAsksFirstOnAFullOne() {
         val (workspace, root) = workspace()
         try {

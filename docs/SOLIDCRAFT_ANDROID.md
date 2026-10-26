@@ -297,8 +297,10 @@ asserted inside the owner object, not in the UI, so a screen cannot produce two 
 
 ## The live view
 
-The document's geometry is the engine's. The plate draws a **derived mesh**, one tessellated mesh
-per body (CadBodyMeshes), and the picture is kept live by patching only what an edit named:
+The document's geometry is the engine's. The plate draws it as **one plate object per part**: the
+tessellation is one mesh per body (CadBodyMeshes), and each body becomes its own object with the
+engine's body name and the id cad:<body> (CadPartPublish). The picture is kept live by patching
+only what an edit named:
 
 1. the agent calls execute/batch over the bridge; the engine answers with
    created_bodies / changed_bodies / removed_bodies (verified shapes: a box reports
@@ -307,10 +309,11 @@ per body (CadBodyMeshes), and the picture is kept live by patching only what an 
    say no bodies and become a full re-read - still of the same scene, body by body);
 3. the app exports **only the named bodies** with file.export {bodies: [name]} - one batch call,
    one STL file per body - parses them and patches the composer;
-4. the composed mesh replaces the plate object's sourceMesh in place: same object id, same name,
-   same camera. The plate object is updated, never reloaded;
-5. the human's plate edits are re-applied: the placement transform is carried over relative to
-   the old mesh (a part that grows keeps its turn and its place; it never recentres), painted
+4. each edited body's mesh replaces **that part's** plate object's sourceMesh in place: same object
+   id, same name, same camera, and every other part's object is left exactly as it is (a body the
+   edit did not name keeps the same mesh instance). The plate objects are updated, never reloaded;
+5. each part's own human edits are re-applied: the placement transform is carried over relative to
+   that part's old mesh (a part that grows keeps its turn and its place; it never recentres), painted
    triangles are kept while the triangle count matches and are otherwise **named as cleared** in
    the status;
 6. a plate that has been **split** (or a snap pair applied) is no longer the document's object:
@@ -333,18 +336,73 @@ never used.
 | plate function | on a live CAD document | how |
 |---|---|---|
 | orbit / zoom / pan / double-tap reset | yes | the same ModelSurfaceView gestures |
-| move by finger, position, rotate, scale, gizmo | yes | stored on the derived mesh's PlateObject.placement, re-applied on every document change |
-| lay flat, drop to plate, reset/centre | yes | same placement path |
-| apply imported Cura transform | yes | same placement path |
-| split at a plane | yes | split the derived mesh; the halves are marked as derived objects, and a later document change marks the plate stale instead of pasting over them |
-| snap fit (all styles, cuts, gizmo) | yes | the existing snap pipeline on the derived halves; same stale rule on a document change |
-| paint supports / clear | yes | triangle paint on the derived mesh; kept while the triangle count matches |
-| multi-object: remove, arrange, settings | yes | the document object is one plate object among the plate's objects |
-| Slice | yes | a print-quality STL is exported from the current document only when it changed since the last slice; an unchanged document reuses the recorded export, and the status says which |
-| Export G-code | yes | the slice of the derived mesh, as today |
-| Export STEP / STL / 3MF | yes | the agent sheet writes the document, unchanged |
-| Model / Layers / Path view switch | yes | the slice of the derived mesh, as today |
+| move by finger, position, rotate, scale, gizmo | yes, per part | each part's own PlateObject.placement, carried onto its new tessellation on every document change |
+| lay flat, drop to plate, reset/centre | yes, per part | same placement path |
+| apply imported Cura transform | yes, per part | same placement path |
+| split at a plane | yes, per part | split a part's object; the halves are marked as derived objects, and a later document change marks the plate stale instead of pasting over them |
+| snap fit (all styles, cuts, gizmo) | yes, per part | the existing snap pipeline on the derived halves; same stale rule on a document change |
+| paint supports / clear | yes, per part | triangle paint on that part's mesh; kept while its triangle count matches |
+| multi-object: remove, arrange, settings | yes | the document is a group of plate objects like any others |
+| Slice | **no, until converted** | a live document says *Slice needs an STL - convert the CAD document first*; the Slice button is greyed and its tap names that reason. **Convert to STL** is the human's press that clears it |
+| Convert to STL / Convert again | yes | exports one STL per part into the workspace's converted/ folder and replaces the document's plate objects with those meshes, at the arrangement the user gave them; afterwards Slice runs as on any mesh |
+| Export G-code | yes, after converting | the slice of the converted meshes, as for an imported mesh |
+| Export STEP / STL / 3MF | yes | the agent sheet (and the SolidCraft menu) writes the document, unchanged; exports never convert |
+| Model / Layers / Path view switch | yes | the slice of the converted meshes, as today |
 | sketch / feature / parameter editing | no, by design | the agent is the only author; the app has no UI that edits the document |
+
+### One plate object per part
+
+A document can hold several bodies, and the plate draws each as its own object: the engine's body
+name becomes the plate name, the id is cad:<body>, and the placement is the identity on the
+document's coordinates - where the agent puts a part is where it prints. Everything the plate
+does to a mesh, it does to a part: move, rotate, scale, lay flat, arrange, split, snap fit, paint,
+remove. A single-body design is one object and looks exactly as it did before.
+
+The human's edits survive an agent's edit of the same part: a repaint keeps the part's identity
+(so the camera does not reset), carries its placement onto the new tessellation relative to the
+old one, and keeps its paint while the triangle count matches (and says so when it has to clear
+it). Parts the edit did not name keep their very same plate object. The whole arrangement, and
+the per-part mapping, are saved in the workspace descriptor (and read back on a relaunch; a 1.9.6
+descriptor's single whole-document object still restores and is replaced by the parts on the
+first republish).
+
+### Converting to STL is its own press
+
+A slicer takes STL triangles; a live document is not one. The two are separate states on purpose,
+and the user asked for the conversion to be a deliberate press rather than a side effect:
+
+1. **A live document** - Slice is greyed, and tapping it says *Slice needs an STL - convert the
+   CAD document first*. Beside it, on the plate's actions and in the **SolidCraft** menu, is
+   **Convert to STL**.
+2. **Press Convert** - each body is exported with file.save_mesh into
+   files/solidcraft/workspace/converted/<design>-<body>.stl, and the document's plate objects are
+   replaced by one mesh object per part (id stl:<body>) at the placement the human had already
+   given that part. The document stays open in the engine.
+3. **Converted** - Slice runs on the converted models (one per part); the button reads **Convert
+   again**. An agent edit now marks the plate stale with a named reason instead of pasting under
+   the human, and Convert again takes the new shape (replacing its own objects in place, same ids
+   and placement). Closing the document keeps the converted models: they are the plate's own STLs.
+
+Nothing else converts. Slice does not export the document to make itself work, Export writes the
+document unchanged, and a repaint never converts. Converting twice is always the human's choice.
+
+### The SolidCraft menu and the files screen
+
+**SolidCraft** sits in the top bar beside Blender and CAD: New design, Open
+STEP/IGES/3MF/OBJ/glTF, **SolidCraft files**, Save design, Export STEP/3MF/STL, Convert to
+STL/Convert again, and the engine's state line (*Engine: running / starting / not running*) with
+connect, copy-token and stop.
+
+**SolidCraft files** lists the design files in the workspace (files/solidcraft/workspace/designs)
+with their name, part count, modified time and size. The part count comes from a tiny sidecar
+(designs/<slug>.meta) the app writes whenever it saves or publishes a design; a design it has
+never written lists by its file name and says the count is unknown rather than inventing one.
+**Load to plate** opens a design as the live document and asks first when a document is open or
+the plate holds models. **Delete** confirms by name, and refuses the design the plate is showing:
+*this design is on the plate; close or convert it first.* It removes the design, its sidecar and
+the engine's display caches - never the converted STLs, which are plate models now. The empty
+state says *No designs yet - New design, or open a STEP file.* Nothing on this screen touches the
+plate except Load to plate.
 
 ## The agent bridge (external agents)
 

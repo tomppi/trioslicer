@@ -77,6 +77,37 @@ class WorkspaceStateStoreTest {
     }
 
     @Test
+    fun aModelInsideAnotherOfTheAppsFoldersIsAccepted() {
+        // A CAD document's parts are its engine display exports, and a converted part is the
+        // STL the human's Convert press wrote: both live inside the app's files directory, in
+        // the SolidCraft workspace beside models/, and a restore has to accept them.
+        val files = createTempDirectory("enderslicer-workspace-cad").toFile()
+        val part = File(files, "solidcraft/workspace/display/design-body-Case.stl").apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val store = WorkspaceStateStore(files)
+        val snapshot = WorkspaceStateStore.Snapshot(
+            modelPath = part.absolutePath,
+            modelDisplayName = "Case",
+            placement = ModelPlacement(centerXmm = 0.0, centerYmm = 0.0, baseZmm = 0.0),
+            configurationFingerprint = WorkspaceStateStore.fingerprint("settings"),
+            models = listOf(
+                WorkspaceStateStore.Entry(
+                    modelPath = part.absolutePath,
+                    modelDisplayName = "Case",
+                    placement = ModelPlacement(centerXmm = 0.0, centerYmm = 0.0, baseZmm = 0.0),
+                    id = "cad:Case",
+                ),
+            ),
+        )
+
+        store.save(snapshot)
+
+        assertEquals(snapshot, requireNotNull(store.load()))
+    }
+
+    @Test
     fun fingerprintIgnoresOverrideKeyInsertionOrder() {
         // saveSettings persists overriddenSettingKeys sorted, while a live
         // updateSettings appends in user-entered order. The fingerprint must

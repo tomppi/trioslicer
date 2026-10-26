@@ -150,8 +150,13 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import com.tomppi.enderslicer.solidcraft.CadBodyMeshes
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.CadConvert
+import com.tomppi.enderslicer.solidcraft.CadConvertedPart
+import com.tomppi.enderslicer.solidcraft.CadDesignLibrary
 import com.tomppi.enderslicer.solidcraft.CadLiveUpdate
-import com.tomppi.enderslicer.solidcraft.CadSliceHandoff
+import com.tomppi.enderslicer.solidcraft.CadPart
+import com.tomppi.enderslicer.solidcraft.CadPartPublish
+import com.tomppi.enderslicer.solidcraft.CadSliceGate
 import com.tomppi.enderslicer.solidcraft.CadWorkspace
 import com.tomppi.enderslicer.solidcraft.DocumentDelta
 import com.tomppi.enderslicer.solidcraft.EngineFaceQuery
@@ -570,11 +575,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Repaints run one at a time, in the order the engine reported the edits. */
     private val cadRepaintLock = Mutex()
 
-    /** The plate object drawing the document, so a repaint replaces it rather than adding one. */
-    private var cadDisplayObjectId: String? = null
-
-    /** The display cache file the plate object's source path names. */
-    private var cadDisplayMeshPath: String? = null
+    /**
+     * The plate objects the live document draws, one per body: body name -> plate object id.
+     *
+     * The ViewModel owns this, like the rest of the document state: a repaint or a conversion
+     * after a rotation finds the same objects, because a rotation does not restart the class.
+     */
+    private val cadPartIds = LinkedHashMap<String, String>()
 
     /** Ids of plate objects made from the document by a split (or a snap joint on its halves). */
     private val cadDerivedPlateIds = mutableSetOf<String>()
@@ -589,6 +596,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     @Volatile
     private var cadLastPersistAt: Long = 0L
+
+    /** The pending or running persistence write, so a burst ends with one final write. */
+    @Volatile
+    private var cadPersistJob: Job? = null
 
     private val _solidCraftSheetOpen = MutableStateFlow(false)
 
@@ -717,8 +728,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (design.isFile) {
                             session.open(design.absolutePath)
                             cadOpenDesignPath = existing.designPath
-                            val composed = refreshCadAllBodies(session, cadWorkspace(), existing.name)
-                            if (composed != null) publishCadMesh(composed, existing.name, existing.designPath, existing.sourcePath, null)
+                            if (refreshCadAllBodies(session, cadWorkspace(), existing.name)) {
+                                publishCadParts(
+                                    name = existing.name,
+                                    designPath = existing.designPath,
+                                    sourcePath = existing.sourcePath,
+                                    editMillis = null,
+                                    replaceDerived = true,
+                                )
+                            }
                         }
                     }
                     _uiState.value.cadDocument
@@ -795,19 +813,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun closeCadDocument() {
         SolidCraftEngine.onDocumentChanged = null
         viewModelScope.launch {
+            val document = _uiState.value.cadDocument
+            // A live document's plate objects go with it. A converted plate keeps its meshes:
+            // the human converted them into ordinary STL models, and closing the document does
+            // not throw away the models on the plate.
+            val liveIds = document?.parts?.map { it.objectId }.orEmpty().toSet() +
+                listOfNotNull(document?.displayObjectId)
+            val convertedCount = document?.convertedParts?.size ?: 0
             withContext(Dispatchers.IO) {
                 persistCadWorkspaceNow()
                 SolidCraftEngine.stop()
             }
             cadOpenDesignPath = null
             cadBodies.clear()
-            val objectId = cadDisplayObjectId
-            cadDisplayObjectId = null
-            cadDisplayMeshPath = null
+            cadPartIds.clear()
+            cadDerivedPlateIds.clear()
             _uiState.update { state ->
                 state.copy(
-                    models = state.models.filterNot { it.id == objectId },
-                    selectedModelId = state.models.firstOrNull { it.id != objectId }?.id,
+                    models = state.models.filterNot { it.id in liveIds },
+                    selectedModelId = state.models.firstOrNull { it.id !in liveIds }?.id,
                     cadDocument = null,
                 ).withoutPublishedSlice("CAD document closed")
             }
@@ -816,8 +840,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _uiState.update {
                 it.copy(
-                    statusMessage = "CAD document closed; its design file is kept in the " +
-                        "SolidCraft workspace and the plate can import a mesh again",
+                    statusMessage = if (convertedCount > 0) {
+                        "CAD document closed; its " + convertedCount + " converted part" +
+                            (if (convertedCount == 1) "" else "s") + " stay on the plate as STL " +
+                            "models. The design file is kept in the SolidCraft workspace."
+                    } else {
+                        "CAD document closed; its design file is kept in the SolidCraft " +
+                            "workspace and the plate can import a mesh again"
+                    },
                 )
             }
             dropFaceSelection("the CAD document was closed")
@@ -837,17 +867,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!beginOperation("Rebuilding the plate from the document…")) return
         viewModelScope.launch {
             try {
-                val mesh = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
                     val session = SolidCraftEngine.session()
                         ?: throw IllegalStateException("the CAD agent session disappeared")
                     openCadDesign(session, document)
-                    refreshCadAllBodies(session, cadWorkspace(), document.name)
-                        ?: throw IllegalStateException("the engine reported no bodies to draw")
+                    if (!refreshCadAllBodies(session, cadWorkspace(), document.name)) {
+                        throw IllegalStateException("the engine reported no bodies to draw")
+                    }
                 }
                 val dropped = cadDerivedPlateIds.size
-                publishCadMesh(
-                    composed = mesh,
+                publishCadParts(
                     name = document.name,
                     designPath = document.designPath,
                     sourcePath = document.sourcePath,
@@ -911,17 +941,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val design = workspace.designFile(name)
                     session.save(design.absolutePath)
                     cadOpenDesignPath = design.absolutePath
-                    val composed = refreshCadAllBodies(session, workspace, name)
-                        ?: throw IllegalStateException(
+                    if (!refreshCadAllBodies(session, workspace, name)) {
+                        throw IllegalStateException(
                             "the engine opened " + sourceName + " but reported no bodies to draw",
                         )
-                    PreparedCadOpen(name, sourceName, design, composed, cadBodies.count)
+                    }
+                    PreparedCadOpen(name, sourceName, design, cadBodies.count, cadBodies.triangleCount())
                 }
                 // An opened file is a new document, not an edit of whatever was on the plate:
                 // it replaces the document's plate object (and any split layout made from the
                 // old one), exactly as opening a model does in mesh mode.
-                publishCadMesh(
-                    composed = prepared.mesh,
+                publishCadParts(
                     name = prepared.name,
                     designPath = prepared.design.absolutePath,
                     sourcePath = prepared.sourceName,
@@ -933,7 +963,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isBusy = false,
                         statusMessage = "Opened " + prepared.sourceName + " as a CAD document " +
                             "(SolidCraft engine) · " + prepared.bodies + " bodies · " +
-                            "%,d".format(prepared.mesh.triangleCount) +
+                            "%,d".format(prepared.triangles) +
                             " triangles display tessellation · the agent can now edit it",
                     )
                 }
@@ -981,13 +1011,318 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- The SolidCraft workspace's designs -------------------------------------------------
+
+    /** The workspace the SolidCraft files screen lists and loads from. */
+    fun solidCraftWorkspace(): CadWorkspace = cadWorkspace()
+
+    /**
+     * The human's own step from the live CAD document to the STLs a Slice reads.
+     *
+     * Each body is exported on its own into the workspace's converted/ folder and becomes an
+     * ordinary plate object: named after the body, at the placement the human had already given
+     * that part, with the exported file as its source. The document stays open in the engine -
+     * the agent can keep editing it - and the plate now holds STL models instead of live
+     * geometry, which is exactly the state Slice needs. Nothing else converts: Slice, Export, a
+     * repaint and a file load all leave this press to the human.
+     */
+    fun convertCadToStl() {
+        val state = _uiState.value
+        val document = state.cadDocument ?: return
+        if (state.isBusy) return
+        val again = document.converted
+        if (!beginOperation(
+                if (again) "Converting the CAD document again…" else "Converting the CAD document to STL…",
+            )
+        ) {
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val exported = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    openCadDesign(session, document)
+                    val workspace = cadWorkspace()
+                    val bodies = cadBodyNames(session)
+                    if (bodies.isEmpty()) {
+                        throw IllegalStateException("the design has no bodies to convert")
+                    }
+                    val steps = bodies.map { body ->
+                        ToolStep(
+                            command = "file.save_mesh",
+                            params = JSONObject()
+                                .put("path", workspace.convertedFile(document.name, body).absolutePath)
+                                .put("format", "stl")
+                                .put("bodies", JSONArray().put(body)),
+                        )
+                    }
+                    session.batch(steps, rollback = false)
+                    bodies.map { body ->
+                        val file = workspace.convertedFile(document.name, body)
+                        if (!file.isFile || file.length() == 0L) {
+                            throw IllegalStateException("the engine wrote no STL for " + body)
+                        }
+                        CadConvertedPart(
+                            body = body,
+                            mesh = StlParser.parse(file, body, MeshTriangleLimits.current()),
+                            stlPath = file.absolutePath,
+                        )
+                    }
+                }
+                val replacing = if (document.converted) document.convertedParts else document.parts
+                val plan = CadConvert.plan(exported, _uiState.value.models, replacing)
+                cadPartIds.clear()
+                for (part in plan.parts) cadPartIds[part.body] = part.objectId
+                val documentAfter = document.copy(
+                    displayObjectId = null,
+                    displayMeshPath = null,
+                    parts = emptyList(),
+                    converted = true,
+                    convertedRevision = document.displayRevision,
+                    convertedParts = plan.parts,
+                    triangleCount = plan.triangleCount,
+                    bodyCount = plan.parts.size,
+                    updating = false,
+                    derivedStale = false,
+                    staleReason = null,
+                )
+                val paintNote = if (plan.paintDropped.isNotEmpty()) {
+                    " · painted supports were cleared on " + plan.paintDropped.joinToString(", ") +
+                        " because the exported mesh changed size"
+                } else {
+                    ""
+                }
+                val status = "Converted " + document.name + (if (again) " again" else "") +
+                    " to STL: " + plan.parts.size + " part" +
+                    (if (plan.parts.size == 1) "" else "s") + ", " +
+                    "%,d".format(plan.triangleCount) + " triangles · Slice can run now · the " +
+                    "STLs are in the SolidCraft workspace's converted folder" + paintNote
+                _uiState.update { current ->
+                    current.copy(
+                        models = plan.models,
+                        selectedModelId = current.selectedModelId
+                            ?.takeIf { id -> plan.models.any { it.id == id } }
+                            ?: plan.parts.firstOrNull()?.objectId,
+                        cadDocument = documentAfter,
+                        isBusy = false,
+                    ).withoutPublishedSlice(status)
+                }
+                if (_uiState.value.selectedFace != null) {
+                    dropFaceSelection("the document was converted to STL; the plate holds mesh models now")
+                }
+                Diagnostics.info(
+                    "cad",
+                    "converted " + document.name + ": " + plan.parts.size + " parts, " +
+                        plan.triangleCount + " triangles",
+                )
+                scheduleCadPersist(force = true)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * Starts a fresh design and clears the document's plate objects.
+     *
+     * The engine owns the document, so this is the engine's own New Design: saved into the
+     * workspace so the files screen lists it and a later session can open it. The previous
+     * document's plate objects go - they belonged to the design that is gone - and the plate is
+     * ready for the agent's first body.
+     */
+    fun newCadDesign() {
+        if (_uiState.value.isBusy) return
+        if (!beginOperation("Starting a new CAD design…")) return
+        viewModelScope.launch {
+            try {
+                val prepared = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    session.newDesign()
+                    val name = cadDesignName(session)
+                    val workspace = cadWorkspace()
+                    val design = workspace.designFile(name)
+                    session.save(design.absolutePath)
+                    cadOpenDesignPath = design.absolutePath
+                    cadBodies.clear()
+                    CadDesignLibrary.writeMeta(workspace, design, name, 0, System.currentTimeMillis())
+                    PreparedCadLoad(name = name, design = design, parts = 0, triangles = 0)
+                }
+                val state = _uiState.value
+                val dropped = state.cadDocument?.parts?.map { it.objectId }.orEmpty()
+                    .plus(state.cadDocument?.convertedParts?.map { it.objectId }.orEmpty())
+                    .plus(listOfNotNull(state.cadDocument?.displayObjectId))
+                cadPartIds.clear()
+                cadDerivedPlateIds.clear()
+                val document = CadDocument(
+                    name = prepared.name,
+                    designPath = prepared.design.absolutePath,
+                    displayRevision = (state.cadDocument?.displayRevision ?: 0L) + 1L,
+                )
+                _uiState.update { current ->
+                    val models = current.models.filterNot { it.id in dropped }
+                    current.copy(
+                        models = models,
+                        selectedModelId = current.selectedModelId
+                            ?.takeIf { id -> models.any { it.id == id } }
+                            ?: models.firstOrNull()?.id,
+                        cadDocument = document,
+                        isBusy = false,
+                    ).withoutPublishedSlice(
+                        "Started a new CAD design: " + prepared.name +
+                            " · the plate is empty and the agent can build the first body",
+                    )
+                }
+                dropFaceSelection("a new CAD design was started")
+                scheduleCadPersist(force = true)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /** Saves the live design into the SolidCraft workspace, where the files screen lists it. */
+    fun saveCadDesign() {
+        val document = _uiState.value.cadDocument ?: return
+        if (_uiState.value.isBusy) return
+        if (!beginOperation("Saving the CAD design…")) return
+        viewModelScope.launch {
+            try {
+                val design = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    openCadDesign(session, document)
+                    val file = File(document.designPath)
+                    session.save(file.absolutePath)
+                    check(file.isFile && file.length() > 0L) { "the engine wrote no design file" }
+                    CadDesignLibrary.writeMeta(
+                        workspace = cadWorkspace(),
+                        design = file,
+                        name = document.name,
+                        partCount = maxOf(
+                            cadBodies.count,
+                            document.parts.size,
+                            document.convertedParts.size,
+                        ),
+                        savedAtMillis = System.currentTimeMillis(),
+                    )
+                    file
+                }
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Saved " + document.name + " to the SolidCraft workspace (" +
+                            formatFileSize(design.length()) + ") · SolidCraft files lists it",
+                    )
+                }
+                scheduleCadPersist(force = true)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /**
+     * Opens one design from the SolidCraft workspace as the plate's live document.
+     *
+     * The files screen's own action: the design file is the engine's source of truth, so this
+     * is the same open an imported file gets, without a new file to stage. Whatever the plate
+     * was showing of a previous document - live parts or converted STLs - is replaced by this
+     * design's parts; the previous design file stays in the workspace untouched.
+     */
+    fun loadCadDesign(designPath: String) {
+        if (_uiState.value.isBusy) return
+        val design = File(designPath)
+        if (!design.isFile) {
+            _uiState.update {
+                it.copy(statusMessage = "That design is gone from the SolidCraft workspace: " + design.name)
+            }
+            return
+        }
+        if (!beginOperation("Loading " + design.name + "…")) return
+        viewModelScope.launch {
+            try {
+                val prepared = withContext(Dispatchers.IO) {
+                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+                    val session = SolidCraftEngine.session()
+                        ?: throw IllegalStateException("the CAD agent session disappeared")
+                    session.open(design.absolutePath)
+                    cadOpenDesignPath = design.absolutePath
+                    val name = runCatching { cadDesignName(session) }.getOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: design.nameWithoutExtension
+                    if (!refreshCadAllBodies(session, cadWorkspace(), name)) {
+                        throw IllegalStateException(
+                            "the engine opened " + design.name + " but reported no bodies to draw",
+                        )
+                    }
+                    PreparedCadLoad(
+                        name = name,
+                        design = design,
+                        parts = cadBodies.count,
+                        triangles = cadBodies.triangleCount(),
+                    )
+                }
+                val previous = _uiState.value.cadDocument
+                val dropped = previous?.parts?.map { it.objectId }.orEmpty()
+                    .plus(previous?.convertedParts?.map { it.objectId }.orEmpty())
+                    .plus(listOfNotNull(previous?.displayObjectId))
+                cadDerivedPlateIds.clear()
+                cadPartIds.clear()
+                _uiState.update { current ->
+                    val models = current.models.filterNot { it.id in dropped }
+                    current.copy(
+                        models = models,
+                        selectedModelId = current.selectedModelId
+                            ?.takeIf { id -> models.any { it.id == id } }
+                            ?: models.firstOrNull()?.id,
+                        cadDocument = null,
+                    )
+                }
+                publishCadParts(
+                    name = prepared.name,
+                    designPath = prepared.design.absolutePath,
+                    sourcePath = null,
+                    editMillis = null,
+                    replaceDerived = true,
+                )
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusMessage = "Loaded " + prepared.design.name + " from the SolidCraft " +
+                            "workspace: " + prepared.parts + " part" +
+                            (if (prepared.parts == 1) "" else "s") + " · " +
+                            "%,d".format(prepared.triangles) + " triangles · it is the live " +
+                            "document now, and Slice needs Convert to STL",
+                    )
+                }
+                dropFaceSelection("a design from the SolidCraft workspace was loaded")
+                scheduleCadPersist(force = true)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
     /** One prepared open, so the plate update happens on the main-thread coroutine. */
     private data class PreparedCadOpen(
         val name: String,
         val sourceName: String,
         val design: File,
-        val mesh: com.tomppi.enderslicer.viewer.StlMesh,
         val bodies: Int,
+        val triangles: Int,
+    )
+
+    /** One prepared workspace load, on the main thread. */
+    private data class PreparedCadLoad(
+        val name: String,
+        val design: File,
+        val parts: Int,
+        val triangles: Int,
     )
 
     /**
@@ -1019,6 +1354,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: runCatching { cadDesignName(session) }.getOrNull()
             ?: "CAD document"
         val design = workspace.designFile(name)
+        // A converted plate is not live geometry any more: the document moved on under the
+        // human's converted STLs, so the repaint names that instead of pasting a new shape.
+        if (previous?.converted == true) {
+            markCadStale(
+                previous = previous,
+                name = name,
+                designPath = previous.designPath,
+                reason = "the agent changed the CAD document after it was converted; the plate " +
+                    "still shows the converted STLs - press Convert again to take the new shape",
+                editMillis = System.currentTimeMillis() - receivedAt,
+            )
+            return
+        }
+        // A split or snap layout is geometry the human made from the previous shape: never
+        // paste the document's new shape over it.
+        if (cadDerivedPlateIds.isNotEmpty()) {
+            markCadStale(
+                previous = previous,
+                name = name,
+                designPath = design.absolutePath,
+                reason = "the agent changed the document, but the plate holds a split or snap " +
+                    "layout made from its previous shape. The plate shows the previous shape; " +
+                    "press Rebuild plate in the CAD agent sheet to take the new one.",
+                editMillis = System.currentTimeMillis() - receivedAt,
+            )
+            return
+        }
         markCadUpdating(true)
         var incremental = false
         if (!delta.fullRefresh && delta.repaintBodies.isNotEmpty()) {
@@ -1035,7 +1397,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!incremental) {
             // The honest fallback for the edits that do not name bodies (undo, a parameter
             // rebuild, an opened file): re-read the document body by body.
-            if (refreshCadAllBodies(session, workspace, name) == null) {
+            if (!refreshCadAllBodies(session, workspace, name)) {
                 if (cadDocumentHasNoBodies(session)) {
                     // An empty document is a real state (an agent's new_design, or an opened
                     // file with nothing in it): the previous design's picture must not stay on
@@ -1055,8 +1417,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
         }
-        val mesh = cadBodies.compose(name)
-        if (mesh == null) {
+        if (cadBodies.count == 0) {
             markCadUpdating(false)
             dropFaceSelection("the design has no bodies now")
             _uiState.update { it.copy(statusMessage = "CAD document: the design is empty") }
@@ -1073,8 +1434,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.onFailure { Log.w("MainViewModel", "could not save the CAD design", it) }
         }
         val meshDoneNanos = System.nanoTime()
-        val published = publishCadMesh(
-            composed = mesh,
+        val published = publishCadParts(
             name = name,
             designPath = designPath,
             sourcePath = delta.openedPath ?: previous?.sourcePath,
@@ -1082,6 +1442,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         val stateDoneNanos = System.nanoTime()
         if (!published) return
+        val triangles = cadBodies.triangleCount()
         val millis = fun (from: Long, to: Long) = (to - from) / 1_000_000
         Log.i(
             "MainViewModel",
@@ -1090,11 +1451,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 " · export→mesh " + millis(exportedNanos, meshDoneNanos) + " ms" +
                 " · mesh→state " + millis(meshDoneNanos, stateDoneNanos) + " ms" +
                 " · total " + millis(startNanos, stateDoneNanos) + " ms" +
-                " · " + cadBodies.count + " bodies · " + mesh.triangleCount + " triangles",
+                " · " + cadBodies.count + " bodies · " + triangles + " triangles",
         )
         Diagnostics.info(
             "cad",
-            "repainted " + name + " after " + delta.tool + ": " + mesh.triangleCount +
+            "repainted " + name + " after " + delta.tool + ": " + triangles +
                 " triangles from " + cadBodies.count + " bodies",
         )
         scheduleCadPersist()
@@ -1115,14 +1476,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         delta: DocumentDelta,
         receivedAt: Long,
     ) {
-        val dropped = cadDisplayObjectId ?: previous?.displayObjectId
+        val dropped = previous?.parts?.map { it.objectId }.orEmpty()
+            .plus(previous?.convertedParts?.map { it.objectId }.orEmpty())
+            .plus(listOfNotNull(previous?.displayObjectId))
         cadBodies.clear()
-        cadDisplayObjectId = null
-        cadDisplayMeshPath = null
+        cadPartIds.clear()
         cadRevisionAtMillis = System.currentTimeMillis()
         _uiState.update {
             it.withoutCadBodies(
-                displayObjectId = dropped,
+                partObjectIds = dropped,
                 name = name,
                 designPath = designPath,
                 sourcePath = delta.openedPath ?: previous?.sourcePath,
@@ -1160,8 +1522,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * (exactly the identity), because where the agent puts the part in the design is where it
      * prints - the app adds no placement of its own.
      */
-    private fun publishCadMesh(
-        composed: com.tomppi.enderslicer.viewer.StlMesh,
+    /**
+     * Puts the document's parts on the plate, one object per body, in place.
+     *
+     * The same plate object ids, the same names and the same object count: the model view
+     * resets its camera when a mesh arrives under a different name or the plate's object count
+     * changes, and the camera belongs to the spectator. Each part keeps its own placement - the
+     * human's move, turn and scale relative to the old tessellation - and its paint while the
+     * triangle count has not changed; [CadPartPublish] is the rule, this is the view-model half
+     * that runs it against the real plate.
+     *
+     * A repaint that must not paste never reaches here: a split/snap layout made from the old
+     * shape, and a converted plate, are marked stale by [markCadStale] instead.
+     */
+    private fun publishCadParts(
         name: String,
         designPath: String,
         sourcePath: String?,
@@ -1170,182 +1544,148 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ): Boolean {
         val state = _uiState.value
         val previous = state.cadDocument
-        val objectId = cadDisplayObjectId ?: previous?.displayObjectId
-        val existing = objectId?.let { id -> state.models.firstOrNull { it.id == id } }
         // Only a split (or a jointed pair) is stale geometry made from the previous shape. An
         // object the user REMOVED from the plate is not stale: the next agent edit brings the
-        // document back as a fresh plate object, the way an import would.
-        if (existing == null && objectId != null && !replaceDerived && cadDerivedPlateIds.isNotEmpty()) {
-            // The plate holds a split or a jointed pair made from the document's previous
-            // shape: the new shape is not pasted over it. The document is marked stale and
-            // named, Slice refuses to export it, and Rebuild plate is the way forward.
-            val reason = "the agent changed the document, but the plate holds a split or snap " +
-                "layout made from its previous shape. The plate shows the previous shape; " +
-                "press Rebuild plate in the CAD agent sheet to take the new one."
-            val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
+        // document back as fresh plate objects, the way an import would.
+        if (cadDerivedPlateIds.isNotEmpty() && !replaceDerived) {
+            markCadStale(
+                previous = previous,
+                name = name,
                 designPath = designPath,
-                sourcePath = sourcePath ?: previous?.sourcePath,
-                updating = false,
-                bodyCount = cadBodies.count,
-                derivedStale = true,
-                staleReason = reason,
-                lastEditMillis = editMillis ?: previous?.lastEditMillis,
-                editCount = (previous?.editCount ?: 0) + 1,
+                reason = "the agent changed the document, but the plate holds a split or snap " +
+                    "layout made from its previous shape. The plate shows the previous shape; " +
+                    "press Rebuild plate in the CAD agent sheet to take the new one.",
+                editMillis = editMillis,
             )
-            _uiState.update { it.copy(cadDocument = document, statusMessage = reason) }
-            scheduleCadPersist()
             return false
         }
-        val placement = if (existing != null) {
-            reapplyPlatePlacement(existing.placement, existing.sourceMesh, composed)
+        // A converted plate is the human's STLs now: taking the live document again is an
+        // explicit act (Rebuild plate, opening a file, loading a design), never a repaint.
+        if (previous?.converted == true && !replaceDerived) {
+            markCadStale(
+                previous = previous,
+                name = name,
+                designPath = designPath,
+                reason = "the agent changed the CAD document after it was converted; the plate " +
+                    "still shows the converted STLs - press Convert again to take the new shape",
+                editMillis = editMillis,
+            )
+            return false
+        }
+        val workspace = cadWorkspace()
+        val modelsBefore = if (replaceDerived) {
+            state.models.filterNot { it.id in cadDerivedPlateIds }
         } else {
-            documentCoordinates(composed)
-        }
-        val paint = when {
-            existing == null -> SupportPaintState()
-            existing.sourceMesh.triangleCount == composed.triangleCount -> existing.supportPaint
-            else -> SupportPaintState()
-        }
-        val paintDropped = existing != null &&
-            existing.sourceMesh.triangleCount != composed.triangleCount &&
-            (existing.supportPaint.enforcerTriangles.isNotEmpty() ||
-                existing.supportPaint.blockerTriangles.isNotEmpty())
-        val id = existing?.id ?: objectId ?: PlateObject.newId()
-        cadDisplayObjectId = id
-        val cachePath = cadDisplayMeshPath ?: File(
-            File(app.filesDir, "models"),
-            "solidcraft-" + CadWorkspace.slug(name) + "-display.stl",
-        ).absolutePath
-        cadDisplayMeshPath = cachePath
-        val display = PlateObject(
-            id = id,
-            name = name,
-            sourceMesh = composed,
-            mesh = placement.transformed(composed),
-            sourcePath = cachePath,
-            placement = placement,
-            supportPaint = paint,
-        )
-        // The document's own object is replaced in place; a first one is added to the plate (the
-        // other objects there are the human's own imports), and a rebuild drops the objects a
-        // split made from the old shape first.
-        val models = when {
-            existing != null -> state.models.map { if (it.id == id) display else it }
-            replaceDerived -> state.models.filterNot { it.id in cadDerivedPlateIds } + display
-            else -> state.models + display
+            state.models
         }
         if (replaceDerived) cadDerivedPlateIds.clear()
-        cadRevisionAtMillis = System.currentTimeMillis()
-        val document = CadDocument(
+        // Taking the live document again drops the converted layout: those meshes were made
+        // from the document, and the plate now shows the document itself.
+        val convertedIds = previous?.convertedParts?.map { it.objectId }.orEmpty().toSet()
+        val modelsForPlan = modelsBefore.filterNot { it.id in convertedIds }
+        val plan = CadPartPublish.plan(
+            bodies = cadBodies.entries(),
+            models = modelsForPlan,
+            previousParts = if (previous?.converted == true) emptyList() else previous?.parts.orEmpty(),
+            displayPath = { body -> workspace.bodyFile(name, body).absolutePath },
+            legacyObjectId = previous?.displayObjectId,
+        )
+        cadPartIds.clear()
+        for (part in plan.parts) cadPartIds[part.body] = part.objectId
+        val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
             name = name,
             designPath = designPath,
             sourcePath = sourcePath ?: previous?.sourcePath,
-            displayObjectId = id,
-            displayMeshPath = cachePath,
+            displayObjectId = null,
+            displayMeshPath = null,
+            parts = plan.parts,
+            converted = false,
+            convertedRevision = -1L,
+            convertedParts = emptyList(),
             displayRevision = (previous?.displayRevision ?: 0L) + 1L,
-            triangleCount = composed.triangleCount,
-            bodyCount = cadBodies.count,
+            triangleCount = plan.triangleCount,
+            bodyCount = plan.parts.size,
             updating = false,
             derivedStale = false,
             staleReason = null,
             lastEditMillis = editMillis ?: previous?.lastEditMillis,
             editCount = (previous?.editCount ?: 0) + if (editMillis != null) 1 else 0,
-            sliceStlPath = previous?.sliceStlPath,
-            sliceExportRevision = previous?.sliceExportRevision ?: -1L,
-            sliceExportAtMillis = previous?.sliceExportAtMillis ?: 0L,
-            sliceTriangles = previous?.sliceTriangles ?: 0,
         )
         _uiState.update { current ->
+            val selected = current.selectedModelId?.takeIf { id -> plan.models.any { it.id == id } }
+                ?: plan.parts.firstOrNull()?.objectId
             current.copy(
-                models = models,
-                selectedModelId = current.selectedModelId ?: id,
+                models = plan.models,
+                selectedModelId = selected,
                 cadDocument = document,
             ).withoutPublishedSlice(current.statusMessage)
         }
-        val paintNote = if (paintDropped) {
-            " · painted supports were cleared because the shape's triangle count changed"
+        val paintNote = if (plan.paintDropped.isNotEmpty()) {
+            " · painted supports were cleared on " + plan.paintDropped.joinToString(", ") +
+                " because the shape's triangle count changed"
         } else {
             ""
         }
         _uiState.update { it.copy(statusMessage = cadStatusLine(it.cadDocument ?: document) + paintNote) }
         Diagnostics.info(
             "cad",
-            "display " + name + ": " + composed.triangleCount + " triangles from " +
-                cadBodies.count + " bodies, revision " + document.displayRevision,
+            "display " + name + ": " + plan.triangleCount + " triangles from " +
+                plan.parts.size + " parts, revision " + document.displayRevision,
         )
-        // Every republish renumbers the plate's triangles - an edit's repaint, a reconnect that
-        // rereads the design, a rebuild. A selected face is re-resolved by NAME against the
-        // body that now exists: a name that survived re-tints its new triangles, a name the
-        // republish removed drops the selection and says which face went. Doing it here rather
-        // than in the edit path alone is what keeps the amber on the face the user picked when
-        // the plate is republished for any other reason.
+        // Every republish renumbers the plate's triangles: a selected face is re-resolved by
+        // NAME against the part that now exists, so the amber follows the face the edit kept
+        // and a face the edit removed drops the selection with a sentence naming it.
         if (_uiState.value.selectedFace != null) {
             viewModelScope.launch(Dispatchers.IO) {
-                val live = SolidCraftEngine.session()
-                if (live != null) reapplySelectedFace(live)
+                SolidCraftEngine.session()?.let { reapplySelectedFace(it) }
             }
         }
         return true
     }
 
     /**
-     * The placement that puts a mesh at the document's own coordinates: exactly the identity.
+     * Records that the plate no longer matches the document, with the sentence that says why.
      *
-     * Where the agent puts the part in the design is where it prints. The app adds no plate
-     * placement of its own on top of that; the human's transforms are carried separately, by
-     * [reapplyPlatePlacement].
+     * Nothing on the plate changes except the status and the document's stale flag: the plate
+     * shows the shape it already had (a split layout, or the converted STLs), Slice refuses it
+     * with this reason, and the way forward is named in the sentence.
      */
-    private fun documentCoordinates(mesh: com.tomppi.enderslicer.viewer.StlMesh): ModelPlacement =
-        ModelPlacement(
-            centerXmm = mesh.bounds.centerX.toDouble(),
-            centerYmm = mesh.bounds.centerY.toDouble(),
-            baseZmm = mesh.bounds.minZ.toDouble(),
-            source = "SolidCraft document coordinates",
+    private fun markCadStale(
+        previous: CadDocument?,
+        name: String,
+        designPath: String,
+        reason: String,
+        editMillis: Long? = null,
+    ) {
+        val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
+            name = name,
+            designPath = designPath,
+            updating = false,
+            bodyCount = cadBodies.count,
+            derivedStale = true,
+            staleReason = reason,
+            lastEditMillis = editMillis ?: previous?.lastEditMillis,
+            editCount = (previous?.editCount ?: 0) + 1,
         )
-
-    /**
-     * Carries the human's plate transform onto a newly derived mesh.
-     *
-     * A placement is the mesh's identity plus what the human did to it: the linear part holds
-     * their rotation and scale, and the centre and base are the identity's plus their move. So
-     * the transform is expressed relative to the old mesh and applied to the new one - a part
-     * that grows keeps the place and the turn the user gave it, and never recentres itself.
-     */
-    private fun reapplyPlatePlacement(
-        old: ModelPlacement,
-        oldMesh: com.tomppi.enderslicer.viewer.StlMesh,
-        newMesh: com.tomppi.enderslicer.viewer.StlMesh,
-    ): ModelPlacement {
-        val oldIdentity = documentCoordinates(oldMesh)
-        val movedX = old.centerXmm - oldIdentity.centerXmm
-        val movedY = old.centerYmm - oldIdentity.centerYmm
-        val movedZ = old.baseZmm - oldIdentity.baseZmm
-        val untouched = old.linear == ModelPlacement.IDENTITY &&
-            kotlin.math.abs(movedX) < 1e-6 &&
-            kotlin.math.abs(movedY) < 1e-6 &&
-            kotlin.math.abs(movedZ) < 1e-6
-        if (untouched) return documentCoordinates(newMesh)
-        return ModelPlacement(
-            linear = old.linear,
-            centerXmm = newMesh.bounds.centerX.toDouble() + movedX,
-            centerYmm = newMesh.bounds.centerY.toDouble() + movedY,
-            baseZmm = newMesh.bounds.minZ.toDouble() + movedZ,
-            source = old.source,
-        )
+        _uiState.update { it.copy(cadDocument = document, statusMessage = reason) }
+        scheduleCadPersist()
     }
 
-    /** The status line for a live document: what it is, how big, and what was exported when. */
+    /** The status line for a live document: what it is, how big, and what its plate holds. */
     private fun cadStatusLine(document: CadDocument): String = buildString {
         append("CAD document ").append(document.name)
-        append(" · ").append(document.bodyCount).append(" bodies · ")
-        append("%,d".format(document.triangleCount)).append(" triangles rendered")
+        if (document.converted) {
+            append(" · converted to ").append(document.convertedParts.size).append(" STL part")
+            if (document.convertedParts.size != 1) append('s')
+            append(" · ").append("%,d".format(document.triangleCount)).append(" triangles on the plate")
+        } else {
+            append(" · ").append(document.parts.size).append(" part")
+            if (document.parts.size != 1) append('s')
+            append(" on the plate · ").append("%,d".format(document.triangleCount)).append(" triangles")
+        }
         document.lastEditMillis?.let { append(" · last edit ").append(it).append(" ms") }
-        if (document.sliceExportAtMillis > 0L) {
-            append(" · STL exported ")
-            append(((System.currentTimeMillis() - document.sliceExportAtMillis) / 1000).coerceAtLeast(0))
-            append("s ago (")
-            append("%,d".format(document.sliceTriangles))
-            append(" triangles)")
+        if (document.derivedStale) {
+            append(" · stale: ").append(document.staleReason ?: "convert or rebuild it")
         }
     }
 
@@ -1410,10 +1750,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         session: SolidCraftSession,
         workspace: CadWorkspace,
         name: String,
-    ): com.tomppi.enderslicer.viewer.StlMesh? {
-        val bodyNames = runCatching { cadBodyNames(session) }.getOrNull() ?: return null
+    ): Boolean {
+        val bodyNames = runCatching { cadBodyNames(session) }.getOrNull() ?: return false
         cadBodies.clear()
-        if (bodyNames.isEmpty()) return null
+        if (bodyNames.isEmpty()) return false
         val steps = bodyNames.map { body ->
             ToolStep(
                 command = "file.export",
@@ -1423,16 +1763,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .put("bodies", JSONArray().put(body)),
             )
         }
-        runCatching { session.batch(steps, rollback = false) }.getOrElse { return null }
+        runCatching { session.batch(steps, rollback = false) }.getOrElse { return false }
         for (body in bodyNames) {
             val file = workspace.bodyFile(name, body)
-            if (!file.isFile || file.length() == 0L) return null
+            if (!file.isFile || file.length() == 0L) return false
             val mesh = runCatching {
                 StlParser.parse(file, body, MeshTriangleLimits.current())
-            }.getOrNull() ?: return null
+            }.getOrNull() ?: return false
             cadBodies.put(body, mesh)
         }
-        return cadBodies.compose(name)
+        return cadBodies.count > 0
     }
 
     /** The design's own name, for a first document the app did not open from a file. */
@@ -1470,140 +1810,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * The export a Slice consumes, exported at Slice time.
-     *
-     * The first Slice always exports: a fresh STL from the engine's current document. A later
-     * Slice reuses that file only while no edit has moved the document on - the handoff object
-     * makes that decision, and the status line says which happened.
-     */
-    private fun prepareCadForSlice(document: CadDocument): PreparedCadSlice {
-        val workspace = cadWorkspace()
-        return when (val decision = CadSliceHandoff.decide(document, workspace.exports, System.currentTimeMillis())) {
-            is CadSliceHandoff.Decision.Reuse -> PreparedCadSlice(
-                mesh = StlParser.parse(decision.source, document.name, MeshTriangleLimits.current()),
-                file = decision.source,
-                exportedAt = document.sliceExportAtMillis,
-                message = "Reusing " + decision.source.name + " (exported " +
-                    ((System.currentTimeMillis() - document.sliceExportAtMillis) / 1000).coerceAtLeast(0) +
-                    "s ago, unchanged since); slicing it",
-                exported = false,
-            )
-            is CadSliceHandoff.Decision.Export -> {
-                if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
-                val session = SolidCraftEngine.session()
-                    ?: throw IllegalStateException("the CAD agent session disappeared")
-                openCadDesign(session, document)
-                val started = System.currentTimeMillis()
-                session.export(decision.destination.absolutePath, format = "stl")
-                check(decision.destination.isFile && decision.destination.length() > 0L) {
-                    "the engine wrote no STL for the CAD document"
-                }
-                val mesh = StlParser.parse(decision.destination, document.name, MeshTriangleLimits.current())
-                PreparedCadSlice(
-                    mesh = mesh,
-                    file = decision.destination,
-                    exportedAt = started,
-                    message = "Exported the CAD document to " + decision.destination.name + " (" +
-                        "%,d".format(mesh.triangleCount) + " triangles) in " +
-                        (System.currentTimeMillis() - started) + " ms; slicing it",
-                    exported = true,
-                )
-            }
-        }
-    }
-
-    private data class PreparedCadSlice(
-        val mesh: com.tomppi.enderslicer.viewer.StlMesh,
-        val file: File,
-        val exportedAt: Long,
-        val message: String,
-        val exported: Boolean,
-    )
-
-    /**
      * The Slice the plate's button calls.
      *
-     * A mesh plate slices exactly as before. A CAD document exports its print STL first - the
-     * deliberate export, not the per-edit display tessellation - then hands that mesh to the
-     * unchanged slice pipeline, so every engine sees the document as the mesh it would have
-     * been imported as.
+     * A mesh plate slices exactly as before, and so does a converted CAD plate: its parts are
+     * ordinary STL models by then. A live CAD document is refused by name - a slicer takes STL
+     * triangles, and the user's own Convert to STL is the only way across. Nothing here
+     * converts the document, and nothing here exports it to make Slice work: converting as a
+     * side effect of slicing is exactly what the user asked not to have.
      */
     fun sliceModel() {
-        val document = _uiState.value.cadDocument
-        if (document == null) {
-            sliceModelCore()
+        val reason = CadSliceGate.reasonFor(_uiState.value.cadDocument)
+        if (reason != null) {
+            _uiState.update { it.copy(statusMessage = reason) }
             return
         }
-        if (document.derivedStale) {
-            _uiState.update {
-                it.copy(
-                    statusMessage = document.staleReason
-                        ?: "the CAD document changed since the plate was split; " +
-                            "Rebuild plate in the CAD agent sheet before slicing",
-                )
-            }
-            return
-        }
-        if (_uiState.value.isBusy) return
-        viewModelScope.launch {
-            if (!beginOperation("Exporting the CAD document…")) return@launch
-            try {
-                val prepared = withContext(Dispatchers.IO) { prepareCadForSlice(document) }
-                val objectId = cadDisplayObjectId
-                _uiState.update { state ->
-                    val doc = state.cadDocument ?: return@update state
-                    // The printed mesh is the derived mesh at print quality, with the plate
-                    // transform re-applied: the document is not re-derived behind the user's
-                    // edits, and the exported STL is what he will actually print.
-                    val models = state.models.map { object3d ->
-                        if (object3d.id == objectId) {
-                            val placement = reapplyPlatePlacement(
-                                object3d.placement,
-                                object3d.sourceMesh,
-                                prepared.mesh,
-                            )
-                            val paint = if (object3d.sourceMesh.triangleCount == prepared.mesh.triangleCount) {
-                                object3d.supportPaint
-                            } else {
-                                SupportPaintState()
-                            }
-                            object3d.copy(
-                                sourceMesh = prepared.mesh,
-                                mesh = placement.transformed(prepared.mesh),
-                                placement = placement,
-                                supportPaint = paint,
-                            )
-                        } else {
-                            object3d
-                        }
-                    }
-                    state.copy(
-                        models = models,
-                        cadDocument = doc.copy(
-                            sliceStlPath = prepared.file.absolutePath,
-                            sliceExportRevision = doc.displayRevision,
-                            sliceExportAtMillis = prepared.exportedAt,
-                            sliceTriangles = prepared.mesh.triangleCount,
-                        ),
-                        isBusy = false,
-                        statusMessage = prepared.message,
-                    )
-                }
-                withContext(Dispatchers.IO) { persistCadWorkspaceNow() }
-                Diagnostics.info("cad", prepared.message)
-                sliceModelCore()
-            } catch (error: Throwable) {
-                showOperationFailure(error)
-            }
-        }
+        sliceModelCore()
     }
 
-    /** Writes the display cache and the workspace descriptor, at most every 1.5 s. */
+    /** Writes the design, its sidecar and the workspace descriptor, at most every 1.5 s. */
     private fun scheduleCadPersist(force: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (!force && now - cadLastPersistAt < CAD_PERSIST_INTERVAL_MILLIS) return
-        cadLastPersistAt = now
-        viewModelScope.launch(Dispatchers.IO) { persistCadWorkspaceNow() }
+        if (force || now - cadLastPersistAt >= CAD_PERSIST_INTERVAL_MILLIS) {
+            cadLastPersistAt = now
+            cadPersistJob?.cancel()
+            cadPersistJob = viewModelScope.launch(Dispatchers.IO) { persistCadWorkspaceNow() }
+            return
+        }
+        // A repaint during the interval must still land: without a trailing write, the last
+        // edit of a burst (and the part count the files screen reads) could be a second stale.
+        if (cadPersistJob != null) return
+        cadPersistJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(CAD_PERSIST_INTERVAL_MILLIS)
+            cadLastPersistAt = System.currentTimeMillis()
+            cadPersistJob = null
+            persistCadWorkspaceNow()
+        }
     }
 
     /**
@@ -1617,25 +1858,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun persistCadWorkspaceNow() {
         val state = _uiState.value
         val document = state.cadDocument ?: return
-        val mesh = cadBodies.compose(document.name)
-        if (mesh != null) {
-            val cache = File(
-                File(app.filesDir, "models"),
-                "solidcraft-" + CadWorkspace.slug(document.name) + "-display.stl",
-            )
-            cache.parentFile?.mkdirs()
-            val temporary = File(cache.parentFile, cache.name + ".next")
-            runCatching {
-                StlMeshWriter.writeBinary(mesh, temporary)
-                if (cache.exists() && !cache.delete()) {
-                    error("could not replace " + cache.absolutePath)
-                }
-                check(temporary.renameTo(cache)) { "could not move the CAD display cache into place" }
-            }.onFailure {
-                temporary.delete()
-                Log.w("MainViewModel", "could not write the CAD display cache", it)
-            }
-        }
+        // The per-body display exports ARE the plate's caches: each part object's sourcePath
+        // names the engine's own file for that body, so a restore has one file per part to read
+        // and nothing has to be re-composed. What is left to write is what the app knows about
+        // the design - the files screen's sidecar - and the design itself.
+        val partCount = maxOf(
+            cadBodies.count,
+            document.parts.size,
+            document.convertedParts.size,
+        )
+        CadDesignLibrary.writeMeta(
+            workspace = cadWorkspace(),
+            design = File(document.designPath),
+            name = document.name,
+            partCount = partCount,
+            savedAtMillis = System.currentTimeMillis(),
+        )
         SolidCraftEngine.session()?.takeIf { SolidCraftEngine.isReady() }?.let { session ->
             runCatching { session.save(document.designPath) }.onFailure {
                 Log.w("MainViewModel", "could not save the CAD design", it)
@@ -2818,8 +3056,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // The CAD document's view goes with the plate: the design file and the running
                 // engine stay, so asking the agent for a change brings the document back.
                 cadBodies.clear()
-                cadDisplayObjectId = null
-                cadDisplayMeshPath = null
+                cadPartIds.clear()
                 cadDerivedPlateIds.clear()
                 _uiState.update { current ->
                     // The plate is empty, so every joint and every previewed half the
@@ -3225,7 +3462,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // A CAD document's split halves are geometry derived from the document's
                 // previous shape: a later document change must not paste over them, and
                 // Rebuild plate must know which objects to take away.
-                if (state.cadDocument?.displayObjectId == model.id) {
+                if (state.cadDocument?.isDocumentObject(model.id) == true) {
                     cadDerivedPlateIds.addAll(objects.map { it.id })
                 }
                 val low = objects.first()
@@ -6048,6 +6285,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        if (document.converted) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Face selection needs the live document: the plate holds " +
+                        "converted STL parts. Press Rebuild plate in the CAD agent sheet to take " +
+                        "the document again, then select the face.",
+                )
+            }
+            return
+        }
         if (document.derivedStale) {
             _uiState.update {
                 it.copy(
@@ -6066,7 +6313,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        document.displayObjectId?.let { id -> if (state.models.any { it.id == id }) selectModel(id) }
+        document.parts.firstOrNull()?.objectId
+            ?.let { id -> if (state.models.any { it.id == id }) selectModel(id) }
         _uiState.update {
             it.copy(
                 faceSelectMode = true,
@@ -6110,27 +6358,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         if (!state.faceSelectMode || faceSelectionBusy) return
         val document = state.cadDocument ?: return
-        val objectId = document.displayObjectId ?: return
-        val objectIndex = state.models.indexOfFirst { it.id == objectId }
-        if (objectIndex < 0) return
-        if (hit.objectIndex != objectIndex) {
-            val other = state.models.getOrNull(hit.objectIndex)?.name
+        if (document.converted) return
+        val plateObject = state.models.getOrNull(hit.objectIndex) ?: return
+        val body = document.bodyOf(plateObject.id)
+        if (body == null) {
             _uiState.update {
                 it.copy(
-                    statusMessage = if (other != null) {
-                        "That tap was on " + other + ", not on the CAD document " +
-                            document.name + ". Select a face on the document itself."
-                    } else {
-                        "That tap did not land on the CAD document " + document.name + "."
-                    },
+                    statusMessage = "That tap was on " + plateObject.name + ", not on the CAD " +
+                        "document " + document.name + ". Select a face on one of its parts.",
                 )
             }
             return
         }
-        val plateObject = state.models[objectIndex]
-        val sceneOffset = state.models.take(objectIndex).sumOf { it.mesh.triangleCount }
-        val located = cadBodies.locate(hit.triangleIndex - sceneOffset)
-        if (located == null) {
+        val sceneOffset = state.models.take(hit.objectIndex).sumOf { it.mesh.triangleCount }
+        val bodyMesh = cadBodies.mesh(body)
+        val localTriangle = hit.triangleIndex - sceneOffset
+        if (bodyMesh == null || localTriangle !in 0 until bodyMesh.triangleCount) {
             _uiState.update {
                 it.copy(statusMessage = "That tap did not land on a body of the CAD document.")
             }
@@ -6144,21 +6387,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val pick = withContext(Dispatchers.IO) {
                     FaceSelectionFlow.select(
                         query = query,
-                        body = located.body,
-                        bodyMesh = located.mesh,
+                        body = body,
+                        bodyMesh = bodyMesh,
                         displayMesh = plateObject.sourceMesh,
                         placement = plateObject.placement,
                         hit = hit,
-                        localTriangleIndex = located.triangleIndex,
+                        localTriangleIndex = localTriangle,
                         orientation = orientation,
                     )
                 } ?: throw IllegalStateException(
                     "the engine's face list has no face under that point",
                 )
                 val confirmed = pick.engineAgreed
-                val bodyFirst = cadBodies.firstTriangleOf(located.body) ?: 0
                 val sceneTriangles = IntArray(pick.triangles.size) { index ->
-                    sceneOffset + bodyFirst + pick.triangles[index]
+                    sceneOffset + pick.triangles[index]
                 }
                 _uiState.update {
                     it.copy(
@@ -6201,10 +6443,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         val previous = state.selectedFace ?: return
         val document = state.cadDocument ?: return
-        val objectId = document.displayObjectId ?: return
+        if (document.converted) {
+            dropSelectedFace(previous, "the document was converted to STL")
+            return
+        }
+        val objectId = document.parts.firstOrNull { it.body == previous.body }?.objectId
+        if (objectId == null) {
+            dropSelectedFace(previous, "the body " + previous.body + " is no longer part of the document")
+            return
+        }
         val plateObject = state.models.firstOrNull { it.id == objectId }
         if (plateObject == null) {
-            dropSelectedFace(previous, "the CAD object left the plate")
+            dropSelectedFace(previous, "the CAD part left the plate")
             return
         }
         val bodyMesh = cadBodies.mesh(previous.body)
@@ -6233,9 +6483,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is FaceReapply.Retinted -> {
                 val objectIndex = state.models.indexOfFirst { it.id == objectId }.coerceAtLeast(0)
                 val sceneOffset = state.models.take(objectIndex).sumOf { it.mesh.triangleCount }
-                val bodyFirst = cadBodies.firstTriangleOf(outcome.face.body) ?: 0
                 val sceneTriangles = IntArray(outcome.triangles.size) { index ->
-                    sceneOffset + bodyFirst + outcome.triangles[index]
+                    sceneOffset + outcome.triangles[index]
                 }
                 _uiState.update {
                     it.copy(
@@ -7917,31 +8166,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         // The CAD document the descriptor held, when its design file is still there. The plate
-        // entry that was restored is the display cache, so the picture comes back; the design
-        // is the document, and the engine is started again by Connect or at Slice.
+        // objects that were restored ARE the document's parts (or its converted STLs), one file
+        // each; the design is the document, and the engine is started again by Connect.
         val restoredCad = snapshot.cad?.let { saved ->
             if (!File(saved.designPath).isFile) return@let null
+            fun restoredParts(parts: List<WorkspaceStateStore.CadState.PartState>): List<CadPart> =
+                parts.mapNotNull { part ->
+                    part.takeIf { savedPart -> objects.any { it.id == savedPart.objectId } }
+                        ?.let { CadPart(body = it.body, objectId = it.objectId) }
+                }
+            val legacyObjectId = saved.displayObjectId
+                ?.takeIf { id -> objects.any { it.id == id } }
+                ?: objects.firstOrNull { it.sourcePath == saved.displayMeshPath }?.id
             CadDocument(
                 name = saved.name,
                 designPath = saved.designPath,
                 sourcePath = saved.sourcePath,
-                displayObjectId = objects.firstOrNull { it.sourcePath == saved.displayMeshPath }?.id
-                    ?: saved.displayObjectId,
+                displayObjectId = legacyObjectId,
                 displayMeshPath = saved.displayMeshPath,
+                parts = restoredParts(saved.parts),
+                converted = saved.converted,
+                convertedRevision = saved.convertedRevision,
+                convertedParts = restoredParts(saved.convertedParts),
                 derivedStale = saved.derivedStale,
                 staleReason = saved.staleReason,
                 displayRevision = saved.displayRevision,
                 triangleCount = saved.triangleCount,
                 bodyCount = saved.bodyCount,
-                sliceStlPath = saved.sliceStlPath,
-                sliceExportRevision = saved.sliceExportRevision,
-                sliceExportAtMillis = saved.sliceExportAtMillis,
-                sliceTriangles = saved.sliceTriangles,
             )
         }
         if (restoredCad != null) {
-            cadDisplayObjectId = restoredCad.displayObjectId
-            cadDisplayMeshPath = restoredCad.displayMeshPath
+            cadPartIds.clear()
+            for (part in restoredCad.parts) cadPartIds[part.body] = part.objectId
         }
         _uiState.update { current ->
             current.withoutPublishedSlice()
@@ -7950,9 +8206,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isBusy = false,
                     cadDocument = restoredCad,
                     statusMessage = when {
-                        restoredCad != null ->
-                            "Restored CAD document ${restoredCad.name} · ${restoredCad.bodyCount} " +
-                                "bodies · connect the CAD agent to work on it; Slice exports it again"
+                        restoredCad != null -> if (restoredCad.converted) {
+                            "Restored CAD document ${restoredCad.name} · ${restoredCad.convertedParts.size} " +
+                                "converted parts on the plate · slice or convert it again; connect the " +
+                                "CAD agent to edit the design"
+                        } else {
+                            "Restored CAD document ${restoredCad.name} · ${restoredCad.parts.size} " +
+                                "parts · connect the CAD agent to work on it; Slice needs Convert to STL"
+                        }
                         objects.size > 1 ->
                             "Restored ${objects.size} models on the plate; slice again to create validated G-code"
                         else ->
@@ -7996,12 +8257,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     triangleCount = document.triangleCount,
                     bodyCount = document.bodyCount,
                     displayObjectId = document.displayObjectId,
+                    parts = document.parts.map {
+                        WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
+                    },
+                    converted = document.converted,
+                    convertedRevision = document.convertedRevision,
+                    convertedParts = document.convertedParts.map {
+                        WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
+                    },
                     derivedStale = document.derivedStale,
                     staleReason = document.staleReason,
-                    sliceStlPath = document.sliceStlPath,
-                    sliceExportRevision = document.sliceExportRevision,
-                    sliceExportAtMillis = document.sliceExportAtMillis,
-                    sliceTriangles = document.sliceTriangles,
                 )
             },
         )

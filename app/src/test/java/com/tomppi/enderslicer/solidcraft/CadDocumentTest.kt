@@ -6,16 +6,14 @@ import com.tomppi.enderslicer.viewer.VertexData
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
 
 /**
- * The display/print handoff: the document's tessellation is one mesh per body, an edit patches
- * only the bodies it named, and the Slice export is a deliberate artifact that may be reused
- * only while the document has not moved on.
+ * The document's live-view handoff: the tessellation is one mesh per body, an edit patches only
+ * the bodies it named, and the plate draws one object per body.
  */
 class CadDocumentTest {
 
@@ -34,25 +32,25 @@ class CadDocumentTest {
     }
 
     @Test
-    fun aOneBodyDocumentBorrowsTheBodysOwnVertices() {
-        val composer = CadBodyMeshes()
-        val body = triangle()
-        composer.put("Body1", body)
-        val composed = composer.compose("bracket")!!
-        assertEquals("bracket", composed.displayName)
-        assertSame(body.interleavedVertices, composed.interleavedVertices)
-    }
-
-    @Test
-    fun composingTwoBodiesConcatenatesThemInBodyOrder() {
+    fun theComposerKeepsOneMeshPerBodyInTheEnginesOrder() {
         val composer = CadBodyMeshes()
         composer.put("Body1", triangle(x = 0f))
         composer.put("Body2", triangle(x = 20f))
-        val composed = composer.compose("bracket")!!
-        assertEquals(2, composed.triangleCount)
+        assertEquals(listOf("Body1", "Body2"), composer.names())
+        assertEquals(listOf("Body1" to 0, "Body2" to 1), composer.entries().mapIndexed { index, pair -> pair.first to index })
         assertEquals(2, composer.count)
-        assertEquals(0f, composed.bounds.minX)
-        assertEquals(30f, composed.bounds.maxX)
+        assertEquals(2, composer.triangleCount())
+        assertEquals("Body2", composer.entries()[1].first)
+        assertEquals(1, composer.mesh("Body2")?.triangleCount)
+        assertEquals(0f, composer.mesh("Body1")?.bounds?.maxZ)
+    }
+
+    @Test
+    fun anEmptyComposerHasNoTriangles() {
+        val composer = CadBodyMeshes()
+        assertEquals(0, composer.count)
+        assertEquals(0, composer.triangleCount())
+        assertTrue(composer.entries().isEmpty())
     }
 
     @Test
@@ -60,8 +58,7 @@ class CadDocumentTest {
         val composer = CadBodyMeshes()
         composer.put("Body1", triangle(x = 0f))
         composer.put("Body2", triangle(x = 20f))
-        val before = composer.compose("part")!!
-        assertEquals(2, before.triangleCount)
+        assertEquals(2, composer.triangleCount())
 
         val delta = DocumentDelta(
             tool = "execute",
@@ -73,9 +70,8 @@ class CadDocumentTest {
         val applied = CadLiveUpdate.applyIncremental(composer, delta) { replacement }
         assertTrue(applied)
         assertEquals(listOf("Body1"), composer.names())
-        val after = composer.compose("part")!!
-        assertEquals(1, after.triangleCount)
-        assertEquals(5f, after.bounds.minZ)
+        assertEquals(1, composer.triangleCount())
+        assertEquals(5f, composer.mesh("Body1")?.bounds?.minZ)
     }
 
     @Test
@@ -108,6 +104,40 @@ class CadDocumentTest {
     }
 
     @Test
+    fun theDocumentNamesItsOwnObjectsAndBodies() {
+        val live = CadDocument(
+            name = "Bracket",
+            designPath = "/ws/bracket.solidcraft",
+            parts = listOf(
+                CadPart("Case", "cad:Case"),
+                CadPart("Lid", "cad:Lid"),
+            ),
+        )
+        assertEquals("Case", live.bodyOf("cad:Case"))
+        assertEquals(null, live.bodyOf("stl:Case"))
+        assertTrue(live.isCadObject("cad:Lid"))
+        assertFalse(live.isCadObject("stl:Lid"))
+        assertTrue(live.isDocumentObject("cad:Lid"))
+        assertFalse(live.isDocumentObject("stl:Lid"))
+        assertEquals(setOf("cad:Case", "cad:Lid"), live.objectIds())
+
+        val converted = live.copy(
+            parts = emptyList(),
+            converted = true,
+            convertedParts = listOf(
+                CadPart("Case", "stl:Case"),
+                CadPart("Lid", "stl:Lid"),
+            ),
+        )
+        assertTrue(converted.isDocumentObject("stl:Case"))
+        assertFalse(converted.isDocumentObject("cad:Case"))
+        assertEquals("stl:Lid", converted.convertedObjectOf("Lid"))
+        assertEquals("stl:Case", converted.convertedObjectOf("Case"))
+        // A converted object draws a body but is not a live part of the document.
+        assertEquals(null, converted.bodyOf("stl:Case"))
+    }
+
+    @Test
     fun theWorkspaceKeepsEveryGeneratedFileInsideTheEnginesAllowedFolder() {
         val root = Files.createTempDirectory("cad-workspace").toFile()
         try {
@@ -115,74 +145,20 @@ class CadDocumentTest {
             val document = "../step out/../../evil"
             val design = workspace.designFile(document)
             val body = workspace.bodyFile(document, "../Body 1")
+            val converted = workspace.convertedFile(document, "../Body 1")
             val print = workspace.printFile(document, 1234L)
-            for (file in listOf(design, body, print)) {
+            for (file in listOf(design, body, converted, print)) {
                 assertTrue(
                     file.canonicalPath + " escaped " + root.canonicalPath,
                     file.canonicalPath.startsWith(root.canonicalPath + File.separator),
                 )
             }
             assertTrue(workspace.designFile("Part") == workspace.designFile("part"))
+            // The converted STLs are their own folder: deleting a design must not take them.
+            assertEquals("converted", converted.parentFile?.name)
         } finally {
             root.deleteRecursively()
         }
-    }
-
-    @Test
-    fun theFirstSliceExportsAndAnUnchangedDocumentReusesThatExport() {
-        val exports = Files.createTempDirectory("cad-exports").toFile()
-        try {
-            val fresh = CadDocument(name = "Bracket", designPath = "/tmp/bracket.solidcraft")
-            val first = CadSliceHandoff.decide(fresh, exports, 1_000L)
-            assertTrue(first is CadSliceHandoff.Decision.Export)
-            val firstPath = (first as CadSliceHandoff.Decision.Export).destination
-            firstPath.writeText("stl")
-            val exported = fresh.copy(
-                sliceStlPath = firstPath.absolutePath,
-                sliceExportRevision = fresh.displayRevision,
-                sliceExportAtMillis = 1_000L,
-                sliceTriangles = 1,
-            )
-            val again = CadSliceHandoff.decide(exported, exports, 2_000L)
-            assertTrue(again is CadSliceHandoff.Decision.Reuse)
-            assertEquals(firstPath, (again as CadSliceHandoff.Decision.Reuse).source)
-        } finally {
-            exports.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun anEditedDocumentMustBeExportedAgainAndSoMustAReusedFileThatIsGone() {
-        val exports = Files.createTempDirectory("cad-exports").toFile()
-        try {
-            val untouched = CadDocument(name = "Bracket", designPath = "/tmp/bracket.solidcraft")
-            val export = CadSliceHandoff.decide(untouched, exports, 1_000L) as CadSliceHandoff.Decision.Export
-            export.destination.writeText("stl")
-            val edited = untouched.copy(
-                displayRevision = 4L,
-                sliceStlPath = export.destination.absolutePath,
-                sliceExportRevision = 3L,
-                sliceExportAtMillis = 1_000L,
-            )
-            assertTrue(CadSliceHandoff.decide(edited, exports, 2_000L) is CadSliceHandoff.Decision.Export)
-            export.destination.delete()
-            val unchanged = edited.copy(displayRevision = 3L, sliceExportRevision = 3L)
-            assertTrue(CadSliceHandoff.decide(unchanged, exports, 2_000L) is CadSliceHandoff.Decision.Export)
-        } finally {
-            exports.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun aDocumentWithNoPrintExportNeedsOne() {
-        val document = CadDocument(name = "x", designPath = "/tmp/x.solidcraft")
-        assertTrue(document.needsSliceExport)
-        val exported = document.copy(
-            sliceStlPath = "/tmp/x-print.stl",
-            sliceExportRevision = document.displayRevision,
-        )
-        // The file does not exist, so even a matching revision cannot be reused.
-        assertTrue(exported.needsSliceExport)
     }
 
     @Test
@@ -192,5 +168,6 @@ class CadDocumentTest {
         assertTrue(workspace.importFile("../../etc/passwd").name.endsWith("etc_passwd") ||
             workspace.importFile("../../etc/passwd").name.contains("passwd"))
         assertNotNull(workspace.bodyFile("doc", "Body1"))
+        assertTrue(workspace.convertedFile("doc", "Body1").parentFile?.name == "converted")
     }
 }

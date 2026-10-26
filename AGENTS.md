@@ -167,36 +167,61 @@ Checked against Cura's source, and each one was wrong here before:
   `;Layer height:` header rather than guessed from Z rises.
 - A width is **never zero** (`FlavorParser.py`: `line_widths[:, 0] = 0.35  # Just a guess`).
 
-## A CAD document is the engine's; the plate edits a derived mesh
+## A CAD document's parts are separate plate objects; converting is the human's press
 
 The Plate can show a live SolidCraft CAD document. Two owners, and a change must not confuse
 them: the **document** is the engine's (features, parameters, its own coordinates, which bodies
-exist) and only the agent authors it; the **derived mesh** on the plate is the app's, and every
-human plate function - move, rotate, scale, split, snap fit, paint, Slice, Export - acts on it.
+exist) and only the agent authors it; the **plate** draws it as one object per part, and every
+human plate function - move, rotate, scale, split, snap fit, paint, arrange, Convert - acts on a
+part.
 
-- A repaint after an agent edit replaces the plate object's `sourceMesh` in place and
-  **re-applies** the human's edits: the placement transform relative to the old mesh, and the
-  paint only while the triangle count matches (otherwise it is cleared and named in the
-  status). It must never reset the camera, recentre the part, or go through a file-loading
-  step: `ModelSurfaceView.resetCamera` fires on a new display name or a changed object count,
-  so the document object keeps one id and one name.
+- **One body is one plate object.** `CadDocument.parts` names the body each object draws
+  (`CadPart(body, objectId)`, id `cad:<body>`, the engine's own body name as the plate name, at
+  the document's coordinates). Nothing composes the bodies into one mesh any more; a repaint
+  patches only the bodies the edit named and leaves every other part's `PlateObject` exactly as
+  it is (an untouched body keeps the same mesh instance). The legacy `displayObjectId` fields
+  exist only to restore a 1.9.6 descriptor, and the first republish replaces that object with
+  the parts.
+- A repaint **re-applies each part's own human edits**: the placement transform relative to the
+  old mesh, and the paint only while the triangle count matches (otherwise it is cleared and
+  named in the status). It must never reset the camera, recentre a part, or go through a
+  file-loading step: `ModelSurfaceView.resetCamera` fires on a new display name or a changed
+  object count, so every part keeps one id and one name across an edit.
 - No debounce on the picture. An edit repaints as soon as it is reported; a second edit that
-  arrives during a repaint is merged into the next one. Persisting the display cache and the
-  workspace descriptor is batched - that is persistence, not the view.
+  arrives during a repaint is merged into the next one. Persist the design, its sidecar and the
+  workspace descriptor in a batch, not per frame.
 - The engine exports **only the bodies the edit named** (`file.export` with a `bodies` list).
   Undo/redo, `set_parameter`, `new_design` and `open` carry no body report and fall back to
   reading the document body by body. `screenshot` is refused by the bridge: the plate is the
   viewport.
-- A split or snap layout is geometry made from the previous shape. When the document changes
-  under it, the document is marked stale with a named reason, Slice refuses it, and **Rebuild
-  plate from the document** is the deliberate way to take the new shape. Never paste the new
+- **Slice refuses a live document, by name.** A slicer takes STL triangles; the user asked for
+  the conversion to be a separate press, so `CadSliceGate` is the one rule: a live document says
+  *Slice needs an STL - convert the CAD document first*, and the plate shows a greyed but
+  tappable Slice plus a **Convert to STL** button that names its reason when tapped. **Converting
+  is never automatic**: not from Slice, not from Export, not from a repaint or a file load. The
+  human's press is the only caller of `convertCadToStl`.
+- **Converted means STL models.** Convert exports one `file.save_mesh` STL per body into the
+  workspace's `converted/` folder and replaces the document's plate objects with one mesh object
+  per part (`stl:<body>`), at the arrangement the human had already given that part, with the
+  exported file as its source. The document stays open in the engine. An agent edit after the
+  conversion marks the plate stale with a named reason and offers **Convert again**; converting
+  again replaces its own objects in place (ids and placement kept). Closing the document keeps
+  the converted models - they are the plate's own STLs now.
+- A split or snap layout is geometry made from the shape it cut. When the document changes under
+  it, the document is marked stale with a named reason, Slice refuses it, and **Rebuild plate
+  from the document** is the deliberate way to take the new shape (for a converted plate the
+  same press drops the STL layout and publishes the live document again). Never paste the new
   mesh over the user's split.
-- Slice exports the print STL from the current document (or reuses the last export while the
-  document is unchanged) and slices the derived mesh, so the human's plate edits are what
-  prints. The Slice export and the per-edit display tessellation are the same SolidCraft STL
-  export; they differ in when they are taken.
-- Open CAD files (STEP/IGES/3MF/OBJ/glTF) through `Import > Open CAD document`, which uses the
-  engine's own io crate and keeps a document. `Import model` keeps the mesh routes, including
+- The **SolidCraft files** screen lists the workspace's designs (name, part count from the
+  `designs/<slug>.meta` sidecar the app writes, modified time, size). Load to plate opens one as
+  the live document and asks first when a document or plate content would be replaced; Delete
+  confirms by name and **refuses the plate's document** (*this design is on the plate; close or
+  convert it first*). Delete removes the design, its sidecar and its display caches - never the
+  converted STLs. Nothing on that screen touches the plate except Load to plate.
+- Exports (STEP/STL/3MF) still write the document's own files and leave it unchanged; they are
+  the human taking the result out, not a conversion.
+- Open CAD files (STEP/IGES/3MF/OBJ/glTF) through `SolidCraft > Open`, which uses the engine's
+  own io crate and keeps a document. `Import model` keeps the mesh routes, including
   OpenCASCADE's STEP/IGES conversion. The menu item is the route choice.
 
 ## A face selection is a face, not a paint stroke

@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -324,6 +325,14 @@ fun EnderSlicerApp(
     // The CAD engine's exports accumulate the same way Blender's do - every render it writes
     // lands in the same folder as every model - so they get the same screen.
     var cadFilesOpen by rememberSaveable { mutableStateOf(false) }
+    // The SolidCraft workspace's designs (the engine's own .solidcraft documents) get a screen
+    // of their own, like Blender's exports: load one onto the plate, or delete one.
+    var solidCraftFilesOpen by rememberSaveable { mutableStateOf(false) }
+    // The SolidCraft menu, beside Blender's and CAD's: the designs, the plate's Convert press,
+    // and the engine that owns the live document.
+    var solidCraftMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    // The menu's engine line, polled so it tells the truth when the sheet is not open.
+    var solidCraftEngineLine by remember { mutableStateOf("Engine: not running") }
     var aiChatOpen by rememberSaveable { mutableStateOf(false) }
     // The floating chat's size, remembered for the session: a chat left full screen reopens full
     // screen, one left as a panel reopens as a panel, and the bubble is a size - not a close.
@@ -853,7 +862,10 @@ fun EnderSlicerApp(
     fun faceForNextMessage(): SelectedFace? {
         val current = viewModel.uiState.value
         val face = current.selectedFace ?: return null
-        val objectId = current.cadDocument?.displayObjectId ?: return face
+        val objectId = current.cadDocument?.parts
+            ?.firstOrNull { it.body == face.body }
+            ?.objectId
+            ?: return face
         val plateObject = current.models.firstOrNull { it.id == objectId } ?: return face
         val map = plateObject.placement.documentPlacement(plateObject.sourceMesh)
         return face.rewordedFor(map, modelOrientation)
@@ -1516,6 +1528,7 @@ fun EnderSlicerApp(
     BackHandler(enabled = blenderFilesOpen && !modellingOpen) { blenderFilesOpen = false }
     // Back closes the CAD files screen when it is up, and the CAD screen itself otherwise: without
     // the second, system back on a full-screen destination walked straight out of the app.
+    BackHandler(enabled = solidCraftFilesOpen) { solidCraftFilesOpen = false }
     BackHandler(enabled = cadFilesOpen) { cadFilesOpen = false }
     BackHandler(enabled = cadOpen && !cadFilesOpen) { cadOpen = false }
     // The paint brush and the annotation tools own the model's gestures while they
@@ -1641,12 +1654,28 @@ fun EnderSlicerApp(
         }
     }
 
-    val effectiveSliceBlockedReason = sliceBlockedReason
+    // The plate's Slice gate is a fact about the document, read from MainUiState (never from
+    // this composition's own state): a rotation must not change what Slice decides, and a live
+    // CAD document refuses Slice by name until the human presses Convert to STL.
+    val effectiveSliceBlockedReason = state.cadSliceBlockedReason
+        ?: sliceBlockedReason
         ?: if (nonPlanarSettings.enabled && conicalSettings.enabled) {
             "Non-planar and conical slicing are mutually exclusive; disable one before slicing"
         } else {
             null
         }
+
+    // The SolidCraft menu's engine line, polled so it is current whenever the menu opens.
+    LaunchedEffect(Unit) {
+        while (true) {
+            solidCraftEngineLine = when {
+                SolidCraftEngine.isReady() -> "Engine: running · " + SolidCraftEngine.status(context)
+                SolidCraftEngine.isStarting() -> "Engine: starting…"
+                else -> "Engine: not running"
+            }
+            delay(1_000)
+        }
+    }
 
     fun launchBumpMesh() {
         val mesh = state.mesh
@@ -1697,6 +1726,9 @@ fun EnderSlicerApp(
                 state = state,
                 gcodeAvailable = state.hasCurrentGcode(),
                 sliceBlockedReason = effectiveSliceBlockedReason,
+                sliceTappable = state.cadNeedsConversion,
+                cadConvertLabel = state.cadConvertLabel,
+                onConvertCad = viewModel::convertCadToStl,
                 onSlice = viewModel::sliceModel,
                 onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                 onTools = { modelToolsOpen = true },
@@ -1931,6 +1963,154 @@ fun EnderSlicerApp(
                                         )
                                     }
                                 }
+                                // SolidCraft's own menu: the design the agent owns, the plate's
+                                // Convert press, and the engine that holds the document. Its items
+                                // read the document state, so it cannot offer a load, a save or an
+                                // export that would do nothing.
+                                Box {
+                                    TopBarTextAction(
+                                        label = "SolidCraft",
+                                        onClick = { solidCraftMenuExpanded = true },
+                                    )
+                                    DropdownMenu(
+                                        expanded = solidCraftMenuExpanded,
+                                        onDismissRequest = { solidCraftMenuExpanded = false },
+                                        modifier = Modifier.widthIn(min = 280.dp, max = 340.dp),
+                                    ) {
+                                        MenuSectionLabel("Design")
+                                        DropdownMenuItem(
+                                            text = { Text("New design") },
+                                            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                viewModel.newCadDesign()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Open STEP/IGES/3MF/OBJ/glTF…") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                cadDocumentPicker.launch(
+                                                    arrayOf(
+                                                        "application/step",
+                                                        "application/octet-stream",
+                                                        "model/3mf",
+                                                        "model/obj",
+                                                        "model/gltf-binary",
+                                                        "model/gltf+json",
+                                                        "*/*",
+                                                    ),
+                                                )
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("SolidCraft files") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                solidCraftFilesOpen = true
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Save design") },
+                                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                viewModel.saveCadDesign()
+                                            },
+                                            enabled = state.cadDocument != null && !state.isBusy,
+                                        )
+                                        HorizontalDivider()
+                                        MenuSectionLabel("Export")
+                                        DropdownMenuItem(
+                                            text = { Text("Export STEP") },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                cadStepExportPicker.launch(cadExportBase(state) + ".step")
+                                            },
+                                            enabled = state.cadDocument != null && !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Export 3MF") },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                cad3mfExportPicker.launch(cadExportBase(state) + ".3mf")
+                                            },
+                                            enabled = state.cadDocument != null && !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Export STL") },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                cadStlExportPicker.launch(cadExportBase(state) + ".stl")
+                                            },
+                                            enabled = state.cadDocument != null && !state.isBusy,
+                                        )
+                                        HorizontalDivider()
+                                        MenuSectionLabel("Plate")
+                                        DropdownMenuItem(
+                                            text = { Text(state.cadConvertLabel ?: "Convert to STL") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                viewModel.convertCadToStl()
+                                            },
+                                            enabled = state.cadDocument != null && !state.isBusy,
+                                        )
+                                        HorizontalDivider()
+                                        MenuSectionLabel("Engine")
+                                        DropdownMenuItem(
+                                            text = { Text(solidCraftEngineLine) },
+                                            onClick = {},
+                                            enabled = false,
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    state.cadDocument?.let { "CAD agent · " + it.name }
+                                                        ?: "Connect CAD agent",
+                                                )
+                                            },
+                                            leadingIcon = { Icon(AppIcons.Sparkle, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                viewModel.connectCadAgent()
+                                                viewModel.openSolidCraftSheet()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy MCP token") },
+                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                requestMcpTokenCopy(
+                                                    context = context,
+                                                    clipLabel = "SolidCraft MCP token",
+                                                    engineName = "SolidCraft CAD agent",
+                                                    tokenFile = {
+                                                        SolidCraftEngine.ensureToken(context)
+                                                        SolidCraftEngine.tokenFile(context)
+                                                    },
+                                                )
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Stop CAD agent") },
+                                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                                            onClick = {
+                                                solidCraftMenuExpanded = false
+                                                viewModel.stopCadAgent()
+                                            },
+                                            enabled = !state.isBusy && SolidCraftEngine.isReady(),
+                                        )
+                                    }
+                                }
                                 // CAD gets its own menu rather than an entry in the Blender
                                 // one, and that is the whole mechanism: which menu the user
                                 // opened is what tells the agent which engine it is working
@@ -2005,53 +2185,6 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
-                                        HorizontalDivider()
-                                        // The plate's own CAD engine, not the CAD screen's: it
-                                        // drives the live document the main viewport draws. The
-                                        // agent is its author; the human's surfaces are the sheet,
-                                        // look, Slice and Export.
-                                        MenuSectionLabel("Plate CAD agent (SolidCraft)")
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    state.cadDocument?.let { "CAD agent · " + it.name }
-                                                        ?: "Connect CAD agent",
-                                                )
-                                            },
-                                            leadingIcon = { Icon(AppIcons.Sparkle, contentDescription = null) },
-                                            onClick = {
-                                                cadMenuExpanded = false
-                                                viewModel.connectCadAgent()
-                                                viewModel.openSolidCraftSheet()
-                                            },
-                                            enabled = !state.isBusy,
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Copy SolidCraft MCP token") },
-                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-                                            onClick = {
-                                                cadMenuExpanded = false
-                                                requestMcpTokenCopy(
-                                                    context = context,
-                                                    clipLabel = "SolidCraft MCP token",
-                                                    engineName = "SolidCraft CAD agent",
-                                                    tokenFile = {
-                                                        SolidCraftEngine.ensureToken(context)
-                                                        SolidCraftEngine.tokenFile(context)
-                                                    },
-                                                )
-                                            },
-                                            enabled = !state.isBusy,
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Stop CAD agent") },
-                                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
-                                            onClick = {
-                                                cadMenuExpanded = false
-                                                viewModel.stopCadAgent()
-                                            },
-                                            enabled = !state.isBusy && SolidCraftEngine.isReady(),
-                                        )
                                     }
                                 }
                             }
@@ -2072,6 +2205,9 @@ fun EnderSlicerApp(
                             nonPlanarEnabled = nonPlanarSettings.enabled,
                             conicalEnabled = conicalSettings.enabled,
                             sliceBlockedReason = effectiveSliceBlockedReason,
+                            sliceTappable = state.cadNeedsConversion,
+                            cadConvertLabel = state.cadConvertLabel,
+                            onConvertCad = viewModel::convertCadToStl,
                             onSlice = viewModel::sliceModel,
                             onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                             onTools = { modelToolsOpen = true },
@@ -2263,6 +2399,25 @@ fun EnderSlicerApp(
                             }
                         },
                         loadLabel = "Load",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                    )
+                } else if (solidCraftFilesOpen) {
+                    // The engine's own designs, not its exports: load one onto the plate or
+                    // delete one. The plate is only touched by Load to plate.
+                    SolidCraftFilesScreen(
+                        workspace = viewModel.solidCraftWorkspace(),
+                        // The design is the plate's document only while it is LIVE. A
+                        // converted plate holds STL models made from it, so Delete is allowed
+                        // then - the refusal sentence itself says "close or convert it first".
+                        plateDesignPath = state.cadDocument?.takeIf { !it.converted }?.designPath,
+                        plateHasContent = state.cadDocument != null || state.models.isNotEmpty(),
+                        platePartCount = state.cadDocument?.let { document ->
+                            if (document.converted) document.convertedParts.size else document.parts.size
+                        },
+                        onBack = { solidCraftFilesOpen = false },
+                        onLoad = { entry -> viewModel.loadCadDesign(entry.designFile.absolutePath) },
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),
@@ -3933,6 +4088,14 @@ internal fun MoreRow(
     }
 }
 
+/** The name a SolidCraft menu Export writes: the document's own, made file-safe. */
+internal fun cadExportBase(state: MainUiState): String =
+    state.cadDocument?.name
+        ?.replace(Regex("[^A-Za-z0-9._-]"), "-")
+        ?.take(64)
+        ?.ifBlank { null }
+        ?: "design"
+
 @Composable
 internal fun TopBarTextAction(
     label: String,
@@ -4106,7 +4269,9 @@ private fun ViewerPanel(
     // The selection is a face, not a screen position: an orbit keeps it, and only the plain-word
     // description changes, so the HUD is re-worded for the camera the user has now.
     val hudFace = state.selectedFace?.let { face ->
-        val objectId = state.cadDocument?.displayObjectId
+        val objectId = state.cadDocument?.parts
+            ?.firstOrNull { it.body == face.body }
+            ?.objectId
         val plateObject = state.models.firstOrNull { it.id == objectId }
         if (plateObject == null || modelOrientation == null) {
             face
@@ -4721,6 +4886,11 @@ internal fun SessionRail(
     state: MainUiState,
     gcodeAvailable: Boolean,
     sliceBlockedReason: String?,
+    /** True when a blocked Slice is still the tappable one: a live CAD document. */
+    sliceTappable: Boolean = false,
+    /** "Convert to STL" or "Convert again" while a document is loaded; null when there is none. */
+    cadConvertLabel: String? = null,
+    onConvertCad: () -> Unit = {},
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
@@ -4866,10 +5036,22 @@ internal fun SessionRail(
             // engine is active, and Export saves that engine's G-code.
             Button(
                 onClick = onSlice,
+                // A live CAD document greys Slice out but keeps it tappable: the tap names the
+                // reason, and the button is exactly where the user looks for the answer.
                 enabled = state.engineAvailable &&
                     state.modelPath != null &&
                     !state.isBusy &&
-                    sliceBlockedReason == null,
+                    (sliceBlockedReason == null || sliceTappable),
+                colors = if (sliceBlockedReason != null) {
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    ButtonDefaults.buttonColors()
+                },
                 contentPadding = PaddingValues(
                     horizontal = EnderSlicerDimens.Space4,
                     vertical = EnderSlicerDimens.Space4,
@@ -4879,6 +5061,23 @@ internal fun SessionRail(
                     .padding(horizontal = EnderSlicerDimens.Space8),
             ) {
                 RailButtonLabel(if (gcodeAvailable) "Slice again" else "Slice")
+            }
+            // The one press that turns the live document into the STL models Slice needs. It is
+            // never a side effect of Slice: the user asked for the two to be separate presses.
+            cadConvertLabel?.let { label ->
+                OutlinedButton(
+                    onClick = onConvertCad,
+                    enabled = !state.isBusy,
+                    contentPadding = PaddingValues(
+                        horizontal = EnderSlicerDimens.Space4,
+                        vertical = EnderSlicerDimens.Space4,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = EnderSlicerDimens.Space8),
+                ) {
+                    RailButtonLabel(label)
+                }
             }
             OutlinedButton(
                 onClick = onExportGcode,
@@ -5291,6 +5490,11 @@ internal fun ActionBar(
     nonPlanarEnabled: Boolean,
     conicalEnabled: Boolean,
     sliceBlockedReason: String?,
+    /** True when a blocked Slice is still the tappable one: a live CAD document. */
+    sliceTappable: Boolean = false,
+    /** "Convert to STL" or "Convert again" while a document is loaded; null when there is none. */
+    cadConvertLabel: String? = null,
+    onConvertCad: () -> Unit = {},
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
@@ -5324,7 +5528,20 @@ internal fun ActionBar(
                 if (state.isBusy) CircularProgressIndicator(modifier = Modifier.height(28.dp))
                 Button(
                     onClick = onSlice,
-                    enabled = state.engineAvailable && state.modelPath != null && !state.isBusy && sliceBlockedReason == null,
+                    // Greyed while a live CAD document holds it, but the tap still lands: the
+                    // status line names the reason, and Convert to STL is the press that clears it.
+                    enabled = state.engineAvailable && state.modelPath != null && !state.isBusy &&
+                        (sliceBlockedReason == null || sliceTappable),
+                    colors = if (sliceBlockedReason != null) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors()
+                    },
                     modifier = Modifier.weight(1f),
                 ) {
                     Text(
@@ -5347,6 +5564,15 @@ internal fun ActionBar(
                 // target unfolds it again.
                 IconButton(onClick = onToggle) {
                     Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Hide the actions")
+                }
+            }
+            cadConvertLabel?.let { label ->
+                OutlinedButton(
+                    onClick = onConvertCad,
+                    enabled = !state.isBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(label)
                 }
             }
             OutlinedButton(

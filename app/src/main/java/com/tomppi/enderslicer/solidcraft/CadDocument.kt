@@ -1,12 +1,7 @@
 package com.tomppi.enderslicer.solidcraft
 
-import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
-import com.tomppi.enderslicer.viewer.VertexData
-import com.tomppi.enderslicer.viewer.unionOrNull
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * One engine body and the plate object that draws it.
@@ -84,19 +79,14 @@ data class CadDocument(
     val lastEditMillis: Long? = null,
     /** How many edits this session has applied. */
     val editCount: Int = 0,
-    /** The print STL the last Slice wrote, and the display revision it was written from. */
-    val sliceStlPath: String? = null,
-    val sliceExportRevision: Long = -1L,
-    val sliceExportAtMillis: Long = 0L,
-    val sliceTriangles: Int = 0,
 ) {
     /** Every plate object id this document owns, live parts and converted parts alike. */
     fun objectIds(): Set<String> = parts.mapTo(LinkedHashSet()) { it.objectId }
 
-    /** True when [objectId] is one of the document's own plate objects. */
+    /** True when [objectId] is one of the document's own live parts. */
     fun isCadObject(objectId: String): Boolean = parts.any { it.objectId == objectId }
 
-    /** The body a plate object draws, or null when the object is not this document's. */
+    /** The body a plate part object draws, or null when the object is not a live part. */
     fun bodyOf(objectId: String): String? = parts.firstOrNull { it.objectId == objectId }?.body
 
     /** The converted object that draws [body], or null when it is not converted. */
@@ -104,19 +94,12 @@ data class CadDocument(
         convertedParts.firstOrNull { it.body == body }?.objectId
 
     /**
-     * Legacy: true when the 1.9.6 slice handoff would export the document again.
-     *
-     * Kept only so the file compiles while the view model still names it; the slice handoff is
-     * gone in this release and nothing may convert or export the document to slice it.
+     * True when [objectId] is any plate object this document put there - a live part or a
+     * converted STL. A split of either is geometry made from the document, so it is what the
+     * stale rules ask about.
      */
-    @Deprecated("Slice converts nothing; Convert to STL is the human's own press")
-    val needsSliceExport: Boolean
-        get() {
-            val path = sliceStlPath ?: return true
-            return sliceExportRevision != displayRevision ||
-                !File(path).isFile ||
-                File(path).length() == 0L
-        }
+    fun isDocumentObject(objectId: String): Boolean =
+        parts.any { it.objectId == objectId } || convertedParts.any { it.objectId == objectId }
 }
 
 /**
@@ -176,16 +159,13 @@ data class DocumentDelta(
  * The plate's live tessellation, one mesh per body of the engine's design.
  *
  * The engine exports a body at a time (file.export with a bodies list), so an edit re-exports
- * only the bodies it touched. This keeps the per-body meshes and composes the one [StlMesh] the
- * plate's view draws. Composition is a concatenation of already-tessellated triangles - local
- * memory work, no engine call - and a plate of one body borrows that body's mesh instead of
- * copying it.
+ * only the bodies it touched. This keeps those per-body meshes; the plate draws one object per
+ * body (see [CadPartPublish]), so nothing is concatenated here any more - an edit that names one
+ * body leaves every other body's mesh instance untouched, and the plate keeps the other parts'
+ * objects as they are.
  *
  * Not thread-safe; the view model owns one and touches it from one coroutine at a time.
  */
-/** One body of the document, and which of its own triangles a scene triangle is. */
-data class BodyTriangle(val body: String, val mesh: StlMesh, val triangleIndex: Int)
-
 class CadBodyMeshes {
 
     private val bodies = LinkedHashMap<String, StlMesh>()
@@ -196,33 +176,11 @@ class CadBodyMeshes {
 
     fun mesh(name: String): StlMesh? = bodies[name]
 
-    /**
-     * Which body a triangle of [compose]'s concatenation belongs to, and its index there.
-     *
-     * [compose] walks the bodies in insertion order, so a scene triangle is its body's own index
-     * plus that body's place in the run - which is what turns a tap's triangle into "the face of
-     * Body2" instead of a number nothing can name.
-     */
-    fun locate(sceneTriangleIndex: Int): BodyTriangle? {
-        if (sceneTriangleIndex < 0) return null
-        var first = 0
-        for ((name, mesh) in bodies) {
-            val next = first + mesh.triangleCount
-            if (sceneTriangleIndex < next) return BodyTriangle(name, mesh, sceneTriangleIndex - first)
-            first = next
-        }
-        return null
-    }
+    /** The bodies in the engine's own order, for the plate's per-part publish. */
+    fun entries(): List<Pair<String, StlMesh>> = bodies.entries.map { it.key to it.value }
 
-    /** Where [name]'s triangles start in [compose]'s concatenation, or null if it is not there. */
-    fun firstTriangleOf(name: String): Int? {
-        var first = 0
-        for ((body, mesh) in bodies) {
-            if (body == name) return first
-            first += mesh.triangleCount
-        }
-        return null
-    }
+    /** Every body's triangles added up: the document's display triangle count. */
+    fun triangleCount(): Int = bodies.values.sumOf { it.triangleCount }
 
     fun put(name: String, mesh: StlMesh) {
         bodies[name] = mesh
@@ -234,76 +192,6 @@ class CadBodyMeshes {
 
     fun clear() = bodies.clear()
 
-    /**
-     * The whole design as the one mesh the plate draws, or null while it has no bodies.
-     *
-     * [displayName] is the document's name and must stay the same across edits: the model view
-     * resets its camera when a mesh arrives under a different name, and the camera belongs to
-     * the user.
-     */
-    fun compose(displayName: String): StlMesh? {
-        if (bodies.isEmpty()) return null
-        if (bodies.size == 1) {
-            // One body is the document: share its vertex data rather than copying it.
-            return bodies.values.first().copy(displayName = displayName)
-        }
-        val totalTriangles = bodies.values.sumOf { it.triangleCount }
-        if (totalTriangles <= 0) return null
-        val totalFloats = Math.multiplyExact(totalTriangles, FLOATS_PER_TRIANGLE)
-        val heap = totalTriangles < OFF_HEAP_MIN_TRIANGLES
-        val array = if (heap) FloatArray(totalFloats) else null
-        val direct = if (heap) {
-            null
-        } else {
-            ByteBuffer.allocateDirect(totalFloats * Float.SIZE_BYTES)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-        }
-        var written = 0
-        for (mesh in bodies.values) {
-            val floats = mesh.triangleCount * FLOATS_PER_TRIANGLE
-            val source = mesh.interleavedVertices
-            val sourceArray = source.arrayOrNull()
-            if (array != null) {
-                if (sourceArray != null) {
-                    System.arraycopy(sourceArray, 0, array, written, floats)
-                } else {
-                    source.directOrNull()!!.duplicate().apply {
-                        position(0)
-                        limit(floats)
-                    }.get(array, written, floats)
-                }
-            } else {
-                val target = direct!!
-                target.position(written)
-                if (sourceArray != null) {
-                    target.put(sourceArray, 0, floats)
-                } else {
-                    target.put(
-                        source.directOrNull()!!.duplicate().apply {
-                            position(0)
-                            limit(floats)
-                        },
-                    )
-                }
-            }
-            written += floats
-        }
-        return StlMesh(
-            displayName = displayName,
-            interleavedVertices = if (array != null) VertexData.fromArray(array) else VertexData.fromDirect(direct!!),
-            triangleCount = totalTriangles,
-            bounds = bodies.values.map { it.bounds }.unionOrNull() ?: return null,
-        )
-    }
-
-    private companion object {
-        /** Position + normal per vertex, three vertices: the layout StlParser writes. */
-        const val FLOATS_PER_TRIANGLE = 18
-
-        /** The same off-heap threshold StlParser applies to a single mesh. */
-        const val OFF_HEAP_MIN_TRIANGLES = 200_000
-    }
 }
 
 /**
@@ -435,40 +323,5 @@ class CadWorkspace(root: File) {
                 .trim('.', '_', '-')
                 .take(96)
                 .ifBlank { "design" }
-    }
-}
-
-/**
- * What a Slice does with the CAD document: export it once, then reuse that artifact while the
- * document has not moved on.
- *
- * The first slice after opening always exports: the workspace has no print STL for this
- * document yet. A later slice reuses the file only when neither the document nor the file
- * changed, saying which file it reused - the status line names what was exported and when.
- */
-object CadSliceHandoff {
-
-    sealed interface Decision {
-        /** Export the document to this workspace STL, then slice it. */
-        data class Export(val destination: File) : Decision
-
-        /** Slice the STL the last Slice already exported. */
-        data class Reuse(val source: File) : Decision
-    }
-
-    fun decide(document: CadDocument, exportsDirectory: File, nowMillis: Long): Decision {
-        val existing = document.sliceStlPath?.let(::File)
-        if (existing != null &&
-            existing.isFile &&
-            existing.length() > 0L &&
-            document.sliceExportRevision == document.displayRevision
-        ) {
-            return Decision.Reuse(existing)
-        }
-        val destination = File(
-            exportsDirectory,
-            CadWorkspace.slug(document.name) + "-print-" + nowMillis + ".stl",
-        )
-        return Decision.Export(destination)
     }
 }

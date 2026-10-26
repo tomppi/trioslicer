@@ -17,6 +17,7 @@ import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.profile.CuraEngineProfile
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.CadSliceGate
 import com.tomppi.enderslicer.solidcraft.SelectedFace
 import com.tomppi.enderslicer.smartinfill.SmartInfillOverlay
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
@@ -1154,13 +1155,13 @@ data class MainUiState(
      * plate object.
      */
     fun withoutCadBodies(
-        displayObjectId: String?,
+        partObjectIds: List<String>,
         name: String,
         designPath: String,
         sourcePath: String?,
         editMillis: Long?,
     ): MainUiState {
-        val dropped = displayObjectId ?: cadDocument?.displayObjectId
+        val dropped = partObjectIds.toSet() + listOfNotNull(cadDocument?.displayObjectId)
         val previous = cadDocument
         val document = (previous ?: CadDocument(name = name, designPath = designPath)).copy(
             name = name,
@@ -1168,6 +1169,10 @@ data class MainUiState(
             sourcePath = sourcePath ?: previous?.sourcePath,
             displayObjectId = null,
             displayMeshPath = null,
+            parts = emptyList(),
+            converted = false,
+            convertedRevision = -1L,
+            convertedParts = emptyList(),
             displayRevision = (previous?.displayRevision ?: 0L) + 1L,
             triangleCount = 0,
             bodyCount = 0,
@@ -1176,9 +1181,27 @@ data class MainUiState(
             editCount = (previous?.editCount ?: 0) + if (editMillis != null) 1 else 0,
         )
         return copy(
-            models = models.filterNot { it.id == dropped },
-            selectedModelId = models.firstOrNull { it.id != dropped }?.id,
+            models = models.filterNot { it.id in dropped },
+            selectedModelId = models.firstOrNull { it.id !in dropped }?.id,
             cadDocument = document,
         ).withoutPublishedSlice("CAD document: the engine has no bodies to draw yet")
+    }
+
+    /**
+     * The reason Slice is refused right now, or null when it may run.
+     *
+     * The plate reads this, not a composable's own state: a rotation must not change what the
+     * Slice button decides, and the gate is a fact about the document, not about the screen.
+     */
+    val cadSliceBlockedReason: String? get() = CadSliceGate.reasonFor(cadDocument)
+
+    /** True when the only thing between the plate and a Slice is the human's Convert press. */
+    val cadNeedsConversion: Boolean get() = CadSliceGate.needsConversion(cadDocument)
+
+    /** The plate's Convert button label, or null when no document is loaded. */
+    val cadConvertLabel: String? get() = when {
+        cadDocument == null -> null
+        cadDocument.converted -> "Convert again"
+        else -> "Convert to STL"
     }
 }

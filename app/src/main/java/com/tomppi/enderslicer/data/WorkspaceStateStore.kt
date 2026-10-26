@@ -179,10 +179,6 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         /** True when the plate held a split/snap layout made from the previous shape. */
         val derivedStale: Boolean = false,
         val staleReason: String? = null,
-        val sliceStlPath: String? = null,
-        val sliceExportRevision: Long = -1L,
-        val sliceExportAtMillis: Long = 0L,
-        val sliceTriangles: Int = 0,
     ) {
         /** One body of the document and the plate object that draws it. */
         data class PartState(
@@ -310,9 +306,14 @@ class WorkspaceStateStore(private val filesDirectory: File) {
             "Workspace model name is invalid"
         }
         val model = File(path).canonicalFile
-        val modelDirectory = File(filesDirectory, "models").canonicalFile
-        require(model.path.startsWith(modelDirectory.path + File.separator)) {
-            "Workspace model is outside the private model directory"
+        val privateFiles = filesDirectory.canonicalFile
+        // A plate model does not have to live in files/models: a CAD document's part files are
+        // the engine's own per-body display exports (files/solidcraft/workspace/display) and a
+        // converted part is the STL the human's Convert press wrote
+        // (files/solidcraft/workspace/converted). What matters is that the descriptor names a
+        // file inside the app's private files directory, never one outside it.
+        require(model.path.startsWith(privateFiles.path + File.separator)) {
+            "Workspace model is outside the app's files directory"
         }
         require(model.isFile && model.length() > 0L) { "Workspace model is unavailable" }
         require(paint.enforcerTriangles.all { it >= 0 }) {
@@ -432,15 +433,11 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                     .put("displayRevision", cad.displayRevision)
                     .put("triangleCount", cad.triangleCount)
                     .put("bodyCount", cad.bodyCount)
-                    .put("sliceExportRevision", cad.sliceExportRevision)
-                    .put("sliceExportAtMillis", cad.sliceExportAtMillis)
-                    .put("sliceTriangles", cad.sliceTriangles)
                     .put("derivedStale", cad.derivedStale)
                     .apply {
                         cad.sourcePath?.let { put("sourcePath", it) }
                         cad.displayMeshPath?.let { put("displayMeshPath", it) }
                         cad.displayObjectId?.let { put("displayObjectId", it) }
-                        cad.sliceStlPath?.let { put("sliceStlPath", it) }
                         cad.staleReason?.let { put("staleReason", it) }
                         if (cad.parts.isNotEmpty()) put("parts", encodeParts(cad.parts))
                         if (cad.converted) {
@@ -500,10 +497,6 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                 convertedParts = decodeParts(json.optJSONArray("convertedParts")),
                 derivedStale = json.optBoolean("derivedStale", false),
                 staleReason = json.optString("staleReason").takeIf { it.isNotBlank() },
-                sliceStlPath = json.optString("sliceStlPath").takeIf { it.isNotBlank() },
-                sliceExportRevision = json.optLong("sliceExportRevision", -1L),
-                sliceExportAtMillis = json.optLong("sliceExportAtMillis", 0L).coerceAtLeast(0L),
-                sliceTriangles = json.optInt("sliceTriangles", 0).coerceAtLeast(0),
             )
         }.getOrNull()
     }

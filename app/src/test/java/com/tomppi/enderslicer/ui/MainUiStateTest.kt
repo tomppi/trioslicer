@@ -8,6 +8,7 @@ import com.tomppi.enderslicer.model.PlateObject
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerEngine
 import com.tomppi.enderslicer.solidcraft.CadDocument
+import com.tomppi.enderslicer.solidcraft.CadPart
 import com.tomppi.enderslicer.viewer.MeshBounds
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.VertexData
@@ -229,8 +230,7 @@ class MainUiStateTest {
             cadDocument = CadDocument(
                 name = "Untitled",
                 designPath = "/data/cad/untitled.solidcraft",
-                displayObjectId = drawn.id,
-                displayMeshPath = drawn.sourcePath,
+                parts = listOf(CadPart(body = "Case", objectId = drawn.id)),
                 displayRevision = 7,
                 triangleCount = 1,
                 bodyCount = 1,
@@ -248,7 +248,7 @@ class MainUiStateTest {
         assertTrue("and a published slice of it", before.hasCurrentGcode())
 
         val after = before.withoutCadBodies(
-            displayObjectId = "cad-display",
+            partObjectIds = listOf("cad-display"),
             name = "Untitled",
             designPath = "/data/cad/untitled.solidcraft",
             sourcePath = null,
@@ -264,6 +264,8 @@ class MainUiStateTest {
         assertNull(after.cadDocument?.displayMeshPath)
         assertEquals(0, after.cadDocument?.triangleCount)
         assertEquals(0, after.cadDocument?.bodyCount)
+        assertTrue("the document's parts went with its picture", after.cadDocument?.parts.orEmpty().isEmpty())
+        assertFalse("nothing is converted after a new design", after.cadDocument?.converted == true)
         assertEquals(8L, after.cadDocument?.displayRevision)
         assertEquals(1, after.cadDocument?.editCount)
         assertEquals(
@@ -277,7 +279,7 @@ class MainUiStateTest {
     @Test
     fun anEmptyCadDocumentLeavesTheHumansOwnImportedMeshOnThePlate() {
         val after = drawnCadState(plateObject("imported", "/models/part.stl")).withoutCadBodies(
-            displayObjectId = "cad-display",
+            partObjectIds = listOf("cad-display"),
             name = "Untitled",
             designPath = "/data/cad/untitled.solidcraft",
             sourcePath = null,
@@ -288,5 +290,44 @@ class MainUiStateTest {
         assertEquals("imported", after.selectedModelId)
         assertNotNull("the human's mesh is not the document's picture", after.mesh)
         assertEquals(0, after.cadDocument?.editCount)
+    }
+
+    private fun cadState(converted: Boolean = false, stale: Boolean = false): MainUiState =
+        plateState().copy(
+            cadDocument = CadDocument(
+                name = "Bracket",
+                designPath = "/data/cad/bracket.solidcraft",
+                converted = converted,
+                convertedRevision = if (converted) 2L else -1L,
+                derivedStale = stale,
+                staleReason = if (stale) "the design moved on" else null,
+            ),
+        )
+
+    @Test
+    fun aLiveDocumentRefusesSliceByNameAndThePlateKnowsThePressThatClearsIt() {
+        val live = cadState()
+        assertEquals("Slice needs an STL - convert the CAD document first", live.cadSliceBlockedReason)
+        assertTrue(live.cadNeedsConversion)
+        assertEquals("Convert to STL", live.cadConvertLabel)
+        // A mesh plate is none of those things.
+        assertNull(plateState().cadSliceBlockedReason)
+        assertFalse(plateState().cadNeedsConversion)
+        assertNull(plateState().cadConvertLabel)
+    }
+
+    @Test
+    fun aConvertedDocumentIsSliceableAndOffersConvertAgain() {
+        val converted = cadState(converted = true)
+        assertNull(converted.cadSliceBlockedReason)
+        assertFalse(converted.cadNeedsConversion)
+        assertEquals("Convert again", converted.cadConvertLabel)
+    }
+
+    @Test
+    fun aStalePlateStillSaysWhyItIsRefused() {
+        val stale = cadState(converted = true, stale = true)
+        assertEquals("the design moved on", stale.cadSliceBlockedReason)
+        assertFalse(stale.cadNeedsConversion)
     }
 }

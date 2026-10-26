@@ -11,9 +11,9 @@ import java.io.File
 import java.nio.file.Files
 
 /**
- * The workspace descriptor's CAD half: the design is the document, the display cache is the
- * frame the last session drew, and the print export is recorded so a later Slice can say
- * honestly whether it reused one.
+ * The workspace descriptor's CAD half: the design is the document, the per-body display files
+ * are the frame the last session drew, and the per-part mapping names the plate objects that
+ * draw it.
  */
 class WorkspaceCadStateTest {
 
@@ -65,14 +65,10 @@ class WorkspaceCadStateTest {
         triangleCount = 1_480,
         bodyCount = 2,
         displayObjectId = "cad-object",
-        sliceStlPath = File(root, "solidcraft/workspace/exports/bracket-print.stl").absolutePath,
-        sliceExportRevision = 11L,
-        sliceExportAtMillis = 1_000L,
-        sliceTriangles = 1_500,
     )
 
     @Test
-    fun aCadDocumentRoundTripsWithItsDesignAndPrintExport() {
+    fun aCadDocumentRoundTripsWithItsDesign() {
         val (store, root) = workspace()
         try {
             val cache = displayCache(root)

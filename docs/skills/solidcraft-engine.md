@@ -181,8 +181,11 @@ plate. There is no debounce and nothing to trigger:
 - do not use screenshot or render tools; the plate is the picture;
 - undo, redo, a parameter edit (set_parameter / parameters.change), new_design and open have no
   body report, so the app re-reads the whole document body by body - still the same scene;
-- if the user has split the derived mesh, or applied a snap joint, a document change marks the
-  plate stale and the app says so; the user presses Rebuild plate in the agent sheet. Do not
+- the plate draws one object per body: the user can move, rotate, scale, split and paint each
+  part on its own, and a change to one body repaints only that part (the others stay exactly as
+  they are);
+- if the user has split a part's plate object, or applied a snap joint, a document change marks
+  the plate stale and the app says so; the user presses Rebuild plate in the agent sheet. Do not
   loop edits trying to force it; say one sentence about the split being stale.
 
 The camera is the user's. Never reset it, never recentre the part, never change the view on
@@ -196,17 +199,27 @@ prints. The app adds no centring of its own, so:
 - build the part on the bed: positive Z, and somewhere inside the machine's X/Y (ask the user's
   printer settings, or keep it near the origin and small);
 - if the part must move on the bed, move it in the document (transforms/assemblies), not by
-  asking the user to drag it - though the user can drag/rotate/scale the derived mesh if they
-  want to.
+  asking the user to drag it - though the user can drag/rotate/scale each part's plate object if
+  they want to.
 
 ## 5. Saving, Slice, and who may edit
 
 - The app saves the design itself into its workspace after edits; do not overwrite the app's
-  design path unless you are asked to.
-- Slice is the user's button: pressing it exports a fresh print STL from the current document
-  (or reuses the last export while the document is unchanged) and hands it to the slicer
-  engines.
-- Export STEP/STL/3MF is the user's other button; both are in the CAD agent sheet.
+  design path unless you are asked to. **Save design** in the SolidCraft menu is the explicit
+  save.
+- **Slice refuses a live CAD document.** A slicer takes STL triangles, and the user's own press
+  of **Convert to STL** (on the plate's actions or in the SolidCraft menu) exports one STL per
+  part into the workspace's converted/ folder and replaces the document's plate objects with
+  those meshes. Until then Slice is greyed and says *Slice needs an STL - convert the CAD
+  document first*. Never try to make Slice work for the user, never convert on their behalf, and
+  never tell them Slice will work - say the one sentence about Convert. Converting again after a
+  later edit is their press too; an edit after a conversion marks the plate stale by name.
+- Export STEP/STL/3MF is the user's other button; it writes the document unchanged and never
+  converts it.
+- The **SolidCraft files** screen lists the designs in the workspace; **Load to plate** opens one
+  as the live document (it asks first when something would be replaced), **Delete** removes a
+  design (and refuses the one the plate is showing). Do not delete or rename design files
+  yourself.
 - **One author at a time.** The app arbitrates between its own in-app agent and external agents
   through the bridge: while an external agent is attached, the in-app composer is paused and the
   sheet offers **Take over** (which closes the external connection - it has to reconnect); while
@@ -237,11 +250,11 @@ estimates, and the features are real modelled B-rep geometry in the timeline, no
 Two rules come before the recipes:
 
 - **On a CAD document, build plastic features with the engine, not with the plate's snap panel.**
-  The plate's snap-fit panel cuts and joins the *derived mesh* - it exists for a mesh the user
-  imported. Applied to the document's derived mesh it splits the plate object, and the next
-  document change marks the plate stale (section 5 of the app's rule: document edits never paste
-  over a split). So when the user asks for a snap fit, a lip, a boss or a rest on the document,
-  make it in the document with `plastic.*`; the panel is for imported meshes only.
+  The plate's snap-fit panel cuts and joins a *plate object* - it exists for a mesh the user
+  imported. Applied to a part of the document it splits that part's plate object, and the next
+  document change marks the plate stale (the app's rule: document edits never paste over a
+  split). So when the user asks for a snap fit, a lip, a boss or a rest on the document, make it
+  in the document with `plastic.*`; the panel is for imported meshes only.
 - **Sheet metal (`sheet.*`) is out of scope for this app.** The engine has the family, but this app
   has no sheet-metal workflow: do not start a sheet-metal design here. **Never use the engine's
   `screenshot` or `render.*` commands either** - the plate is the viewport and the bridge refuses
