@@ -139,10 +139,29 @@ against the engine session the app already owns - no bridge, no socket, no token
 
 ### Watching it: the chat surface
 
-The sparkle chat (the floating `ui/AiChatOverlay.kt` the harness chat always used) is now the
-in-app agent's window too. A source switch at the top chooses **CAD agent (in-app)** (the
-default) or **Harness**; the in-app source renders the one `cadMessages` conversation the CAD
-agent sheet's ask box also writes, so there is no second transcript - only a second view.
+The AI chat (the floating `ui/AiChatOverlay.kt` the harness chat always used) is now the
+in-app agent's window too, and its door is **Ask AI** in the sidebar rail - in the same list as
+Plate / Settings / Print / More, in the fold's permanent column and in the phone's collapsible
+sidebar alike. It is an action, not a destination: it opens the overlay - over whichever tab is
+showing, so it works from Settings or Print as well - and leaves the selected tab alone, with no
+badge or highlight when idle, and it opens at the size the chat was last left at. The Blender
+menu's old entry is gone - the chat has one primary door. A source switch at the top chooses
+**CAD agent (in-app)** (the default) or **Harness**, and that switch is the same state as the
+sheet's mode chips: typing in either box always reaches the backend the chat is showing.
+
+- **Two backends, two conversations.** `ui/CadConversations.kt` holds the in-app agent's
+  messages (tool rows included) and the CAD harness session's messages as separate lists, and
+  every write is one-sided: the in-app loop appends only to the in-app list, the harness poll
+  repopulates only the harness list from `cad.messages()`, and a tool row can only exist on the
+  in-app side. Switching the source never shows the other backend's transcript - the bug this
+  replaced was one shared `cadMessages` list, where a harness case from the user's PC appeared
+  under "CAD agent (in-app)". Each source has its own named empty state: **No in-app
+  conversation yet - ask for a change** / **No harness session - connect the harness from the
+  Harness tab**. The header names the backend and its state - `In-app - deepseek-chat at
+  api.deepseek.com` or `Harness - session connected` / `Harness - not connected` - and the
+  Author line stays under it in both sources. The in-app list is not persisted, so it is cleared
+  when the CAD document is closed or a different document is opened: a transcript from another
+  document is worse than an empty one.
 
 - **Tool rows, live.** Every tool call is emitted as a redacted `AgentToolTrace`
   (`cadagent/AgentToolTrace.kt`) twice: at the start (running) and at the end with its duration

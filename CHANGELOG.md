@@ -116,10 +116,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the author in one line (**Author: nobody / in-app agent / external agent on 9878**), and the
   two author states are made mutually exclusive - and asserted - by the owner object.
 - **The in-app agent is a chat you can watch - with tool rows, a Stop, a transcript to copy,
-  and full screen.** The sparkle chat (the floating overlay the harness chat always used) now has
+  and full screen.** The AI chat (the floating overlay the harness chat always used, opened from
+  **Ask AI** in the sidebar rail) now has
   a source switch at the top: **CAD agent (in-app)** or **Harness**. The in-app source shows the
-  one CAD conversation the CAD agent sheet's ask box also writes - not a second transcript - and
-  every tool the agent runs is a row in it: **name, argument summary, duration and a one-line
+  app agent's own conversation - the same one the CAD agent sheet drives while its mode is in-app,
+  and only that one (see the Fixed note on the two separate lists) - and every tool the agent
+  runs is a row in it: **name, argument summary, duration and a one-line
   outcome**, live while the turn runs (`solid.box {length=40} 12 ms - 1 body created (Body1)`,
   `web_search "M3 socket head" 13 ms - 1 result`). A failed call is a red row carrying the
   engine's or the endpoint's own sentence, not silence. The rows are built from a redacted
@@ -140,6 +142,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a resize never stops the engine or the turn and never resets the scroll. The chosen size is
   remembered for the session: a chat left full screen reopens full screen, one left as a panel
   reopens as a panel, and the bubble is a size, not a close.
+- **The AI chat has its own door in the navigation rail.** **Ask AI** now sits in the sidebar
+  rail's own list, beside Plate / Settings / Print / More, in both shapes the rail has: the fold's
+  permanent column and the phone's collapsible sidebar. It is an action, not a destination: the
+  row is drawn exactly like its neighbours - same width, padding, icon and label - but it carries
+  no badge and no selected state, and tapping it opens the AI chat overlay - over whichever tab is
+  showing - with the size the chat was last left at (bubble, panel or full screen) without
+  changing the selected tab; a turn that
+  is already running is simply there when the chat opens, with its tool rows, Stop, Copy
+  transcript and Author line as they were. The Blender menu's **Ask AI** entry is gone - the
+  Sparkle glyph now means the chat itself and the rail is its one primary door - and the strings
+  that used to point at "the sparkle button" (the CAD agent sheet's harness note and the modelling
+  and CAD harness hints) now name **Ask AI in the sidebar rail**. The CAD menu's CAD-agent entry
+  keeps its own item: it opens the document sheet, not this chat.
 - `scripts/build-solidcraft-engine-android.sh` (cargo cross-build, strip, stage, optional
   release tarball) and `scripts/fetch-solidcraft-engine-android.sh` (SHA-256-pinned release
   asset, or a local tree). `docs/SOLIDCRAFT_ANDROID.md` records the architecture and the
@@ -149,6 +164,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An in-app chat can no longer show the harness session's transcript.** The two CAD backends
+  were writing one shared `cadMessages` list, so a conversation had with the harness agent (a
+  case discussed on the user's PC, in the report) turned up under **CAD agent (in-app)** - which
+  also made it impossible to tell which backend a transcript belonged to. `ui/CadConversations.kt`
+  now holds two lists and every write is one-sided: the in-app loop appends only the in-app
+  messages (tool rows included), the harness poll repopulates only the harness list from
+  `cad.messages()`, and a tool row can only exist on the in-app side. The chat's source switch
+  and the CAD agent sheet's mode chips are **one shared selection**, so typing in either box
+  reaches the backend the chat shows, and the sheet renders the active backend's list. The header
+  names the backend and its state - **In-app - `<model>` at `<host>`** or **Harness - session
+  connected / not connected** - with the Author line unchanged underneath, and each empty
+  transcript says why: **No in-app conversation yet - ask for a change** / **No harness session -
+  connect the harness from the Harness tab**. The in-app conversation is not persisted, so it is
+  cleared when the CAD document is closed or a different document is opened - a transcript from
+  another document is worse than an empty one. The overlay's Harness source is now the CAD harness
+  session the sheet's Harness mode drives; the old general Ask-AI overlay chat (and its
+  Build-from-image upload) went with the Blender menu door the rail replaced.
 - **DeepSeek's search and fetch are found when the base URL is the API host.** The shipped
   default base is `https://api.deepseek.com`, which answers chat completions, but the search
   and fetch tools live under `/v1/tools/...`: a base URL without `/v1` made the first

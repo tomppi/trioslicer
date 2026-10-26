@@ -62,11 +62,9 @@ class AiChatOverlaySizesTest {
         ),
         busy = busy,
         status = null,
-        authorLine = "Author: nobody",
+        backendLine = "In-app - fake-model at example.test",
         configured = true,
         onSend = { sends++ },
-        onStop = { stops++ },
-        onCopyTranscript = { },
     )
 
     private fun show(initial: ChatSize = ChatSize.BUBBLE, busy: Boolean = false) {
@@ -80,10 +78,11 @@ class AiChatOverlaySizesTest {
                 AiChatOverlay(
                     messages = emptyList(),
                     onSend = { sendCounter++ },
-                    onUploadImage = { },
                     onClose = { closed = true },
-                    onStop = { harnessStops++ },
+                    onStop = { stops++ },
                     inApp = inApp(busy),
+                    authorLine = "Author: nobody",
+                    harnessLine = "Harness - not connected",
                     size = size,
                     lastExpandedSize = expanded,
                     onSizeChange = { wanted ->
@@ -107,7 +106,6 @@ class AiChatOverlaySizesTest {
     }
 
     private var sendCounter = 0
-    private var harnessStops = 0
 
     @Test
     fun theThreeSizesWalkBubbleToPanelToFullAndBack() {

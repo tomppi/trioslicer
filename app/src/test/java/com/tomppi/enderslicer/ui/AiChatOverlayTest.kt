@@ -20,11 +20,12 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The floating chat on a JVM: two sources, tool rows, the author line, Stop and the transcript.
+ * The floating chat on a JVM: two backends, two conversations.
  *
- * The harness path is a first-class assertion here, not a by-product: switching to Harness must
- * still show the launch-URL setup and still stop through the harness's own Stop, exactly as it
- * did before the in-app source existed.
+ * The harness path is a first-class assertion here, not a by-product: switching to Harness shows
+ * the harness session's own messages and its own setup, and stopping it is the harness Stop. The
+ * in-app source shows the in-app conversation with its tool rows and nothing from the harness -
+ * the two are separate lists and switching never shows the other one.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -33,7 +34,7 @@ class AiChatOverlayTest {
     @get:Rule
     val compose = createComposeRule()
 
-    private var harnessStops = 0
+    private var stops = 0
 
     private fun boxRow(): AiChatMessage = AiChatMessage(
         fromUser = false,
@@ -53,39 +54,38 @@ class AiChatOverlayTest {
     private fun inApp(
         messages: List<AiChatMessage> = emptyList(),
         busy: Boolean = false,
-        pausedReason: String? = null,
         configured: Boolean = true,
-        onSend: (String) -> Unit = {},
-        onStop: () -> Unit = {},
-        onCopyTranscript: (String) -> Unit = {},
     ): InAppChat = InAppChat(
         messages = messages,
         busy = busy,
         status = null,
-        authorLine = "Author: nobody",
-        pausedReason = pausedReason,
+        backendLine = "In-app - fake-model at example.test",
         configured = configured,
-        onSend = onSend,
-        onStop = onStop,
-        onCopyTranscript = onCopyTranscript,
+        onSend = {},
     )
 
     private fun show(
         inApp: InAppChat?,
         harnessMessages: List<AiChatMessage> = emptyList(),
         harnessBusy: Boolean = false,
-        setup: ChatSetup? = ChatSetup(address = "", onAddressChange = {}, onConnect = {}),
+        harnessLine: String = "Harness - session connected",
+        setup: ChatSetup? = null,
+        pausedReason: String? = null,
+        onCopyTranscript: (String) -> Unit = {},
     ) {
         compose.setContent {
             AiChatOverlay(
                 messages = harnessMessages,
                 onSend = {},
-                onUploadImage = {},
                 onClose = {},
-                onStop = { harnessStops++ },
+                onStop = { stops++ },
                 setup = setup,
                 busy = harnessBusy,
                 inApp = inApp,
+                authorLine = "Author: nobody",
+                authorPausedReason = pausedReason,
+                harnessLine = harnessLine,
+                onCopyTranscript = onCopyTranscript,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -93,7 +93,7 @@ class AiChatOverlayTest {
     }
 
     @Test
-    fun theInAppSourceIsTheDefaultAndShowsTheConversationWithItsToolRows() {
+    fun theInAppSourceIsTheDefaultAndShowsOnlyItsOwnConversationWithToolRows() {
         show(
             inApp(
                 messages = listOf(
@@ -102,51 +102,98 @@ class AiChatOverlayTest {
                     AiChatMessage(fromUser = false, text = "the box is on the plate"),
                 ),
             ),
+            harnessMessages = listOf(
+                AiChatMessage(fromUser = true, text = "the Pi harness was asked about a case"),
+                AiChatMessage(fromUser = false, text = "harness only reply"),
+            ),
         )
 
+        // The backend line names the phone's own agent and its endpoint.
+        compose.onNodeWithText("In-app - fake-model at example.test").assertIsDisplayed()
         compose.onNodeWithText("Author: nobody").assertIsDisplayed()
-        // The transcript scrolls; a message is present even when the panel's height puts it
-        // just outside the visible part of the scroll.
-        compose.onNodeWithText("a 40 x 30 x 10 box with 3 mm fillets").assertExists()
         compose.onNodeWithText("solid.box").assertExists()
         compose.onNodeWithText("1 body created (Body1)").assertExists()
         compose.onNodeWithText("the box is on the plate").assertExists()
-        // The harness setup is not this source's content.
+        // The harness conversation is not this source's content.
+        compose.onNodeWithText("the Pi harness was asked about a case").assertDoesNotExist()
+        compose.onNodeWithText("harness only reply").assertDoesNotExist()
         compose.onNodeWithText("Launch URL").assertDoesNotExist()
     }
 
     @Test
-    fun switchingToHarnessKeepsTheHarnessPathIntactAndComesBack() {
-        show(inApp(messages = listOf(boxRow())))
+    fun switchingTheSourceShowsTheRightConversationAndNeverTheOther() {
+        show(
+            inApp(messages = listOf(AiChatMessage(fromUser = false, text = "in-app only reply"))),
+            harnessMessages = listOf(AiChatMessage(fromUser = false, text = "harness only reply")),
+        )
+        // Default: in-app.
+        compose.onNodeWithText("in-app only reply").assertExists()
+        compose.onNodeWithText("harness only reply").assertDoesNotExist()
 
         compose.onNodeWithText("Harness").performClick()
-        compose.onNodeWithText("Launch URL").assertIsDisplayed()
-        compose.onNodeWithText("Author: nobody").assertDoesNotExist()
+        compose.onNodeWithText("harness only reply").assertExists()
+        compose.onNodeWithText("in-app only reply").assertDoesNotExist()
+        compose.onNodeWithText("Harness - session connected").assertIsDisplayed()
 
         compose.onNodeWithText("CAD agent (in-app)").performClick()
-        compose.onNodeWithText("solid.box").assertIsDisplayed()
+        compose.onNodeWithText("in-app only reply").assertExists()
+        compose.onNodeWithText("harness only reply").assertDoesNotExist()
+    }
+
+    @Test
+    fun eachBackendHasItsOwnEmptyState() {
+        show(inApp(), harnessLine = "Harness - not connected")
+
+        compose.onNodeWithText("No in-app conversation yet - ask for a change. Every tool " +
+            "the in-app agent runs will show up here as a row.").assertIsDisplayed()
+
+        compose.onNodeWithText("Harness").performClick()
+        compose.onNodeWithText(
+            "No harness session - connect the harness from the Harness tab.",
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun theHeaderNamesTheBackendAndItsStateNotJustTheSwitch() {
+        show(inApp(), harnessLine = "Harness - not connected")
+
+        compose.onNodeWithText("In-app - fake-model at example.test").assertIsDisplayed()
+        // The author line stays in both sources; it is the document's, not a backend's.
+        compose.onNodeWithText("Author: nobody").assertIsDisplayed()
+
+        compose.onNodeWithText("Harness").performClick()
+        compose.onNodeWithText("Harness - not connected").assertIsDisplayed()
         compose.onNodeWithText("Author: nobody").assertIsDisplayed()
     }
 
     @Test
-    fun theHarnessStopStaysTheHarnessStop() {
-        // A configured harness has no setup panel, so its composer and Stop are shown.
-        show(inApp(), harnessBusy = true, setup = null)
+    fun theHarnessSetupStillCoversTheComposerWhenItIsNotConnected() {
+        show(
+            inApp(),
+            setup = ChatSetup(address = "", onAddressChange = {}, onConnect = {}),
+        )
+        // In-app has its composer; the harness setup is not this source's content.
+        compose.onNodeWithText("Launch URL").assertDoesNotExist()
+
         compose.onNodeWithText("Harness").performClick()
-        compose.onNodeWithText("Stop").assertIsDisplayed().performClick()
-        assertEquals("the harness path still stops itself", 1, harnessStops)
+        compose.onNodeWithText("Launch URL").assertIsDisplayed()
     }
 
     @Test
-    fun stopWhileTheInAppAgentRunsCancelsThatTurn() {
-        var stops = 0
-        show(inApp(busy = true, onStop = { stops++ }))
+    fun stopStopsTheShownBackend() {
+        stops = 0
+        show(inApp(busy = true), harnessBusy = true)
+        // In-app running.
         compose.onNodeWithText("Stop").assertIsDisplayed().performClick()
         assertEquals(1, stops)
+        // The same Stop button serves the harness when that source is shown.
+        compose.onNodeWithText("Harness").performClick()
+        compose.onNodeWithText("Stop").assertIsDisplayed().performClick()
+        assertEquals(2, stops)
     }
 
     @Test
-    fun copyTranscriptHandsOverTheMessagesAndTheToolRows() {
+    fun copyTranscriptCopiesTheShownBackend() {
         var copied: String? = null
         show(
             inApp(
@@ -155,28 +202,33 @@ class AiChatOverlayTest {
                     boxRow(),
                     AiChatMessage(fromUser = false, text = "the box is on the plate"),
                 ),
-                onCopyTranscript = { copied = it },
             ),
+            harnessMessages = listOf(AiChatMessage(fromUser = false, text = "harness only reply")),
+            onCopyTranscript = { copied = it },
         )
 
-        compose.onNodeWithText("Copy transcript").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Copy transcript").performClick()
+        val inAppText = copied
+        assertNotNull(inAppText)
+        assertTrue(inAppText!!.contains("You: a 40 x 30 x 10 box with 3 mm fillets"))
+        assertTrue("the tool row is in the in-app copy: " + inAppText, inAppText.contains("tool: solid.box"))
+        assertFalse("no harness text in the in-app copy", inAppText.contains("harness only reply"))
 
-        val text = copied
-        assertNotNull("the caller gets transcript text to copy", text)
-        assertTrue(text!!.contains("You: a 40 x 30 x 10 box with 3 mm fillets"))
-        assertTrue("the tool row is in the copy: " + text, text.contains("tool: solid.box"))
-        assertTrue(text.contains("1 body created (Body1)"))
-        assertTrue(text.contains("Agent: the box is on the plate"))
-        assertFalse("no credential can be in it", text.contains("sk-"))
+        compose.onNodeWithText("Harness").performClick()
+        compose.onNodeWithText("Copy transcript").performClick()
+        val harnessText = copied
+        assertNotNull(harnessText)
+        assertTrue(harnessText!!.contains("Agent: harness only reply"))
+        assertFalse("no tool rows in the harness copy", harnessText.contains("tool: solid.box"))
+        assertFalse("no credential", harnessText.contains("sk-"))
     }
 
     @Test
-    fun anAttachedExternalAgentPausesTheChatAndSaysSoInTheHeader() {
+    fun anAttachedExternalAgentPausesTheInAppChat() {
         show(
-            inApp(
-                pausedReason = "external agent connected - in-app agent paused - take the " +
-                    "document back in the CAD agent sheet.",
-            ),
+            inApp(),
+            pausedReason = "external agent connected - in-app agent paused - take the " +
+                "document back in the CAD agent sheet.",
         )
 
         compose.onNodeWithText("Author: nobody · in-app agent paused").assertIsDisplayed()

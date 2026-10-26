@@ -67,6 +67,18 @@ data class AgentSettings(
     val isCleartextRemote: Boolean
         get() = HarnessClient.isUnencryptedRemote(baseUrl)
 
+    /**
+     * The backend line the chat header shows: the model and the host it answers on, never the
+     * path and never the key - "deepseek-chat at api.deepseek.com", or "not configured".
+     */
+    fun endpointLabel(): String {
+        if (baseUrlProblem() != null || model.isBlank()) return "not configured"
+        val url = runCatching { URL(baseUrl.trim()) }.getOrNull() ?: return "not configured"
+        val host = url.host ?: return "not configured"
+        val port = if (url.port == -1) "" else ":" + url.port
+        return model.trim() + " at " + host + port
+    }
+
     /** The named reason this base URL cannot be called yet, or null when it can. */
     fun baseUrlProblem(): String? {
         val address = baseUrl.trim()

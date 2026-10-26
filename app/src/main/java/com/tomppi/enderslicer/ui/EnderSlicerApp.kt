@@ -346,10 +346,9 @@ fun EnderSlicerApp(
         plateRailOpen = next.railOpen
         plateActionBarExpanded = next.actionBarExpanded
     }
-    // Conversation is session-scoped on purpose: the harness owns the real
-    // transcript, and a half-sent turn must not survive a process restart.
-    var aiMessages by remember { mutableStateOf(listOf<AiChatMessage>()) }
-    var aiStatus by remember { mutableStateOf<String?>(null) }
+    // The harness connect attempt is session-scoped, and two taps must not race; the
+    // conversations themselves live in CadConversations (CAD), modellingMessages (Blender
+    // modelling) and the harness's own session.
     var aiBusy by remember { mutableStateOf(false) }
     var aiAddress by remember { mutableStateOf("") }
     var aiWorkspace by remember { mutableStateOf("") }
@@ -379,17 +378,17 @@ fun EnderSlicerApp(
     var modellingChatReady by remember { mutableStateOf(false) }
     val modellingChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
 
-    // The CAD conversation: same harness, a different engine, and a transcript about
-    // dimensions rather than about a mesh. Its own session id, because an agent that has
-    // just been reading a Blender transcript answers as if the model were a mesh.
+    // The CAD conversations, one per backend and never mixed: the in-app agent's own messages
+    // (tool rows included) and the harness session's messages. See [CadConversations].
+    var cadConversations by remember { mutableStateOf(CadConversations()) }
+    var cadStatus by remember { mutableStateOf<String?>(null) }
+    var cadBusy by remember { mutableStateOf(false) }
+    // The CAD screen is the harness CAD session's view; it opens on its own.
     var cadOpen by rememberSaveable { mutableStateOf(false) }
     // How this device draws the CAD viewport. Read once per composition and handed to the
     // viewport as a lambda, so a saved change reaches the very next frame.
     var cadViewerOpen by rememberSaveable { mutableStateOf(false) }
     var cadViewerSettings by remember { mutableStateOf(CadViewerPreference.load(context)) }
-    var cadMessages by remember { mutableStateOf(listOf<AiChatMessage>()) }
-    var cadStatus by remember { mutableStateOf<String?>(null) }
-    var cadBusy by remember { mutableStateOf(false) }
     var cadChatReady by remember { mutableStateOf(false) }
     var cadEngineStatus by remember { mutableStateOf("CAD engine not started") }
     // True while the engine is unpacking or starting, so the empty view spins only when
@@ -417,8 +416,9 @@ fun EnderSlicerApp(
     val cadChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
     // The CAD document's author can be this phone's own process: an OpenAI-compatible endpoint
     // called directly from the app, with the engine's tools run in process. In-app is the
-    // default; the harness above stays as the advanced path. Both write cadMessages, so the
-    // transcript is the same box either way and the sheet says which agent is driving.
+    // default; the harness above stays as the advanced path. Each backend owns its own
+    // conversation (CadConversations) - the same source switch chooses which one is shown and
+    // which one the sheet's ask box drives.
     val agentSettingsStore = remember(context) { AgentSettingsStore(context.applicationContext) }
     var agentSettings by remember { mutableStateOf(agentSettingsStore.loadSettings()) }
     // What the endpoint has said about the web tool routes, once the agent has tried them.
@@ -429,25 +429,13 @@ fun EnderSlicerApp(
     var chatAuthorship by remember { mutableStateOf(SolidCraftEngine.authorship().state()) }
 
     /**
-     * Puts one tool call's start or end into the CAD conversation.
+     * Puts one tool call's start or end into the in-app agent's conversation.
      *
-     * A tool row is not a second transcript: it is an entry of the same cadMessages the sheet's
-     * ask box writes (a chat message carrying its [AgentToolTrace]), so the sheet and the
-     * floating chat show one conversation. The row appears when the call starts and is replaced
-     * in place - same position, same turn - when it ends.
+     * A tool row belongs to the in-app conversation only: the harness reports prose turns, and
+     * a row appended here can never appear under the Harness source.
      */
     fun applyToolTrace(trace: AgentToolTrace) {
-        val index = cadMessages.indexOfLast { it.tool?.callId == trace.callId }
-        cadMessages = if (index >= 0) {
-            cadMessages.toMutableList().also { it[index] = it[index].copy(tool = trace) }
-        } else {
-            cadMessages + AiChatMessage(
-                fromUser = false,
-                text = "",
-                kind = AiChatEntryKind.TOOL,
-                tool = trace,
-            )
-        }
+        cadConversations = cadConversations.withToolTrace(trace)
     }
 
     LaunchedEffect(aiChatOpen) {
@@ -473,20 +461,7 @@ fun EnderSlicerApp(
     // Twenty seconds is comfortably longer than the queue latency seen against
     // the live harness and far shorter than the twenty-minute poll ceiling.
     val harnessSettlePolls = 10
-    // Spells out the order rather than just the goal, because the failure modes
-    // are ordering failures: generating before the box is awake looks like a
-    // hang, and hibernating early loses the model.
-    val imageModelPrompt = buildString {
-        append("Build a 3D model from the image I just attached. ")
-        append("Use the image-to-3d-model skill, in its documented order: ")
-        append("wake the GPU box first (gpu-box-power), generate with ")
-        append("Hunyuan3D-2mini using DMC, post-process to a printable scale, ")
-        append("validate that it is watertight, deliver the STL into the app's ")
-        append("blender/exports folder with a fresh unique filename so the ")
-        append("hot-load picks it up, confirm it landed, then hibernate the box.")
-    }
     val harnessStore = remember(context) { HarnessConfigStore(context.applicationContext) }
-    val harnessChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
     val aiScope = rememberCoroutineScope()
     // Camera-file writes: their own scope and a single-threaded dispatcher, so a
     // gesture's burst of publishes cannot interleave inside write-and-rename.
@@ -591,68 +566,6 @@ fun EnderSlicerApp(
         }
     }
 
-    fun askHarness(text: String) {
-        aiScope.launch {
-            aiBusy = true
-            aiStatus = null
-            try {
-                val chat = harnessChat.get() ?: error("Connect to the harness first")
-                // The floating chat is the Blender one; say so, so the agent does not have
-                // to infer the engine from the wording of the request.
-                withContext(Dispatchers.IO) { chat.send(EngineMode.BLENDER.prompt(text)) }
-                aiMessages = aiMessages + AiChatMessage(fromUser = true, text = text)
-                pollForReply(chat, { aiMessages = it }, { aiStatus = it })
-            } catch (error: Throwable) {
-                aiStatus = error.message?.take(160) ?: "Harness call failed"
-            } finally {
-                aiBusy = false
-            }
-        }
-    }
-
-    /**
-     * Uploads the picked image, then asks the harness to model it.
-     *
-     * Upload first, prompt second: the prompt refers to the staged attachment,
-     * so sending it the other way round would ask about an image the harness
-     * does not have yet.
-     *
-     * Nothing is read back. The model arrives through the export folder like
-     * any other export, so the app never has to poll for a file.
-     */
-    fun sendImageToHarness(uri: Uri) {
-        aiScope.launch {
-            aiBusy = true
-            aiStatus = null
-            try {
-                val chat = harnessChat.get() ?: error("Connect to the harness first")
-                val bytes = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: error("Could not read that image")
-                }
-                val name = "model-source-" + System.currentTimeMillis() + ".jpg"
-                withContext(Dispatchers.IO) {
-                    val id = chat.ensureSession()
-                    // Upload first, prompt second, and carry the receipt into
-                    // the prompt: staging the bytes is not the same as sending
-                    // them, and without the receipt block the agent receives a
-                    // text-only message.
-                    val receipt = chat.attach(id, name, bytes)
-                    chat.send(imageModelPrompt, receipt)
-                }
-                aiMessages = aiMessages + AiChatMessage(
-                    fromUser = true,
-                    text = "Build a 3D model from this image",
-                )
-                pollForReply(chat, { aiMessages = it }, { aiStatus = it })
-            } catch (error: Throwable) {
-                aiStatus = error.message?.take(200) ?: "Image upload failed"
-            } finally {
-                aiBusy = false
-            }
-        }
-    }
-
     /**
      * Connects to the harness at [aiAddress] and adopts its session.
      *
@@ -681,7 +594,7 @@ fun EnderSlicerApp(
         }
         aiBusy = true
         aiScope.launch {
-            aiStatus = null
+            cadStatus = null
             try {
                 val client = HarnessClient(
                     baseUrl = target.baseUrl,
@@ -707,7 +620,6 @@ fun EnderSlicerApp(
                 // the prompt's skill names resolve to nothing.
                 val chat = HarnessChat(client, workspace)
                 val adopted = withContext(Dispatchers.IO) { chat.connect(stored.sessionId) }
-                harnessChat.set(chat)
                 // A second conversation with its own session id, so modelling
                 // never inherits the image-to-model transcript.
                 val modelling = HarnessChat(client, workspace)
@@ -729,8 +641,10 @@ fun EnderSlicerApp(
                 cadChat.set(cad)
                 cadChatReady = true
                 harnessStore.saveCadSession(adoptedCad.sessionId)
-                cadMessages = withContext(Dispatchers.IO) { cad.messages() }
-                    .map { AiChatMessage(fromUser = it.fromUser, text = it.text) }
+                cadConversations = cadConversations.replaceHarness(
+                    withContext(Dispatchers.IO) { cad.messages() }
+                        .map { AiChatMessage(fromUser = it.fromUser, text = it.text) },
+                )
                 // Merged over what was stored, never over what was typed: the address
                 // field is a bare URL here, so a blank one must not erase the stored
                 // address, workspace or session ids.
@@ -741,14 +655,11 @@ fun EnderSlicerApp(
                 // stored encrypted now, and a bearer credential left in a text
                 // field is one paste away from somewhere it does not belong.
                 aiAddress = target.baseUrl
-                aiMessages = withContext(Dispatchers.IO) { chat.messages() }.map {
-                    AiChatMessage(fromUser = it.fromUser, text = it.text)
-                }
                 // A turn that outlived the activity is still running on the
-                // harness, and nothing else reads its reply back: pick both
-                // conversations up again instead of losing the answers to a
-                // rotation and starting a second generation on the next send.
-                resumeReplyIfRunning(chat, { aiMessages = it }, { aiStatus = it }) { aiBusy = it }
+                // harness, and nothing else reads its reply back: pick the
+                // modelling and CAD conversations up again instead of losing the
+                // answers to a rotation and starting a second generation on the
+                // next send.
                 resumeReplyIfRunning(
                     modelling,
                     { modellingMessages = it },
@@ -758,42 +669,21 @@ fun EnderSlicerApp(
                 // activity is still running on the harness and nothing else reads its reply back.
                 resumeReplyIfRunning(
                     cad,
-                    { cadMessages = it },
+                    { cadConversations = cadConversations.replaceHarness(it) },
                     { cadStatus = it },
                 ) { cadBusy = it }
-                aiStatus = when {
-                    !adopted.reused -> "Started a new conversation"
-                    workspace.isBlank() -> "No workspace set — the agent cannot see your skills"
+                // The harness source's own status line: its first connection shows here, and
+                // it is the same "Harness - ..." state the header reports.
+                cadStatus = when {
+                    !adopted.reused -> "Started a new harness conversation"
+                    workspace.isBlank() -> "No workspace set - the agent cannot see your skills"
                     else -> null
                 }
             } catch (error: Throwable) {
-                aiStatus = error.message?.take(200) ?: "Could not reach the harness"
+                cadStatus = error.message?.take(200) ?: "Could not reach the harness"
                 aiConfigured = false
                 aiInsecure = false
             } finally {
-                aiBusy = false
-            }
-        }
-    }
-
-    /**
-     * Stops the conversation.
-     *
-     * Cancels the turn and then tells the agent to drop the work that cancel
-     * does not reach: a background job survives it, and its completion notice
-     * starts a fresh turn on its own.
-     */
-    fun stopHarness() {
-        val chat = harnessChat.get() ?: return
-        aiScope.launch {
-            try {
-                withContext(Dispatchers.IO) { chat.stop() }
-                aiStatus = "Stopped"
-            } catch (error: Throwable) {
-                aiStatus = error.message?.take(160) ?: "Could not stop the session"
-            } finally {
-                // The poll loop may be waiting on a turn that will now never
-                // answer, so the composer has to be released here too.
                 aiBusy = false
             }
         }
@@ -913,9 +803,15 @@ fun EnderSlicerApp(
                     pick.asPrompt(pick.x, pick.y) + text
                 }
                 withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(outgoing)) }
-                cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+                cadConversations = cadConversations.appendHarness(
+                    AiChatMessage(fromUser = true, text = text),
+                )
                 cadPick = null
-                pollForReply(chat, { cadMessages = it }, { cadStatus = it })
+                pollForReply(
+                    chat,
+                    { cadConversations = cadConversations.replaceHarness(it) },
+                    { cadStatus = it },
+                )
             } catch (error: Throwable) {
                 cadStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
@@ -949,7 +845,9 @@ fun EnderSlicerApp(
             cadBusy = true
             cadStatus = null
             inAppWebNotice = inAppCadAgent.get()?.webToolsNotice
-            cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
+            cadConversations = cadConversations.appendInApp(
+                AiChatMessage(fromUser = true, text = text),
+            )
             val ownership = SolidCraftEngine.authorship()
             var turnBegan = false
             try {
@@ -1022,17 +920,21 @@ fun EnderSlicerApp(
                             // Plain words for the sheet's compact transcript, which has no rows
                             // of its own; the floating chat shows the tool rows instead.
                             aiScope.launch {
-                                cadMessages = cadMessages + AiChatMessage(
-                                    fromUser = false,
-                                    text = activity,
-                                    kind = AiChatEntryKind.ACTIVITY,
+                                cadConversations = cadConversations.appendInApp(
+                                    AiChatMessage(
+                                        fromUser = false,
+                                        text = activity,
+                                        kind = AiChatEntryKind.ACTIVITY,
+                                    ),
                                 )
                             }
                         },
                         onToolTrace = { trace -> aiScope.launch { applyToolTrace(trace) } },
                     )
                 }
-                cadMessages = cadMessages + AiChatMessage(fromUser = false, text = reply)
+                cadConversations = cadConversations.appendInApp(
+                    AiChatMessage(fromUser = false, text = reply),
+                )
                 inAppWebNotice = agent.webToolsNotice
             } catch (error: AgentException) {
                 cadStatus = if (error.code == "cancelled") "Stopped" else error.message
@@ -1078,8 +980,8 @@ fun EnderSlicerApp(
      * Sends one request to whichever agent authors the CAD document.
      *
      * In-app is the default: the endpoint is called from this phone and the engine's tools run in
-     * process. The harness is the advanced path and keeps its own conversation on the harness.
-     * Both write cadMessages, so the transcript is the same either way.
+     * process. The harness is the advanced path and keeps its own conversation on the harness;
+     * each backend's messages live in their own list ([CadConversations]).
      */
     fun askSolidCraftAgent(text: String) {
         val stored = agentSettingsStore.load()
@@ -1092,10 +994,16 @@ fun EnderSlicerApp(
             cadStatus = null
             try {
                 val chat = cadChat.get()
-                    ?: error("Connect the harness first - the sparkle button on the plate")
+                    ?: error("Connect the harness first - Ask AI is in the sidebar rail")
                 withContext(Dispatchers.IO) { chat.send(EngineMode.SOLIDCRAFT.prompt(text)) }
-                cadMessages = cadMessages + AiChatMessage(fromUser = true, text = text)
-                pollForReply(chat, { cadMessages = it }, { cadStatus = it })
+                cadConversations = cadConversations.appendHarness(
+                    AiChatMessage(fromUser = true, text = text),
+                )
+                pollForReply(
+                    chat,
+                    { cadConversations = cadConversations.replaceHarness(it) },
+                    { cadStatus = it },
+                )
             } catch (error: Throwable) {
                 cadStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
@@ -1124,8 +1032,8 @@ fun EnderSlicerApp(
         inAppWebNotice = null
         cadStatus = when {
             mode == AgentMode.HARNESS && !aiConfigured ->
-                "The harness is not connected yet. Connect it from the sparkle chat, or switch " +
-                    "back to the in-app agent - it needs no computer."
+                "The harness is not connected yet. Connect it from Ask AI in the sidebar rail, " +
+                    "or switch back to the in-app agent - it needs no computer."
             else -> null
         }
     }
@@ -1153,7 +1061,7 @@ fun EnderSlicerApp(
             // A different endpoint or model is a different agent: the old conversation and what
             // the old server said about search do not apply to it.
             inAppCadAgent.get()?.reset()
-            cadMessages = emptyList()
+            cadConversations = cadConversations.copy(inApp = emptyList())
         } else if (apiKey != null) {
             // A new key can have different tool-route permission, so re-learn what search offers.
             inAppCadAgent.get()?.reset()
@@ -1244,7 +1152,7 @@ fun EnderSlicerApp(
                 // There is no connect button on this screen, so the way to make
                 // it work has to be said here.
                 modellingStatus = "The harness is not set up yet - connect it in the AI chat " +
-                    "(Blender menu, Ask AI) first"
+                    "(Ask AI in the sidebar rail) first"
             }
         }
         // The engine starts on its default scene, so a first visit has nothing
@@ -1278,7 +1186,7 @@ fun EnderSlicerApp(
                 connectHarness()
             } else {
                 cadStatus = "The harness is not set up yet - connect it in the AI chat " +
-                    "(Blender menu, Ask AI) first"
+                    "(Ask AI in the sidebar rail) first"
             }
         }
     }
@@ -1325,7 +1233,7 @@ fun EnderSlicerApp(
         // the test - so a rotation with the CAD screen open left every send failing
         // from a chat that had nothing to send on, until the screen was left and
         // re-entered.
-        val missingClient = (aiChatOpen && harnessChat.get() == null) ||
+        val missingClient = (aiChatOpen && cadChat.get() == null) ||
             (modellingOpen && modellingChat.get() == null) ||
             (cadOpen && cadChat.get() == null)
         if (aiConfigured && missingClient) connectHarness()
@@ -1513,12 +1421,6 @@ fun EnderSlicerApp(
     val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(viewModel::importCuraProject)
     }
-    // Image -> model is a harness job, not an on-device one: the harness wakes
-    // the GPU box over Wake-on-LAN, runs the generator, and hibernates it again.
-    // The upload path is not wired yet, so this reports rather than pretends.
-    val aiImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) sendImageToHarness(uri)
-    }
     val textureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.data?.let(viewModel::importModel)
@@ -1563,7 +1465,13 @@ fun EnderSlicerApp(
     // The CAD route into the app: STEP/IGES/3MF/OBJ/glTF through the engine's own io crate,
     // not through OCCT's STEP-to-mesh converter. Import model keeps the mesh route.
     val cadDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        uri?.let(viewModel::openCadDocument)
+        uri?.let { picked ->
+            // A different document is a different conversation: nothing in-app is persisted,
+            // and showing the previous document's transcript over this one would be worse
+            // than an empty chat.
+            cadConversations = cadConversations.copy(inApp = emptyList())
+            viewModel.openCadDocument(picked)
+        }
     }
 
     val effectiveSliceBlockedReason = sliceBlockedReason
@@ -1632,6 +1540,9 @@ fun EnderSlicerApp(
                     viewModel.connectCadAgent()
                     viewModel.openSolidCraftSheet()
                 },
+                // The chat's only door. It opens the overlay at the size last chosen and
+                // leaves the selected tab alone.
+                onAskAi = { aiChatOpen = true },
                 onSettings = viewModel::updateSettings,
                 onPrusaSettings = viewModel::updatePrusaSettings,
                 onOrcaSettings = viewModel::updateOrcaSettings,
@@ -1850,17 +1761,6 @@ fun EnderSlicerApp(
                                                 annotationUiOpen = true
                                             },
                                             enabled = state.mesh != null && !state.isBusy,
-                                        )
-                                        HorizontalDivider()
-                                        MenuSectionLabel("Assistant")
-                                        DropdownMenuItem(
-                                            text = { Text("Ask AI") },
-                                            leadingIcon = { Icon(AppIcons.Sparkle, contentDescription = null) },
-                                            onClick = {
-                                                blenderMenuExpanded = false
-                                                aiChatOpen = true
-                                            },
-                                            enabled = !state.isBusy,
                                         )
                                     }
                                 }
@@ -2099,7 +1999,7 @@ fun EnderSlicerApp(
                     )
                 } else if (cadOpen && !cadFilesOpen && !blenderFilesOpen) {
                     CadScreen(
-                        messages = cadMessages,
+                        messages = cadConversations.harness,
                         busy = cadBusy,
                         status = cadStatus,
                         agentConnected = cadChatReady,
@@ -3083,14 +2983,17 @@ fun EnderSlicerApp(
         }
     }
 
-    // Plate only: the other tabs have no viewer for the user to paint on, and
-    // the chat's whole point is describing painted regions.
-    if (aiChatOpen && selectedTab == AppTab.PLATE) {
+    // Every tab: the rail's Ask AI door is available wherever the rail is, and opening the
+    // chat must never move the selected destination. The overlay floats over whatever the tab
+    // is showing; the plate still gets the paint-and-describe workflow it always had.
+    if (aiChatOpen) {
         AiChatOverlay(
-            messages = aiMessages,
-            onSend = ::askHarness,
-            onUploadImage = { aiImagePicker.launch(arrayOf("image/*")) },
-            onStop = ::stopHarness,
+            // The harness session's own messages - never the in-app agent's.
+            messages = cadConversations.harness,
+            // Sending goes to the backend the shared selection says is shown.
+            onSend = ::askSolidCraftAgent,
+            // The same stop the CAD agent sheet's Cancel uses, for whichever backend is shown.
+            onStop = ::cancelAgentTurn,
             onClose = { aiChatOpen = false },
             setup = if (aiConfigured) {
                 null
@@ -3103,27 +3006,35 @@ fun EnderSlicerApp(
                     onWorkspaceChange = { aiWorkspace = it },
                 )
             },
-            busy = aiBusy,
-            status = aiStatus,
+            busy = cadBusy,
+            status = cadStatus,
             insecure = aiInsecure,
-            // The same surface, two backends: in-app is the phone's own CAD agent and the
-            // default source; the harness above it is unchanged and still its own conversation.
+            // One shared selection with the CAD agent sheet: the sheet's mode chips and these
+            // chips are the same state, so typing in either box always reaches the backend the
+            // chat is showing.
+            source = agentSettings.mode.chatSource(),
+            onSourceChange = { setAgentMode(it.agentMode()) },
+            authorLine = chatAuthorship.authorLine,
+            authorPausedReason = if (chatAuthorship.inAppPaused) {
+                chatAuthorship.pausedLine + " - take the document back in the CAD agent sheet."
+            } else {
+                null
+            },
+            harnessLine = if (aiConfigured) {
+                "Harness - session connected"
+            } else {
+                "Harness - not connected"
+            },
+            // The in-app agent's own conversation, tool rows included.
             inApp = InAppChat(
-                messages = cadMessages,
+                messages = cadConversations.inApp,
                 busy = cadBusy,
                 status = cadStatus,
-                authorLine = chatAuthorship.authorLine,
-                pausedReason = if (chatAuthorship.inAppPaused) {
-                    chatAuthorship.pausedLine + " - take the document back in the CAD agent sheet."
-                } else {
-                    null
-                },
+                backendLine = "In-app - " + agentSettings.endpointLabel(),
                 configured = agentSettings.isConfigured,
                 onSend = ::askInAppAgentFromChat,
-                // The same stop the sheet's Cancel uses: this turn, not the engine.
-                onStop = { inAppCadAgent.get()?.cancel() },
-                onCopyTranscript = ::copyChatTranscript,
             ),
+            onCopyTranscript = ::copyChatTranscript,
             // The three sizes live here so they survive the chat being closed and reopened; a
             // resize is state only - the engine and a running turn are untouched by it.
             size = chatSize,
@@ -3158,7 +3069,8 @@ fun EnderSlicerApp(
                 ?: "cad-document"
             SolidCraftSheet(
                 document = state.cadDocument,
-                messages = cadMessages,
+                // The same shared selection the chat's source switch drives.
+                messages = cadConversations.messagesFor(agentSettings.mode.chatSource()),
                 agentSettings = agentSettings,
                 chatConfigured = aiConfigured,
                 chatBusy = cadBusy,
@@ -3173,7 +3085,12 @@ fun EnderSlicerApp(
                 onCancelAgent = ::cancelAgentTurn,
                 onConnect = viewModel::connectCadAgent,
                 onStop = viewModel::stopCadAgent,
-                onCloseDocument = viewModel::closeCadDocument,
+                onCloseDocument = {
+                    viewModel.closeCadDocument()
+                    // The in-app conversation belongs to the document that is now closed; it
+                    // is not persisted, so it is cleared rather than carried into the next one.
+                    cadConversations = cadConversations.copy(inApp = emptyList())
+                },
                 onRebuild = viewModel::rebuildCadPlateFromDocument,
                 onCopyToken = {
                     requestMcpTokenCopy(
@@ -4529,8 +4446,9 @@ internal fun SliceStatus(
 }
 
 /**
- * The navigation rail: the four destinations, then the printing session, then
- * the Plate's actions - all in one column, which is the only column a fold has.
+ * The navigation rail: the four destinations and the chat's own door (an action, not a
+ * destination), then the printing session, then the Plate's actions - all in one column, which
+ * is the only column a fold has.
  *
  * The session is the state chip, this slice's numbers, and the four values that
  * used to be cards over the plate (layer height, infill, supports, adhesion),
@@ -4553,6 +4471,8 @@ internal fun SessionRail(
     cadDocument: Boolean = false,
     /** Starts the CAD agent and opens its sheet, where a change can be asked for. */
     onCadAgent: () -> Unit = {},
+    /** Opens the AI chat overlay. An action, not a destination: the tab stays put. */
+    onAskAi: () -> Unit = {},
     onSettings: (String, (SlicerSettings) -> SlicerSettings) -> Unit,
     onPrusaSettings: (String, (PrusaSliceSettings) -> PrusaSliceSettings) -> Unit,
     onOrcaSettings: (String, (OrcaSliceSettings) -> OrcaSliceSettings) -> Unit,
@@ -4633,6 +4553,10 @@ internal fun SessionRail(
             AppTab.entries.forEach { tab ->
                 RailDestination(tab, selected == tab) { onSelect(tab) }
             }
+            // The AI chat's own door: in the same list as the destinations, drawn the same
+            // way, but an action - it opens the chat overlay and never changes the tab or
+            // shows a selected state.
+            RailAction(icon = AppIcons.Sparkle, label = "Ask AI", onClick = onAskAi)
             HorizontalDivider(
                 modifier = Modifier.padding(
                     horizontal = EnderSlicerDimens.Space8,
@@ -4980,6 +4904,31 @@ private fun RailButtonLabel(text: String) {
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/**
+ * One action in the rail's destination list.
+ *
+ * Drawn like a destination - same width, padding, shape, icon size and label - because it
+ * sits in the same column, but it is never selected and never carries a badge: opening the
+ * chat is a door, not a place the app is standing in.
+ */
+@Composable
+private fun RailAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = EnderSlicerDimens.Space8)
+            .clip(MaterialTheme.shapes.small)
+            .clickable(onClick = onClick)
+            .padding(vertical = EnderSlicerDimens.Space6),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
+    ) {
+        Icon(icon, contentDescription = null, tint = color)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
+    }
 }
 
 /** One destination, drawn the way the suite's own rail draws it. */

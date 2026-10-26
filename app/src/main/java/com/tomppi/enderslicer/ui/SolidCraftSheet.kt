@@ -491,8 +491,8 @@ internal fun SolidCraftSheet(
                         "the whole agent. The key is sealed in the device keystore and is never " +
                         "shown again."
                 } else {
-                    "The harness is not connected. Open it from the sparkle button and connect " +
-                        "it first; this box then sends to the same CAD conversation."
+                    "The harness is not connected. Open it from Ask AI in the sidebar rail " +
+                        "and connect it first; this box then sends to the same CAD conversation."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -87,25 +87,17 @@ enum class ChatSource(val label: String) {
  * that same list, in the order they happened, so the chat shows the work as it runs.
  */
 data class InAppChat(
+    /** This backend's own conversation - never the harness session's. */
     val messages: List<AiChatMessage>,
     val busy: Boolean = false,
     /** The last failure, in the agent's own words (endpoint, key, engine). */
     val status: String? = null,
-    /** "Author: nobody" / "Author: in-app agent" / "Author: external agent on 9878". */
-    val authorLine: String = "",
-    /** Non-null when another author has the document; the in-app composer is paused. */
-    val pausedReason: String? = null,
+    /** "In-app - deepseek-chat at api.deepseek.com", or "In-app - not configured". */
+    val backendLine: String = "",
     /** False until the endpoint has a URL and a model; the composer says so. */
     val configured: Boolean = true,
     val onSend: (String) -> Unit = {},
-    /** The same cancel the sheet's Cancel uses: it stops this turn, not the engine. */
-    val onStop: () -> Unit = {},
-    /** Receives the transcript text (messages + tool rows); the caller owns the clipboard. */
-    val onCopyTranscript: (String) -> Unit = {},
-) {
-    /** The author line, as the chat header shows it. */
-    val headerLine: String get() = authorLine
-}
+)
 
 /**
  * Address entry, shown until the harness has been reached once.
@@ -143,11 +135,13 @@ private val FullScreenReadingWidth = 760.dp
  * viewport for reading a long transcript; the plate keeps running underneath and
  * the engine and the turn are untouched by a resize.
  *
- * **Two backends, one surface.** [ChatSource.IN_APP] shows the CAD conversation the
- * CAD agent sheet also drives, with a row for every tool the agent runs (name, arguments,
- * duration, outcome) so the user can watch it work; [ChatSource.HARNESS] is the harness chat
- * exactly as it was. The header names the document's author in both, so an attached external
- * agent reads as "in-app agent paused" instead of a chat that quietly does nothing.
+ * **Two backends, one surface - and two conversations.** [ChatSource.IN_APP] renders the
+ * in-app agent's own messages (a row for every tool it runs: name, arguments, duration,
+ * outcome), and [ChatSource.HARNESS] renders the harness session's own messages. They are
+ * separate lists owned by their backends; switching the source never shows the other one's
+ * transcript, and each empty state says which backend is being looked at. The header names the
+ * backend and its state, and the document's author, so an attached external agent reads as
+ * "in-app agent paused" instead of a chat that quietly does nothing.
  *
  * The size itself lives with the caller ([size], [lastExpandedSize], [onSizeChange]) so it
  * survives the chat being closed and reopened in the same session, and so back and the header
@@ -158,25 +152,42 @@ private val FullScreenReadingWidth = 760.dp
  */
 @Composable
 fun AiChatOverlay(
+    /** The harness session's own conversation - never the in-app agent's. */
     messages: List<AiChatMessage>,
+    /** Sends to the harness session. */
     onSend: (String) -> Unit,
-    onUploadImage: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    /** Stops the running turn and the work it started. Offered while [busy]. */
+    /** Stops the running turn of whichever backend is shown. */
     onStop: () -> Unit = {},
-    /** Non-null until the harness address is known; replaces the composer. */
+    /** Non-null until the harness address is known; its setup replaces the composer. */
     setup: ChatSetup? = null,
-    /** True while a request is in flight, so the composer can say so. */
+    /** True while a harness request is in flight, so the composer can say so. */
     busy: Boolean = false,
-    /** Last transport outcome, shown under the composer. */
+    /** Last harness transport outcome, shown under the conversation. */
     status: String? = null,
-    /** True while the session travels over plain HTTP to another machine. */
+    /** True while the harness session travels over plain HTTP to another machine. */
     insecure: Boolean = false,
     /** The app's own CAD agent. Non-null enables the source switch and the in-app view. */
     inApp: InAppChat? = null,
-    /** Which source the chat opens on; in-app is the default, the agent this app was built for. */
+    /**
+     * The selected source, owned by the caller so the CAD agent sheet's ask box and this chat
+     * cannot disagree about which backend a message goes to. Null lets the overlay remember its
+     * own selection (tests, previews).
+     */
+    source: ChatSource? = null,
+    /** Called when a source chip is tapped; the caller persists the shared selection. */
+    onSourceChange: (ChatSource) -> Unit = {},
+    /** Which source the chat opens on when [source] is null; in-app is the app's default. */
     initialSource: ChatSource = ChatSource.IN_APP,
+    /** "Author: nobody" / "Author: in-app agent" / "Author: external agent on 9878". */
+    authorLine: String = "",
+    /** Non-null when another author has the document; the in-app composer is paused. */
+    authorPausedReason: String? = null,
+    /** "Harness - session connected" / "Harness - not connected". */
+    harnessLine: String = "",
+    /** Receives the shown backend's transcript text; the caller owns the clipboard. */
+    onCopyTranscript: (String) -> Unit = {},
     /** The remembered size; the overlay only asks the caller to change it. */
     size: ChatSize = ChatSize.PANEL,
     /** The last non-bubble size, so tapping the bubble returns where the user was. */
@@ -197,11 +208,21 @@ fun AiChatOverlay(
     var draft by rememberSaveable { mutableStateOf("") }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var placed by remember { mutableStateOf(false) }
-    var source by rememberSaveable { mutableStateOf(initialSource) }
+    // The caller owns the selection (one shared selection with the CAD agent sheet); with no
+    // caller-owned source the overlay remembers its own, which is what previews and tests use.
+    var localSource by rememberSaveable { mutableStateOf(initialSource) }
+    val shownSource = source ?: localSource
+    val selectSource: (ChatSource) -> Unit = { wanted ->
+        if (source == null) {
+            localSource = wanted
+        } else {
+            onSourceChange(wanted)
+        }
+    }
     val density = LocalDensity.current
     val scroll = rememberScrollState()
 
-    val showInApp = inApp != null && source == ChatSource.IN_APP
+    val showInApp = inApp != null && shownSource == ChatSource.IN_APP
     val app = if (showInApp) inApp else null
     // The harness state and the in-app state are separate: whichever source is not on screen
     // keeps its own messages untouched - switching source or size is not a new conversation.
@@ -228,8 +249,8 @@ fun AiChatOverlay(
             ) {
                 ChatSource.entries.forEach { candidate ->
                     FilterChip(
-                        selected = source == candidate,
-                        onClick = { source = candidate },
+                        selected = shownSource == candidate,
+                        onClick = { selectSource(candidate) },
                         label = { Text(candidate.label, style = MaterialTheme.typography.labelSmall) },
                     )
                 }
@@ -237,18 +258,38 @@ fun AiChatOverlay(
         }
     }
 
+    // Which backend is on screen, and its own state: "In-app - model at host" or
+    // "Harness - session connected". The switch alone does not say what it is connected to.
+    val backendRow: @Composable () -> Unit = {
+        val line = if (showInApp) app?.backendLine.orEmpty() else harnessLine
+        if (line.isNotBlank()) {
+            Text(
+                text = line,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                modifier = Modifier.padding(
+                    start = EnderSlicerDimens.CardPadding,
+                    end = EnderSlicerDimens.CardPadding,
+                    top = EnderSlicerDimens.Space4,
+                ),
+            )
+        }
+    }
+
     val authorRow: @Composable () -> Unit = {
         // The one-author rule, in the chat's own header: an external agent holding the document
         // must read as "in-app agent paused", never as a chat that is silently unable to send.
-        if (app != null) {
+        // The author is the document's, not a backend's, so the line shows in both sources.
+        if (authorLine.isNotBlank()) {
             Text(
-                text = if (app.pausedReason != null) {
-                    app.headerLine + " · in-app agent paused"
+                text = if (authorPausedReason != null && showInApp) {
+                    authorLine + " · in-app agent paused"
                 } else {
-                    app.headerLine
+                    authorLine
                 },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (app.pausedReason != null) {
+                color = if (authorPausedReason != null && showInApp) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
@@ -293,10 +334,8 @@ fun AiChatOverlay(
                 app != null -> {
                     if (app.messages.isEmpty()) {
                         Text(
-                            text = "Ask me to build or change the CAD document on the " +
-                                "plate. Every tool I run shows up here while I run it - " +
-                                "the box, the fillet, a web search - so you can watch " +
-                                "the work instead of waiting on a spinner.",
+                            text = "No in-app conversation yet - ask for a change. Every " +
+                                "tool the in-app agent runs will show up here as a row.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -309,9 +348,9 @@ fun AiChatOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    app.pausedReason?.let {
+                    if (authorPausedReason != null) {
                         Text(
-                            text = it,
+                            text = authorPausedReason,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -325,6 +364,14 @@ fun AiChatOverlay(
                     }
                 }
                 setup != null -> {
+                    if (messages.isEmpty()) {
+                        Text(
+                            text = "No harness session - connect the harness from the " +
+                                "Harness tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         text = "Paste the launch URL your harness printed - the " +
                             "https://your-machine.your-tailnet.ts.net address with " +
@@ -382,8 +429,8 @@ fun AiChatOverlay(
                 else -> {
                     if (messages.isEmpty()) {
                         Text(
-                            text = "Paint on the model to show me what to add or change, " +
-                                "then ask. I can also build a new model from an image.",
+                            text = "No harness session - connect the harness from the " +
+                                "Harness tab.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -431,7 +478,9 @@ fun AiChatOverlay(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(
                     onSend = {
-                        if (draft.isNotBlank() && canSend(showInApp, app, activeBusy)) {
+                        if (draft.isNotBlank() &&
+                            canSend(showInApp, app, activeBusy, authorPausedReason)
+                        ) {
                             sendDraft(showInApp, draft, app, onSend)
                             draft = ""
                         }
@@ -442,12 +491,15 @@ fun AiChatOverlay(
             Spacer(Modifier.width(EnderSlicerDimens.Space4))
             FilledIconButton(
                 onClick = {
-                    if (draft.isNotBlank() && canSend(showInApp, app, activeBusy)) {
+                    if (draft.isNotBlank() &&
+                        canSend(showInApp, app, activeBusy, authorPausedReason)
+                    ) {
                         sendDraft(showInApp, draft, app, onSend)
                         draft = ""
                     }
                 },
-                enabled = draft.isNotBlank() && canSend(showInApp, app, activeBusy),
+                enabled = draft.isNotBlank() &&
+                    canSend(showInApp, app, activeBusy, authorPausedReason),
             ) {
                 Icon(AppIcons.Send, contentDescription = "Send")
             }
@@ -465,44 +517,25 @@ fun AiChatOverlay(
                     bottom = EnderSlicerDimens.Space8,
                 ),
         ) {
-            if (showInApp) {
-                TextButton(
-                    onClick = { app?.onCopyTranscript?.invoke(chatTranscriptText(app.messages)) },
-                    enabled = app != null && app.messages.isNotEmpty(),
-                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                ) { Text("Copy transcript") }
-                if (app?.configured == false) {
-                    Text(
-                        text = "Set the endpoint in the CAD agent sheet.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else {
-                TextButton(
-                    onClick = onUploadImage,
-                    contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
-                ) {
-                    Icon(
-                        imageVector = AppIcons.ImageUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(EnderSlicerDimens.Space6))
-                    Text("Build from image")
-                }
+            // The shown backend's transcript, tool rows included for the in-app agent.
+            TextButton(
+                onClick = { onCopyTranscript(chatTranscriptText(activeMessages)) },
+                enabled = activeMessages.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
+            ) { Text("Copy transcript") }
+            if (showInApp && app?.configured == false) {
+                Text(
+                    text = "Set the endpoint in the CAD agent sheet.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            // Only while something is running. Stops this turn, not the engine: the in-app Stop
-            // is the same cancel the CAD agent sheet's Cancel uses.
+            // Only while something is running. Stops this backend's turn, not the engine: the
+            // caller passes the same cancel the CAD agent sheet's Cancel uses.
             if (activeBusy) {
                 Spacer(Modifier.weight(1f))
-                val stopTurn: () -> Unit = if (showInApp) {
-                    { app?.onStop?.invoke() }
-                } else {
-                    onStop
-                }
                 TextButton(
-                    onClick = stopTurn,
+                    onClick = onStop,
                     contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space8),
                 ) { Text("Stop") }
             }
@@ -563,6 +596,7 @@ fun AiChatOverlay(
                         TextButton(onClick = onClose) { Text("Close") }
                     }
                     sourceChips()
+                    backendRow()
                     authorRow()
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     insecureNote()
@@ -686,6 +720,7 @@ fun AiChatOverlay(
                     TextButton(onClick = onClose) { Text("Close") }
                 }
                 sourceChips()
+                backendRow()
                 authorRow()
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 insecureNote()
@@ -702,10 +737,10 @@ fun AiChatOverlay(
 }
 
 /** Whether the composer may send right now, for either backend. */
-private fun canSend(showInApp: Boolean, app: InAppChat?, busy: Boolean): Boolean {
+private fun canSend(showInApp: Boolean, app: InAppChat?, busy: Boolean, paused: String?): Boolean {
     if (busy) return false
     if (!showInApp) return true
-    return app != null && app.configured && app.pausedReason == null
+    return app != null && app.configured && paused == null
 }
 
 private fun sendDraft(showInApp: Boolean, text: String, app: InAppChat?, onSendHarness: (String) -> Unit) {

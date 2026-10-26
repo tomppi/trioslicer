@@ -47,11 +47,14 @@ stdio `tools/list` every turn, minus the tools that make no sense on this plate:
 and in the bridge without an app change. Every call runs in process through the same engine
 session; a tool failure is returned to the model as an error result, never thrown at the UI.
 
-The user watches this agent in the app's floating chat (sparkle): the **CAD agent (in-app)**
-source shows every tool call as a row - name, arguments, duration and outcome - as it runs, with
-a Stop that cancels the turn and a **Copy transcript** that copies the messages and rows. The
-chat also has three sizes (bubble, panel, full screen); none of them changes the document, the
-engine or a running turn.
+The user watches this agent in the app's floating chat, opened from **Ask AI** in the sidebar
+rail (the same list as Plate / Settings / Print / More - the Blender menu's old entry is gone):
+the **CAD agent (in-app)** source shows every tool call as a row - name, arguments, duration and
+outcome - as it runs, with a Stop that cancels the turn and a **Copy transcript** that copies the
+messages and rows. Its **Harness** source is the CAD harness session's own conversation, not the
+same transcript: the two backends keep separate lists, so a harness turn never appears under the
+in-app source (and the reverse). The chat also has three sizes (bubble, panel, full screen); none
+of them changes the document, the engine or a running turn.
 
 The in-app agent can also **search the web and read pages** (`web_search`, `web_fetch`) when
 the configured endpoint offers DeepSeek's `/tools/search` and `/tools/fetch` routes and the

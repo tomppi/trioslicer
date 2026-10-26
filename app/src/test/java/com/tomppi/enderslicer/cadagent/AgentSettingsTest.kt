@@ -153,6 +153,18 @@ class AgentSettingsTest {
     }
 
     @Test
+    fun theEndpointLabelNamesTheModelAndHostButNeverThePathOrKey() {
+        val deepSeek = AgentSettings()
+        assertEquals("deepseek-chat at api.deepseek.com", deepSeek.endpointLabel())
+
+        val local = AgentSettings(baseUrl = "http://192.168.3.212:8080/v1", model = "walk-model")
+        assertEquals("walk-model at 192.168.3.212:8080", local.endpointLabel())
+
+        val unset = AgentSettings(baseUrl = "", model = "")
+        assertEquals("not configured", unset.endpointLabel())
+    }
+
+    @Test
     fun theMaskedKeyIsTheOnlyRenderingOfTheKey() {
         val settings = AgentSettings(hasApiKey = true)
         assertEquals(AgentSettings.MASKED_KEY, settings.keyMask)
