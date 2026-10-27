@@ -109,10 +109,13 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
     data class ApplyResult(val stl: File, val triangles: Int, val repairWarnings: List<String>)
 
     /** A named engine failure; the message is written for the user. */
-    class StudioException(message: String, cause: Throwable? = null) : Exception(message, cause)
+    open class StudioException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     /** The apply was cancelled by [cancel] (or by the caller's coroutine scope going away). */
     class CancelledException(message: String = "BumpMesh studio apply was cancelled") : CancellationException(message)
+
+    /** A named phase timed out; its message already names the step and the expected triangle count. */
+    class EngineTimeoutException(message: String, cause: Throwable? = null) : StudioException(message, cause)
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -219,7 +222,11 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
             pruneResults()
             progress(BumpMeshProgress.LOADING_ENGINE, 0f)
             withContext(Dispatchers.Main.immediate) { page.ensureStarted() }
-            withTimeout(WARMUP_TIMEOUT_MS) { page.awaitReady() }
+            try {
+                withTimeout(WARMUP_TIMEOUT_MS) { page.awaitReady() }
+            } catch (timeout: TimeoutCancellationException) {
+                throw StudioException(BumpMeshFailureReport.readyTimeout(), timeout)
+            }
             progress(BumpMeshProgress.LOADING_ENGINE, 0.05f)
 
             val mask = request.mask
@@ -256,15 +263,8 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
                         throw StudioException(error.message ?: "The source STL could not be read", error)
                     }
                 }
-                withContext(Dispatchers.Main.immediate) {
-                    val command = if (mask != null) {
-                        page.openProjectCommand(expectedTriangles)
-                    } else {
-                        page.openModelCommand(expectedTriangles, request.sourceStl.name)
-                    }
-                    page.evaluate(command)
-                }
-                awaitEvent(activeCall, setOf(EVENT_MODEL_LOADED, EVENT_PROJECT_LOADED), IMPORT_TIMEOUT_MS, progress)
+                activeCall.expectedTriangles = expectedTriangles
+                openSourceWithRetry(activeCall, request, mask != null, expectedTriangles, progress)
                 loadedSource = request.sourceStl
                 loadedSourceLength = request.sourceStl.length()
                 loadedSourceModified = request.sourceStl.lastModified()
@@ -294,12 +294,13 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
             throw cancelled
         } catch (timeout: TimeoutCancellationException) {
             resetAfterAbort()
-            throw StudioException("BumpMesh did not answer in time; the studio was reset. Try again.", timeout)
+            throw StudioException(BumpMeshFailureReport.readyTimeout(), timeout)
         } catch (cancelled: CancellationException) {
             resetAfterAbort()
             throw cancelled
         } catch (error: StudioException) {
             resetAfterAbort()
+            Log.w(TAG, "BumpMesh apply failed: " + (error.message ?: error.javaClass.simpleName))
             throw error
         } catch (error: Throwable) {
             resetAfterAbort()
@@ -311,6 +312,46 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
             activeCall.closeFile()
             callSlot.finish()
             page.currentProject = null
+        }
+    }
+
+    /**
+     * Opens the model (whole object) or the .bumpmesh project (painted mask) on the hidden page.
+     *
+     * If the page produces no event at all (a renderer that is not running our code), the hidden WebView is built
+     * fresh once and the import retried; if the fresh page is silent too, the timeout sentence names the step and the
+     * triangle count instead of hanging.
+     */
+    private suspend fun openSourceWithRetry(
+        activeCall: ApplyCall,
+        request: ApplyRequest,
+        masked: Boolean,
+        expectedTriangles: Int,
+        progress: (String, Float) -> Unit,
+    ) {
+        var attempt = 1
+        while (true) {
+            withContext(Dispatchers.Main.immediate) {
+                val command = if (masked) {
+                    page.openProjectCommand(expectedTriangles)
+                } else {
+                    page.openModelCommand(expectedTriangles, request.sourceStl.name)
+                }
+                page.evaluate(command)
+            }
+            try {
+                awaitEvent(activeCall, setOf(EVENT_MODEL_LOADED, EVENT_PROJECT_LOADED), IMPORT_SILENCE_TIMEOUT_MS, progress)
+                return
+            } catch (stalled: EngineTimeoutException) {
+                if (attempt >= 2) throw stalled
+                attempt++
+                withContext(Dispatchers.Main.immediate) { page.recycleForRetry() }
+                try {
+                    withTimeout(WARMUP_TIMEOUT_MS) { page.awaitReady() }
+                } catch (timeout: TimeoutCancellationException) {
+                    throw StudioException(BumpMeshFailureReport.readyTimeout(), timeout)
+                }
+            }
         }
     }
 
@@ -455,7 +496,16 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
                 error("unreachable")
             }
         } catch (timeout: TimeoutCancellationException) {
-            throw StudioException("BumpMesh did not finish " + expected.joinToString("/") + " in time", timeout)
+            val stepName = when {
+                expected.contains(EVENT_MODEL_LOADED) -> "the model load"
+                expected.contains(EVENT_PROJECT_LOADED) -> "the project import"
+                expected.contains(EVENT_SETTINGS_APPLIED) -> "the texture settings"
+                else -> expected.joinToString("/")
+            }
+            throw EngineTimeoutException(
+                BumpMeshFailureReport.importTimeout(step = stepName, expectedTriangleCount = activeCall.expectedTriangles),
+                timeout,
+            )
         }
     }
 
@@ -497,7 +547,7 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
                 error("unreachable")
             }
         } catch (timeout: TimeoutCancellationException) {
-            throw StudioException("The BumpMesh export did not finish in time", timeout)
+            throw EngineTimeoutException(BumpMeshFailureReport.phaseTimeout("the export"), timeout)
         }
     }
 
@@ -534,6 +584,10 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
 
         @Volatile
         var resultTriangles = 0
+
+        /** The cleaned triangle count the page should report for this apply; 0 until the import is prepared. */
+        @Volatile
+        var expectedTriangles = 0
 
         private var stream: OutputStream? = null
         private var expectedBytes = 0L
@@ -686,6 +740,10 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
     }
 
     private fun onPageEvent(kind: String, label: String, fraction: Double, message: String) {
+        if (kind == EVENT_DRIVER_READY) {
+            page.markReady()
+            return
+        }
         val event = StudioEvent(
             kind = kind,
             label = label,
@@ -821,12 +879,10 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
                 return
             }
             view.evaluateJavascript(script + "\n;(window.__BumpMeshStudio ? 'ok' : 'missing');") { result ->
-                if (result == "\"ok\"") {
-                    if (!ready.isCompleted) ready.complete(Unit)
-                } else {
-                    if (!ready.isCompleted) {
-                        ready.completeExceptionally(StudioException("The BumpMesh studio driver did not initialise (" + result + ")"))
-                    }
+                // Readiness is the driver's own driver-ready event: it is sent only after the driver has verified that
+                // every page control it drives is present. Injection alone is not readiness.
+                if (result != "\"ok\"" && !ready.isCompleted) {
+                    ready.completeExceptionally(StudioException("The BumpMesh studio driver did not initialise (" + result + ")"))
                 }
             }
         }
@@ -885,6 +941,33 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
             }
         }
 
+
+        fun markReady() {
+            if (!ready.isCompleted) ready.complete(Unit)
+        }
+
+        fun failReady(reason: String) {
+            if (!ready.isCompleted) {
+                ready.completeExceptionally(StudioException(reason.ifBlank { "The BumpMesh page failed to initialise" }))
+            }
+        }
+
+        /** Destroys the hidden WebView and builds a fresh one; used once when an import produces no event at all. */
+        fun recycleForRetry() {
+            val old = webView ?: return
+            val parent = old.parent as? ViewGroup
+            webView = null
+            runCatching { old.removeJavascriptInterface(JAVASCRIPT_BRIDGE_NAME) }
+            runCatching { old.removeJavascriptInterface(ADAPTER_BRIDGE_NAME) }
+            parent?.removeView(old)
+            runCatching {
+                old.stopLoading()
+                old.loadUrl("about:blank")
+                old.destroy()
+            }
+            ready = CompletableDeferred()
+            ensureStarted()
+        }
 
         fun clearConsoleWarnings() = synchronized(consoleWarnings) { consoleWarnings.clear() }
 
@@ -961,6 +1044,7 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
         private const val EVENT_WARNING = "warning"
         private const val EVENT_ERROR = "error"
         private const val EVENT_CANCELLED = "cancelled"
+        private const val EVENT_DRIVER_READY = "driver-ready"
 
         private const val STL_HEADER_BYTES = 84L
         private const val MIN_TILE_MM = 0.01f
@@ -972,7 +1056,8 @@ class BumpMeshStudio(private val context: Context, @Suppress("unused") private v
         private const val MIN_REFINE_MM = 0.01f
         private const val MAX_REFINE_MM = 100f
         private const val WARMUP_TIMEOUT_MS = 60_000L
-        private const val IMPORT_TIMEOUT_MS = 180_000L
+        /** How long an import may produce no event before the hidden WebView is rebuilt once. */
+        private const val IMPORT_SILENCE_TIMEOUT_MS = 25_000L
         private const val SETTINGS_TIMEOUT_MS = 120_000L
         private const val EXPORT_BASE_TIMEOUT_MS = 120_000L
         private const val EXPORT_PER_MILLION_TIMEOUT_MS = 60_000L

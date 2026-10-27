@@ -672,3 +672,36 @@ internal object BumpMeshLibraryManifest {
         return null
     }
 }
+/**
+ * The sentence a stuck engine reports: the step that was running and, when known, the triangle count the page was
+ * expected to show. No page console tail, no driver step history - the shipped logcat stays quiet and only a real
+ * failure carries this sentence into the UI and one Log.w.
+ */
+internal object BumpMeshFailureReport {
+    fun importTimeout(step: String, expectedTriangleCount: Int): String {
+        val counts = if (expectedTriangleCount > 0) {
+            " The page was expected to show " + MeshTriangleLimits.formatCount(expectedTriangleCount) + " triangles."
+        } else {
+            ""
+        }
+        return "BumpMesh did not finish " + step + " in time." + counts +
+            " The studio was reset; press Apply again."
+    }
+
+    /** Why a page triangle count cannot be used for a painted mask, or null when it matches the prediction. */
+    fun countMismatch(expectedTriangleCount: Int, actualTriangleCount: Int): String? {
+        if (expectedTriangleCount <= 0 || actualTriangleCount <= 0) return null
+        if (expectedTriangleCount == actualTriangleCount) return null
+        return "The page loaded " + MeshTriangleLimits.formatCount(actualTriangleCount) +
+            " triangles but the painted mask was built for " + MeshTriangleLimits.formatCount(expectedTriangleCount) +
+            ". The page and the studio disagree about which triangles are dropped at load, so the mask cannot be trusted." +
+            " Choose Whole object for this mesh, or reload the studio and paint again."
+    }
+
+    fun readyTimeout(): String =
+        "The BumpMesh page never reported itself ready, so the studio did not send it anything." +
+            " Reload the studio and press Apply again."
+
+    fun phaseTimeout(step: String): String =
+        "BumpMesh did not finish " + step + " in time; the studio was reset. Press Apply again."
+}
