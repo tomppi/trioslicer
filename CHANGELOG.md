@@ -14,6 +14,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pinned to the bottom of its pane while the transcript scrolls. Below it the single scrolling
   column keeps its order and content. Every card is one composable called by both layouts, so
   the two arrangements cannot drift apart - the rule the Smart Infill workbench already follows.
+- **The CAD sheet got the plate's width instead of Material's 640 dp phone cap.** Only the CAD
+  sheet passes a `sheetMaxWidth` to its `ModalBottomSheet`: below a 600 dp window it keeps
+  Material's 640 dp default (a phone is narrower anyway), at or above it uses
+  `min(windowWidthDp - 24 dp, 960 dp)` - the window-minus-margins frame the Smart Infill panel
+  fills. On the Fold's inner display the sheet is 714 dp instead of 640 dp (that window reports
+  738 dp), so each pane is ~37 dp wider; a wide window in landscape gets 902 dp. Every other
+  `AppBottomSheet` caller keeps the Material default.
 - **The sheet's copy is one line per section instead of paragraphs.** The engine/authorship
   sentence, the network-off line, the export and open-file hints, the API-key handling, the
   web-tools trust line and the driving line are all short now; the facts that would become a

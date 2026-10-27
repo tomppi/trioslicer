@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -97,10 +98,12 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -3577,7 +3580,22 @@ fun EnderSlicerApp(
     // The CAD agent sheet: the whole human surface on a live CAD document besides looking at
     // it, slicing it and exporting it. Kept above the AI chat so the sheet is never behind it.
     if (solidCraftSheetOpen && selectedTab == AppTab.PLATE) {
-        AppBottomSheet(onDismissRequest = { viewModel.closeSolidCraftSheet() }) {
+        // The CAD sheet gets the width the plate has. Material caps a bottom sheet at 640dp,
+        // which left a strip of the Fold's inner display unused beside the Smart Infill panel
+        // the user compared it to; that panel fills the plate (window minus its 12dp margins).
+        // Below 600dp the Material default is kept, and on a phone it is the whole window
+        // anyway. A wide window in landscape therefore gets the wide sheet too: this is
+        // width-driven, with no device check.
+        val windowWidthDp = LocalConfiguration.current.screenWidthDp.dp
+        val cadSheetMaxWidth = if (windowWidthDp >= 600.dp) {
+            minOf(windowWidthDp - 24.dp, 960.dp)
+        } else {
+            BottomSheetDefaults.SheetMaxWidth
+        }
+        AppBottomSheet(
+            onDismissRequest = { viewModel.closeSolidCraftSheet() },
+            sheetMaxWidth = cadSheetMaxWidth,
+        ) {
             val exportBase = state.cadDocument?.name
                 ?.replace(Regex("[^A-Za-z0-9._-]"), "-")
                 ?.take(64)
@@ -4304,11 +4322,15 @@ internal fun TopBarTextAction(
 @Composable
 private fun AppBottomSheet(
     onDismissRequest: () -> Unit,
+    // Material3 caps a modal sheet at 640dp. The CAD agent sheet passes a wider cap when the
+    // window has the width for it; every other caller keeps the Material default.
+    sheetMaxWidth: Dp = BottomSheetDefaults.SheetMaxWidth,
     content: @Composable () -> Unit,
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetMaxWidth = sheetMaxWidth,
     ) {
         content()
     }
