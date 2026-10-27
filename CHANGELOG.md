@@ -4,6 +4,33 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.14] - 2026-10-27
+
+### Added
+
+- **A native BumpMesh texture studio, built like Smart Infill: the BumpMesh engine drives a native panel instead of its own web page.**
+  Pick a texture, tile size, displacement height, mapping mode, smoothing and refine length, choose **Whole object** or **Painted
+  region**, and press Apply - the result replaces the selected plate object in place, ready to slice. The engine runs headlessly in
+  its existing bundled workspace (no vendored file changed), all **101 BumpMesh textures** are included (17.5 MB, +16.7 MB APK), and
+  the old full-screen **BumpMesh texturizer** web view stays exactly where it was under *More -> Experimental*.
+- **Undo in the side rail while a texture is applied.** The rail shows *Undo <texture>* after an apply; one press restores the
+  previous mesh (and the pre-texture paint), removes the row and invalidates the slice. Separate from the placement undo.
+- **The side rail's navigation block collapses with an arrow.** On a wide window the Plate/Settings/Print/More/Ask AI icons fold away
+  behind a chevron so the action buttons get the height; the choice is remembered across launches, and a pending agent question keeps its
+  badge visible even when the menu is collapsed.
+- **Honest cost tiers on the Apply button.** Fast (<= 800 k triangles), Detailed (<= 2 M) and Extreme (2-8 M with a memory warning and
+  a confirm); the studio estimates the result before it runs and refuses Extreme settings below the measured-safe refine floor. The
+  mesh triangle limit is shown and can be raised from the studio itself, because a textured model is a much larger mesh than its source.
+
+### Tested
+
+- Measured through the real engine on 3DBenchy (225,154 triangles, limit raised to 8 M): Fast/Knurling = **415,619 triangles in 18.3 s**;
+  the Armor library texture = **406,242 in 18.1 s**; a painted region (35,929 faces) = **271,436 in 11.6 s** with every untouched
+  vertex preserved below the painted area; Extreme (tile 6 mm, 1.2 mm) = 2,260,270 triangles in 112.6 s with a 3.57 GiB renderer peak.
+- Device walk on the dev phone: studio at Fold width (two panes) and phone width (one column), gallery *101 of 101*, estimate within
+  +3.9 % of the result, apply 22.9 s, **Sliced - 242 layers**, rail *Undo Armor* restored the mesh, and the *More -> Experimental*
+  web view row still opened the full BumpMesh page.
+- Suite: **2,178 tests, 0 failures** (35 skipped) before the rail-collapse change.
 ## [1.9.13] - 2026-10-27
 
 ### Changed
