@@ -325,11 +325,6 @@ fun EnderSlicerApp(
     var modelHintsDismissed by rememberSaveable { mutableStateOf(false) }
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
-    // The studio's "Paint the region" closes its sheet and arms the paint brush; the paint bar
-    // itself is local UI state, so one effect turns the armed flag into the bar on screen.
-    LaunchedEffect(state.bumpMeshStudio.paintArmed) {
-        if (state.bumpMeshStudio.paintArmed) supportPaintUiOpen = true
-    }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
@@ -2793,6 +2788,9 @@ fun EnderSlicerApp(
                                 viewModel.rotateModel(axis, degrees.toDouble())
                             },
                             onPaintMode = viewModel::setPaintMode,
+                            onTextureRegionHit = viewModel::textureRegionAt,
+                            onTextureRegionBrush = viewModel::bumpMeshRegionBrush,
+                            onTextureRegionDone = viewModel::bumpMeshFinishPaint,
                             onCloseSupportPaintUi = {
                                 viewModel.setPaintMode(SupportPaintMode.NONE)
                                 supportPaintUiOpen = false
@@ -4523,6 +4521,11 @@ private fun ViewerPanel(
     /** The arrow came up: the axis goes dark. */
     onJointAxisRelease: () -> Unit,
     onPaintMode: (SupportPaintMode) -> Unit,
+    /** The studio's own region brush: one stroke from the plate, stored in the studio state. */
+    onTextureRegionHit: (MeshPicker.Hit) -> Unit,
+    onTextureRegionBrush: (TextureRegionBrush) -> Unit,
+    /** Leaves the region brush and brings the studio sheet back with the region kept. */
+    onTextureRegionDone: () -> Unit,
     /** True while a finger drag moves the model across the plate instead of orbiting. */
     dragMove: Boolean,
     /** A finished drag: the plate movement it asked for, in millimetres. */
@@ -4750,6 +4753,18 @@ private fun ViewerPanel(
                         view.onJointAxisRelease = onJointAxisRelease
                         view.onModelPicked = onModelPicked
                         view.paintMode = state.paintMode
+                        // The studio's texture region draws its own green overlay while its
+                        // brush is armed and never touches the support paint's colours.
+                        view.textureRegionPaintActive = state.bumpMeshStudio.painting
+                        view.onTextureRegionHit = onTextureRegionHit
+                        view.setTextureRegionTint(
+                            textureRegionSceneTint(
+                                models = state.models,
+                                objectId = state.bumpMeshStudio.objectId,
+                                paintedTriangles = state.bumpMeshStudio.paintedTriangles,
+                                painting = state.bumpMeshStudio.painting,
+                            ),
+                        )
                         // One tap is either a face pick or a Smart Infill surface, never both;
                         // the face pick is reported once per gesture (see faceSelectActive).
                         view.surfacePickActive = state.smartInfillPicking || state.faceSelectMode
@@ -4820,6 +4835,22 @@ private fun ViewerPanel(
                 activeMode = state.paintMode,
                 onPaintMode = onPaintMode,
                 onClose = onCloseSupportPaintUi,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(12.dp),
+            )
+        }
+
+        // The studio's dedicated region bar: NOT "Support painting". Two Draw/Erase-only
+        // buttons, a live count and Done - which brings the studio sheet back with the region
+        // it kept, so the user never has to find their way back to it.
+        if (state.bumpMeshStudio.painting && viewerMode == ViewerMode.MODEL) {
+            TextureRegionPaintBar(
+                brush = state.bumpMeshStudio.regionBrush,
+                paintedTriangles = state.bumpMeshStudio.paintedTriangles.size,
+                meshTriangles = state.bumpMeshStudio.sourceTriangles,
+                onBrush = onTextureRegionBrush,
+                onDone = onTextureRegionDone,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(12.dp),
@@ -7709,6 +7740,68 @@ private fun PaintModeButton(
         OutlinedButton(onClick = { onPaintMode(mode) }, modifier = modifier) { Text(label) }
     }
 }
+
+/**
+ * The BumpMesh studio's own region bar, shown while its brush is armed.
+ *
+ * It is deliberately not the support-paint overlay: a texture region is a studio input, has no
+ * Block mode (blocking is the slicer's job), and its Done brings the studio sheet back instead
+ * of dropping the user on the plate. The count is live, from the studio's own triangle set.
+ */
+@Composable
+internal fun TextureRegionPaintBar(
+    brush: TextureRegionBrush,
+    paintedTriangles: Int,
+    meshTriangles: Int,
+    onBrush: (TextureRegionBrush) -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Texture region", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Drag on the model to choose which faces get the texture.",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RegionBrushButton("Draw", TextureRegionBrush.DRAW, brush, onBrush, Modifier.weight(1f))
+                RegionBrushButton("Erase", TextureRegionBrush.ERASE, brush, onBrush, Modifier.weight(1f))
+            }
+            Text(
+                MeshTriangleLimits.formatCount(paintedTriangles) + " of " +
+                    MeshTriangleLimits.formatCount(meshTriangles) + " triangles painted",
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Button(onClick = onDone, modifier = Modifier.testTag(TEXTURE_REGION_DONE_TAG)) {
+                Text("Done")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RegionBrushButton(
+    label: String,
+    brush: TextureRegionBrush,
+    activeBrush: TextureRegionBrush,
+    onBrush: (TextureRegionBrush) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (activeBrush == brush) {
+        Button(onClick = { onBrush(brush) }, modifier = modifier) { Text(label) }
+    } else {
+        OutlinedButton(onClick = { onBrush(brush) }, modifier = modifier) { Text(label) }
+    }
+}
+
+/** The region bar's Done: the tests press it, so a press is not a coordinate. */
+internal const val TEXTURE_REGION_DONE_TAG = "texture-region-done"
 
 /** Annotation tool callbacks, grouped so the viewer signature stays readable. */
 private class AnnotationActions(

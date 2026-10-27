@@ -8063,8 +8063,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .ifEmpty { bumpMeshEngine.textures() }
         bumpMeshEngine.warmUp()
         _uiState.update {
+            // A region painted earlier is carried in only while it still belongs to this object
+            // and this mesh; anything else would name triangles of a mesh that is not on screen.
             it.copy(
-                bumpMeshStudio = bumpMeshStudioOpened(model, limit, textures),
+                bumpMeshStudio = bumpMeshStudioOpened(model, limit, textures, existing = it.bumpMeshStudio),
                 textureUndoLabel = textureUndoHistory.railLabel,
                 textureUndoCount = textureUndoHistory.size,
             )
@@ -8074,7 +8076,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Closes the sheet; a running apply keeps running only if the user did not Cancel. */
     fun closeBumpMeshStudio() {
         _uiState.update {
-            it.copy(bumpMeshStudio = it.bumpMeshStudio.copy(open = false, paintArmed = false))
+            it.copy(bumpMeshStudio = it.bumpMeshStudio.copy(open = false))
         }
     }
 
@@ -8130,22 +8132,100 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Closes the sheet and arms the plate's own paint brush.
+     * Closes the sheet and arms the plate's dedicated texture-region brush.
      *
-     * The mask is the support-paint brush's Draw (enforcer) triangles - it is the plate's only
-     * per-triangle editor, and using it here means the studio needs no second paint system.
-     * The paint is cleared by an apply (see [applyBumpMeshTexture]) so it can never quietly
-     * become support material.
+     * This is NOT the support-paint brush: the region is the studio's own set of triangle
+     * indices, painted by its own mode and bar, and it never reads or writes the user's support
+     * paint. The support brush is defused here only so the two tools cannot both own a touch.
      */
     fun bumpMeshArmPaint() {
         val state = _uiState.value
-        if (state.selectedModel == null || state.isBusy) return
-        setPaintMode(SupportPaintMode.ENFORCER)
+        val model = state.selectedModel ?: return
+        if (state.isBusy) return
+        setPaintMode(SupportPaintMode.NONE)
+        _uiState.update { current ->
+            val studio = current.bumpMeshStudio
+            val sameMesh = studio.objectId == model.id &&
+                studio.maskMeshTriangles == model.sourceMesh.triangleCount
+            val region = if (sameMesh) {
+                studio.paintedTriangles
+            } else {
+                // A different object or a new triangle numbering: the old region cannot name
+                // this mesh's faces.
+                emptySet()
+            }
+            current.copy(
+                bumpMeshStudio = studio.copy(
+                    open = false,
+                    objectId = model.id,
+                    sourceName = model.name,
+                    sourceTriangles = model.sourceMesh.triangleCount,
+                    paintedTriangles = region,
+                    maskMeshTriangles = model.sourceMesh.triangleCount,
+                ).withPainting(true),
+                statusMessage = "Texture region: drag on the model to choose which faces get " +
+                    "the texture. Done returns to the studio.",
+            )
+        }
+    }
+
+    /** The region bar's Draw / Erase choice; it only changes which way a stroke goes. */
+    fun bumpMeshRegionBrush(brush: TextureRegionBrush) =
+        updateBumpMeshStudio { it.withRegionBrush(brush) }
+
+    /**
+     * One stroke from the plate's texture-region brush.
+     *
+     * The brush is expanded on the object the finger hit, but only the studio's own object is
+     * painted: a region is a fact about that mesh's triangle numbering, so a stroke on a
+     * neighbour is ignored rather than silently stored against the wrong mesh.
+     */
+    fun textureRegionAt(hit: MeshPicker.Hit) {
+        val snapshot = _uiState.value
+        val studio = snapshot.bumpMeshStudio
+        if (!studio.painting || snapshot.isBusy) return
+        val target = snapshot.models.getOrNull(hit.objectIndex) ?: return
+        if (studio.objectId != target.id) return
+        val erase = studio.regionBrush == TextureRegionBrush.ERASE
+        // The radius is the brush's own setting; reading it changes no support data.
+        val radiusMm = target.supportPaint.brushRadiusMm.toFloat()
+        viewModelScope.launch(Dispatchers.Default) {
+            val triangles = SupportPaintBrush.expand(
+                mesh = target.mesh,
+                hitX = hit.x,
+                hitY = hit.y,
+                hitZ = hit.z,
+                radiusMm = radiusMm,
+            )
+            if (triangles.isEmpty()) return@launch
+            _uiState.update { current ->
+                val model = current.models.firstOrNull { it.id == target.id } ?: return@update current
+                current.copy(
+                    bumpMeshStudio = current.bumpMeshStudio.withRegionStroke(triangles, erase),
+                    selectedModelId = model.id,
+                )
+            }
+        }
+    }
+
+    /**
+     * The region bar's Done: the brush goes away and the studio comes back with the region it
+     * kept, on Painted region so Apply is one press away.
+     */
+    fun bumpMeshFinishPaint() {
+        val state = _uiState.value
+        if (!state.bumpMeshStudio.painting) return
+        setPaintMode(SupportPaintMode.NONE)
         _uiState.update {
+            val opened = bumpMeshStudioAfterPaintDone(it.bumpMeshStudio)
             it.copy(
-                bumpMeshStudio = it.bumpMeshStudio.copy(open = false, paintArmed = true),
-                statusMessage = "Paint the region with the Draw brush; it becomes the studio's " +
-                    "include mask. Reopen Texture surface when done.",
+                bumpMeshStudio = opened,
+                statusMessage = if (opened.paintedTriangles.isEmpty()) {
+                    "No region painted; the studio is still on Whole object."
+                } else {
+                    MeshTriangleLimits.formatCount(opened.paintedTriangles.size) +
+                        " painted triangles are the studio's region."
+                },
             )
         }
     }
@@ -8177,14 +8257,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val texture = studio.texture ?: return
+        // The include mask is the studio's own region, never the support paint's triangles.
         val mask = if (studio.wholeObject) {
             null
+        } else if (studio.objectId != model.id || studio.maskStale) {
+            null
         } else {
-            textureMaskOf(model.supportPaint, model.sourceMesh.triangleCount)
+            textureRegionMaskOf(studio.paintedTriangles, model.sourceMesh.triangleCount)
         }
         if (!studio.wholeObject && mask == null) {
             updateBumpMeshStudio {
-                it.failed("Paint a region on the plate first, or switch back to Whole object.")
+                it.failed(
+                    if (studio.maskStale) {
+                        "The painted region belonged to a previous mesh; paint it again."
+                    } else {
+                        "Paint a region on the plate first, or switch back to Whole object."
+                    },
+                )
             }
             return
         }
@@ -8241,14 +8330,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@launch
                 }
-                val replaced = stillThere.copy(
-                    sourceMesh = parsed,
-                    mesh = stillThere.placement.transformed(parsed),
-                    // A new triangle numbering: the old paint cannot name these triangles.
-                    supportPaint = SupportPaintState(
-                        brushRadiusMm = stillThere.supportPaint.brushRadiusMm,
-                    ),
-                )
+                // The user's support paint is deliberately untouched by a texture apply: it
+                // is their slicer data, not ours to clear, and the requirement is that it
+                // survives entering, painting, applying and undoing the studio.
+                val replaced = plateObjectWithTextureMesh(stillThere, parsed)
                 textureUndoHistory.push(
                     TextureUndoEntry(
                         objectId = stillThere.id,
@@ -8316,6 +8401,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (current == null) {
             _uiState.update {
                 it.copy(
+                    bumpMeshStudio = it.bumpMeshStudio.copy(
+                        paintedTriangles = emptySet(),
+                        maskMeshTriangles = 0,
+                        painting = false,
+                    ),
                     textureUndoLabel = textureUndoHistory.railLabel,
                     textureUndoCount = textureUndoHistory.size,
                     statusMessage = "That object is no longer on the plate; the texture undo " +
@@ -8327,6 +8417,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (current.sourceMesh !== entry.appliedSourceMesh) {
             _uiState.update {
                 it.copy(
+                    // The undo will not run, but a region painted against the current mesh is
+                    // still this mesh's; it stays. The studio's mask is only dropped when the
+                    // mesh actually changes under it.
                     textureUndoLabel = textureUndoHistory.railLabel,
                     textureUndoCount = textureUndoHistory.size,
                     statusMessage = "The mesh changed since this texture; undoing it would " +
@@ -8342,6 +8435,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         " · slice again to export G-code",
                 )
                 .copy(
+                    bumpMeshStudio = snapshot.bumpMeshStudio.copy(
+                        paintedTriangles = emptySet(),
+                        maskMeshTriangles = 0,
+                        painting = false,
+                    ),
                     textureUndoLabel = textureUndoHistory.railLabel,
                     textureUndoCount = textureUndoHistory.size,
                 )

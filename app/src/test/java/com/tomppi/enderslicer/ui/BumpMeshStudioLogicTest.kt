@@ -140,23 +140,114 @@ class BumpMeshStudioLogicTest {
     }
 
     @Test
-    fun theMaskIsThePaintsEnforcerSetAndOutOfRangeIndicesAreDropped() {
-        val paint = SupportPaintState(
-            enforcerTriangles = setOf(0, 2, 4, 99),
-            blockerTriangles = setOf(1),
-        )
-        val mask = textureMaskOf(paint, meshTriangles = 5)
+    fun theRegionMaskIsTheStudiosOwnSetAndOutOfRangeIndicesAreDropped() {
+        // A support paint that deliberately does NOT become a texture mask: the studio has its
+        // own set, so a user's enforcers are not silently textured.
+        val painted = setOf(0, 2, 4, 99)
+        val mask = textureRegionMaskOf(painted, meshTriangles = 5)
         assertNotNull(mask)
-        assertEquals(3, paintedTriangleCount(mask))
         assertEquals(listOf(true, false, true, false, true), mask!!.toList())
         // 99 is out of range for a 5-triangle mesh and never reaches the engine.
-        assertNull(textureMaskOf(SupportPaintState(), 5))
-        assertNull(textureMaskOf(paint, 0))
-        // The blocker set is support material, not a texture mask: no enforcer, no mask.
-        assertEquals(
-            0,
-            paintedTriangleCount(textureMaskOf(SupportPaintState(blockerTriangles = setOf(0, 1)), 2)),
+        assertNull(textureRegionMaskOf(emptySet(), 5))
+        assertNull(textureRegionMaskOf(painted, 0))
+    }
+
+    @Test
+    fun aSupportPaintWithBlockerTrianglesCreatesNoTextureRegion() {
+        val support = SupportPaintState(
+            enforcerTriangles = setOf(3),
+            blockerTriangles = setOf(0, 1),
         )
+        val model = plateObject(triangles = 40, paint = support)
+        val studio = bumpMeshStudioOpened(model, 1_500_000, listOf(texture()))
+        assertEquals("the studio opens with no region of its own", 0, studio.maskTriangles)
+        assertNull(studio.paintedFraction)
+        assertTrue(studio.wholeObject)
+        // The user's support paint is exactly what it was.
+        assertEquals(support, model.supportPaint)
+    }
+
+    @Test
+    fun paintingATextureRegionLeavesTheSupportPaintByteIdentical() {
+        val supportBefore = SupportPaintState(
+            enforcerTriangles = setOf(1, 4),
+            blockerTriangles = setOf(2, 7),
+            brushRadiusMm = 4.5,
+        )
+        val model = plateObject(triangles = 40, paint = supportBefore)
+
+        // Paint a texture region on the studio's own store...
+        val studio = bumpMeshStudioOpened(model, 1_500_000, listOf(texture()))
+            .withWholeObject(false)
+            .withRegionStroke(setOf(10, 11, 12), erase = false)
+        // ...and apply the texture through the same replacement the view model uses.
+        val replaced = plateObjectWithTextureMesh(model, mesh(99, "textured.stl"))
+
+        assertEquals("support paint survives the region paint", supportBefore, model.supportPaint)
+        assertEquals("support paint survives the apply", supportBefore, replaced.supportPaint)
+        assertEquals("the region lives only in the studio", 3, studio.maskTriangles)
+        assertTrue(replaced.supportPaint.enforcerTriangles == setOf(1, 4))
+        assertTrue(replaced.supportPaint.blockerTriangles == setOf(2, 7))
+        assertEquals(4.5, replaced.supportPaint.brushRadiusMm, 0.0)
+
+        // ...and the other way round: support painting never writes the studio region.
+        val studioAfterSupport = studio.withRegionStroke(setOf(4, 5), erase = false)
+        assertEquals(5, studioAfterSupport.maskTriangles)
+        assertEquals(supportBefore, model.supportPaint)
+    }
+
+    @Test
+    fun theRegionBrushDrawsAndErasesAndTheCountFollows() {
+        val studio = BumpMeshStudioState(sourceTriangles = 50, objectId = "m1")
+        val drawn = studio.withRegionStroke(setOf(1, 2, 3), erase = false)
+        assertEquals(3, drawn.maskTriangles)
+        assertEquals(3, drawn.paintedTriangles.size)
+        val more = drawn.withRegionStroke(setOf(3, 4), erase = false)
+        assertEquals(setOf(1, 2, 3, 4), more.paintedTriangles)
+        val erased = more.withRegionStroke(setOf(2), erase = true)
+        assertEquals(setOf(1, 3, 4), erased.paintedTriangles)
+        // Out-of-range triangles are dropped rather than wrapped onto another face.
+        assertEquals(emptySet<Int>(), studio.withRegionStroke(setOf(50, -1), erase = false).paintedTriangles)
+        // The brush choice is the bar's, and a stroke does not change the support paint.
+        assertEquals(TextureRegionBrush.ERASE, studio.withRegionBrush(TextureRegionBrush.ERASE).regionBrush)
+    }
+
+    @Test
+    fun doneBringsTheStudioBackWithTheRegionKept() {
+        val painting = BumpMeshStudioState(
+            open = false,
+            painting = true,
+            sourceTriangles = 100,
+            objectId = "m1",
+            texture = texture(),
+            wholeObject = true,
+        ).withRegionStroke(setOf(1, 2, 3), erase = false)
+        val done = bumpMeshStudioAfterPaintDone(painting)
+        assertTrue(done.open)
+        assertFalse(done.painting)
+        assertEquals(3, done.maskTriangles)
+        assertFalse("Done reopens on the painted region", done.wholeObject)
+        assertNull("Apply is enabled after Done", done.applyBlockedReason)
+        // An empty region reopens on Whole object.
+        val emptyDone = bumpMeshStudioAfterPaintDone(painting.copy(paintedTriangles = emptySet()))
+        assertTrue(emptyDone.wholeObject)
+    }
+
+    @Test
+    fun theRegionOverlayIsSceneIndicesOffsetByTheObjectsBeforeIt() {
+        val first = plateObject(id = "a", triangles = 10)
+        val second = plateObject(id = "b", triangles = 20)
+        val tint = textureRegionSceneTint(
+            models = listOf(first, second),
+            objectId = "b",
+            paintedTriangles = setOf(0, 5, 19),
+            painting = true,
+        )
+        assertNotNull(tint)
+        assertEquals(listOf(10, 15, 29), tint!!.toList())
+        // Only while painting, only for a known object.
+        assertNull(textureRegionSceneTint(listOf(first, second), "b", setOf(0), painting = false))
+        assertNull(textureRegionSceneTint(listOf(first), "gone", setOf(0), painting = true))
     }
 
     @Test
@@ -211,7 +302,7 @@ class BumpMeshStudioLogicTest {
     }
 
     @Test
-    fun openingTheStudioReadsTheSelectedMeshLimitAndPaint() {
+    fun openingTheStudioReadsTheSelectedMeshLimitAndObject() {
         val model = plateObject(
             triangles = 40,
             paint = SupportPaintState(enforcerTriangles = setOf(1, 3)),
@@ -224,11 +315,26 @@ class BumpMeshStudioLogicTest {
         assertTrue(state.open)
         assertEquals("part.stl", state.sourceName)
         assertEquals(40, state.sourceTriangles)
-        assertEquals(2, state.maskTriangles)
+        assertEquals("m1", state.objectId)
+        assertEquals(0, state.maskTriangles)
         assertEquals(40, state.maskMeshTriangles)
         assertEquals(1_500_000, state.limit)
         assertEquals(texture(), state.texture)
         assertTrue("Whole object is the default", state.wholeObject)
+
+        // A region painted earlier rides back in only while object and mesh still match.
+        val withRegion = state.withWholeObject(false).withRegionStroke(setOf(1, 3), erase = false)
+        val reopened = bumpMeshStudioOpened(model, 1_500_000, listOf(texture()), existing = withRegion)
+        assertEquals(2, reopened.maskTriangles)
+        assertFalse(reopened.wholeObject)
+        val otherObject = bumpMeshStudioOpened(
+            plateObject(id = "m2", triangles = 40), 1_500_000, listOf(texture()), existing = withRegion,
+        )
+        assertEquals("a different object drops the region", 0, otherObject.maskTriangles)
+        val otherMesh = bumpMeshStudioOpened(
+            plateObject(triangles = 41), 1_500_000, listOf(texture()), existing = withRegion,
+        )
+        assertEquals("a different mesh drops the region", 0, otherMesh.maskTriangles)
     }
 
     @Test
@@ -278,7 +384,7 @@ class BumpMeshStudioLogicTest {
             paintedWithoutMask.applyBlockedReason.orEmpty().contains("Paint a region"),
         )
 
-        val paintedWithMask = paintedWithoutMask.withMask(10, 50_000)
+        val paintedWithMask = paintedWithoutMask.withRegionStroke((0 until 10).toSet(), erase = false)
         assertNull(paintedWithMask.applyBlockedReason)
         assertEquals(10f / 50_000f, paintedWithMask.paintedFraction!!, 1e-6f)
 
@@ -318,30 +424,33 @@ class BumpMeshStudioLogicTest {
     }
 
     @Test
-    fun replacingTheMeshDropsOrRefusesAStaleMaskInsteadOfUsingIt() {
+    fun replacingTheMeshDropsOrRefusesAStaleRegionInsteadOfUsingIt() {
         val paintedAndFresh = BumpMeshStudioState(
             sourceTriangles = 120,
+            objectId = "m1",
             texture = texture(),
             wholeObject = false,
-            maskTriangles = 10,
+            paintedTriangles = (0 until 10).toSet(),
             maskMeshTriangles = 120,
             limit = 1_500_000,
         )
         assertNotNull(paintedAndFresh.paintedFraction)
         assertNull(paintedAndFresh.applyBlockedReason)
 
-        // A different mesh: the mask's triangle numbering no longer exists.
+        // A different mesh: the region's triangle numbering no longer exists, and the refusal
+        // names that instead of asking for a paint that is already there.
         val replaced = paintedAndFresh.copy(sourceTriangles = 200, maskMeshTriangles = 120)
         assertTrue(replaced.maskStale)
         assertNull(replaced.paintedFraction)
-        assertTrue(replaced.applyBlockedReason.orEmpty().contains("Paint a region"))
+        assertTrue(replaced.applyBlockedReason.orEmpty().contains("paint it again"))
         assertTrue(replaced.maskLifecycleNote.contains("new mesh"))
 
-        // The apply itself clears the mask (apply/undo/import all replace the mesh).
+        // The apply itself clears the region (apply/undo/import all replace the mesh).
         val finished = paintedAndFresh.finished("Applied Knurling", repair = null)
         assertEquals(0, finished.maskTriangles)
         assertEquals(0, finished.maskMeshTriangles)
         assertTrue(finished.wholeObject)
+        assertFalse(finished.painting)
         assertFalse(finished.applying)
         assertNull(finished.error)
         assertEquals("Applied Knurling", finished.result)

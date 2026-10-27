@@ -85,6 +85,19 @@ class ModelSurfaceView(
         }
 
     /**
+     * True while the texture-region brush is armed: a single-finger drag paints the studio's
+     * include mask instead of the support paint.
+     *
+     * Deliberately separate from [paintMode] and from [surfacePickActive]: three different
+     * paints, three different stores. Arming this one touches neither the support paint nor a
+     * face selection - the mask lives in the studio state and is drawn by its own tint buffer.
+     */
+    var textureRegionPaintActive: Boolean = false
+
+    /** Invoked on the UI thread with the model point a texture-region stroke hit. */
+    var onTextureRegionHit: ((MeshPicker.Hit) -> Unit)? = null
+
+    /**
      * When true, a single-finger drag moves the model across the build plate
      * instead of orbiting the camera. Two fingers still zoom and pan, and paint
      * mode still wins when it is on.
@@ -534,6 +547,19 @@ class ModelSurfaceView(
         requestRender()
     }
 
+    /**
+     * Tints the studio's texture region, as scene triangle indices.
+     *
+     * Its own buffer and its own colour, mixed over the shaded part by the same mesh shader:
+     * it is neither the support paint (which it never reads or writes) nor the amber face tint
+     * (which it leaves in place). Null or an empty array clears it.
+     */
+    fun setTextureRegionTint(triangles: IntArray?) {
+        val copy = triangles?.copyOf()
+        queueEvent { modelRenderer.setTextureRegionTint(copy) }
+        requestRender()
+    }
+
     /** The view's current orientation, or the plate's default before the first gesture. */
     fun plateOrientation(): ViewerOrientation = modelRenderer.orientation
 
@@ -636,7 +662,7 @@ class ModelSurfaceView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!cameraInteractive) return false
-        val painting = paintMode != SupportPaintMode.NONE
+        val painting = paintMode != SupportPaintMode.NONE || textureRegionPaintActive
         val annotating = annotationActive && !painting
 
         gestureDetector.onTouchEvent(event)
@@ -1213,6 +1239,10 @@ class ModelSurfaceView(
                                 facePickReported = true
                                 onSurfacePick?.invoke(hit)
                             }
+                        } else if (textureRegionPaintActive) {
+                            // The studio's region brush: its own store, its own tint buffer, and
+                            // the support paint is not even read here.
+                            onTextureRegionHit?.invoke(hit)
                         } else {
                             // Support paint follows the finger: the host paints the object this
                             // hit names and selects it, so one stroke can cross the plate.
@@ -1573,6 +1603,17 @@ private class ModelRenderer(
     private var faceTintVbo = 0
     private var faceTintUploaded: SelectionTintBuffer? = null
 
+    /**
+     * The texture studio's include region, drawn in its own green over the shaded part.
+     *
+     * A second per-triangle byte buffer, for the same reason the face tint has one: painting a
+     * texture region must not write the support paint's colours, and the two can stand at the
+     * same time. Cleared by the host when painting ends, the mesh changes or a texture is applied.
+     */
+    private var textureRegionTint: SelectionTintBuffer? = null
+    private var textureRegionTintVbo = 0
+    private var textureRegionTintUploaded: SelectionTintBuffer? = null
+
 
     /** One state per object, in the same order as the plate's meshes. */
     private var paintStates: List<SupportPaintState> = emptyList()
@@ -1674,6 +1715,17 @@ private class ModelRenderer(
             SelectionTintBuffer(count).also { it.select(triangles) }
         }
         releaseFaceTintBuffer()
+    }
+
+    /** Fills the texture region's tint from scene triangle indices, or clears it with null. */
+    fun setTextureRegionTint(triangles: IntArray?) {
+        val count = sceneTriangleCount()
+        textureRegionTint = if (triangles == null || triangles.isEmpty() || count <= 0) {
+            null
+        } else {
+            SelectionTintBuffer(count).also { it.select(triangles) }
+        }
+        releaseTextureRegionTintBuffer()
     }
 
     /** How many triangles the plate's scene holds, or 0 when it is empty. */
@@ -1938,6 +1990,10 @@ private class ModelRenderer(
             // object of the old scene and goes with it.
             faceTint = null
             releaseFaceTintBuffer()
+            // A rebuilt scene renumbers every triangle, so the texture region's indices belong
+            // to the old mesh too: dropped with it, and the host re-paints a fresh region.
+            textureRegionTint = null
+            releaseTextureRegionTintBuffer()
             // Written last: the volatile field is what publishes the scene and the
             // bookkeeping beside it to a pick running on the executor thread.
             mesh = scene?.mesh
@@ -2464,6 +2520,8 @@ private class ModelRenderer(
         // and silently draw no tint at all.
         faceTintVbo = 0
         faceTintUploaded = null
+        textureRegionTintVbo = 0
+        textureRegionTintUploaded = null
         regionProgram = 0
         regionVbo = 0
         regionColorVbo = 0
@@ -3033,6 +3091,15 @@ private class ModelRenderer(
         faceTintUploaded = null
     }
 
+    /** Same for the texture region's tint buffer. */
+    private fun releaseTextureRegionTintBuffer() {
+        if (textureRegionTintVbo != 0) {
+            GLES20.glDeleteBuffers(1, intArrayOf(textureRegionTintVbo), 0)
+            textureRegionTintVbo = 0
+        }
+        textureRegionTintUploaded = null
+    }
+
     /** Deletes the mesh buffer and forgets which model it held. */
     private fun releaseMeshBuffer() {
         if (meshVbo != 0) {
@@ -3207,6 +3274,44 @@ private class ModelRenderer(
             GLES20.glVertexAttrib1f(tintLocation, 0f)
         }
 
+        // The texture studio's include region: a second per-vertex attribute, its own buffer and
+        // its own green, so it can stand at the same time as a face selection and never reads
+        // the support paint. With no region the array is disabled and its constant is 0.
+        val regionTintLocation = GLES20.glGetAttribLocation(meshProgram, "aTextureRegionTint")
+        val regionTint = textureRegionTint
+        if (regionTint != null && regionTintLocation >= 0 && regionTint.byteCount > 0) {
+            if (textureRegionTintVbo == 0) {
+                val ids = IntArray(1)
+                GLES20.glGenBuffers(1, ids, 0)
+                textureRegionTintVbo = ids[0]
+            }
+            if (textureRegionTintVbo != 0) {
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, textureRegionTintVbo)
+                if (textureRegionTintUploaded !== regionTint) {
+                    regionTint.buffer.position(0)
+                    GLES20.glBufferData(
+                        GLES20.GL_ARRAY_BUFFER,
+                        regionTint.byteCount,
+                        regionTint.buffer,
+                        GLES20.GL_DYNAMIC_DRAW,
+                    )
+                    textureRegionTintUploaded = regionTint
+                }
+                GLES20.glEnableVertexAttribArray(regionTintLocation)
+                GLES20.glVertexAttribPointer(
+                    regionTintLocation,
+                    1,
+                    GLES20.GL_UNSIGNED_BYTE,
+                    true,
+                    0,
+                    0,
+                )
+            }
+        } else if (regionTintLocation >= 0) {
+            GLES20.glDisableVertexAttribArray(regionTintLocation)
+            GLES20.glVertexAttrib1f(regionTintLocation, 0f)
+        }
+
         // One draw per object, each starting at its own first scene vertex and
         // through its own model matrix: only the object being transformed carries
         // the preview, so a neighbour cannot even appear to move before the commit
@@ -3262,6 +3367,10 @@ private class ModelRenderer(
                         GLES20.glDisableVertexAttribArray(tintLocation)
                         GLES20.glVertexAttrib1f(tintLocation, 0f)
                     }
+                    if (regionTintLocation >= 0) {
+                        GLES20.glDisableVertexAttribArray(regionTintLocation)
+                        GLES20.glVertexAttrib1f(regionTintLocation, 0f)
+                    }
                     bindTraits(
                         buffer = previewBuffers.getOrNull(slot),
                         vbo = previewVbo,
@@ -3294,6 +3403,11 @@ private class ModelRenderer(
                         GLES20.glEnableVertexAttribArray(tintLocation)
                         GLES20.glVertexAttribPointer(tintLocation, 1, GLES20.GL_UNSIGNED_BYTE, true, 0, 0)
                     }
+                    if (regionTint != null && regionTintLocation >= 0 && textureRegionTintVbo != 0) {
+                        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, textureRegionTintVbo)
+                        GLES20.glEnableVertexAttribArray(regionTintLocation)
+                        GLES20.glVertexAttribPointer(regionTintLocation, 1, GLES20.GL_UNSIGNED_BYTE, true, 0, 0)
+                    }
                     continue
                 }
             }
@@ -3310,6 +3424,7 @@ private class ModelRenderer(
         GLES20.glDisableVertexAttribArray(normal)
         GLES20.glDisableVertexAttribArray(color)
         if (tintLocation >= 0) GLES20.glDisableVertexAttribArray(tintLocation)
+        if (regionTintLocation >= 0) GLES20.glDisableVertexAttribArray(regionTintLocation)
 
         // The optimized volumes are the selected object's own meshes and draw
         // through the matrix the loop left behind - the last object's, which is
@@ -3619,16 +3734,19 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
             attribute vec3 aNormal;
             attribute vec3 aColor;
             attribute float aFaceTint;
+            attribute float aTextureRegionTint;
             varying vec3 vNormal;
             varying vec3 vColor;
             varying vec3 vPlatePosition;
             varying float vFaceTint;
+            varying float vTextureRegionTint;
             void main() {
                 gl_Position = uMvpMatrix * vec4(aPosition, 1.0);
                 vPlatePosition = (uPlateMatrix * vec4(aPosition, 1.0)).xyz;
                 vNormal = normalize(mat3(uModelMatrix) * aNormal);
                 vColor = aColor;
                 vFaceTint = aFaceTint;
+                vTextureRegionTint = aTextureRegionTint;
             }
         """
         const val MESH_FRAGMENT_SHADER = """
@@ -3639,9 +3757,14 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
             varying vec3 vColor;
             varying vec3 vPlatePosition;
             varying float vFaceTint;
+            varying float vTextureRegionTint;
             // The selected face: warm amber, deliberately outside the support palette (its
             // interface is cyan and its supports magenta) and the layer view's speed ramp.
             const vec3 FACE_TINT_COLOR = vec3(1.0, 0.78, 0.22);
+            // The texture studio's include region: a violet, outside the amber face tint, the
+            // support brush's green enforcer / red blocker and the layer speed ramp, so a
+            // region can never read as a face selection or as support material.
+            const vec3 TEXTURE_REGION_COLOR = vec3(0.72, 0.42, 1.0);
             void main() {
                 if (uClipEnabled > 0.5 &&
                     dot(uClipPlane.xyz, vPlatePosition) > uClipPlane.w) {
@@ -3661,6 +3784,9 @@ val ANNOTATION_MARKER_COLOR = floatArrayOf(1.00f, 1.00f, 1.00f)
                 // face keeps its shape while it reads warm; support paint underneath it stays
                 // where it was and simply shades through.
                 vec3 color = mix(shaded, FACE_TINT_COLOR, vFaceTint * 0.85);
+                // The studio's region is a second, independent tint: painted faces read green
+                // whether or not a face selection is tinted over them at the same time.
+                color = mix(color, TEXTURE_REGION_COLOR, vTextureRegionTint * 0.70);
                 gl_FragColor = vec4(color, 1.0);
             }
         """

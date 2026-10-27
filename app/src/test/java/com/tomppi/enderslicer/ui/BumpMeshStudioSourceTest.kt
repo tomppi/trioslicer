@@ -69,13 +69,16 @@ class BumpMeshStudioSourceTest {
     }
 
     @Test
-    fun applyInPlaceReplacesTheMeshPushUndoAndClearsThePaint() {
+    fun applyInPlaceKeepsTheObjectAndTheSupportPaint() {
         val viewModel = source("com/tomppi/enderslicer/ui/MainViewModel.kt")
         assertTrue(viewModel.contains("textureUndoHistory.push("))
-        assertTrue(viewModel.contains("sourceMesh = parsed,"))
         assertTrue(
-            "the paint cannot survive a new triangle numbering",
-            viewModel.contains("supportPaint = SupportPaintState("),
+            "one helper does the replacement, so a support paint cannot be dropped in passing",
+            viewModel.contains("plateObjectWithTextureMesh(stillThere, parsed)"),
+        )
+        assertTrue(
+            "a texture apply never rewrites the user's support paint",
+            !viewModel.contains("A new triangle numbering: the old paint cannot name these triangles"),
         )
         assertTrue(viewModel.contains("bumpMeshStudioOpened("))
         assertTrue(viewModel.contains("MeshTriangleLimits.save(getApplication(), required)"))
@@ -84,6 +87,50 @@ class BumpMeshStudioSourceTest {
             viewModel.contains("current.sourceMesh !== entry.appliedSourceMesh"),
         )
         assertTrue(viewModel.contains("withModel(entry.objectId) { entry.before }"))
+    }
+
+    @Test
+    fun theTextureRegionHasItsOwnBarAndNeverArmsSupportPainting() {
+        val viewModel = source("com/tomppi/enderslicer/ui/MainViewModel.kt")
+        assertTrue(viewModel.contains("fun bumpMeshArmPaint()"))
+        assertTrue(
+            "the old support-paint arming is gone",
+            !viewModel.contains("setPaintMode(SupportPaintMode.ENFORCER)"),
+        )
+        assertTrue(
+            "the apply mask is the studio's own set, not the model's support paint",
+            viewModel.contains("textureRegionMaskOf(studio.paintedTriangles"),
+        )
+        assertTrue(!viewModel.contains("textureMaskOf(model.supportPaint"))
+        assertTrue(viewModel.contains("fun bumpMeshFinishPaint()"))
+        assertTrue(viewModel.contains("fun textureRegionAt(hit: MeshPicker.Hit)"))
+        assertTrue(viewModel.contains("bumpMeshStudioAfterPaintDone("))
+
+        val viewer = source("com/tomppi/enderslicer/viewer/ModelSurfaceView.kt")
+        assertTrue(
+            "the region has a tint attribute of its own",
+            viewer.contains("aTextureRegionTint"),
+        )
+        assertTrue(
+            "and a colour outside the support palette and the amber face tint",
+            viewer.contains("TEXTURE_REGION_COLOR = vec3(0.72, 0.42, 1.0)"),
+        )
+        assertTrue(viewer.contains("var textureRegionPaintActive: Boolean = false"))
+        assertTrue(viewer.contains("var onTextureRegionHit: ((MeshPicker.Hit) -> Unit)? = null"))
+
+        val app = source("com/tomppi/enderslicer/ui/EnderSlicerApp.kt")
+        assertTrue(app.contains("TextureRegionPaintBar("))
+        assertTrue(app.contains("Text(\"Texture region\","))
+        assertTrue(app.contains("Drag on the model to choose which faces get the texture."))
+        assertTrue(app.contains("triangles painted"))
+        assertTrue(app.contains("TEXTURE_REGION_DONE_TAG"))
+        assertTrue(app.contains("Text(\"Done\")"))
+        assertTrue(app.contains("view.textureRegionPaintActive = state.bumpMeshStudio.painting"))
+        assertTrue(app.contains("view.setTextureRegionTint("))
+        assertTrue(
+            "the studio no longer opens the generic support-paint bar",
+            !app.contains("LaunchedEffect(state.bumpMeshStudio.paintArmed)"),
+        )
     }
 
     @Test

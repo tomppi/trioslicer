@@ -179,31 +179,6 @@ data class BumpMeshLimitCheck(val current: Int, val required: Int) {
 internal fun bumpMeshLimitCheck(current: Int, tier: BumpMeshTier): BumpMeshLimitCheck =
     BumpMeshLimitCheck(current = current, required = tier.outputCap)
 
-/**
- * The per-triangle mask for painted-region texturing, taken from the plate's own paint.
- *
- * The support-paint brush is the plate's existing per-triangle editor, and its enforcer set is
- * exactly the painted triangles of the selected object's mesh. The studio uses the Draw
- * (enforcer) set as the "include only" region; the paint is cleared by an apply so it never
- * quietly becomes support material, and it is cleared by a mesh replacement naturally because a
- * new mesh has no paint. Indices outside the mesh are dropped rather than passed on, so a stale
- * paint can never name a triangle that no longer exists.
- */
-internal fun textureMaskOf(paint: SupportPaintState, meshTriangles: Int): BooleanArray? {
-    if (meshTriangles <= 0 || paint.enforcerTriangles.isEmpty()) return null
-    val mask = BooleanArray(meshTriangles)
-    var painted = false
-    for (index in paint.enforcerTriangles) {
-        if (index in 0 until meshTriangles) {
-            mask[index] = true
-            painted = true
-        }
-    }
-    return if (painted) mask else null
-}
-
-internal fun paintedTriangleCount(mask: BooleanArray?): Int = mask?.count { it } ?: 0
-
 /** One applied texture, remembered so the side rail can undo it. */
 internal data class TextureUndoEntry(
     val objectId: String,
@@ -266,9 +241,19 @@ data class BumpMeshStudioState(
     val refineMm: Float = BumpMeshTier.FAST.refineMm,
     /** True = whole selected plate object; false = the painted region only. */
     val wholeObject: Boolean = true,
-    /** Triangles the plate's enforcer paint covers, and the mesh size they were painted on. */
-    val maskTriangles: Int = 0,
+    /**
+     * The studio's own include region: selected plate-object triangle indices.
+     *
+     * Deliberately NOT the support paint. The support brush's enforcer/blocker sets are the
+     * user's slicer data; a texture region is a disposable studio input. They live side by side,
+     * and entering, painting, applying or undoing a texture never reads or writes the support
+     * state (the only shared thing is the brush's radius, which is a setting).
+     */
+    val paintedTriangles: Set<Int> = emptySet(),
+    /** The mesh size [paintedTriangles] was painted on: a different mesh makes it stale. */
     val maskMeshTriangles: Int = 0,
+    /** The plate object the region belongs to; a different object drops it. */
+    val objectId: String? = null,
     val sourceName: String = "",
     val sourceTriangles: Int = 0,
     val tier: BumpMeshTier = BumpMeshTier.FAST,
@@ -280,8 +265,10 @@ data class BumpMeshStudioState(
     val error: String? = null,
     val result: String? = null,
     val repairWarning: String? = null,
-    /** Set after "Paint the region" closes the sheet and arms the plate's paint brush. */
-    val paintArmed: Boolean = false,
+    /** True while the plate draws the dedicated texture-region brush and its bar. */
+    val painting: Boolean = false,
+    /** Which way the texture-region brush goes while [painting]. */
+    val regionBrush: TextureRegionBrush = TextureRegionBrush.DRAW,
 ) {
     /** The distinct category labels the manifest provides, in display order. */
     val categories: List<String>
@@ -295,8 +282,11 @@ data class BumpMeshStudioState(
                     texture.category.contains(search, ignoreCase = true))
         }
 
+    /** How many triangles the region covers; 0 means no region. */
+    val maskTriangles: Int get() = paintedTriangles.size
+
     val paintedFraction: Float?
-        get() = if (maskTriangles > 0 && maskMeshTriangles == sourceTriangles && sourceTriangles > 0) {
+        get() = if (paintedTriangles.isNotEmpty() && maskMeshTriangles == sourceTriangles && sourceTriangles > 0) {
             maskTriangles.toFloat() / sourceTriangles.toFloat()
         } else {
             null
@@ -312,12 +302,14 @@ data class BumpMeshStudioState(
     val limitCheck: BumpMeshLimitCheck get() = bumpMeshLimitCheck(limit, tier)
 
     val maskStale: Boolean
-        get() = maskTriangles > 0 && maskMeshTriangles != sourceTriangles
+        get() = paintedTriangles.isNotEmpty() && maskMeshTriangles != sourceTriangles
 
     val estimateWarning: String?
         get() = when {
+            !wholeObject && maskStale ->
+                "The painted region belonged to a previous mesh; the triangle numbering changed, so paint it again."
             !wholeObject && paintedFraction == null ->
-                "Paint a region on this mesh first - the mask is the Draw (enforcer) brush's triangles."
+                "Paint a region on this mesh first - press Paint the region."
             else -> bumpMeshEstimateWarning(estimate, tier)
         }
 
@@ -325,8 +317,8 @@ data class BumpMeshStudioState(
 
     /** The sentence under the Painted region switch - the mask's own lifecycle, said plainly. */
     val maskLifecycleNote: String
-        get() = "The mask is this mesh's triangle numbering: a new mesh (apply, undo, import) " +
-            "clears it, and the paint is cleared after applying so it never becomes support."
+        get() = "The region is this mesh's triangle numbering: a new mesh (apply, undo, import) " +
+            "clears it. It is the studio's own region and never touches support paint."
 
     val applyBlockedReason: String?
         get() = when {
@@ -334,6 +326,9 @@ data class BumpMeshStudioState(
             sourceTriangles <= 0 -> "Select a plate object first."
             texture == null -> "Pick a texture."
             !limitCheck.satisfied -> limitCheck.sentence
+            painting -> "Done painting the region first."
+            !wholeObject && maskStale ->
+                "The painted region belonged to a previous mesh; paint it again."
             !wholeObject && paintedFraction == null ->
                 "Paint a region on the plate first, or switch back to Whole object."
             extremeNeedsConfirm -> "Confirm the Extreme tier before applying."
@@ -378,10 +373,31 @@ data class BumpMeshStudioState(
 
     fun withLimit(value: Int): BumpMeshStudioState = copy(limit = value)
 
-    fun withMask(paintedTriangles: Int, meshTriangles: Int): BumpMeshStudioState = copy(
-        maskTriangles = paintedTriangles,
+    /** Carries a painted region into the studio, or clears it when the mesh/object differs. */
+    fun withMask(triangles: Set<Int>, meshTriangles: Int): BumpMeshStudioState = copy(
+        paintedTriangles = triangles.filter { it in 0 until meshTriangles }.toSet(),
         maskMeshTriangles = meshTriangles,
     )
+
+    /**
+     * One region brush stroke: [triangles] are added (Draw) or removed (Erase) from the studio's
+     * own set. Nothing here reads or writes the support paint.
+     */
+    fun withRegionStroke(triangles: Set<Int>, erase: Boolean): BumpMeshStudioState {
+        if (sourceTriangles <= 0) return this
+        val valid = triangles.filter { it in 0 until sourceTriangles }
+        if (valid.isEmpty()) return this
+        val next = if (erase) paintedTriangles - valid.toSet() else paintedTriangles + valid
+        return copy(paintedTriangles = next, maskMeshTriangles = sourceTriangles)
+    }
+
+    fun withPainting(value: Boolean): BumpMeshStudioState = copy(
+        painting = value,
+        // The bar's brush starts on Draw every time it is armed; the studio's mask is kept.
+        regionBrush = if (value) TextureRegionBrush.DRAW else regionBrush,
+    )
+
+    fun withRegionBrush(value: TextureRegionBrush): BumpMeshStudioState = copy(regionBrush = value)
 
     fun starting(): BumpMeshStudioState = copy(
         applying = true,
@@ -419,9 +435,10 @@ data class BumpMeshStudioState(
         error = null,
         result = resultLine,
         repairWarning = repair,
-        // The apply changed the mesh; the paint is gone with it (see maskLifecycleNote).
-        maskTriangles = 0,
+        // The apply changed the mesh; the region's numbering is gone with it.
+        paintedTriangles = emptySet(),
         maskMeshTriangles = 0,
+        painting = false,
         wholeObject = true,
     )
 }
@@ -454,17 +471,99 @@ internal fun bumpMeshStudioOpened(
     model: PlateObject?,
     limit: Int,
     textures: List<BumpMeshTextureRef>,
+    /** The studio state this opening should carry a region over from, when it is still valid. */
+    existing: BumpMeshStudioState? = null,
 ): BumpMeshStudioState {
     val sourceTriangles = model?.sourceMesh?.triangleCount ?: 0
-    val painted = model?.let { textureMaskOf(it.supportPaint, sourceTriangles) }
+    val regionStillFits = existing != null && model != null &&
+        existing.objectId == model.id &&
+        existing.maskMeshTriangles == sourceTriangles
+    val painted = if (regionStillFits) existing!!.paintedTriangles else emptySet<Int>()
     return BumpMeshStudioState(
         open = true,
         textures = textures,
         texture = textures.firstOrNull(),
         sourceName = model?.name.orEmpty(),
         sourceTriangles = sourceTriangles,
-        maskTriangles = paintedTriangleCount(painted),
+        objectId = model?.id,
+        paintedTriangles = painted,
         maskMeshTriangles = sourceTriangles,
         limit = limit,
+        // Carrying a region in reopens on the Painted region mode, with its estimate.
+        wholeObject = painted.isEmpty(),
     )
+}
+
+/** The studio's region brush: two modes, because blocking is support's job, not a texture's. */
+enum class TextureRegionBrush(val label: String) {
+    DRAW("Draw"),
+    ERASE("Erase"),
+}
+
+/** What the region bar's Done does to the studio: brush away, sheet back, region kept. */
+internal fun bumpMeshStudioAfterPaintDone(state: BumpMeshStudioState): BumpMeshStudioState =
+    state.withPainting(false).copy(
+        open = true,
+        wholeObject = state.paintedTriangles.isEmpty(),
+    )
+
+/**
+ * The plate object after a texture apply: the textured mesh in place, everything human-owned
+ * kept.
+ *
+ * The support paint travels through exactly as it was - the studio's region is a separate store,
+ * so applying a texture has nothing to clear there. (The mesh's triangle numbering changes, and
+ * the region is dropped by [BumpMeshStudioState.finished].)
+ */
+internal fun plateObjectWithTextureMesh(
+    model: PlateObject,
+    texturedSource: StlMesh,
+): PlateObject = model.copy(
+    sourceMesh = texturedSource,
+    mesh = model.placement.transformed(texturedSource),
+    supportPaint = model.supportPaint,
+)
+
+/** The include mask the engine gets: null when the region is empty or belongs to another mesh. */
+internal fun textureRegionMaskOf(
+    paintedTriangles: Set<Int>,
+    meshTriangles: Int,
+): BooleanArray? {
+    if (meshTriangles <= 0 || paintedTriangles.isEmpty()) return null
+    val mask = BooleanArray(meshTriangles)
+    var painted = 0
+    for (triangle in paintedTriangles) {
+        if (triangle in 0 until meshTriangles) {
+            mask[triangle] = true
+            painted++
+        }
+    }
+    return if (painted == 0) null else mask
+}
+
+/**
+ * The region as scene triangle indices for the plate's tint buffer: the plate concatenates every
+ * object, so the studio object's own indices are offset by the triangles before it. Null when the
+ * studio is not painting - the overlay stands only while the brush does, and the studio shows the
+ * count once the region is kept.
+ */
+internal fun textureRegionSceneTint(
+    models: List<PlateObject>,
+    objectId: String?,
+    paintedTriangles: Set<Int>,
+    painting: Boolean,
+): IntArray? {
+    if (!painting || objectId == null || paintedTriangles.isEmpty()) return null
+    var offset = 0
+    for (model in models) {
+        if (model.id == objectId) {
+            val triangles = paintedTriangles
+                .filter { it in 0 until model.sourceMesh.triangleCount }
+                .map { offset + it }
+                .toIntArray()
+            return triangles.takeIf { it.isNotEmpty() }
+        }
+        offset += model.mesh.triangleCount
+    }
+    return null
 }
