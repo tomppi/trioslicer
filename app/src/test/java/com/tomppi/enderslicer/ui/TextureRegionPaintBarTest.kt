@@ -42,7 +42,7 @@ class TextureRegionPaintBarTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("Texture region").assertIsDisplayed()
-        compose.onNodeWithText("Drag on the model to choose which faces get the texture.")
+        compose.onNodeWithText("Drag on the model to paint the region; drag beside it to rotate the view.")
             .assertIsDisplayed()
         compose.onNodeWithText("1,234 of 5,000 triangles painted").assertIsDisplayed()
         compose.onNodeWithText("Block").assertDoesNotExist()

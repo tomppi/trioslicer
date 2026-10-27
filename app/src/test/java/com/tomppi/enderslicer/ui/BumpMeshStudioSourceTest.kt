@@ -121,7 +121,16 @@ class BumpMeshStudioSourceTest {
         val app = source("com/tomppi/enderslicer/ui/EnderSlicerApp.kt")
         assertTrue(app.contains("TextureRegionPaintBar("))
         assertTrue(app.contains("Text(\"Texture region\","))
-        assertTrue(app.contains("Drag on the model to choose which faces get the texture."))
+        assertTrue(
+            app.contains("Drag on the model to paint the region; drag beside it to rotate the view."),
+        )
+        assertTrue(
+            app.contains("drag beside it rotates the view; two fingers pan and zoom"),
+        )
+        val tools = source("com/tomppi/enderslicer/ui/ModelToolsSheet.kt")
+        assertTrue(
+            tools.contains("drag beside it rotates the view; two fingers pan and zoom"),
+        )
         assertTrue(app.contains("triangles painted"))
         assertTrue(app.contains("TEXTURE_REGION_DONE_TAG"))
         assertTrue(app.contains("Text(\"Done\")"))

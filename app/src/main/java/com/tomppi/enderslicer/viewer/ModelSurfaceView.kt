@@ -75,7 +75,10 @@ class ModelSurfaceView(
     /** True once this gesture's face pick has been reported, so a drag reports only the first. */
     private var facePickReported = false
 
-    /** When not [SupportPaintMode.NONE], a single-finger drag paints instead of rotating. */
+    /**
+     * When not [SupportPaintMode.NONE], a single-finger gesture ON THE MODEL paints; beside the
+     * model the same one-finger drag orbits the camera (see [PaintStrokeGate]).
+     */
     var paintMode: SupportPaintMode = SupportPaintMode.NONE
         set(value) {
             if (field == value) return
@@ -85,8 +88,8 @@ class ModelSurfaceView(
         }
 
     /**
-     * True while the texture-region brush is armed: a single-finger drag paints the studio's
-     * include mask instead of the support paint.
+     * True while the texture-region brush is armed: a single-finger gesture on the model paints
+     * the studio's include mask (beside it the camera orbits, as for the support brush).
      *
      * Deliberately separate from [paintMode] and from [surfacePickActive]: three different
      * paints, three different stores. Arming this one touches neither the support paint nor a
@@ -333,10 +336,8 @@ class ModelSurfaceView(
      * the movement made while it is in flight is held and replayed as an orbit if
      * the answer is "not on the model".
      */
-    private var brushDeciding = false
-    private var brushDragging = false
-    private var brushAccumDx = 0f
-    private var brushAccumDy = 0f
+    private val brushGate = PaintStrokeGate()
+    private var brushProbeToken = 0
 
     /** True while the queued coordinate is the stroke's deciding probe. */
     private val brushProbePending = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -704,19 +705,14 @@ class ModelSurfaceView(
                             strokeAccumDy = 0f
                         }
                     }
-                    if (surfacePickActive) {
-                        // Ask whether this gesture began on the model. Until the answer
-                        // arrives the touch is held rather than guessed at.
+                    if (surfacePickActive || painting) {
+                        // A brush is armed: ask whether this gesture began on the model
+                        // before painting anything. Until the pick answers the touch is held
+                        // rather than guessed at, so a drag beside the part is the camera's
+                        // (orbit) - the same rule Smart Infill's surface pick already used.
                         facePickReported = false
-                        brushDeciding = true
-                        brushDragging = false
-                        brushAccumDx = 0f
-                        brushAccumDy = 0f
+                        brushProbeToken = brushGate.begin()
                         brushProbePending.set(true)
-                        pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
-                        schedulePaintPick()
-                    }
-                    if (painting) {
                         pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
                         schedulePaintPick()
                     } else if (annotating) {
@@ -742,9 +738,13 @@ class ModelSurfaceView(
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
-                    // Two fingers are a pan, not a cut stroke.
+                    // Two fingers are a pan, not a cut stroke. A brush gesture still asking
+                    // "on the model?" was the camera's after all, so its later answer is
+                    // ignored; a stroke that already began keeps its finger while the second
+                    // finger pans and zooms.
                     if (strokeFirstHit == null) replayStrokeAsOrbit()
                     resetJointStroke()
+                    if (brushGate.cancelDecision()) brushProbePending.set(false)
                     previousFocusX = pointerFocusX(event)
                     previousFocusY = pointerFocusY(event)
                     panning = true
@@ -801,17 +801,16 @@ class ModelSurfaceView(
                         }
                         previousX = event.x
                         previousY = event.y
-                    } else if (painting || brushDragging) {
-                        // A stroke sample. One slot, overwritten: the picker runs
-                        // off the UI thread and a slow sample must not queue up a
-                        // backlog of stale positions behind it.
+                    } else if (brushGate.dragging) {
+                        // The probe answered "on the model": later samples paint. One
+                        // slot, overwritten: the picker runs off the UI thread and a slow
+                        // sample must not queue up a backlog of stale positions behind it.
                         pendingPaintCoordinates.set(floatArrayOf(event.x, event.y))
                         schedulePaintPick()
-                    } else if (brushDeciding) {
+                    } else if (brushGate.deciding) {
                         // Held until the probe answers: replayed as an orbit if the
                         // gesture turned out to be beside the model.
-                        brushAccumDx += event.x - previousX
-                        brushAccumDy += event.y - previousY
+                        brushGate.accumulate(event.x - previousX, event.y - previousY)
                         previousX = event.x
                         previousY = event.y
                     } else if (annotating && annotationDeciding) {
@@ -926,15 +925,12 @@ class ModelSurfaceView(
                         scheduleAnnotationGesture()
                     }
                 }
-                if (brushDragging && !painting) {
+                if (brushGate.dragging && !painting) {
                     // The stroke is over: the host hands the finished selection to
                     // the engine once, here, instead of on every sample.
                     onSurfacePickEnd?.invoke()
                 }
-                brushDeciding = false
-                brushDragging = false
-                brushAccumDx = 0f
-                brushAccumDy = 0f
+                brushGate.end() 
                 // The preview is deliberately left standing: the commit lands a
                 // moment later, and dropping it here would snap the model back to
                 // where it started in between. It goes when the new geometry
@@ -1086,7 +1082,6 @@ class ModelSurfaceView(
      * mode to switch out of every time the view needs turning.
      */
     private fun applyBrushProbe(hit: MeshPicker.Hit?) {
-        brushDeciding = false
         // What a surface pick may report is the owning tool's own rule (SurfacePickGate): the
         // support brush paints the part under the finger, Smart Infill the selected one, and a
         // face pick whichever part actually owns the face - it must not be limited to the
@@ -1097,32 +1092,32 @@ class ModelSurfaceView(
             surfacePickActive = surfacePickActive,
             selectedObjectIndex = currentSelectedIndex,
         )
-        if (reports && hit != null) {
-            brushDragging = true
-            // The sample that answered "brush" is a sample like any other: hand it
-            // to the handler the later ones use, or the first touch of a stroke is
-            // spent on the question and the paint only starts on the next sample.
-            // The handler expands the brush off the UI thread, exactly as it does
-            // for every later sample, so nothing here waits for that expansion.
-            if (surfacePickActive) {
-                if (!faceSelectActive || !facePickReported) {
-                    facePickReported = true
-                    onSurfacePick?.invoke(hit)
-                }
-            } else {
-                onPaintHit?.invoke(hit)
-            }
-            return
-        }
-        brushDragging = false
-        if (brushAccumDx != 0f || brushAccumDy != 0f) {
-            // The movement made while the answer was in flight becomes the orbit
-            // it would have been had the touch landed beside the model.
-            modelRenderer.rotate(brushAccumDx * 0.35f, brushAccumDy * 0.35f)
-            brushAccumDx = 0f
-            brushAccumDy = 0f
+        // A hit starts the stroke; a miss turns the held movement into the orbit it would have
+        // been. A stale answer (two fingers cancelled the question, or the gesture ended) is
+        // ignored by the gate itself, so a probe can never paint after the finger has moved on.
+        val started = brushGate.probe(
+            hit = reports && hit != null,
+            token = brushProbeToken,
+        ) { dx, dy ->
+            modelRenderer.rotate(dx * 0.35f, dy * 0.35f)
             notifyOrientation()
             requestRender()
+        }
+        if (!started) return
+        val answer = hit ?: return
+        // The sample that answered "brush" is a sample like any other: hand it to the
+        // handler the later ones use, or the first touch of a stroke is spent on the
+        // question and the paint only starts on the next sample. The handler expands the
+        // brush off the UI thread, exactly as it does for every later sample.
+        if (surfacePickActive) {
+            if (!faceSelectActive || !facePickReported) {
+                facePickReported = true
+                onSurfacePick?.invoke(answer)
+            }
+        } else if (textureRegionPaintActive) {
+            onTextureRegionHit?.invoke(answer)
+        } else {
+            onPaintHit?.invoke(answer)
         }
     }
 
@@ -1416,7 +1411,8 @@ class ModelSurfaceView(
             // work on is exactly what a brush needs, and it was the only way to change the target
             // without leaving the paint screen.
             if (!cameraInteractive || annotationActive || jointPickActive ||
-                surfacePickActive || gizmoMode != TransformGizmoMode.NONE
+                surfacePickActive || textureRegionPaintActive ||
+                gizmoMode != TransformGizmoMode.NONE
             ) {
                 return false
             }
@@ -1444,6 +1440,7 @@ class ModelSurfaceView(
             // transform card over it - the next tap would then rotate the part instead of picking
             // the face, with the card drawn over the HUD chip that told the user to tap.
             if (cameraInteractive && paintMode == SupportPaintMode.NONE &&
+                !textureRegionPaintActive &&
                 !annotationActive && !jointMoveActive && !surfacePickActive &&
                 gizmoMode == TransformGizmoMode.NONE
             ) {

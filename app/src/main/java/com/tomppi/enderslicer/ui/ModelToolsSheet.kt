@@ -800,7 +800,7 @@ private fun ModelSupportPaintTools(
     }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            "Set the brush radius and tap Apply brush to open the paint controls. Tap Draw or Block, then drag on the model to paint supports (green) or blockers (red); tap Erase to remove paint. Use two fingers to rotate and zoom the camera.",
+            "Set the brush radius and tap Apply brush to open the paint controls. Tap Draw or Block, then drag on the model: drag on the part paints supports (green) or blockers (red), drag beside it rotates the view; two fingers pan and zoom. Tap Erase to remove paint.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

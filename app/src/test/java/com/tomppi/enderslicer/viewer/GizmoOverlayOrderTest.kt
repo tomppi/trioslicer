@@ -57,7 +57,10 @@ class GizmoOverlayOrderTest {
         val grab = down.indexOf("grabGizmoHandleAt(")
         assertTrue("ACTION_DOWN offers the touch to the gizmo", grab >= 0)
         val jointPick = down.indexOf("jointPickActive)")
-        val surfacePick = down.indexOf("surfacePickActive)")
+        // The surface picker and the plain paint brushes share the decide-first block now
+        // (PaintStrokeGate), so the marker is the flag itself rather than "surfacePickActive)".
+        // The ordering claim is unchanged: the gizmo is offered the touch first.
+        val surfacePick = down.indexOf("surfacePickActive")
         val dragMove = down.indexOf("dragMoveActive)")
         assertTrue("the gizmo is tried before the joint picker", grab < jointPick)
         assertTrue("the gizmo is tried before the surface/face picker", grab < surfacePick)

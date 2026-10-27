@@ -7713,7 +7713,8 @@ private fun SupportPaintOverlay(
         ) {
             Text("Support painting", style = MaterialTheme.typography.titleSmall)
             Text(
-                "Tap Draw, Block or Erase, then drag on the model. Use two fingers to rotate and zoom.",
+                "Tap Draw, Block or Erase, then drag on the model: drag on the part paints, " +
+                    "drag beside it rotates the view; two fingers pan and zoom.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -7765,7 +7766,7 @@ internal fun TextureRegionPaintBar(
         ) {
             Text("Texture region", style = MaterialTheme.typography.titleSmall)
             Text(
-                "Drag on the model to choose which faces get the texture.",
+                "Drag on the model to paint the region; drag beside it to rotate the view.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
             )
