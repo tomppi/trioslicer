@@ -4,6 +4,27 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.15] - 2026-10-27
+
+### Fixed
+
+- **Painted-region texturing has its own tool now, and it can no longer touch the support paint.** Choosing *Painted region* used
+  to arm the app's generic support-paint brush: the bar was titled *Support painting* with Draw/Block/Erase, and the texture mask and
+  the user's support blocking/allowance shared one buffer - so painting a texture region rewrote support paint, and applying could clear it.
+  The studio now opens a dedicated **Texture region** bar (Draw and Erase only, no Block) with a live *N of M triangles painted* count and
+  a **Done** button that returns straight to the studio with *Apply to painted region* enabled. The region is stored separately, is drawn
+  on the plate in **violet** (distinct from the green support enforcers, the red blockers and the amber face tint), and the support paint is
+  carried through an apply byte-identically - verified on the phone: 2,405 support triangles before painting a region were still
+  2,405 after applying a texture.
+
+### Tested
+
+- Device walk on 3DBenchy (225,154 triangles): the region bar never showed the support vocabulary, the count moved 0 -> 1,987 -> 3,519 ->
+  2,387 across Draw/Erase, Done returned to the studio, apply took **12.5 s** with the rail showing *Undo Armor*, undo restored the mesh,
+  and the support paint dialog still read *2405 support + 0 block triangles painted*. A stale region refuses by name; whole-object mode
+  ignores it.
+- Suite: **2,195 tests, 0 failures** (35 skipped), including support-paint byte-identity in both directions and a Compose test for the new
+  bar.
 ## [1.9.14] - 2026-10-27
 
 ### Added
