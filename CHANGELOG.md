@@ -4,6 +4,27 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.16] - 2026-10-27
+
+### Fixed
+
+- **A brush no longer locks the camera: drag on the model to paint, drag beside it to rotate.** Arming support paint or the studio's
+  Texture region brush used to claim every one-finger gesture as a stroke, so the view could not be orbited while a brush was armed -
+  the only way to turn the model was to stop painting. Both brushes now go through the decide-first gate Smart Infill already used
+  (`PaintStrokeGate`): finger-down is a held question, the pick answers whether it landed on the model, a hit starts the stroke and a
+  miss replays the accumulated movement as the orbit it would have been. Two fingers keep panning and zooming at any moment, and a
+  second finger never cancels a stroke that has already begun.
+- **The hints tell the truth now:** the Texture region bar says *Drag on the model to paint the region; drag beside it to rotate the
+  view*, and the support paint controls say the same, instead of *use two fingers to rotate*.
+
+### Tested
+
+- Device walk on 3DBenchy (225,154 triangles): with Texture region armed, dragging beside the model orbited the view while the count
+  stayed 0; dragging on the model painted **0 -> 2,992 -> 3,966** with the camera still. With the support brush, paint went
+  **2,405 -> 4,865** on-model with the camera still, and dragging beside the model orbited without changing the count. (Two-finger
+  mid-stroke cannot be injected by `adb input`; it is covered by the gate and source tests rather than a screenshot.)
+- Suite: **2,206 tests, 0 failures** (35 skipped), including the new `PaintStrokeGateTest` (hit/miss/accumulated replay once/stale answer
+  inert/two fingers) and `PaintGestureSourceTest` (decide-first wiring, routing, two-finger cancel, pan-branch order, hint text).
 ## [1.9.15] - 2026-10-27
 
 ### Fixed
