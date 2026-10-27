@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -264,6 +265,12 @@ fun EnderSlicerApp(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.PLATE) }
+    // The wide rail's own menu block (the five destinations) folds away with its arrow so the
+    // action rows below get the height. The choice is a UI preference like the UI scale, so
+    // the fold the user chose is still folded on the next launch; default is expanded.
+    var railMenuExpanded by rememberSaveable {
+        mutableStateOf(RailMenuPreference.initialize(context))
+    }
 
     // The end of a live repaint: the first frame that draws a new display revision. The
     // latency reported for an agent edit runs from the call's answer to this frame.
@@ -1873,6 +1880,15 @@ fun EnderSlicerApp(
                 gcodeAvailable = state.hasCurrentGcode(),
                 sliceBlockedReason = effectiveSliceBlockedReason,
                 sliceTappable = state.cadNeedsConversion,
+                // The wide rail folds its own menu block away so the action rows get the
+                // height; the phone's sidebar panel passes this as false and is unchanged.
+                collapsibleMenu = expandedLayout,
+                menuExpanded = railMenuExpanded,
+                onToggleMenu = {
+                    val expanded = !railMenuExpanded
+                    railMenuExpanded = expanded
+                    RailMenuPreference.save(context, expanded)
+                },
                 cadConvertLabel = state.cadConvertLabel,
                 onConvertCad = {
                     viewModel.clearPendingQuestion()
@@ -5172,6 +5188,11 @@ internal fun SessionRail(
     sliceBlockedReason: String?,
     /** True when a blocked Slice is still the tappable one: a live CAD document. */
     sliceTappable: Boolean = false,
+    /** True on the wide rail (never in the phone's sidebar panel): its menu block can fold. */
+    collapsibleMenu: Boolean = false,
+    /** Whether the five destination rows are drawn; meaningful only when [collapsibleMenu]. */
+    menuExpanded: Boolean = true,
+    onToggleMenu: () -> Unit = {},
     /** "Convert to STL" or "Convert again" while a document is loaded; null when there is none. */
     cadConvertLabel: String? = null,
     onConvertCad: () -> Unit = {},
@@ -5261,6 +5282,15 @@ internal fun SessionRail(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Column(modifier = Modifier.width(SessionRailWidth).fillMaxHeight()) {
+            // The fold arrow sits above the scrolling column: on the rail's own width, below
+            // the plate's top bar and always reachable whatever the rail's scroll position.
+            if (collapsibleMenu) {
+                RailMenuToggle(
+                    expanded = menuExpanded,
+                    attention = askAiBadge,
+                    onToggle = onToggleMenu,
+                )
+            }
             // Everything above the + scrolls; the + itself does not, so the
             // sidebar's own settings are one tap away on any window height.
             Column(
@@ -5271,24 +5301,42 @@ internal fun SessionRail(
                 verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-            AppTab.entries.forEach { tab ->
-                RailDestination(tab, selected == tab) { onSelect(tab) }
+            if (!collapsibleMenu || menuExpanded) {
+                AppTab.entries.forEach { tab ->
+                    RailDestination(tab, selected == tab) { onSelect(tab) }
+                }
+                // The AI chat's own door: in the same list as the destinations, drawn the same
+                // way, but an action - it opens the chat overlay and never changes the tab or
+                // shows a selected state.
+                RailAction(
+                    icon = AppIcons.Sparkle,
+                    label = "Ask AI",
+                    onClick = onAskAi,
+                    badge = askAiBadge,
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(
+                        horizontal = EnderSlicerDimens.Space8,
+                        vertical = EnderSlicerDimens.Space8,
+                    ),
+                )
+            } else if (askAiBadge) {
+                // A question must never be invisible because the menu is folded: the one row
+                // that can carry attention keeps its place, with its badge, while the rest of
+                // the menu is hidden.
+                RailAction(
+                    icon = AppIcons.Sparkle,
+                    label = "Ask AI",
+                    onClick = onAskAi,
+                    badge = true,
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(
+                        horizontal = EnderSlicerDimens.Space8,
+                        vertical = EnderSlicerDimens.Space8,
+                    ),
+                )
             }
-            // The AI chat's own door: in the same list as the destinations, drawn the same
-            // way, but an action - it opens the chat overlay and never changes the tab or
-            // shows a selected state.
-            RailAction(
-                icon = AppIcons.Sparkle,
-                label = "Ask AI",
-                onClick = onAskAi,
-                badge = askAiBadge,
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(
-                    horizontal = EnderSlicerDimens.Space8,
-                    vertical = EnderSlicerDimens.Space8,
-                ),
-            )
             SessionChip(
                 text = when {
                     state.isBusy -> "Slicing…"
@@ -5630,6 +5678,9 @@ internal const val SESSION_RAIL_ADD_TAG = "session-rail-add"
 /** The side rail's texture-undo row; present only while a texture can be taken back. */
 internal const val SESSION_RAIL_TEXTURE_UNDO_TAG = "session-rail-texture-undo"
 
+/** The wide rail's fold arrow: collapses and expands the five-destination menu block. */
+internal const val SESSION_RAIL_MENU_TOGGLE_TAG = "session-rail-menu-toggle"
+
 /**
  * What the sidebar picker's back button says: where it returns to, named by the tab
  * it was opened over. The rail's + can raise the picker from any of them, and the
@@ -5770,6 +5821,42 @@ private fun RailAction(
             }
         }
         Text(label, style = MaterialTheme.typography.labelMedium, color = color)
+    }
+}
+
+/**
+ * The wide rail's menu fold: one 48 dp touch target on the rail's own width, a chevron-up
+ * while the destinations are drawn and a chevron-down while they are folded away. The content
+ * description says what the press does, and it carries the pending-question attention while
+ * the rail is folded (the Ask AI row itself also stays visible in that case).
+ */
+@Composable
+private fun RailMenuToggle(
+    expanded: Boolean,
+    attention: Boolean,
+    onToggle: () -> Unit,
+) {
+    val description = when {
+        expanded -> "Collapse the menu"
+        attention -> "Expand the menu - Ask AI has a question"
+        else -> "Expand the menu"
+    }
+    IconButton(
+        onClick = onToggle,
+        modifier = Modifier
+            .fillMaxWidth()
+            // The rail draws edge to edge, so the arrow is inset by the phone's own status
+            // bar: without this it was drawn behind the clock and only its bottom half could
+            // be tapped. Below the status bar it is fully visible and fully reachable.
+            .statusBarsPadding()
+            .padding(top = EnderSlicerDimens.Space4)
+            .testTag(SESSION_RAIL_MENU_TOGGLE_TAG),
+    ) {
+        Icon(
+            imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+            contentDescription = description,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

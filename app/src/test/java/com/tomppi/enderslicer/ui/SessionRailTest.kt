@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.ui
 
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithText
@@ -110,6 +112,10 @@ class SessionRailTest {
         sliceBlockedReason: String? = null,
         busy: Boolean = false,
         sidebar: SidebarSettings = SidebarSettings(),
+        /** Non-null puts the wide rail's fold arrow in the test: the value is the menu state. */
+        railMenu: MutableState<Boolean>? = null,
+        askAiBadge: Boolean = false,
+        onToggleMenu: () -> Unit = {},
     ) {
         reason = sliceBlockedReason
         compose.setContent {
@@ -133,6 +139,13 @@ class SessionRailTest {
                 ),
                 gcodeAvailable = gcodeAvailable,
                 sliceBlockedReason = reason,
+                askAiBadge = askAiBadge,
+                collapsibleMenu = railMenu != null,
+                menuExpanded = railMenu?.value ?: true,
+                onToggleMenu = {
+                    onToggleMenu()
+                    railMenu?.let { it.value = !it.value }
+                },
                 onSlice = { slices++ },
                 onExportGcode = { exports++ },
                 onSettings = { key, change ->
@@ -539,5 +552,89 @@ class SessionRailTest {
             .performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_INFILL).assertDoesNotExist()
         compose.onNodeWithTag(SESSION_SIDEBAR_ROW_TAG_PREFIX + SIDEBAR_SUPPORTS).assertDoesNotExist()
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The wide rail's menu fold (1.9.14): the five destinations fold away so the action
+    // rows get the height, and the choice is the UI preference RailMenuPreferenceTest
+    // covers on its own.
+    // ---------------------------------------------------------------------------------
+
+    @Test
+    fun theArrowFoldsTheDestinationsAwayAndBringsThemBack() {
+        val menu = mutableStateOf(true)
+        var toggles = 0
+        show(sliceable = true, railMenu = menu, onToggleMenu = { toggles++ })
+
+        // Expanded is today's rail: the five destinations and an up arrow.
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertIsDisplayed()
+        }
+        compose.onNodeWithContentDescription("Collapse the menu").assertIsDisplayed()
+
+        compose.onNodeWithTag(SESSION_RAIL_MENU_TOGGLE_TAG)
+            .assertIsDisplayed()
+            .performClick()
+        compose.waitForIdle()
+
+        assertEquals(false, menu.value)
+        assertEquals(1, toggles)
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertDoesNotExist()
+        }
+        // The actions stay - the freed height is exactly their room - and the arrow points
+        // the other way with the semantics that say what a press does.
+        compose.onNodeWithText("Slice").assertExists()
+        compose.onNodeWithText("Model tools").assertExists()
+        compose.onNodeWithText("Texture surface").assertExists()
+        compose.onNodeWithContentDescription("Expand the menu").assertIsDisplayed()
+
+        compose.onNodeWithTag(SESSION_RAIL_MENU_TOGGLE_TAG).performClick()
+        compose.waitForIdle()
+
+        assertEquals(true, menu.value)
+        assertEquals(2, toggles)
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertExists()
+        }
+        compose.onNodeWithContentDescription("Collapse the menu").assertExists()
+    }
+
+    @Test
+    fun theFoldedRailKeepsAWaitingQuestionVisible() {
+        show(railMenu = mutableStateOf(false), askAiBadge = true)
+
+        // The one row that can carry attention keeps its place while the menu is folded...
+        compose.onNodeWithText("Ask AI").assertIsDisplayed()
+        compose.onNodeWithText("Slice").assertExists()
+        compose.onNodeWithContentDescription("CAD agent is waiting for an answer")
+            .assertIsDisplayed()
+        // ...and the arrow itself says why expanding matters.
+        compose.onNodeWithContentDescription("Expand the menu - Ask AI has a question")
+            .assertIsDisplayed()
+        // The destinations are still folded away, so this is not today's full rail.
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun aFoldedRailWithoutAQuestionIsSilent() {
+        show(railMenu = mutableStateOf(false))
+
+        compose.onNodeWithText("Ask AI").assertDoesNotExist()
+        compose.onNodeWithContentDescription("CAD agent is waiting for an answer").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Expand the menu").assertIsDisplayed()
+    }
+
+    @Test
+    fun theArrowOnlyExistsOnTheWideRail() {
+        // The phone's sidebar panel passes no railMenu, so it keeps its old shape.
+        show()
+
+        compose.onNodeWithTag(SESSION_RAIL_MENU_TOGGLE_TAG).assertDoesNotExist()
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertExists()
+        }
     }
 }
