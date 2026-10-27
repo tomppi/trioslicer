@@ -146,12 +146,29 @@ Two limits worth stating in the same breath:
 - **On a non-rooted phone an agent cannot read it at all.** There is no read path an agent can use;
   a human taps *Copy MCP token* and hands the value over, which is the workflow the item exists for.
 
-Neither token can ride off the device in an Auto Backup or a device-to-device transfer: both
-`files/blender/` and `files/cad/` are excluded from both backup lists
-(`app/src/main/res/xml/backup_rules.xml:31`, `:74`; `.../data_extraction_rules.xml:29`, `:80`,
-`:103`, `:143`). That is a backup-policy question rather than a read path an agent can use, and a
-restore leaves neither engine tokenless: both trees are extracted from the APK's assets on the new
-device, and the token beside each is written anew.
+None of the **three** tokens can ride off the device in an Auto Backup or a device-to-device
+transfer, and each is excluded in a way that keeps its engine's authored work restorable:
+
+- **Blender (9876)** and **CAD (9877)** live under trees that are regenerated on the new device, so
+  `files/blender/` and `files/cad/` are excluded whole from both backup lists - the full-backup
+  list in `app/src/main/res/xml/backup_rules.xml`, and both the cloud-backup and device-transfer
+  sections of `app/src/main/res/xml/data_extraction_rules.xml`.
+- **SolidCraft (9878)** has a different split, because its tree also holds authored work: the
+  designs in `files/solidcraft/workspace/designs/` are the user's, and are deliberately kept
+  restorable, as are their `.meta` sidecars and the design display caches. Only two things are
+  excluded from
+  both lists: the token file `files/solidcraft/solidcraft_mcp_token.txt`, and
+  `files/solidcraft/workspace/converted/` - the STLs a **Convert to STL** press wrote, which are
+  derived from the design (one press rebuilds them) and which can be tens of megabytes per part
+  against a 25 MB Auto Backup quota; an over-quota backup is not a partial one
+  (`backup_rules.xml` and `data_extraction_rules.xml` name both paths). The converted STLs are
+  not a credential and not the source of truth; the design is backed up, the token and the large
+  derived exports are not.
+
+That is a backup-policy question rather than a read path an agent can use, and a restore leaves no
+engine tokenless: the Blender and CAD trees are extracted from the APK's assets again and their
+tokens written anew, and SolidCraft mints a new token in `SolidCraftEngine.ensureToken` when the
+restored device has none.
 
 ## 6. The biometric gate on the in-app copy
 

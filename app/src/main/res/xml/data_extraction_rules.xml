@@ -78,6 +78,12 @@
              device; the replacement extracts the tree from the app's assets again
              and writes a fresh token beside it. -->
         <exclude domain="file" path="cad/" />
+        <!-- SolidCraft: keep the authored designs (and their display caches), leave the 9878
+             bearer token and the derived Convert to STL exports behind - the token is code
+             execution as this app, and the STLs are rebuildable and can exceed the 25 MB
+             quota by themselves (an over-quota backup is not a partial one). -->
+        <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
+        <exclude domain="file" path="solidcraft/workspace/converted/" />
     </cloud-backup>
     <device-transfer>
         <!-- As in the cloud-backup rules above: the OctoPrint credential is
@@ -141,5 +147,9 @@
              means running arbitrary Python as this app, so a replacement device
              gets the tree from the app's assets again and mints its own. -->
         <exclude domain="file" path="cad/" />
+        <!-- The same split as cloud backup: the designs travel with the user, the 9878 token
+             and the derived converted STLs do not. -->
+        <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
+        <exclude domain="file" path="solidcraft/workspace/converted/" />
     </device-transfer>
 </data-extraction-rules>

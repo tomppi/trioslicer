@@ -176,4 +176,25 @@ class WorkspaceCadStateTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun theSplitLayoutsObjectIdsSurviveARelaunch() {
+        val (store, root) = workspace()
+        try {
+            val cache = displayCache(root)
+            // The two halves a split made from the document: they are plate objects, not the
+            // document's parts, so only this list can tell a restored plate they were derived.
+            val split = cadState(root).copy(
+                derivedStale = true,
+                staleReason = "the plate holds a split made from the previous shape",
+                derivedObjectIds = listOf("half-low", "half-high"),
+            )
+            store.save(snapshot(root, cache, split))
+            val loaded = store.load()!!.cad!!
+            assertEquals(listOf("half-low", "half-high"), loaded.derivedObjectIds)
+            assertTrue(loaded.derivedStale)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

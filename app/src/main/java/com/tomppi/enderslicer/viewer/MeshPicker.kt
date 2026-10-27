@@ -38,6 +38,35 @@ object MeshPicker {
     )
 
     /**
+     * Re-frames a scene-wide hit as a hit on the object that owns the triangle.
+     *
+     * The picker is handed the whole plate as one scene, so the index it answers with is
+     * scene-wide. Every consumer of the viewer's callbacks wants the object and the index inside
+     * that object's own mesh - the index its paint is stored by - so the conversion is part of the
+     * picker's contract, not of any one tool's arithmetic. [triangleOwners] is one owner index per
+     * scene triangle; [objectFirstTriangle] is where each object starts in the scene.
+     *
+     * Pure, so the two-object conversion can be tested without a GL surface: the face pick used to
+     * subtract the scene offset a second time on top of this, which shifted a tap on any part but
+     * the first (a false "did not land on a body", or a neighbouring triangle's normal).
+     */
+    fun objectLocalHit(
+        hit: Hit,
+        triangleOwners: IntArray,
+        objectFirstTriangle: IntArray,
+    ): Hit {
+        val owner = if (hit.triangleIndex in triangleOwners.indices) {
+            triangleOwners[hit.triangleIndex]
+        } else {
+            0
+        }
+        return hit.copy(
+            triangleIndex = hit.triangleIndex - objectFirstTriangle.getOrElse(owner) { 0 },
+            objectIndex = owner,
+        )
+    }
+
+    /**
      * The half of a cut preview a pick must not see.
      *
      * The preview is a shader clip plane: fragments beyond [offsetMm] along

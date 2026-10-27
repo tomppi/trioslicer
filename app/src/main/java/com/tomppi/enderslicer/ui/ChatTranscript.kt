@@ -38,10 +38,16 @@ fun chatTranscriptText(messages: List<AiChatMessage>): String = buildString {
                 if (tool.failed) append(" · FAILED")
             }
             message.question != null -> {
+                // A question is model text too: a data URL echoed into it (from the user's own
+                // message or a page) must not become clipboard payload, exactly like every
+                // other text branch - the function's "no image data" promise covers this entry.
+                val question = message.question!!
                 append('\n')
-                append("question: ").append(message.question!!.question)
-                if (message.question!!.options.isNotEmpty()) {
-                    append(" (options: ").append(message.question!!.options.joinToString(" / ")).append(')')
+                append("question: ").append(withoutImageData(question.question))
+                if (question.options.isNotEmpty()) {
+                    append(" (options: ")
+                        .append(withoutImageData(question.options.joinToString(" / ")))
+                        .append(')')
                 }
             }
             message.kind == AiChatEntryKind.ACTIVITY -> Unit

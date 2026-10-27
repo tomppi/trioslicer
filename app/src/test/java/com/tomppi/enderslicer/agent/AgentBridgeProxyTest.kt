@@ -225,6 +225,54 @@ class AgentBridgeProxyTest {
     }
 
     @Test
+    fun aFloodPastThePipeCapIsRefusedByNameInsteadOfSpawned() {
+        startFakeEngine()
+        val proxy = proxy { reachable("127.0.0.1") }
+        proxy.setEnabled(true)
+        val cap = proxy.maxConcurrentPipes()
+        val clients = ArrayList<Socket>()
+        try {
+            repeat(cap) {
+                val client = Socket("127.0.0.1", port)
+                client.soTimeout = 5_000
+                clients += client
+            }
+            // accept() and forward() are asynchronous: wait for the cap to be really in use.
+            val deadline = System.currentTimeMillis() + 5_000
+            while (proxy.activePipeCount() < cap && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            assertEquals("every allowed pipe is counted", cap, proxy.activePipeCount())
+
+            Socket("127.0.0.1", port).use { extra ->
+                extra.soTimeout = 5_000
+                val line = extra.getInputStream().bufferedReader().readLine()
+                assertNotNull("a refused connection gets a named line, not a hang", line)
+                val refusal = line!!
+                assertTrue("the refusal names the cap: " + refusal, refusal.contains("limit " + cap))
+                assertTrue("the refusal says what happened: " + refusal, refusal.contains("refused"))
+                assertTrue("it says which bridge: " + refusal, refusal.contains("port " + port))
+                // Closed right after the one line.
+                assertEquals(-1, runCatching { extra.getInputStream().read() }.getOrDefault(-1))
+            }
+            synchronized(logs) {
+                assertTrue(
+                    "the cap was not logged: " + logs,
+                    logs.any { it.contains("refused a connection") },
+                )
+            }
+            assertEquals("a refused connection is not counted as a pipe", cap, proxy.activePipeCount())
+        } finally {
+            clients.forEach { runCatching { it.close() } }
+        }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (proxy.activePipeCount() != 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10)
+        }
+        assertEquals("closing the clients releases every pipe", 0, proxy.activePipeCount())
+    }
+
+    @Test
     fun noPayloadIsEverLogged() {
         startFakeEngine()
         val proxy = proxy { reachable("127.0.0.1") }

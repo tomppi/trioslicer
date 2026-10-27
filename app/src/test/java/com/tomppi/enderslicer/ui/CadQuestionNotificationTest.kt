@@ -37,9 +37,18 @@ class CadQuestionNotificationTest {
             "CAD agent is asking a question",
             notification.extras.getCharSequence("android.title")?.toString(),
         )
+        // The question text stays in the chat card: a notification is visible above the lock
+        // screen and can be read by a notification listener, and the question may quote a part
+        // name or something private the user said earlier.
         assertEquals(
-            "Which material should the lid use?",
+            "Open the chat to answer.",
             notification.extras.getCharSequence("android.text")?.toString(),
+        )
+        assertFalse(
+            "the question text must not be in the notification: " +
+                notification.extras.getCharSequence("android.text"),
+            (notification.extras.getCharSequence("android.text")?.toString() ?: "")
+                .contains("Which material"),
         )
 
         // A second post for the same question must not stack a copy.

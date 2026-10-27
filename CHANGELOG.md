@@ -35,6 +35,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   most 10 results with 2,000-character snippets/summaries and a 32,000-character fetched page,
   the removed eight-tool-round limit (and the "continue" sentence it produced) is gone, and the
   plate render is documented at its 1,536 px long side.
+- **The plate's CAD document survives its own bursts, replaces and conversions.** The design's
+  writer never cleared its job, so every edit inside the 1.5 s window was dropped and a burst
+  could leave the file at its first edit; it is one self-clearing loop now, with a test that
+  drives a burst. "New design" saved to `designs/<name>.solidcraft` where every new design is
+  named "Untitled", overwriting the previous design's only source of truth - it takes a free name
+  now. Connect agent no longer republishes a converted or split plate (it used to undo the
+  conversion or silently drop a split); Convert and Convert again refuse a split layout by name
+  instead of duplicating the part; the derived-layout guard is persisted, so a relaunch keeps the
+  split and offers Rebuild plate; Snap Apply's objects join the set Rebuild filters; Convert
+  clears the placement undo; a deleted design on a converted plate is named; and bodies whose
+  readable slugs collide no longer share a file.
+- **A face pick reaches any part of the document.** The pick was gated on the selected model and
+  the selection was forced to the first part, so on a two-part document the lid's faces were
+  unreachable with no message; the plate's hit is object-local and the view model subtracted the
+  scene offset a second time, which broke every part but the first. The amber tint now stays on
+  the face's part while that part is on the plate (not only while it is selected), Clear plate,
+  Convert and arming another tool drop the face mode, and the render's tint scan looks for the
+  tint mix itself instead of any warm pixel.
+- **The question path says what happened and opens where the question is.** An open-chat request
+  is consumed exactly once (a rotation no longer replays the last notification tap), asking for
+  attention switches the chat to the in-app source, the card's history distinguishes *Answered*,
+  *Answered from the options*, *Dismissed* and *not answered*, the notification body is neutral
+  and is cancelled when its question is gone, and a document change resets the transcript, the
+  agent's memory and a waiting question with a sentence that says so.
+- **The agent cannot leak the turn or grow without bound.** Closing the activity cancels the turn
+  (releasing the keeper, the wake lock and the document's authorship), the plate render uses the
+  live plate view instead of one captured when the turn started (so a rotation no longer kills
+  renders for the rest of the turn), a turn keeps only the latest four renders and has a
+  per-request ceiling, a stopped turn is remembered so "continue" has an antecedent, tool rows
+  carry conversation-wide ids, and an image refusal is only believed when the endpoint names
+  image input and a capability.
+- **Security and backups.** The SolidCraft MCP token and the converted STLs are excluded from
+  Auto Backup and device transfer while the designs stay restorable; the published bridge caps
+  concurrent pipes before authentication; and the untrusted-web fence carries a per-request nonce
+  so a page cannot forge its closing line.
 
 ### Tested
 

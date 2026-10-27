@@ -30,12 +30,14 @@ class GizmoOverlayOrderTest {
         val source = viewerSource()
         val scene = source.substringAfter("private fun drawScene(").substringBefore("private fun readPixels(")
         val mesh = scene.indexOf("drawMesh()")
-        val gizmoCall = scene.indexOf("drawGizmo()")
+        // The two pixel-sized overlays take the frame's own size (the offscreen plate capture
+        // draws through them too), so their call sites carry arguments now.
+        val gizmoCall = scene.indexOf("drawGizmo(")
         assertTrue("the frame draws the model", mesh >= 0)
         assertTrue("the frame draws the gizmo", gizmoCall >= 0)
         assertTrue("the gizmo is drawn after the model", gizmoCall > mesh)
 
-        val gizmo = source.substringAfter("private fun drawGizmo()").substringBefore("private fun rebuildColorBuffer(")
+        val gizmo = source.substringAfter("private fun drawGizmo(").substringBefore("private fun rebuildColorBuffer(")
         val disable = gizmo.indexOf("glDisable(GLES20.GL_DEPTH_TEST)")
         val draw = gizmo.indexOf("glDrawArrays")
         val enable = gizmo.indexOf("glEnable(GLES20.GL_DEPTH_TEST)")
@@ -76,7 +78,7 @@ class GizmoOverlayOrderTest {
         val source = viewerSource()
         val scene = source.substringAfter("private fun drawScene(").substringBefore("private fun readPixels(")
         val mesh = scene.indexOf("drawMesh()")
-        for (overlay in listOf("drawAxisTriad()", "drawAnnotation()", "drawGizmo()")) {
+        for (overlay in listOf("drawAxisTriad(", "drawAnnotation(", "drawGizmo(")) {
             assertTrue(overlay + " draws after the model", scene.indexOf(overlay) > mesh)
         }
     }

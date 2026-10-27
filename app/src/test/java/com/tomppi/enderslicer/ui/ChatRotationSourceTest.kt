@@ -44,7 +44,10 @@ class ChatRotationSourceTest {
 
         val viewModel = source("com/tomppi/enderslicer/ui/MainViewModel.kt")
         assertTrue(viewModel.contains("var cadConversations by mutableStateOf(CadConversations())"))
-        assertTrue(viewModel.contains("var cadBusy by mutableStateOf(false)"))
+        // cadBusy is a mirrored property now: the backing state is private and its setter also
+        // publishes the turn state the plate reads (audit cad #10).
+        assertTrue(viewModel.contains("private var cadBusyState by mutableStateOf(false)"))
+        assertTrue(viewModel.contains("var cadBusy: Boolean"))
         assertTrue(viewModel.contains("var modellingMessages by mutableStateOf(listOf<AiChatMessage>())"))
         assertTrue(viewModel.contains("var modellingBusy by mutableStateOf(false)"))
         assertTrue(

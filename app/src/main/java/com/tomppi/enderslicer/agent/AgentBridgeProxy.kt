@@ -6,6 +6,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /** One engine's loopback MCP port, and the names used for it. */
@@ -102,6 +103,22 @@ class AgentBridgeProxy(
 
     /** The engine's loopback answer, last observed: true up, false down, absent untested. */
     private val engineRunning = ConcurrentHashMap<Int, Boolean>()
+
+    /**
+     * Pipes accepted but not finished yet, across every published port.
+     *
+     * The forwarder has no authentication of its own (each engine checks its token after the
+     * bytes arrive), so an unauthenticated peer must not be able to turn "one connection" into
+     * "two threads and a socket pair" without a bound. The cap is generous - a human may hold a
+     * client while another agent reconnects - and a connection past it is refused by name.
+     */
+    private val activePipes = AtomicInteger(0)
+
+    /** How many forwarded connections are open right now; test-visible for the cap. */
+    internal fun activePipeCount(): Int = activePipes.get()
+
+    /** The cap the accept path enforces; test-visible so a test does not hard-code it. */
+    internal fun maxConcurrentPipes(): Int = MAX_CONCURRENT_PIPES
 
     fun isEnabled(): Boolean = enabled
 
@@ -254,11 +271,61 @@ class AgentBridgeProxy(
             } catch (_: Throwable) {
                 break
             }
-            thread(name = "agent-bridge-" + target.port + "-pipe", isDaemon = true) {
-                forward(target, client)
+            // Counted before the engine side exists: this is the point a peer without a token
+            // can spend resources, so the cap has to be here, not after authentication.
+            if (activePipes.incrementAndGet() > MAX_CONCURRENT_PIPES) {
+                activePipes.decrementAndGet()
+                val open = activePipes.get()
+                log(
+                    "agent bridge " + target.port + " (" + target.name + "): refused a connection - " +
+                        open + " of " + MAX_CONCURRENT_PIPES + " pipes already open",
+                )
+                refuseBusy(client, target.port, open)
+                continue
+            }
+            try {
+                thread(name = "agent-bridge-" + target.port + "-pipe", isDaemon = true) {
+                    try {
+                        forward(target, client)
+                    } finally {
+                        activePipes.decrementAndGet()
+                    }
+                }
+            } catch (error: Throwable) {
+                // Creating the pipe failed (the process is out of resources): release the
+                // client and the count rather than leaking either.
+                activePipes.decrementAndGet()
+                runCatching { client.close() }
+                log(
+                    "agent bridge " + target.port + " could not start a pipe: " +
+                        (error.message ?: error.javaClass.simpleName),
+                )
             }
         }
     }
+
+    /** The one-line, named refusal a connection past the cap receives before it is closed. */
+    private fun refuseBusy(client: Socket, port: Int, open: Int) {
+        // No JSON library here: this class stays loadable in a plain JVM unit test, and the one
+        // message is fixed apart from two numbers and a sentence that cannot contain a quote.
+        val message = pipeRefusal(port, open)
+        val line = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":" + PIPE_BUSY_CODE +
+            ",\"message\":\"" + message + "\"}}\n"
+        runCatching {
+            client.getOutputStream().apply {
+                write(line.toByteArray(Charsets.UTF_8))
+                flush()
+            }
+        }
+        runCatching { client.close() }
+    }
+
+    /** The sentence [refuseBusy] sends: one line naming why a connection was refused. */
+    internal fun pipeRefusal(port: Int, open: Int): String =
+        "the app's agent bridge on port " + port + " already has " + open + " open connection" +
+            (if (open == 1) "" else "s") + " (limit " + MAX_CONCURRENT_PIPES + "); the new " +
+            "connection was refused before the engine's token check so the phone cannot be " +
+            "exhausted by connections that never authenticate. Close a connection and retry."
 
     /**
      * Connects the client to the engine's loopback port and copies bytes both ways.
@@ -334,5 +401,18 @@ class AgentBridgeProxy(
         const val CONNECT_TIMEOUT_MILLIS = 2_000
         const val PROBE_TIMEOUT_MILLIS = 250
         const val BUFFER_BYTES = 16 * 1024
+
+        /**
+         * The most forwarded connections this device will hold at once, across all engines.
+         *
+         * Normal use is one or two (an agent, a browser test, a reconnect overlap); 32 leaves
+         * room for that and for a human poking with several clients, while keeping the
+         * unauthenticated path bounded. Raising it raises the per-connection cost: two threads
+         * and two socket pairs each.
+         */
+        const val MAX_CONCURRENT_PIPES = 32
+
+        /** JSON-RPC server-defined error code for "the transport is full, retry later". */
+        const val PIPE_BUSY_CODE = -32001
     }
 }

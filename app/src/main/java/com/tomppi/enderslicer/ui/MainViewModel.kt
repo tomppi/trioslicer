@@ -21,6 +21,7 @@ import com.tomppi.enderslicer.agent.AgentBridges
 import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.cadagent.CadAgent
+import com.tomppi.enderslicer.cadagent.InAppTurnKeeper
 import com.tomppi.enderslicer.conical.ConicalRuntime
 import com.tomppi.enderslicer.data.AppStateStore
 import com.tomppi.enderslicer.data.BuiltInGcode
@@ -97,6 +98,7 @@ import java.util.Locale
 import kotlin.math.sqrt
 import com.tomppi.enderslicer.viewer.AnnotationOverlayBuilder
 import com.tomppi.enderslicer.viewer.BedClipper
+import com.tomppi.enderslicer.viewer.ModelSurfaceView
 import com.tomppi.enderslicer.viewer.PreviewMemoryPolicy
 import com.tomppi.enderslicer.viewer.PreviewMemoryProfile
 import com.tomppi.enderslicer.viewer.MeshBoolean
@@ -157,6 +159,7 @@ import com.tomppi.enderslicer.solidcraft.CadDesignLibrary
 import com.tomppi.enderslicer.solidcraft.CadLiveUpdate
 import com.tomppi.enderslicer.solidcraft.CadPart
 import com.tomppi.enderslicer.solidcraft.CadPartPublish
+import com.tomppi.enderslicer.solidcraft.CadPersistScheduler
 import com.tomppi.enderslicer.solidcraft.CadSliceGate
 import com.tomppi.enderslicer.solidcraft.CadWorkspace
 import com.tomppi.enderslicer.solidcraft.DocumentDelta
@@ -522,6 +525,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // the newest one.
         if (BlenderEngine.onStlExported != null) BlenderEngine.onStlExported = null
         if (CadEngine.onExport != null) CadEngine.onExport = null
+        // Ends the turn, not the engine: a blocking agent loop only stops when its own
+        // cancel() is called, and its finally is the only place the keeper, the wake lock and
+        // the document's authorship are released. A finished Activity (Back/swipe away) must
+        // not leave a turn holding all three; rotation never clears this ViewModel.
+        inAppCadAgent?.cancel()
+        InAppTurnKeeper.end(app)
+        runCatching { SolidCraftEngine.authorship().endInAppTurn() }
         super.onCleared()
     }
 
@@ -573,6 +583,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The live tessellation: one mesh per body of the engine's design. */
     private val cadBodies = CadBodyMeshes()
 
+    /**
+     * True when [cadBodies] holds every body of the document.
+     *
+     * It is false after the plate is cleared (the engine's document and the composer part ways:
+     * the design still has its bodies, the composer does not) and after the document is closed.
+     * A delta that names bodies must then NOT be applied incrementally - it would build a plate
+     * with only the named bodies, or with none for a removal-only edit. The repaint re-reads the
+     * whole document first and says so in the status. [refreshCadAllBodies] restores it.
+     */
+    @Volatile
+    private var cadComposerComplete = true
+
     /** Repaints run one at a time, in the order the engine reported the edits. */
     private val cadRepaintLock = Mutex()
 
@@ -595,12 +617,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var cadRevisionAtMillis: Long = 0L
 
-    @Volatile
-    private var cadLastPersistAt: Long = 0L
+    /**
+     * The one writer for the design, its sidecar and the descriptor.
+     *
+     * At most one write every [CAD_PERSIST_INTERVAL_MILLIS], and always one more after the last
+     * edit of a burst: the old two-branch throttle left its first (immediate) job in the field
+     * forever, so every later edit inside the window was skipped and the design file on disk
+     * stayed at the first edit of the burst (a data-loss bug). [CadPersistScheduler] is a single
+     * loop that is only done when it is clean.
+     */
+    private val cadPersistScheduler: CadPersistScheduler by lazy {
+        CadPersistScheduler(
+            intervalMillis = CAD_PERSIST_INTERVAL_MILLIS,
+            scope = viewModelScope,
+            write = { cadPersistLock.withLock { persistCadWorkspaceNow() } },
+        )
+    }
 
-    /** The pending or running persistence write, so a burst ends with one final write. */
+    /**
+     * Serialises the design's writers.
+     *
+     * The scheduled writer and the two explicit ones (Stop agent and Close document save before
+     * the engine stops) can otherwise run on two IO threads at once, and the engine session is
+     * not safe for two concurrent saves of the same design.
+     */
+    private val cadPersistLock = Mutex()
+
+    /**
+     * The plate view a running agent turn should render, looked up per call and never captured.
+     *
+     * The in-app turn outlives the activity by design (rotation): a view captured when the turn
+     * started is detached after the recreate, and its capturePlate() refuses to draw - "no
+     * frame" for the rest of the turn. This belongs to the ViewModel for the same reason the
+     * conversation does, and the app writes it whenever a plate view is created or updated.
+     */
     @Volatile
-    private var cadPersistJob: Job? = null
+    var cadPlateView: ModelSurfaceView? = null
+
+    /** True when the plate holds a split/snap layout made from this document. */
+    private fun derivedLayoutOnPlate(document: CadDocument?): Boolean =
+        cadDerivedPlateIds.isNotEmpty() || document?.derivedStale == true
 
     private val _solidCraftSheetOpen = MutableStateFlow(false)
 
@@ -622,7 +678,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The in-app agent's status line and turn flag, both surviving a rotation. */
     var cadStatus: String? by mutableStateOf(null)
-    var cadBusy by mutableStateOf(false)
+
+    private var cadBusyState by mutableStateOf(false)
+
+    /**
+     * The in-app agent's turn flag.
+     *
+     * It is mirrored into [MainUiState.cadTurnRunning] because the plate must be able to read
+     * "a turn is running" as state - Convert and Rebuild are disabled from it - and the turn is
+     * started by the screen, not by a plate action.
+     */
+    var cadBusy: Boolean
+        get() = cadBusyState
+        set(value) {
+            if (cadBusyState == value) return
+            cadBusyState = value
+            _uiState.update { it.copy(cadTurnRunning = value) }
+        }
 
     // The harness session is its own backend with its own status and busy flag: an in-app turn
     // must not make the harness source look busy, and a harness reconnect must not put its
@@ -675,6 +747,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun clearPendingQuestion() {
         pendingQuestion = null
+    }
+
+    /**
+     * Ends the previous document's in-app conversation, pending question and agent memory.
+     *
+     * A different document is a different conversation: the transcript, the model's remembered
+     * turns and a waiting question all belong to the design they were made for. The docs promise
+     * this, and the risk review asks that the clear is announced: the returned suffix is
+     * appended to the action's status line, so the user is told the conversation was reset
+     * instead of finding it gone.
+     */
+    private fun resetInAppConversationForDocumentSwitch(): String {
+        val hadConversation = cadConversations.inApp.isNotEmpty() || pendingQuestion != null
+        cadConversations = cadConversations.copy(inApp = emptyList())
+        inAppCadAgent?.reset()
+        clearPendingQuestion()
+        return if (hadConversation) {
+            " · the in-app conversation was reset for this document"
+        } else {
+            ""
+        }
     }
 
     /** Bumped when a CAD turn ends, so the plate asks for a fresh frame and scene read. */
@@ -759,30 +852,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val design = File(existing.designPath)
                         val session = SolidCraftEngine.session()
                             ?: throw IllegalStateException("the CAD agent session disappeared")
-                        if (design.isFile) {
-                            session.open(design.absolutePath)
-                            cadOpenDesignPath = existing.designPath
+                        if (!design.isFile) {
+                            throw IllegalStateException(
+                                CadDesignLibrary.missingDesignSentence(existing.converted),
+                            )
+                        }
+                        session.open(design.absolutePath)
+                        cadOpenDesignPath = existing.designPath
+                        // Connect starts the engine; it is not Rebuild plate. A converted plate
+                        // is the human's STLs and a split/snap layout is the human's geometry
+                        // made from this document: neither may be re-derived by connecting.
+                        if (!existing.converted && !derivedLayoutOnPlate(existing)) {
                             if (refreshCadAllBodies(session, cadWorkspace(), existing.name)) {
                                 publishCadParts(
                                     name = existing.name,
                                     designPath = existing.designPath,
                                     sourcePath = existing.sourcePath,
                                     editMillis = null,
-                                    replaceDerived = true,
+                                    replaceDerived = false,
                                 )
                             }
                         }
                     }
                     _uiState.value.cadDocument
                 }
+                val keptConverted = doc?.converted == true
+                val keptDerived = doc != null && !keptConverted && derivedLayoutOnPlate(doc)
+                if (doc != null && keptDerived) {
+                    markCadStale(
+                        previous = doc,
+                        name = doc.name,
+                        designPath = doc.designPath,
+                        reason = "the plate holds a split or snap layout made from the previous " +
+                            "shape of this document; the plate is not re-derived by connecting. " +
+                            "Press Rebuild plate in the CAD agent sheet to take the document's " +
+                            "current shape.",
+                    )
+                }
                 _uiState.update {
                     it.copy(
                         isBusy = false,
-                        statusMessage = if (doc != null) {
-                            "CAD agent ready · " + doc.name + " · " + doc.bodyCount +
-                                " bodies on the plate · the agent is the only author"
-                        } else {
-                            "CAD agent ready on 127.0.0.1:" + SolidCraftEngine.bridgePort() +
+                        statusMessage = when {
+                            keptConverted -> "CAD agent ready · " + doc!!.name + " · the plate " +
+                                "keeps its " + doc.convertedParts.size + " converted STLs; " +
+                                "Slice can run and the agent can edit the design"
+                            keptDerived -> "CAD agent ready · " + doc!!.name + " · the plate " +
+                                "keeps its split layout made from the previous shape - press " +
+                                "Rebuild plate to take the document's current shape"
+                            doc != null -> "CAD agent ready · " + doc.name + " · " +
+                                doc.bodyCount + " bodies on the plate · the agent is the only author"
+                            else -> "CAD agent ready on 127.0.0.1:" + SolidCraftEngine.bridgePort() +
                                 " · the plate will show the engine's document as the agent builds it"
                         },
                     )
@@ -802,7 +921,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(statusMessage = "Stopping the CAD agent…") }
             withContext(Dispatchers.IO) {
-                persistCadWorkspaceNow()
+                cadPersistLock.withLock { persistCadWorkspaceNow() }
                 SolidCraftEngine.stop()
             }
             cadOpenDesignPath = null
@@ -852,36 +971,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // the human converted them into ordinary STL models, and closing the document does
             // not throw away the models on the plate.
             val liveIds = document?.parts?.map { it.objectId }.orEmpty().toSet() +
-                listOfNotNull(document?.displayObjectId)
+                listOfNotNull(document?.displayObjectId) + cadDerivedPlateIds
             val convertedCount = document?.convertedParts?.size ?: 0
             withContext(Dispatchers.IO) {
-                persistCadWorkspaceNow()
+                cadPersistLock.withLock { persistCadWorkspaceNow() }
                 SolidCraftEngine.stop()
             }
             cadOpenDesignPath = null
             cadBodies.clear()
             cadPartIds.clear()
             cadDerivedPlateIds.clear()
+            cadComposerComplete = false
+            placementHistory.clear()
+            val resetNote = resetInAppConversationForDocumentSwitch()
             _uiState.update { state ->
                 state.copy(
                     models = state.models.filterNot { it.id in liveIds },
                     selectedModelId = state.models.firstOrNull { it.id !in liveIds }?.id,
                     cadDocument = null,
-                ).withoutPublishedSlice("CAD document closed")
+                ).withoutPublishedSlice("CAD document closed" + resetNote).afterPlateReplaced()
             }
             withContext(Dispatchers.IO) {
                 runCatching { workspaceStore.save(workspaceSnapshot(_uiState.value) ?: return@runCatching) }
             }
             _uiState.update {
                 it.copy(
-                    statusMessage = if (convertedCount > 0) {
+                    statusMessage = (if (convertedCount > 0) {
                         "CAD document closed; its " + convertedCount + " converted part" +
                             (if (convertedCount == 1) "" else "s") + " stay on the plate as STL " +
                             "models. The design file is kept in the SolidCraft workspace."
                     } else {
                         "CAD document closed; its design file is kept in the SolidCraft " +
                             "workspace and the plate can import a mesh again"
-                    },
+                    }) + resetNote,
                 )
             }
             dropFaceSelection("the CAD document was closed")
@@ -898,6 +1020,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun rebuildCadPlateFromDocument() {
         val document = _uiState.value.cadDocument ?: return
         if (_uiState.value.isBusy) return
+        _uiState.value.cadRebuildBlockedReason?.let { reason ->
+            _uiState.update { it.copy(statusMessage = reason) }
+            return
+        }
+        if (!File(document.designPath).isFile) {
+            _uiState.update {
+                it.copy(statusMessage = CadDesignLibrary.missingDesignSentence(document.converted))
+            }
+            return
+        }
         if (!beginOperation("Rebuilding the plate from the document…")) return
         viewModelScope.launch {
             try {
@@ -910,7 +1042,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         throw IllegalStateException("the engine reported no bodies to draw")
                     }
                 }
-                val dropped = cadDerivedPlateIds.size
+                val dropped = _uiState.value.models.count { it.id in cadDerivedPlateIds }
                 publishCadParts(
                     name = document.name,
                     designPath = document.designPath,
@@ -925,6 +1057,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             if (dropped > 0) {
                                 " · the " + dropped + "-object split layout made from the " +
                                     "previous shape was dropped"
+                            } else if (document.derivedStale) {
+                                " · the previous plate layout was replaced by the document"
                             } else {
                                 ""
                             },
@@ -970,9 +1104,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         staged.outputStream().use { output -> input.copyTo(output) }
                     } ?: throw IllegalStateException("could not read " + sourceName)
                     session.open(staged.absolutePath)
-                    val name = sourceName.substringBeforeLast('.', sourceName)
+                    val baseName = sourceName.substringBeforeLast('.', sourceName)
                         .ifBlank { "CAD document" }
-                    val design = workspace.designFile(name)
+                    // An Open whose name is already another design in the workspace must not
+                    // overwrite it: the design file is the app's only source of truth.
+                    val design = workspace.uniqueDesignFile(baseName)
+                    val name = design.nameWithoutExtension
                     session.save(design.absolutePath)
                     cadOpenDesignPath = design.absolutePath
                     if (!refreshCadAllBodies(session, workspace, name)) {
@@ -992,13 +1129,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     editMillis = null,
                     replaceDerived = true,
                 )
+                val resetNote = resetInAppConversationForDocumentSwitch()
                 _uiState.update {
                     it.copy(
                         isBusy = false,
                         statusMessage = "Opened " + prepared.sourceName + " as a CAD document " +
                             "(SolidCraft engine) · " + prepared.bodies + " bodies · " +
                             "%,d".format(prepared.triangles) +
-                            " triangles display tessellation · the agent can now edit it",
+                            " triangles display tessellation · saved as " + prepared.design.name +
+                            " · the agent can now edit it" + resetNote,
                     )
                 }
                 scheduleCadPersist(force = true)
@@ -1064,6 +1203,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value
         val document = state.cadDocument ?: return
         if (state.isBusy) return
+        // A running turn owns the engine session: converting beside it can interleave the
+        // conversion's inspect/export with the agent's tool calls. Refused by name, and the
+        // plate disables the press from the same MainUiState fact.
+        state.cadConvertBlockedReason?.let { reason ->
+            _uiState.update { it.copy(statusMessage = reason) }
+            return
+        }
+        // The converted plate's design file can be deleted from SolidCraft files while its STLs
+        // stay on the plate: name that instead of telling the user to reconnect.
+        if (!File(document.designPath).isFile) {
+            _uiState.update {
+                it.copy(statusMessage = CadDesignLibrary.missingDesignSentence(document.converted))
+            }
+            return
+        }
+        // A split/snap layout is geometry made from this document: converting it would silently
+        // drop the human's layout or leave the halves beside the whole converted parts (a
+        // duplicated print). Refuse by name and point at the one press that takes the document back.
+        val derived = if (cadDerivedPlateIds.isNotEmpty()) {
+            cadDerivedPlateIds
+        } else if (document.derivedStale) {
+            setOf("the previous plate layout")
+        } else {
+            emptySet()
+        }
+        CadConvert.refusalFor(derived)?.let { refusal ->
+            _uiState.update { it.copy(statusMessage = refusal) }
+            return
+        }
         val again = document.converted
         if (!beginOperation(
                 if (again) "Converting the CAD document again…" else "Converting the CAD document to STL…",
@@ -1106,7 +1274,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val replacing = if (document.converted) document.convertedParts else document.parts
-                val plan = CadConvert.plan(exported, _uiState.value.models, replacing)
+                val plan = CadConvert.plan(
+                    exported,
+                    _uiState.value.models,
+                    replacing,
+                    legacyObjectId = document.displayObjectId,
+                )
                 cadPartIds.clear()
                 for (part in plan.parts) cadPartIds[part.body] = part.objectId
                 val documentAfter = document.copy(
@@ -1133,6 +1306,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     (if (plan.parts.size == 1) "" else "s") + ", " +
                     "%,d".format(plan.triangleCount) + " triangles · Slice can run now · the " +
                     "STLs are in the SolidCraft workspace's converted folder" + paintNote
+                cadDerivedPlateIds.clear()
+                placementHistory.clear()
                 _uiState.update { current ->
                     current.copy(
                         models = plan.models,
@@ -1141,9 +1316,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             ?: plan.parts.firstOrNull()?.objectId,
                         cadDocument = documentAfter,
                         isBusy = false,
-                    ).withoutPublishedSlice(status)
+                    ).withoutPublishedSlice(status).afterPlateReplaced()
                 }
-                if (_uiState.value.selectedFace != null) {
+                // Unconditionally: after a conversion the plate holds STL objects, so even an
+                // armed-but-empty face mode would leave pixels waiting for a document that is no
+                // longer drawn. dropFaceSelection is a no-op when nothing is selected or armed.
+                run {
                     dropFaceSelection("the document was converted to STL; the plate holds mesh models now")
                 }
                 Diagnostics.info(
@@ -1176,12 +1354,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val session = SolidCraftEngine.session()
                         ?: throw IllegalStateException("the CAD agent session disappeared")
                     session.newDesign()
-                    val name = cadDesignName(session)
                     val workspace = cadWorkspace()
-                    val design = workspace.designFile(name)
+                    // Never overwrite an existing design: the engine's default name is
+                    // "Untitled" for every new design, which used to destroy the previous one.
+                    val design = workspace.uniqueDesignFile(cadDesignName(session))
+                    val name = design.nameWithoutExtension
                     session.save(design.absolutePath)
                     cadOpenDesignPath = design.absolutePath
                     cadBodies.clear()
+                    cadComposerComplete = true
                     CadDesignLibrary.writeMeta(workspace, design, name, 0, System.currentTimeMillis())
                     PreparedCadLoad(name = name, design = design, parts = 0, triangles = 0)
                 }
@@ -1189,13 +1370,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val dropped = state.cadDocument?.parts?.map { it.objectId }.orEmpty()
                     .plus(state.cadDocument?.convertedParts?.map { it.objectId }.orEmpty())
                     .plus(listOfNotNull(state.cadDocument?.displayObjectId))
+                    .plus(cadDerivedPlateIds)
                 cadPartIds.clear()
                 cadDerivedPlateIds.clear()
+                placementHistory.clear()
                 val document = CadDocument(
                     name = prepared.name,
                     designPath = prepared.design.absolutePath,
                     displayRevision = (state.cadDocument?.displayRevision ?: 0L) + 1L,
                 )
+                val resetNote = resetInAppConversationForDocumentSwitch()
                 _uiState.update { current ->
                     val models = current.models.filterNot { it.id in dropped }
                     current.copy(
@@ -1207,8 +1391,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isBusy = false,
                     ).withoutPublishedSlice(
                         "Started a new CAD design: " + prepared.name +
-                            " · the plate is empty and the agent can build the first body",
-                    )
+                            " · the plate is empty and the agent can build the first body" +
+                            resetNote,
+                    ).afterPlateReplaced()
                 }
                 dropFaceSelection("a new CAD design was started")
                 scheduleCadPersist(force = true)
@@ -1305,8 +1490,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val dropped = previous?.parts?.map { it.objectId }.orEmpty()
                     .plus(previous?.convertedParts?.map { it.objectId }.orEmpty())
                     .plus(listOfNotNull(previous?.displayObjectId))
+                    .plus(cadDerivedPlateIds)
                 cadDerivedPlateIds.clear()
                 cadPartIds.clear()
+                placementHistory.clear()
                 _uiState.update { current ->
                     val models = current.models.filterNot { it.id in dropped }
                     current.copy(
@@ -1324,6 +1511,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     editMillis = null,
                     replaceDerived = true,
                 )
+                val resetNote = resetInAppConversationForDocumentSwitch()
                 _uiState.update {
                     it.copy(
                         isBusy = false,
@@ -1331,7 +1519,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "workspace: " + prepared.parts + " part" +
                             (if (prepared.parts == 1) "" else "s") + " · " +
                             "%,d".format(prepared.triangles) + " triangles · it is the live " +
-                            "document now, and Slice needs Convert to STL",
+                            "document now, and Slice needs Convert to STL" + resetNote,
                     )
                 }
                 dropFaceSelection("a design from the SolidCraft workspace was loaded")
@@ -1402,8 +1590,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         // A split or snap layout is geometry the human made from the previous shape: never
-        // paste the document's new shape over it.
-        if (cadDerivedPlateIds.isNotEmpty()) {
+        // paste the document's new shape over it. The persisted derivedStale flag keeps that
+        // rule across a relaunch, when the in-memory id set would otherwise be empty.
+        if (derivedLayoutOnPlate(previous)) {
             markCadStale(
                 previous = previous,
                 name = name,
@@ -1415,14 +1604,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        // A cleared plate (or a closed document) has no composer to patch: read the whole
+        // document back first, so the first edit after Clear cannot rebuild the plate from only
+        // the bodies it happened to name (and a removal-only edit cannot report an empty design
+        // while the engine still holds every body).
+        val composerIncomplete = !cadComposerComplete || cadBodies.count == 0
         markCadUpdating(true)
         var incremental = false
-        if (!delta.fullRefresh && delta.repaintBodies.isNotEmpty()) {
+        if (!composerIncomplete && !delta.fullRefresh && delta.repaintBodies.isNotEmpty()) {
             val loaded = exportCadBodies(session, workspace, name, delta.repaintBodies)
             if (loaded != null && CadLiveUpdate.applyIncremental(cadBodies, delta) { loaded[it] }) {
                 incremental = true
             }
-        } else if (!delta.fullRefresh) {
+        } else if (!composerIncomplete && !delta.fullRefresh) {
             // A removed-only edit (a delete): no triangles to export, the composer drops them.
             cadBodies.remove(delta.removedBodies)
             incremental = true
@@ -1492,6 +1686,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "repainted " + name + " after " + delta.tool + ": " + triangles +
                 " triangles from " + cadBodies.count + " bodies",
         )
+        if (composerIncomplete) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = (it.statusMessage ?: "CAD document") +
+                        " · the plate had been cleared, so the whole document was read back",
+                )
+            }
+        }
         scheduleCadPersist()
     }
 
@@ -1515,6 +1717,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .plus(listOfNotNull(previous?.displayObjectId))
         cadBodies.clear()
         cadPartIds.clear()
+        // An empty design is a complete picture: the composer is not missing bodies, there are
+        // none. The next edit may patch incrementally.
+        cadComposerComplete = true
         cadRevisionAtMillis = System.currentTimeMillis()
         _uiState.update {
             it.withoutCadBodies(
@@ -1581,7 +1786,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Only a split (or a jointed pair) is stale geometry made from the previous shape. An
         // object the user REMOVED from the plate is not stale: the next agent edit brings the
         // document back as fresh plate objects, the way an import would.
-        if (cadDerivedPlateIds.isNotEmpty() && !replaceDerived) {
+        if (derivedLayoutOnPlate(previous) && !replaceDerived) {
             markCadStale(
                 previous = previous,
                 name = name,
@@ -1612,7 +1817,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             state.models
         }
-        if (replaceDerived) cadDerivedPlateIds.clear()
+        if (replaceDerived) {
+            cadDerivedPlateIds.clear()
+            // Every object the plate was showing from the document is replaced, so a placement
+            // history recorded against those objects would undo onto a different object.
+            placementHistory.clear()
+        }
         // Taking the live document again drops the converted layout: those meshes were made
         // from the document, and the plate now shows the document itself.
         val convertedIds = previous?.convertedParts?.map { it.objectId }.orEmpty().toSet()
@@ -1648,11 +1858,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { current ->
             val selected = current.selectedModelId?.takeIf { id -> plan.models.any { it.id == id } }
                 ?: plan.parts.firstOrNull()?.objectId
-            current.copy(
+            val next = current.copy(
                 models = plan.models,
                 selectedModelId = selected,
                 cadDocument = document,
             ).withoutPublishedSlice(current.statusMessage)
+            if (replaceDerived) next.afterPlateReplaced() else next
         }
         val paintNote = if (plan.paintDropped.isNotEmpty()) {
             " · painted supports were cleared on " + plan.paintDropped.joinToString(", ") +
@@ -1660,7 +1871,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ""
         }
-        _uiState.update { it.copy(statusMessage = cadStatusLine(it.cadDocument ?: document) + paintNote) }
+        val renameNote = if (plan.renamed.isNotEmpty()) {
+            " · renamed " + plan.renamed.joinToString(", ") { (from, to) -> from + " -> " + to } +
+                " (placement and paint kept)"
+        } else {
+            ""
+        }
+        _uiState.update {
+            it.copy(
+                statusMessage = cadStatusLine(it.cadDocument ?: document) + paintNote + renameNote,
+            )
+        }
         Diagnostics.info(
             "cad",
             "display " + name + ": " + plan.triangleCount + " triangles from " +
@@ -1785,6 +2006,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workspace: CadWorkspace,
         name: String,
     ): Boolean {
+        // Until the whole document has been read the composer is not trustworthy for an
+        // incremental patch; a failure leaves it unknown, not "empty".
+        cadComposerComplete = false
         val bodyNames = runCatching { cadBodyNames(session) }.getOrNull() ?: return false
         cadBodies.clear()
         if (bodyNames.isEmpty()) return false
@@ -1806,6 +2030,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrNull() ?: return false
             cadBodies.put(body, mesh)
         }
+        cadComposerComplete = cadBodies.count > 0
         return cadBodies.count > 0
     }
 
@@ -1863,22 +2088,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Writes the design, its sidecar and the workspace descriptor, at most every 1.5 s. */
     private fun scheduleCadPersist(force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        if (force || now - cadLastPersistAt >= CAD_PERSIST_INTERVAL_MILLIS) {
-            cadLastPersistAt = now
-            cadPersistJob?.cancel()
-            cadPersistJob = viewModelScope.launch(Dispatchers.IO) { persistCadWorkspaceNow() }
-            return
-        }
-        // A repaint during the interval must still land: without a trailing write, the last
-        // edit of a burst (and the part count the files screen reads) could be a second stale.
-        if (cadPersistJob != null) return
-        cadPersistJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(CAD_PERSIST_INTERVAL_MILLIS)
-            cadLastPersistAt = System.currentTimeMillis()
-            cadPersistJob = null
-            persistCadWorkspaceNow()
-        }
+        cadPersistScheduler.schedule(force)
     }
 
     /**
@@ -3092,6 +3302,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 cadBodies.clear()
                 cadPartIds.clear()
                 cadDerivedPlateIds.clear()
+                // The engine's design still holds its bodies; the composer does not. The next
+                // delta must not be applied as an incremental patch.
+                cadComposerComplete = false
                 _uiState.update { current ->
                     // The plate is empty, so every joint and every previewed half the
                     // session holds belongs to an object that is gone.
@@ -6133,6 +6346,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         record = nextRecord,
                     )
                 }
+                // Apply replaces the two split halves with the jointed pair: the derived
+                // layout now consists of the jointed objects, so the tracked ids move with
+                // them. Without this, Rebuild plate filters nothing and pastes a whole copy of
+                // the part beside the joined halves.
+                val replacedHalves = setOf(low.id, high.id)
+                if (cadDerivedPlateIds.removeAll(replacedHalves)) {
+                    cadDerivedPlateIds.addAll(listOf(lowObject.id, highObject.id))
+                }
                 val descriptor = workspaceSnapshot(commit(_uiState.value))
                     ?: throw IllegalStateException("The joined plate could not be saved")
                 withContext(Dispatchers.IO) {
@@ -6347,8 +6568,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        document.parts.firstOrNull()?.objectId
-            ?.let { id -> if (state.models.any { it.id == id }) selectModel(id) }
+        // The first part used to be force-selected here: the pick was once gated on the selected
+        // model, so this was the workaround that made its faces reachable. SurfacePickGate now
+        // accepts a face tap on any part, and silently moving the user's selection is not the
+        // mode's business.
         _uiState.update {
             it.copy(
                 faceSelectMode = true,
@@ -6404,9 +6627,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        // A MeshPicker hit is already object-local: objectHit() subtracts the object's first
+        // scene triangle, and every other consumer (paint, joints, the docs on Hit) treats
+        // triangleIndex that way. Subtracting the scene offset again here rejected every part
+        // that was not plate model 0 - the audit's VIEW-4. The offset below is only for the
+        // tint buffer, which is one buffer over the whole scene.
         val sceneOffset = state.models.take(hit.objectIndex).sumOf { it.mesh.triangleCount }
         val bodyMesh = cadBodies.mesh(body)
-        val localTriangle = hit.triangleIndex - sceneOffset
+        val localTriangle = hit.triangleIndex
         if (bodyMesh == null || localTriangle !in 0 until bodyMesh.triangleCount) {
             _uiState.update {
                 it.copy(statusMessage = "That tap did not land on a body of the CAD document.")
@@ -8229,6 +8457,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 bodyCount = saved.bodyCount,
             )
         }
+        cadDerivedPlateIds.clear()
+        snapshot.cad?.derivedObjectIds.orEmpty().forEach { id ->
+            if (objects.any { it.id == id }) cadDerivedPlateIds.add(id)
+        }
         if (restoredCad != null) {
             cadPartIds.clear()
             for (part in restoredCad.parts) cadPartIds[part.body] = part.objectId
@@ -8240,14 +8472,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isBusy = false,
                     cadDocument = restoredCad,
                     statusMessage = when {
-                        restoredCad != null -> if (restoredCad.converted) {
-                            "Restored CAD document ${restoredCad.name} · ${restoredCad.convertedParts.size} " +
-                                "converted parts on the plate · slice or convert it again; connect the " +
-                                "CAD agent to edit the design"
-                        } else {
-                            "Restored CAD document ${restoredCad.name} · ${restoredCad.parts.size} " +
-                                "parts · connect the CAD agent to work on it; Slice needs Convert to STL"
-                        }
+                        restoredCad != null -> (
+                            if (restoredCad.converted) {
+                                "Restored CAD document ${restoredCad.name} · " +
+                                    "${restoredCad.convertedParts.size} converted parts on the " +
+                                    "plate · slice or convert it again; connect the CAD agent to " +
+                                    "edit the design"
+                            } else {
+                                "Restored CAD document ${restoredCad.name} · " +
+                                    "${restoredCad.parts.size} parts · connect the CAD agent to " +
+                                    "work on it; Slice needs Convert to STL"
+                            }
+                            ) + if (derivedLayoutOnPlate(restoredCad)) {
+                                " · the plate keeps a split layout made from its previous shape; " +
+                                    "press Rebuild plate to take the document's current shape"
+                            } else {
+                                ""
+                            }
                         objects.size > 1 ->
                             "Restored ${objects.size} models on the plate; slice again to create validated G-code"
                         else ->
@@ -8301,6 +8542,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     },
                     derivedStale = document.derivedStale,
                     staleReason = document.staleReason,
+                    derivedObjectIds = cadDerivedPlateIds.toList(),
                 )
             },
         )

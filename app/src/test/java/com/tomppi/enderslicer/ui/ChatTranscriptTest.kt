@@ -177,6 +177,28 @@ class ChatTranscriptTest {
     }
 
     @Test
+    fun aDataUrlEchoedIntoAQuestionIsOmittedFromTheCopyToo() {
+        val payload = "data:image/jpeg;base64," + "B".repeat(512)
+        val text = chatTranscriptText(
+            listOf(
+                AiChatMessage(
+                    fromUser = false,
+                    text = "question",
+                    kind = AiChatEntryKind.QUESTION,
+                    question = com.tomppi.enderslicer.cadagent.AgentQuestion(
+                        "Is this the picture you meant? " + payload,
+                        listOf("Yes " + payload, "No"),
+                    ),
+                ),
+            ),
+        )
+        assertFalse("no payload in a copied question: " + text, text.contains("base64"))
+        assertFalse(text.contains("B".repeat(512)))
+        assertTrue("the copy says it was omitted", text.contains("[image data omitted]"))
+        assertTrue("the question is still copied", text.contains("question: Is this the picture"))
+    }
+
+    @Test
     fun nothingShapedLikeACredentialAppears() {
         // The rows are redacted where they are built; this pins the second half - the builder
         // adds no header, key or Authorization text of its own.

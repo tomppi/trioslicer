@@ -18,6 +18,14 @@ data class CadPartPlan(
     val parts: List<CadPart>,
     val triangleCount: Int,
     val paintDropped: List<String>,
+    /**
+     * Bodies the edit renamed (old name to new name), so the status can say so.
+     *
+     * A rename keeps the part's human placement and paint - the name is the engine's, the
+     * arrangement is the user's - but the plate object is renamed with it; the camera resets
+     * for a changed name, which is unavoidable and is the only thing a rename costs.
+     */
+    val renamed: List<Pair<String, String>> = emptyList(),
 )
 
 /**
@@ -62,6 +70,16 @@ object CadPartPublish {
         val previousByBody = previousParts.associateBy { it.body }
         val previousIds = previousParts.map { it.objectId }.toSet()
         val legacyIds = listOfNotNull(legacyObjectId).toSet()
+        // The engine's body name is not an identity: a rename makes a body look new. When
+        // exactly one previous body is gone and exactly one new body is unmatched, and the
+        // shape is unchanged (same triangle count), it is the same part under a new name:
+        // carry the human's placement and paint into the renamed object instead of appending
+        // a fresh one at the document's coordinates.
+        val newBodyNames = bodies.filter { it.second.triangleCount > 0 }.map { it.first }.toSet()
+        val renamedCandidates = previousParts
+            .filter { it.body !in newBodyNames }
+            .mapNotNull { part -> models.firstOrNull { it.id == part.objectId }?.let { part to it } }
+        val unmatchedNewBodies = bodies.count { it.second.triangleCount > 0 && it.first !in previousByBody }
         // Ids that are already spoken for by models this publish does not own. The document's
         // own ids are given back before planning so a part keeps its id across a republish.
         val usedIds = models
@@ -71,13 +89,23 @@ object CadPartPublish {
         val planned = LinkedHashMap<String, PlateObject>()
         val parts = ArrayList<CadPart>(bodies.size)
         val paintDropped = ArrayList<String>()
+        val renamed = ArrayList<Pair<String, String>>()
         var triangleCount = 0
         for ((body, mesh) in bodies) {
             if (mesh.triangleCount <= 0) continue
             triangleCount += mesh.triangleCount
-            val existing = previousByBody[body]?.objectId
+            var existing = previousByBody[body]?.objectId
                 ?.let { id -> models.firstOrNull { it.id == id } }
-            val id = if (existing != null) {
+            var renamedFrom: String? = null
+            if (existing == null && unmatchedNewBodies == 1 && renamedCandidates.size == 1) {
+                val (orphanPart, orphanObject) = renamedCandidates.single()
+                if (orphanObject.sourceMesh.triangleCount == mesh.triangleCount) {
+                    existing = orphanObject
+                    renamedFrom = orphanPart.body
+                }
+            }
+            if (renamedFrom != null) renamed += renamedFrom to body
+            val id = if (existing != null && renamedFrom == null) {
                 usedIds.add(existing.id)
                 existing.id
             } else {
@@ -140,6 +168,7 @@ object CadPartPublish {
             parts = parts,
             triangleCount = triangleCount,
             paintDropped = paintDropped,
+            renamed = renamed,
         )
     }
 

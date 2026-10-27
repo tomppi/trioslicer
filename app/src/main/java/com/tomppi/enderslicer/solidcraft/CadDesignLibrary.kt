@@ -75,6 +75,20 @@ object CadDesignLibrary {
     /** The files screen with nothing in it. */
     const val EMPTY_SENTENCE = "No designs yet - New design, or open a STEP file."
 
+    /**
+     * What the document actions say when the design file they need is not there any more.
+     *
+     * SolidCraft files deliberately allows deleting the design of a converted plate (the STLs
+     * are the plate's own models). The plate keeps its document record for Convert again and
+     * Rebuild plate, so that record can name the deleted file instead of failing with a
+     * sentence about reconnecting; for a live document the old advice still holds.
+     */
+    fun missingDesignSentence(converted: Boolean): String = if (converted) {
+        "the design file was deleted; the converted models are on the plate"
+    } else {
+        "the design file is missing; reconnect the CAD agent and rebuild it"
+    }
+
     /** The sidecar's suffix: bracket.solidcraft -> bracket.meta. */
     private const val META_SUFFIX = ".meta"
 

@@ -190,4 +190,35 @@ class CadPartPublishTest {
         assertEquals(mesh.bounds.minZ.toDouble() + 4.0, carried.baseZmm, 1e-6)
         assertNotEquals(moved.centerXmm, carried.centerXmm)
     }
+
+    @Test
+    fun aRenamedBodyKeepsItsPlacementAndPaintAndSaysItWasRenamed() {
+        val first = plan(listOf("Case" to cadTestMesh("case"), "Lid" to cadTestMesh("lid")))
+        val lid = first.models.first { it.name == "Lid" }
+        val moved = lid.withPlacement(
+            lid.placement.copy(
+                centerXmm = lid.placement.centerXmm + 20.0,
+                centerYmm = lid.placement.centerYmm + 5.0,
+            ),
+        ).copy(supportPaint = SupportPaintState(enforcerTriangles = setOf(0)))
+        val plate = first.models.map { if (it.id == lid.id) moved else it }
+        val caseMesh = first.models.first { it.name == "Case" }.sourceMesh
+        // The engine renamed Lid to Cover; the shape did not change (same triangle count).
+        val renamed = plan(
+            listOf("Case" to caseMesh, "Cover" to cadTestMesh("cover")),
+            models = plate,
+            previousParts = first.parts,
+        )
+        assertEquals(listOf("Case", "Cover"), renamed.models.map { it.name })
+        val cover = renamed.models.first { it.name == "Cover" }
+        // The human's arrangement and paint survive the rename: the name is the engine's,
+        // the place is the user's.
+        assertEquals(lid.placement.centerXmm + 20.0, cover.placement.centerXmm, 1e-6)
+        assertEquals(lid.placement.centerYmm + 5.0, cover.placement.centerYmm, 1e-6)
+        assertEquals(setOf(0), cover.supportPaint.enforcerTriangles)
+        assertEquals(listOf("Lid" to "Cover"), renamed.renamed)
+        // The old object is gone, not kept beside the renamed one.
+        assertEquals(2, renamed.models.size)
+        assertEquals(listOf("cad:Case", "cad:Cover"), renamed.models.map { it.id })
+    }
 }

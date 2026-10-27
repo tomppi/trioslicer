@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.tomppi.enderslicer.cadagent.AgentQuestion
@@ -79,6 +80,21 @@ class AskUserFlowTest {
         val last = viewModel.cadConversations.inApp.last()
         assertTrue("the answer is sent as a user message", last.fromUser)
         assertEquals("PETG", last.text)
+        // A chip answer says where it came from; it must not read as a typed answer.
+        compose.onNodeWithText("Answered from the options.").assertExists()
+    }
+
+    @Test
+    fun aTypedAnswerSaysAnswered() {
+        host()
+        viewModel.onInAppQuestion(AgentQuestion("Which material should the lid use?", listOf("PLA", "PETG")))
+        compose.waitForIdle()
+
+        compose.onNode(hasSetTextAction()).performTextInput("PETG")
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitForIdle()
+
+        assertNull("a typed answer clears the wait", viewModel.pendingQuestion)
         compose.onNodeWithText("Answered.").assertExists()
     }
 
@@ -96,6 +112,10 @@ class AskUserFlowTest {
             "dismissing is not an answer: no user message is added",
             viewModel.cadConversations.inApp.none { it.fromUser },
         )
+        // A dismissed card is history that was never answered - the old wording said
+        // "Answered." for every non-waiting card, which is the confusion the audit found.
+        compose.onNodeWithText("Dismissed - the agent was not given an answer.").assertExists()
+        compose.onNodeWithText("Answered.").assertDoesNotExist()
     }
 
     @Test
@@ -132,16 +152,33 @@ private fun QuestionChatHost(viewModel: MainViewModel) {
             configured = true,
             onSend = {},
             question = viewModel.pendingQuestion,
-            onAnswerQuestion = { answer ->
+            onAnswerQuestion = { answer, fromOptions ->
+                resolveQuestion(
+                    viewModel,
+                    if (fromOptions) AiQuestionOutcome.ANSWERED_FROM_OPTIONS else AiQuestionOutcome.ANSWERED,
+                )
                 viewModel.clearPendingQuestion()
                 viewModel.cadConversations = viewModel.cadConversations.appendInApp(
                     AiChatMessage(fromUser = true, text = answer),
                 )
             },
-            onDismissQuestion = { viewModel.clearPendingQuestion() },
+            onDismissQuestion = {
+                resolveQuestion(viewModel, AiQuestionOutcome.DISMISSED)
+                viewModel.clearPendingQuestion()
+            },
         ),
         source = ChatSource.IN_APP,
         authorLine = "Author: nobody",
         modifier = Modifier.fillMaxSize(),
+    )
+}
+
+/** Record how the transcript's waiting question was resolved, as the app's callback does. */
+private fun resolveQuestion(viewModel: MainViewModel, outcome: AiQuestionOutcome) {
+    viewModel.cadConversations = viewModel.cadConversations.copy(
+        inApp = viewModel.cadConversations.inApp.markQuestionResolved(
+            viewModel.pendingQuestion,
+            outcome,
+        ),
     )
 }

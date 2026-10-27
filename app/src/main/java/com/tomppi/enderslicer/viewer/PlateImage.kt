@@ -85,35 +85,15 @@ object PlateImageCodec {
     }
 
     /**
-     * True when enough of the picture is the selected face's amber to say it is tinted.
+     * True when the picture really carries the selected face's amber tint.
      *
-     * The tint is mixed over the shaded blue, so its pixels are warm: red above green above
-     * blue, and clearly warm rather than the part's own blue. The count is a floor, not a
-     * measurement - a face only a few pixels across is still tinted, and this would rather say
-     * nothing than claim a tint a human would not see.
+     * See [FaceTintScan] for the test; this only reads the frame's pixels out.
      */
     private fun hasFaceTint(bitmap: Bitmap): Boolean {
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        var found = 0
-        var index = 0
-        val step = if (pixels.size > 200_000) 3 else 1
-        while (index < pixels.size) {
-            val pixel = pixels[index]
-            val red = (pixel shr 16) and 0xFF
-            val green = (pixel shr 8) and 0xFF
-            val blue = pixel and 0xFF
-            if (red >= 140 && red - blue >= 60 && green > blue) {
-                found++
-                if (found >= MINIMUM_TINT_PIXELS) return true
-            }
-            index += step
-        }
-        return false
+        return FaceTintScan.visible(pixels, bitmap.width, bitmap.height)
     }
-
-    /** Below this many warm pixels the tint is not claimed - see [hasFaceTint]. */
-    private const val MINIMUM_TINT_PIXELS = 24
 
     private fun scaleToLimit(bitmap: Bitmap): Bitmap {
         val longSide = maxOf(bitmap.width, bitmap.height)
@@ -122,5 +102,121 @@ object PlateImageCodec {
         val width = (bitmap.width * factor).toInt().coerceAtLeast(1)
         val height = (bitmap.height * factor).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(bitmap, width, height, true)
+    }
+}
+
+
+/**
+ * The selected face's amber tint, found in a plate frame's pixels.
+ *
+ * The renderer does not draw the tint as a flat colour: the mesh shader mixes it over the shaded
+ * face - `mix(shaded, FACE_TINT_COLOR, 0.85)` with `FACE_TINT_COLOR = (1.0, 0.78, 0.22)` - so a
+ * tinted pixel is 85% amber and 15% of the face's own material (a blue part, or the support paint
+ * under the selection) under the frame's lighting. That 15% is what keeps the test honest: it
+ * holds the blue channel up and the red below white, which is a narrow band no other warm thing on
+ * the plate occupies.
+ *
+ * This replaced a general "warm pixel" test (red above green above blue) that also matched amber
+ * annotations, Smart Infill's load and armed surfaces and red blocker paint, so a frame with no
+ * tint at all could claim one to the agent. The band below rejects those by their own colour, the
+ * flat annotation amber (the one colour that is exactly the tint's own amber) is rejected
+ * outright, and a solid patch is required so a line's or an edge's few pixels cannot answer for a
+ * face. The caption says nothing when in doubt.
+ */
+internal object FaceTintScan {
+
+    /** Points sampled per axis in the coarse pass over the frame. */
+    private const val SAMPLES = 3
+
+    /** A tint needs a solid square patch this many pixels wide... */
+    private const val PATCH = 6
+
+    /** ...with at least this many of its pixels passing (a few JPEG outliers are tolerated). */
+    private const val PATCH_PASSING = 30
+
+    /** Frames bigger than this are coarse-scanned with a stride. */
+    private const val LARGE_FRAME_PIXELS = 400_000
+
+    /**
+     * True when one solid patch of the frame is the selected face's tint.
+     *
+     * [pixels] is row-major ARGB, top row first, as [Bitmap.getPixels] returns it.
+     */
+    fun visible(pixels: IntArray, width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0 || pixels.size < width * height) return false
+        val step = if (pixels.size > LARGE_FRAME_PIXELS) 3 else 1
+        val span = SAMPLES * step
+        if (width < span || height < span) return false
+        var y = 0
+        while (y <= height - span) {
+            var x = 0
+            while (x <= width - span) {
+                var sampled = 0
+                var passing = 0
+                var dy = 0
+                while (dy < SAMPLES) {
+                    val row = (y + dy * step) * width + x
+                    var dx = 0
+                    while (dx < SAMPLES) {
+                        if (isTint(pixels[row + dx * step])) passing++
+                        sampled++
+                        dx++
+                    }
+                    dy++
+                }
+                // One sample may fall on an antialiased edge; a whole face does not.
+                if (passing >= sampled - 1 && solidPatch(pixels, width, height, x, y)) return true
+                x += step
+            }
+            y += step
+        }
+        return false
+    }
+
+    /** Counts a real [PATCH] x [PATCH] window at a coarse candidate's corner. */
+    private fun solidPatch(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        startX: Int,
+        startY: Int,
+    ): Boolean {
+        val x0 = startX.coerceIn(0, maxOf(width - PATCH, 0))
+        val y0 = startY.coerceIn(0, maxOf(height - PATCH, 0))
+        var passing = 0
+        for (row in 0 until PATCH) {
+            val base = (y0 + row) * width + x0
+            for (column in 0 until PATCH) {
+                if (isTint(pixels[base + column])) passing++
+            }
+        }
+        return passing >= PATCH_PASSING
+    }
+
+    /**
+     * One pixel of the tint's band.
+     *
+     * Bounds are the mix's own range for a blue part (with or without support paint under it)
+     * across the shader's lighting range, with a little room for JPEG. Deliberately not a hue
+     * test: a hue test is what counted every warm overlay as a tint.
+     */
+    private fun isTint(pixel: Int): Boolean {
+        val red = (pixel shr 16) and 0xFF
+        val green = (pixel shr 8) and 0xFF
+        val blue = pixel and 0xFF
+
+        // The annotation colour IS the tint's amber, drawn flat and unlit. A mixed tint never
+        // reaches it (the 15% of the blue part keeps the red below the flat amber and the green
+        // off it), so the exact colour cannot be a tint pixel - a line of annotations must not
+        // answer for a face.
+        if (red >= 245 && green in 184..204 && blue in 46..66) return false
+
+        if (red < 212) return false
+        if (green !in 158..218) return false
+        if (blue !in 42..112) return false
+        val redMinusGreen = red - green
+        if (redMinusGreen < 10 || redMinusGreen > 96) return false
+        val greenMinusBlue = green - blue
+        return greenMinusBlue in 76..152
     }
 }

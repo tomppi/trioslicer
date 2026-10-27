@@ -179,6 +179,14 @@ class WorkspaceStateStore(private val filesDirectory: File) {
         /** True when the plate held a split/snap layout made from the previous shape. */
         val derivedStale: Boolean = false,
         val staleReason: String? = null,
+        /**
+         * The plate objects a split (or a joint applied to its halves) made from this document.
+         *
+         * The split guard used to live only in memory, so a relaunch forgot that the plate held
+         * a layout made from the document and the next agent edit pasted the new shape beside
+         * the halves. Persisting the ids is what lets the restored plate keep the stale rule.
+         */
+        val derivedObjectIds: List<String> = emptyList(),
     ) {
         /** One body of the document and the plate object that draws it. */
         data class PartState(
@@ -439,6 +447,9 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                         cad.displayMeshPath?.let { put("displayMeshPath", it) }
                         cad.displayObjectId?.let { put("displayObjectId", it) }
                         cad.staleReason?.let { put("staleReason", it) }
+                        if (cad.derivedObjectIds.isNotEmpty()) {
+                            put("derivedObjectIds", JSONArray(cad.derivedObjectIds))
+                        }
                         if (cad.parts.isNotEmpty()) put("parts", encodeParts(cad.parts))
                         if (cad.converted) {
                             put("converted", true)
@@ -497,6 +508,11 @@ class WorkspaceStateStore(private val filesDirectory: File) {
                 convertedParts = decodeParts(json.optJSONArray("convertedParts")),
                 derivedStale = json.optBoolean("derivedStale", false),
                 staleReason = json.optString("staleReason").takeIf { it.isNotBlank() },
+                derivedObjectIds = json.optJSONArray("derivedObjectIds")?.let { array ->
+                    (0 until array.length()).mapNotNull { index ->
+                        array.optString(index).takeIf { it.isNotBlank() }
+                    }
+                }.orEmpty(),
             )
         }.getOrNull()
     }

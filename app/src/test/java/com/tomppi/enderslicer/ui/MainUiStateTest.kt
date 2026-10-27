@@ -330,4 +330,23 @@ class MainUiStateTest {
         assertEquals("the design moved on", stale.cadSliceBlockedReason)
         assertFalse(stale.cadNeedsConversion)
     }
+
+    @Test
+    fun aRunningAgentTurnRefusesConvertAndRebuildByANamedReason() {
+        val running = cadState().copy(cadTurnRunning = true)
+        assertEquals(
+            "the CAD agent is working; stop the turn before converting",
+            running.cadConvertBlockedReason,
+        )
+        assertEquals(
+            "the CAD agent is working; stop the turn before rebuilding the plate",
+            running.cadRebuildBlockedReason,
+        )
+        // Idle with a document: both presses are allowed (null says so).
+        assertNull(cadState().cadConvertBlockedReason)
+        assertNull(cadState().cadRebuildBlockedReason)
+        // No document: neither press has anything to act on, and the reason says that too.
+        assertEquals("no CAD document is loaded", plateState().cadConvertBlockedReason)
+        assertEquals("no CAD document is loaded", plateState().cadRebuildBlockedReason)
+    }
 }

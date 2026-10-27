@@ -116,6 +116,7 @@ import com.tomppi.enderslicer.annotation.AnnotationState
 import com.tomppi.enderslicer.annotation.SegmentEnd
 import com.tomppi.enderslicer.cadagent.AgentException
 import com.tomppi.enderslicer.cadagent.AgentMode
+import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentRunbook
 import com.tomppi.enderslicer.cadagent.AgentSettings
 import com.tomppi.enderslicer.cadagent.AgentSettingsStore
@@ -497,18 +498,20 @@ fun EnderSlicerApp(
         appLifecycle.addObserver(observer)
         onDispose { appLifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(viewModel.pendingQuestion, aiChatOpen, appResumed) {
+    // The question notification is attention for a question the user cannot see yet. It is
+    // posted only while the app is in the background, and whatever source the chat was last
+    // left on: the question exists only in the in-app conversation, so a chat open on the
+    // Harness pane must not silence it. In the foreground the rail's Ask AI badge is the
+    // attention instead. A question that is gone removes the notification, so it can never
+    // advertise a wait the app no longer holds. MainActivity cancels it too at a cold start,
+    // before any of this composition exists.
+    LaunchedEffect(viewModel.pendingQuestion, appResumed) {
         val waiting = viewModel.pendingQuestion
-        if (waiting != null && !aiChatOpen && !appResumed) {
+        if (waiting != null && !appResumed) {
             CadQuestionNotification.post(context, waiting)
         } else {
             CadQuestionNotification.cancel(context)
         }
-    }
-    // A tap on that notification asks for the chat itself, not only for the app.
-    val chatOpenTicks by ChatOpenRequest.ticks.collectAsStateWithLifecycle()
-    LaunchedEffect(chatOpenTicks) {
-        if (chatOpenTicks > 0) aiChatOpen = true
     }
     // Revision this app last wrote or read. The file is the handover point, so
     // writes bump it and an adoption takes the agent's value verbatim.
@@ -947,6 +950,11 @@ fun EnderSlicerApp(
         viewModel.setAnnotationActive(false)
         viewModel.setCutActive(false)
         viewModel.setSnapActive(false)
+        // One tool at a time: a face tap must not be shadowed by a transform gizmo, and a gizmo
+        // drag must not take a tap meant for the face chip (audit VIEW-5).
+        gizmoMode = TransformGizmoMode.NONE
+        gizmoScalePercent = 100
+        gizmoReadout = null
         viewModel.startFaceSelectMode()
     }
 
@@ -1050,7 +1058,11 @@ fun EnderSlicerApp(
                 // Both are read now, on the UI thread, so the turn carries the state the user
                 // sent from.
                 val faceForTurn = faceForNextMessage()
-                val captureView = plateView
+                // The plate view is looked up per call, never captured: a rotation recreates
+                // the composition and its view while this turn keeps running in the ViewModel's
+                // scope, and the captured one would be detached - capturePlate() then answers
+                // "no frame" for the rest of the turn.
+                val plate = PlateImageSource { platePicture(viewModel.cadPlateView) }
                 val reply = withContext(Dispatchers.IO) {
                     agent.run(
                         settings = stored,
@@ -1058,7 +1070,7 @@ fun EnderSlicerApp(
                         userText = text,
                         view = AgentView(
                             selectionBlock = faceForTurn?.promptBlock().orEmpty(),
-                            plate = PlateImageSource { platePicture(captureView) },
+                            plate = plate,
                             attachPlateToSelection = stored.settings.lendView,
                             faceTinted = faceForTurn != null,
                         ),
@@ -1252,6 +1264,82 @@ fun EnderSlicerApp(
                     "or switch back to the in-app agent - it needs no computer."
             else -> null
         }
+    }
+
+    // How the last waiting question ended. The answer and Dismiss callbacks say so themselves;
+    // any other clearing path - a new prompt in the sheet, Convert, closing the document - is
+    // caught by the effect below and recorded as "not answered", so a dismissed or abandoned
+    // card can never be mislabelled as answered (AGENT-9).
+    var questionEndedByUser by remember { mutableStateOf(false) }
+    var lastWaitingQuestion by remember { mutableStateOf<AgentQuestion?>(null) }
+
+    /**
+     * Records how the transcript's waiting question ended; the card's history line reports it.
+     *
+     * Called by the three human routes (a chip answer, a typed answer, Dismiss) before the wait
+     * is cleared. [openChatForAttention] and the notification path do not resolve anything -
+     * they only make the live card visible.
+     */
+    fun resolvePendingQuestion(outcome: AiQuestionOutcome) {
+        viewModel.cadConversations = viewModel.cadConversations.copy(
+            inApp = viewModel.cadConversations.inApp.markQuestionResolved(
+                viewModel.pendingQuestion,
+                outcome,
+            ),
+        )
+        questionEndedByUser = true
+    }
+
+    // A wait cleared by anything other than the answer/Dismiss callbacks is still recorded, so
+    // its card says "Not answered - the wait was cleared" instead of the old blanket
+    // "Answered.". The flag is set by [resolvePendingQuestion] before the clear, so the answer
+    // paths are not overwritten here.
+    LaunchedEffect(viewModel.pendingQuestion) {
+        val waiting = viewModel.pendingQuestion
+        if (waiting != null) {
+            lastWaitingQuestion = waiting
+            questionEndedByUser = false
+        } else {
+            val previous = lastWaitingQuestion
+            if (previous != null && !questionEndedByUser) {
+                viewModel.cadConversations = viewModel.cadConversations.copy(
+                    inApp = viewModel.cadConversations.inApp.markQuestionResolved(
+                        previous,
+                        AiQuestionOutcome.IGNORED,
+                    ),
+                )
+            }
+            lastWaitingQuestion = null
+            questionEndedByUser = false
+        }
+    }
+
+    /**
+     * Opens the floating chat for something the user must see: the question notification's tap
+     * or the rail's pulsing Ask AI badge.
+     *
+     * A pending in-app question exists only in the in-app conversation, so opening the chat on
+     * whatever source was last shown can land on the Harness pane with the question card hidden
+     * in the other transcript - and the badge swallowed by the now-open chat. When a question is
+     * waiting the door switches the source to the in-app agent first (and persists the mode, as
+     * the source chips do), so the card is always on screen. The request itself is still
+     * one-shot: [ChatOpenRequest.takeUnhandled] records the tick it consumed, so an Activity
+     * recreation does not reopen a chat the user has closed.
+     */
+    fun openChatForAttention() {
+        if (viewModel.pendingQuestion != null) {
+            viewModel.chatSource = ChatSource.IN_APP
+            setAgentMode(AgentMode.IN_APP)
+        }
+        aiChatOpen = true
+    }
+
+    // A tap on that notification asks for the chat itself, not only for the app. The tick is
+    // consumed exactly once: the same value on a recreated composition has already been handled,
+    // so a chat the user closed stays closed; a new tap advances the counter and opens again.
+    val chatOpenTicks by ChatOpenRequest.ticks.collectAsStateWithLifecycle()
+    LaunchedEffect(chatOpenTicks) {
+        if (ChatOpenRequest.takeUnhandled() != null) openChatForAttention()
     }
 
     /**
@@ -1697,10 +1785,9 @@ fun EnderSlicerApp(
     // not through OCCT's STEP-to-mesh converter. Import model keeps the mesh route.
     val cadDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { picked ->
-            // A different document is a different conversation: nothing in-app is persisted,
-            // and showing the previous document's transcript over this one would be worse
-            // than an empty chat.
-            viewModel.cadConversations = viewModel.cadConversations.copy(inApp = emptyList())
+            // The ViewModel resets the in-app conversation, the agent's memory and a pending
+            // question when the open succeeds (and says so in the status); the screen only
+            // hands it the file.
             viewModel.openCadDocument(picked)
         }
     }
@@ -1795,9 +1882,13 @@ fun EnderSlicerApp(
                 },
                 // The chat's only door. It opens the overlay at the size last chosen and
                 // leaves the selected tab alone. The badge is the one time it is not silent:
-                // the in-app agent is waiting on an answer and the chat is closed.
-                onAskAi = { aiChatOpen = true },
-                askAiBadge = viewModel.pendingQuestion != null && !aiChatOpen,
+                // the in-app agent is waiting on an answer and that answer's card is not on
+                // screen - the chat is closed, or it is open on the Harness pane, which never
+                // draws the in-app conversation's card. The door switches to the in-app source
+                // when a question waits, so one tap always lands on the card.
+                onAskAi = { openChatForAttention() },
+                askAiBadge = viewModel.pendingQuestion != null &&
+                    !(aiChatOpen && viewModel.chatSource == ChatSource.IN_APP),
                 onSettings = viewModel::updateSettings,
                 onPrusaSettings = viewModel::updatePrusaSettings,
                 onOrcaSettings = viewModel::updateOrcaSettings,
@@ -2622,7 +2713,10 @@ fun EnderSlicerApp(
                             onFacePick = { hit -> viewModel.selectFaceAt(hit, modelOrientation) },
                             onClearFaceSelection = viewModel::clearFaceSelection,
                             onExitFaceSelectMode = viewModel::exitFaceSelectMode,
-                            onPlateViewChanged = { plateView = it },
+                            onPlateViewChanged = { view ->
+                                plateView = view
+                                viewModel.cadPlateView = view
+                            },
                             onModelPicked = { index ->
                                 state.models.getOrNull(index)?.let { model -> viewModel.selectModel(model.id) }
                             },
@@ -3438,13 +3532,23 @@ fun EnderSlicerApp(
                 configured = agentSettings.isConfigured,
                 onSend = ::askInAppAgentFromChat,
                 // The question card: while waiting, a chip or a typed answer becomes the next
-                // user message and clears the wait; Dismiss clears it without a turn.
+                // user message and clears the wait; Dismiss clears it without a turn. Each
+                // route records how it ended before clearing the wait, so the card's history
+                // line says what actually happened - a chip answer, a typed answer, or no
+                // answer at all.
                 question = viewModel.pendingQuestion,
-                onAnswerQuestion = { answer ->
+                onAnswerQuestion = { answer, fromOptions ->
+                    resolvePendingQuestion(
+                        if (fromOptions) AiQuestionOutcome.ANSWERED_FROM_OPTIONS
+                        else AiQuestionOutcome.ANSWERED,
+                    )
                     viewModel.clearPendingQuestion()
                     askInAppAgentFromChat(answer)
                 },
-                onDismissQuestion = { viewModel.clearPendingQuestion() },
+                onDismissQuestion = {
+                    resolvePendingQuestion(AiQuestionOutcome.DISMISSED)
+                    viewModel.clearPendingQuestion()
+                },
             ),
             onCopyTranscript = ::copyChatTranscript,
             // The three sizes live here so they survive the chat being closed and reopened; a
@@ -3513,11 +3617,11 @@ fun EnderSlicerApp(
                 onConnect = viewModel::connectCadAgent,
                 onStop = viewModel::stopCadAgent,
                 onCloseDocument = {
+                    // closeCadDocument ends the document's in-app conversation, agent memory
+                    // and pending question (and says so); this clear keeps the sheet's own
+                    // contract explicit and is idempotent.
                     viewModel.clearPendingQuestion()
                     viewModel.closeCadDocument()
-                    // The in-app conversation belongs to the document that is now closed; it
-                    // is not persisted, so it is cleared rather than carried into the next one.
-                    viewModel.cadConversations = viewModel.cadConversations.copy(inApp = emptyList())
                 },
                 onRebuild = viewModel::rebuildCadPlateFromDocument,
                 onCopyToken = {
@@ -4467,13 +4571,14 @@ private fun ViewerPanel(
                 // agent sheet opening and closing changes the viewport, and a frame the agent
                 // renders during that must show the tint the user sees.
                 fun applyFaceTint(view: ModelSurfaceView) {
-                    val tintMesh = state.selectedModel?.sourceMesh
+                    // A face stays tinted while its own part is on the plate - not only while that
+                    // part is the selected model. Selecting another object used to drop the amber
+                    // while the chip and the agent's SELECTED FACE block still named the face
+                    // (audit VIEW-3).
+                    val tintMesh = state.faceTintMesh
+                    val onPlate = tintMesh != null && state.models.any { it.sourceMesh === tintMesh }
                     view.setFaceTint(
-                        if (state.selectedFace != null && state.faceTintMesh === tintMesh) {
-                            state.faceTintTriangles
-                        } else {
-                            null
-                        },
+                        if (state.selectedFace != null && onPlate) state.faceTintTriangles else null,
                     )
                 }
                 AndroidView(
@@ -5157,9 +5262,13 @@ internal fun SessionRail(
             // The one press that turns the live document into the STL models Slice needs. It is
             // never a side effect of Slice: the user asked for the two to be separate presses.
             cadConvertLabel?.let { label ->
+                // Convert is deliberate and it owns the document: while the CAD agent is working
+                // the button greys out and names why, instead of running a conversion under a turn
+                // that is still editing the document (audit cad #10).
+                val convertBlocked = state.cadConvertBlockedReason
                 OutlinedButton(
                     onClick = onConvertCad,
-                    enabled = !state.isBusy,
+                    enabled = !state.isBusy && convertBlocked == null,
                     contentPadding = PaddingValues(
                         horizontal = EnderSlicerDimens.Space4,
                         vertical = EnderSlicerDimens.Space4,
@@ -5169,6 +5278,20 @@ internal fun SessionRail(
                         .padding(horizontal = EnderSlicerDimens.Space8),
                 ) {
                     RailButtonLabel(label)
+                }
+                if (convertBlocked != null) {
+                    Text(
+                        text = convertBlocked,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = EnderSlicerDimens.Space8,
+                                end = EnderSlicerDimens.Space8,
+                                bottom = EnderSlicerDimens.Space4,
+                            ),
+                    )
                 }
             }
             OutlinedButton(

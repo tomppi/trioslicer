@@ -18,6 +18,12 @@ import com.tomppi.enderslicer.cadagent.AgentQuestion
  * Everything is idempotent: [post] posts one notification (same id, guarded by a flag) and
  * [cancel] removes it, so a redraw cannot stack copies.
  *
+ * The body is deliberately neutral. A question is model-authored text that can quote a part, a
+ * customer name or anything the user said earlier, and a notification appears above the lock
+ * screen on phones that show notification content. The alert only has to reach the chat - the
+ * card there shows the words - so the question text itself never goes into the notification (nor
+ * into a preview a notification listener could read).
+ *
  * If the user has denied POST_NOTIFICATIONS, Android drops the notification silently - the rail
  * pulse is the fallback, and it is part of the same pending-question state.
  */
@@ -41,7 +47,9 @@ object CadQuestionNotification {
         )
         val notification = Notification.Builder(context, CHANNEL_ID)
             .setContentTitle("CAD agent is asking a question")
-            .setContentText(question.question.take(140))
+            // Never the question text: see the class comment (lock screen / notification
+            // listeners). The card in the chat carries it, and tapping opens the chat.
+            .setContentText("Open the chat to answer.")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(openChat)
             .setAutoCancel(true)

@@ -33,17 +33,22 @@ class AskAiDoorSourceTest {
             app.contains("MenuSectionLabel(\"Assistant\")") || app.contains("Text(\"Ask AI\")"),
         )
         assertEquals(
-            "the rail opens the chat, and the question notification opens it too",
-            2,
+            "the rail and the question notification open the chat through one door helper",
+            1,
             Regex("aiChatOpen = true").findAll(app).count(),
         )
         assertTrue(
-            "the rail wires it",
-            app.contains("onAskAi = { aiChatOpen = true }"),
+            "the rail wires it through the door that shows a pending question on its own source",
+            app.contains("onAskAi = { openChatForAttention() }"),
         )
         assertTrue(
-            "the notification tap asks for the chat itself",
-            app.contains("if (chatOpenTicks > 0) aiChatOpen = true"),
+            "the notification tap asks for the chat itself through the same door",
+            app.contains("if (ChatOpenRequest.takeUnhandled() != null) openChatForAttention()"),
+        )
+        assertTrue(
+            "the door opens a waiting question in the conversation that draws its card",
+            app.contains("fun openChatForAttention()") &&
+                app.contains("viewModel.chatSource = ChatSource.IN_APP"),
         )
         assertTrue(
             "the rail item is drawn like the other destinations",
@@ -98,13 +103,30 @@ class AskAiDoorSourceTest {
     @Test
     fun theInAppConversationIsClearedWhenItsDocumentClosesOrIsReplaced() {
         val app = source("EnderSlicerApp.kt")
-        // Nothing in-app is persisted (the list is remembered, not saved), so a closed or
-        // replaced document must not leave its transcript on screen: both user lifecycle paths
-        // clear the in-app list, and only that list.
-        val clears = Regex(
-            "viewModel\\.cadConversations = viewModel\\.cadConversations\\.copy\\(inApp = emptyList\\(\\)\\)",
-        ).findAll(app).count()
-        assertTrue("the document's close and replace paths clear the in-app list: " + clears, clears >= 2)
+        // Nothing in-app is persisted (the list lives in the view model, not on disk), so a
+        // closed or replaced document must not leave its transcript on screen. The reset moved
+        // into one view-model helper (audit docs #5 / AGENT-7): it clears the transcript, the
+        // agent's memory and a waiting question, it announces that it did, and every path that
+        // replaces the document calls it.
+        val viewModel = source("MainViewModel.kt")
+        assertTrue(
+            "the reset clears only the in-app list",
+            viewModel.contains("cadConversations = cadConversations.copy(inApp = emptyList())"),
+        )
+        assertTrue(
+            "the reset forgets the agent's conversation",
+            viewModel.contains("inAppCadAgent?.reset()"),
+        )
+        assertTrue(
+            "the reset clears a waiting question",
+            viewModel.contains("clearPendingQuestion()"),
+        )
+        assertTrue(
+            "the reset is announced, not silent",
+            viewModel.contains("the in-app conversation was reset for this document"),
+        )
+        val calls = Regex("resetInAppConversationForDocumentSwitch\\(\\)").findAll(viewModel).count()
+        assertTrue("the document-switch paths all reset: " + calls, calls >= 4)
         assertTrue(app.contains("viewModel.closeCadDocument()"))
         assertTrue(app.contains("viewModel.openCadDocument(picked)"))
     }

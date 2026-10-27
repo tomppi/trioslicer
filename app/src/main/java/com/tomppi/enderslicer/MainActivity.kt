@@ -33,6 +33,7 @@ import com.tomppi.enderslicer.nativebridge.KlipperEngineService
 import com.tomppi.enderslicer.octoprint.OctoPrintViewModel
 import com.tomppi.enderslicer.printer.KlipperViewModel
 import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import com.tomppi.enderslicer.ui.CadQuestionNotification
 import com.tomppi.enderslicer.ui.ChatOpenRequest
 import com.tomppi.enderslicer.ui.Diagnostics
 import com.tomppi.enderslicer.ui.EnderSlicerTheme
@@ -74,8 +75,9 @@ class MainActivity : FragmentActivity() {
     /**
      * The question notification's tap asks for the AI chat, not just for the app.
      *
-     * The extra is consumed here so a rotation or a restored intent does not open the chat
-     * again; the composition observes [ChatOpenRequest] and opens the chat on the next tick.
+     * The extra is consumed here so a rotation or a restored intent does not ask again. The
+     * composition consumes each request exactly once through [ChatOpenRequest.takeUnhandled]
+     * and remembers the tick it handled, so a recreated activity does not replay the last tap.
      */
     private fun consumeOpenChatIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(ChatOpenRequest.EXTRA_OPEN_AI_CHAT, false) != true) return
@@ -117,6 +119,15 @@ class MainActivity : FragmentActivity() {
         MeshTriangleLimits.initialize(this)
         UiScale.initialize(this)
         Diagnostics.initialize(this)
+        // A pending question is ViewModel state, so it dies with the process; the question
+        // notification is a system object and does not. An app that comes up holding no
+        // question must remove the notification rather than advertise something it can no
+        // longer show (and whose tap would open an empty chat). A recreated activity (a
+        // rotation) keeps the same ViewModel, so a live question is left alone. After the
+        // one-shot initialisations above, so building the ViewModel here cannot reorder them.
+        if (slicerViewModel.pendingQuestion == null) {
+            CadQuestionNotification.cancel(this)
+        }
         // The agent bridges' network reach is a saved choice: with it on, the listeners go up
         // at app start, not when the CAD agent sheet is first opened. Binding and address
         // lookup are socket work, so they are not on the UI thread.

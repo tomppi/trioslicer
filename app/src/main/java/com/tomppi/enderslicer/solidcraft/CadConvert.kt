@@ -44,20 +44,42 @@ object CadConvert {
     /** The id prefix a converted mesh object carries, so a later conversion can keep it. */
     const val CONVERTED_ID_PREFIX = "stl:"
 
+    /** What Convert (and Convert again) says when the plate holds a layout made from the document. */
+    const val DERIVED_LAYOUT_REFUSAL =
+        "the plate holds a split made from this document; press Rebuild plate before converting"
+
+    /**
+     * Why a conversion cannot run, or null when it can.
+     *
+     * A split (or a joint applied to its halves) is a plate layout made from this document's
+     * shape. Converting it would either drop the human's layout silently or leave the halves
+     * beside the whole converted parts - duplicate geometry in the print - so the press refuses
+     * by name and points at Rebuild plate, the one press that takes the document back.
+     */
+    fun refusalFor(derivedObjectIds: Collection<String>): String? =
+        if (derivedObjectIds.isEmpty()) null else DERIVED_LAYOUT_REFUSAL
+
     /**
      * Plans the converted plate.
      *
      * [parts] are the exported bodies in the engine's own order; [models] is the plate as it
      * is; [replacing] is the mapping of the objects the conversion replaces - the live document
      * parts on the first press, the previous converted objects on a later one.
+     *
+     * [legacyObjectId] is the single whole-document plate object a restored 1.9.6 descriptor
+     * draws: the conversion replaces it with the per-part STLs, exactly as the first per-part
+     * publish replaces it with the live parts. Leaving it would put a whole copy of the design
+     * beside the converted parts, and a Slice would print both.
      */
     fun plan(
         parts: List<CadConvertedPart>,
         models: List<PlateObject>,
         replacing: List<CadPart>,
+        legacyObjectId: String? = null,
     ): CadConvertPlan {
         val replacingByBody = replacing.associateBy { it.body }
-        val replacingIds = replacing.map { it.objectId }.toSet()
+        val replacingIds = replacing.map { it.objectId }.toSet() +
+            listOfNotNull(legacyObjectId).toSet()
         val usedIds = models
             .map { it.id }
             .filterNot { it in replacingIds }

@@ -604,6 +604,10 @@ class ModelSurfaceView(
     private fun grabGizmoHandleAt(x: Float, y: Float): Boolean {
         if (gizmoMode == TransformGizmoMode.NONE) return false
         if (paintMode != SupportPaintMode.NONE || annotationActive) return false
+        // A surface picker owns the plate's touches too: even if a transform card were left up
+        // (arming the other tool is the host's job), a tap while one is armed picks a face or a
+        // Smart Infill surface, it does not rotate or move the part under the finger.
+        if (surfacePickActive) return false
         val handle = modelRenderer.gizmoHitAt(x, y, GizmoDrag.TOUCH_RADIUS_PX) ?: return false
         when (handle.kind) {
             GizmoHandleKind.RING -> {
@@ -1057,13 +1061,17 @@ class ModelSurfaceView(
      */
     private fun applyBrushProbe(hit: MeshPicker.Hit?) {
         brushDeciding = false
-        // The brush paints the part the finger is on, and the host makes that part the selected
-        // one as it paints, so a stroke may begin anywhere on the plate. It used to require the
-        // selected part, which handed every stroke that began on a neighbour to the camera and
-        // left all but the highlighted model unpaintable. Smart Infill is the exception: its
-        // report is about the selected object, so a neighbour is not its target.
-        val paints = hit != null && (!surfacePickActive || hit.objectIndex == currentSelectedIndex)
-        if (paints) {
+        // What a surface pick may report is the owning tool's own rule (SurfacePickGate): the
+        // support brush paints the part under the finger, Smart Infill the selected one, and a
+        // face pick whichever part actually owns the face - it must not be limited to the
+        // selected model, or a two-part document can only select faces on one of its parts.
+        val reports = SurfacePickGate.reports(
+            hit = hit,
+            faceSelectActive = faceSelectActive,
+            surfacePickActive = surfacePickActive,
+            selectedObjectIndex = currentSelectedIndex,
+        )
+        if (reports && hit != null) {
             brushDragging = true
             // The sample that answered "brush" is a sample like any other: hand it
             // to the handler the later ones use, or the first touch of a stroke is
@@ -1190,12 +1198,18 @@ class ModelSurfaceView(
                     }
                     // The object index is read here, on the UI thread, so the answer cannot race
                     // a selection change on the GL thread.
-                    val picked = hit.objectIndex == currentSelectedIndex
                     post {
                         if (surfacePickActive) {
                             // Smart Infill reports on the selected object only; a face pick is
-                            // the tap's own point, reported once however far the finger drags.
-                            if (picked && (!faceSelectActive || !facePickReported)) {
+                            // the tap's own point, reported once however far the finger drags,
+                            // on whichever part of the document the finger landed.
+                            val reports = SurfacePickGate.reports(
+                                hit = hit,
+                                faceSelectActive = faceSelectActive,
+                                surfacePickActive = surfacePickActive,
+                                selectedObjectIndex = currentSelectedIndex,
+                            )
+                            if (reports && (!faceSelectActive || !facePickReported)) {
                                 facePickReported = true
                                 onSurfacePick?.invoke(hit)
                             }
@@ -1395,8 +1409,13 @@ class ModelSurfaceView(
             // The joint's move owns the handles while it is up: a long press on
             // the model would put the model's own card behind arrows that stand
             // on the hook, which is two gizmos for one finger.
+            // A surface picker is a tool that owns the plate's touches (surfacePickActive covers
+            // Smart Infill and face selection): a long press while one is armed must not open the
+            // transform card over it - the next tap would then rotate the part instead of picking
+            // the face, with the card drawn over the HUD chip that told the user to tap.
             if (cameraInteractive && paintMode == SupportPaintMode.NONE &&
-                !annotationActive && !jointMoveActive && gizmoMode == TransformGizmoMode.NONE
+                !annotationActive && !jointMoveActive && !surfacePickActive &&
+                gizmoMode == TransformGizmoMode.NONE
             ) {
                 scheduleTransformProbe(event.x, event.y)
             }
@@ -1580,8 +1599,17 @@ private class ModelRenderer(
     private var maxLineWidth = 1f
     private var gridBuffer: FloatBuffer? = null
     private var gridVertexCount = 0
-    private var viewportWidth = 1
-    private var viewportHeight = 1
+    /**
+     * The on-screen surface's size, and only that.
+     *
+     * Written by [onSurfaceChanged] on the GL thread, read by the gesture code on the UI thread
+     * (a pan and a finger drag convert pixels to millimetres through these). An offscreen plate
+     * render draws into its own frame size passed as parameters down the draw - it never rewrites
+     * these, so a drag that overlaps a capture can never convert its pixels with the capture's
+     * size. Volatile because the two threads read and write them.
+     */
+    @Volatile private var viewportWidth = 1
+    @Volatile private var viewportHeight = 1
 
     // The plate's own XYZ marker, on the bed's front-left corner.
     private var triadBuffer: FloatBuffer? = null
@@ -1732,18 +1760,16 @@ private class ModelRenderer(
             GLES20.glDeleteFramebuffers(1, frameBufferIds, 0)
             return null
         }
-        // The screen's own viewport and size are put back at the end: the drawing code sizes a
-        // few things from them, and none of it may change because a picture was taken.
+        // The capture's size is a parameter of this draw and is never written into the surface's
+        // own fields: those are the on-screen size the gesture code on the UI thread converts
+        // pixels through, and a drag that overlaps a capture must not suddenly measure itself
+        // against the picture's height.
         val screenWidth = viewportWidth
         val screenHeight = viewportHeight
-        viewportWidth = captureWidth
-        viewportHeight = captureHeight
         GLES20.glViewport(0, 0, captureWidth, captureHeight)
         GLES20.glClearColor(PLATE_BACKGROUND[0], PLATE_BACKGROUND[1], PLATE_BACKGROUND[2], 1f)
         drawScene(captureWidth, captureHeight, publishForPicker = false)
         val bitmap = readPixels(captureWidth, captureHeight)
-        viewportWidth = screenWidth
-        viewportHeight = screenHeight
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, screenWidth, screenHeight)
         GLES20.glDeleteRenderbuffers(1, renderBufferIds, 0)
@@ -2148,17 +2174,8 @@ private class ModelRenderer(
      * the gizmo and the annotations all act on one - together with the index
      * inside that object's own mesh, which is the index its paint is stored by.
      */
-    private fun objectHit(hit: MeshPicker.Hit): MeshPicker.Hit {
-        val owner = if (hit.triangleIndex in triangleOwners.indices) {
-            triangleOwners[hit.triangleIndex]
-        } else {
-            0
-        }
-        return hit.copy(
-            triangleIndex = hit.triangleIndex - objectFirstTriangle.getOrElse(owner) { 0 },
-            objectIndex = owner,
-        )
-    }
+    private fun objectHit(hit: MeshPicker.Hit): MeshPicker.Hit =
+        MeshPicker.objectLocalHit(hit, triangleOwners, objectFirstTriangle)
 
     /**
      * Resolves a screen position into an annotation placement.
@@ -2526,9 +2543,12 @@ private class ModelRenderer(
         // the annotation overlay and the transform gizmo each draw with depth testing
         // off (see their own comments), so a part bigger than an arrow can never hide
         // it. The gizmo goes last because it is the one the finger aims at.
-        drawAxisTriad()
+        // The frame's own size goes to the two that size something in pixels: the picture
+        // being drawn can be the offscreen capture, and its size is a parameter, not the
+        // window's.
+        drawAxisTriad(height)
         drawAnnotation()
-        drawGizmo()
+        drawGizmo(width, height)
     }
 
     /**
@@ -2677,7 +2697,14 @@ private class ModelRenderer(
         previewScale = if (scale.isFinite() && scale > 0f) scale else 1f
     }
 
-    private fun drawGizmo() {
+    /**
+     * Draws the transform gizmo into the frame being drawn.
+     *
+     * [width] and [height] are that frame's size in pixels, not the window's: the same call draws
+     * the on-screen frame and the offscreen plate capture, and the ribbon must be a constant width
+     * on whichever one it lands.
+     */
+    private fun drawGizmo(width: Int, height: Int) {
         val overlay = gizmoOverlay ?: return
         val ribbon = gizmoRibbon ?: return
         if (overlay.isEmpty) return
@@ -2705,8 +2732,8 @@ private class ModelRenderer(
             val written = GizmoRibbon.expand(
                 vertices = group.vertices,
                 mvp = mvp,
-                viewportWidth = viewportWidth,
-                viewportHeight = viewportHeight,
+                viewportWidth = width,
+                viewportHeight = height,
                 halfWidthPx = (if (active) GIZMO_ACTIVE_LINE_WIDTH_PX else GIZMO_LINE_WIDTH_PX) / 2f,
                 target = ribbon,
             )
@@ -3410,8 +3437,11 @@ private class ModelRenderer(
      * so the model hides it when the corner is behind the part, and only its arm
      * length is recomputed per frame - from the corner's own depth, so the three
      * arrows keep the same size on screen however far the plate is zoomed.
+     *
+     * [height] is the frame's own height: the offscreen plate capture draws through this same
+     * function with its capture size, and the arm length has to follow the picture it lands in.
      */
-    private fun drawAxisTriad() {
+    private fun drawAxisTriad(height: Int) {
         Matrix.multiplyMM(modelView, 0, view, 0, scene, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
 
@@ -3432,7 +3462,7 @@ private class ModelRenderer(
 
         val armMm = AxisTriad.armMm(
             viewDepthMm = -triadCorner[2],
-            viewportHeightPx = viewportHeight,
+            viewportHeightPx = height,
             fieldOfViewDegrees = FIELD_OF_VIEW_DEGREES,
             armPx = TRIAD_ARM_DP * density,
         )

@@ -16,6 +16,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -138,6 +140,26 @@ class ChatRotationTest {
         assertEquals("model a 20 mm cube", viewModel.modellingMessages[0].text)
         assertEquals("the cube is in the Blender scene", viewModel.modellingMessages[1].text)
         assertTrue("the modelling turn is still running after the rotation", viewModel.modellingBusy)
+    }
+
+    @Test
+    fun aNotificationTapIsHandledOnceAndIsNotReplayedByTheRecreate() {
+        hostTheChat()
+        ChatOpenRequest.resetForTest()
+        ChatOpenRequest.request()
+        assertNotNull(
+            "the running composition handles the notification tap",
+            ChatOpenRequest.takeUnhandled(),
+        )
+
+        // The activity is really recreated: a new composition runs over the same process-wide
+        // request state. With no new tap it must not open the chat again.
+        recreate()
+
+        assertNull(
+            "a recreated activity must not replay the last notification tap",
+            ChatOpenRequest.takeUnhandled(),
+        )
     }
 }
 

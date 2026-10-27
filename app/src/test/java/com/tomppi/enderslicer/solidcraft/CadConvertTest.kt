@@ -40,6 +40,7 @@ class CadConvertTest {
         parts: List<Pair<String, StlMesh>>,
         models: List<PlateObject>,
         replacing: List<CadPart>,
+        legacyObjectId: String? = null,
     ): CadConvertPlan = CadConvert.plan(
         parts = parts.map { (body, mesh) ->
             CadConvertedPart(
@@ -50,6 +51,7 @@ class CadConvertTest {
         },
         models = models,
         replacing = replacing,
+        legacyObjectId = legacyObjectId,
     )
 
     @Test
@@ -147,5 +149,29 @@ class CadConvertTest {
         assertEquals(listOf("import-1"), result.models.map { it.id })
         assertTrue(result.parts.isEmpty())
         assertEquals(0, result.triangleCount)
+    }
+
+    @Test
+    fun aRestored196DocumentsWholeObjectIsReplacedNotKeptBesideTheConvertedParts() {
+        // A 1.9.6 descriptor draws the whole document as one plate object and has no per-part
+        // mapping. Convert used to leave that object on the plate and add one STL per body
+        // beside it: Slice then printed the same geometry twice.
+        val legacy = PlateObject(
+            id = "legacy-doc",
+            name = "Whole document",
+            sourceMesh = cadTestMesh("whole"),
+            mesh = cadTestMesh("whole"),
+            sourcePath = "/ws/display/design-display.stl",
+            placement = CadPartPublish.documentCoordinates(cadTestMesh("whole")),
+        )
+        val result = convert(
+            parts = listOf("Case" to cadTestMesh("case"), "Lid" to cadTestMesh("lid")),
+            models = listOf(imported(), legacy),
+            replacing = emptyList(),
+            legacyObjectId = "legacy-doc",
+        )
+        assertEquals(listOf("import-1", "stl:Case", "stl:Lid"), result.models.map { it.id })
+        assertTrue(result.models.none { it.id == "legacy-doc" })
+        assertEquals(listOf("stl:Case", "stl:Lid"), result.parts.map { it.objectId })
     }
 }

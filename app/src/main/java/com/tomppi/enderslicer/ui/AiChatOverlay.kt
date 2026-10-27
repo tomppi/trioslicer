@@ -63,6 +63,24 @@ import kotlin.math.roundToInt
 /** What one entry of a chat transcript is: prose, a tool row, or a plain-words activity line. */
 enum class AiChatEntryKind { MESSAGE, TOOL, ACTIVITY, ERROR, QUESTION }
 
+/** How a question card was resolved, so its history line says what actually happened. */
+enum class AiQuestionOutcome {
+    /** Still waiting on the user; only the pending question is drawn as live. */
+    PENDING,
+
+    /** Answered with a free-text message. */
+    ANSWERED,
+
+    /** Answered by tapping one of the question's own options. */
+    ANSWERED_FROM_OPTIONS,
+
+    /** Dismissed from the card: the agent was never given an answer. */
+    DISMISSED,
+
+    /** The wait was cleared by something else - a new prompt, Convert, the document closing. */
+    IGNORED,
+}
+
 /** One turn in the AI conversation. */
 data class AiChatMessage(
     val fromUser: Boolean,
@@ -72,7 +90,29 @@ data class AiChatMessage(
     val tool: AgentToolTrace? = null,
     /** Non-null for a [AiChatEntryKind.QUESTION] entry: the question card's content. */
     val question: AgentQuestion? = null,
+    /** How that question was resolved; [AiQuestionOutcome.PENDING] while it is the live one. */
+    val questionOutcome: AiQuestionOutcome = AiQuestionOutcome.PENDING,
 )
+
+/**
+ * The question's entry in a transcript, marked with how it was resolved.
+ *
+ * The resolution belongs to whoever resolves it - the app's answer/dismiss callbacks, or the
+ * transcript owner noticing that the wait was cleared some other way (a new prompt, Convert, a
+ * closed document). Matching by identity, not by position or wording, keeps two questions with
+ * the same words apart, and keeps the card history honest: a dismissed question must never read
+ * as answered.
+ */
+fun List<AiChatMessage>.markQuestionResolved(
+    question: AgentQuestion?,
+    outcome: AiQuestionOutcome,
+): List<AiChatMessage> = if (question == null) {
+    this
+} else {
+    map { message ->
+        if (message.question === question) message.copy(questionOutcome = outcome) else message
+    }
+}
 
 /** Which backend the floating chat is showing. */
 enum class ChatSource(val label: String) {
@@ -103,8 +143,12 @@ data class InAppChat(
     val onSend: (String) -> Unit = {},
     /** The question the agent is waiting on, or null; the waiting card and composer follow it. */
     val question: AgentQuestion? = null,
-    /** The user's answer (a chip or free text): clears the wait and starts the next turn. */
-    val onAnswerQuestion: (String) -> Unit = {},
+    /**
+     * The user's answer (a chip or free text): clears the wait and starts the next turn.
+     * The boolean is true when it came from one of the question's options, false when the user
+     * typed it - the card history says which, so a chip answer is not called a typed one.
+     */
+    val onAnswerQuestion: (String, Boolean) -> Unit = { _, _ -> },
     /** Dismiss the waiting question; the agent's next message starts a fresh turn. */
     val onDismissQuestion: () -> Unit = {},
 )
@@ -483,7 +527,7 @@ fun AiChatOverlay(
         if (draft.isNotBlank()) {
             when {
                 answering && pendingQuestion?.allowText == true -> {
-                    app?.onAnswerQuestion?.invoke(draft.trim())
+                    app?.onAnswerQuestion?.invoke(draft.trim(), false)
                     draft = ""
                 }
                 !answering && canSend(showInApp, app, activeBusy, authorPausedReason) -> {
@@ -778,7 +822,7 @@ private fun sendDraft(showInApp: Boolean, text: String, app: InAppChat?, onSendH
 private fun ChatEntry(
     message: AiChatMessage,
     pendingQuestion: AgentQuestion? = null,
-    onAnswerQuestion: (String) -> Unit = {},
+    onAnswerQuestion: (String, Boolean) -> Unit = { _, _ -> },
     onDismissQuestion: () -> Unit = {},
 ) {
     val tool = message.tool
@@ -793,6 +837,7 @@ private fun ChatEntry(
         AiQuestionCard(
             question = question,
             waiting = question === pendingQuestion,
+            outcome = message.questionOutcome,
             onAnswer = onAnswerQuestion,
             onDismiss = onDismissQuestion,
         )
@@ -819,15 +864,17 @@ private fun ChatEntry(
  * The agent's question, as a card of its own rather than a normal agent bubble.
  *
  * While it is the pending question the card says the agent is waiting and offers its options as
- * one-tap chips; a free-text answer goes through the chat's own composer. Once answered (or
- * dismissed) the card stays in the transcript as history and says `Answered.` - it is never
- * live again.
+ * one-tap chips; a free-text answer goes through the chat's own composer. Once it is history the
+ * card says what actually happened to it ([AiQuestionOutcome]) - an answered question names
+ * whether the answer came from a chip or the composer, and a dismissed or abandoned one says so
+ * instead of claiming it was answered. It is never live again.
  */
 @Composable
 private fun AiQuestionCard(
     question: AgentQuestion,
     waiting: Boolean,
-    onAnswer: (String) -> Unit,
+    outcome: AiQuestionOutcome,
+    onAnswer: (String, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     Surface(
@@ -858,7 +905,7 @@ private fun AiQuestionCard(
                 ) {
                     question.options.forEach { option ->
                         TextButton(
-                            onClick = { if (waiting) onAnswer(option) },
+                            onClick = { if (waiting) onAnswer(option, true) },
                             enabled = waiting,
                             contentPadding = PaddingValues(horizontal = EnderSlicerDimens.Space12),
                         ) { Text(option) }
@@ -883,13 +930,28 @@ private fun AiQuestionCard(
                 }
             } else {
                 Text(
-                    text = if (question.allowText) "Answered." else "Answered from the options.",
+                    text = questionHistoryLine(outcome),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
         }
     }
+}
+
+/**
+ * What a question card says once it is history.
+ *
+ * [AiQuestionOutcome.PENDING] here means the wait was cleared before the card learned how -
+ * never "Answered": the old wording claimed an answer for every non-waiting card, including a
+ * dismissed one, which is exactly the confusion the audit found.
+ */
+private fun questionHistoryLine(outcome: AiQuestionOutcome): String = when (outcome) {
+    AiQuestionOutcome.ANSWERED -> "Answered."
+    AiQuestionOutcome.ANSWERED_FROM_OPTIONS -> "Answered from the options."
+    AiQuestionOutcome.DISMISSED -> "Dismissed - the agent was not given an answer."
+    AiQuestionOutcome.IGNORED -> "Not answered - the wait was cleared."
+    AiQuestionOutcome.PENDING -> "Not answered."
 }
 
 /**

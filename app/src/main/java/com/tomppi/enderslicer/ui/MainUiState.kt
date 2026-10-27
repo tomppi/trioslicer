@@ -453,6 +453,15 @@ data class MainUiState(
     val statusMessage: String = "Import an STL to begin",
     val isBusy: Boolean = false,
     /**
+     * True while the in-app CAD agent's turn is running.
+     *
+     * The turn owns the engine session from its first tool call to its answer, so the presses
+     * that read the document's bodies (Convert to STL, Rebuild plate) must not run beside it.
+     * Mirrored from the ViewModel's cadBusy so the plate can read the disabled state as a fact
+     * about the state, not off a composable's own flag.
+     */
+    val cadTurnRunning: Boolean = false,
+    /**
      * How far the running slice has got, when the engine reports it at all.
      *
      * PrusaSlicer and OrcaSlicer report a percentage as they work; CuraEngine's
@@ -1203,5 +1212,25 @@ data class MainUiState(
         cadDocument == null -> null
         cadDocument.converted -> "Convert again"
         else -> "Convert to STL"
+    }
+
+    /**
+     * Why Convert to STL / Convert again is refused right now, or null when it may run.
+     *
+     * A turn is the one state the plate cannot see from [isBusy] (the turn does not take the
+     * plate's operation flag), so it is a fact about the document's state: the plate disables
+     * the press from this and says the sentence when it is pressed anyway.
+     */
+    val cadConvertBlockedReason: String? get() = when {
+        cadDocument == null -> "no CAD document is loaded"
+        cadTurnRunning -> "the CAD agent is working; stop the turn before converting"
+        else -> null
+    }
+
+    /** Why Rebuild plate is refused right now, or null when it may run. */
+    val cadRebuildBlockedReason: String? get() = when {
+        cadDocument == null -> "no CAD document is loaded"
+        cadTurnRunning -> "the CAD agent is working; stop the turn before rebuilding the plate"
+        else -> null
     }
 }

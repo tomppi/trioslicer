@@ -72,4 +72,15 @@
          is not lost by excluding it: the new device extracts it from the app's
          assets again, and the token beside it is written anew. -->
     <exclude domain="file" path="cad/" />
+    <!-- The SolidCraft tree is deliberately NOT excluded whole: the designs under
+         solidcraft/workspace/designs/ are authored work and must survive a restore, the way
+         user-presets.json does, and the display caches are what makes a restored design show.
+         Two derived things must not ride along. Its token file is the bearer secret for port
+         9878 and is code execution as this app, exactly like blender's and cad's beside it; and
+         workspace/converted/ holds the STLs a Convert to STL press wrote, which one press
+         rebuilds from the design, can be tens of megabytes for a single part, and would push
+         the whole backup past the 25 MB quota - an over-quota backup is not a partial one.
+         Keep designs, keep display; leave the token and the derived STLs behind. -->
+    <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
+    <exclude domain="file" path="solidcraft/workspace/converted/" />
 </full-backup-content>

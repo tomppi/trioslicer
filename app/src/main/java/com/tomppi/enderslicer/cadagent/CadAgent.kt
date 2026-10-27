@@ -91,6 +91,23 @@ class CadAgent(
     @Volatile
     private var cancelled = false
 
+    /** Tool calls run in the turn in flight, for the stopped/failed memory note in [run]. */
+    private var toolsRunThisTurn = 0
+
+    /** Plate renders produced in the turn in flight, for the per-turn image cap's row line. */
+    private var turnImagesRendered = 0
+
+    /**
+     * Conversation-wide tool-call id.
+     *
+     * A call id is how a chat surface pairs a tool row's start event with its end event, and
+     * [com.tomppi.enderslicer.ui.CadConversations.withToolTrace] matches rows by it across the
+     * whole conversation - so it must not restart at 1 on every turn, or a new turn's first row
+     * overwrites the previous turn's row instead of appending one. The agent lives as long as its
+     * conversation, and a settings change resets both together.
+     */
+    private var callIdCounter = 0
+
     /**
      * The question the last turn asked with the app's `ask_user` tool, or null.
      *
@@ -204,24 +221,38 @@ class CadAgent(
         synchronized(lock) {
             cancelled = false
             lastQuestion = null
+            toolsRunThisTurn = 0
+            turnImagesRendered = 0
             val chat = clientFactory(settings)
             client = chat
             val web = if (catalog.includesWebTools) webClientFactory(settings).also { webClient = it } else null
             try {
-                return converse(
-                    chat = chat,
-                    web = web,
-                    catalog = catalog,
-                    userText = userText,
-                    apiKey = settings.apiKey,
-                    endpointHost = endpointHost(settings.settings.baseUrl),
-                    view = view,
-                    onActivity = onActivity,
-                    onToolTrace = onToolTrace,
-                    onRetry = onRetry,
-                    onVisionNotice = onVisionNotice,
-                    onImageAttached = onImageAttached,
-                )
+                // A turn that stops or fails still happened: remember the prompt and a truthful
+                // one-line note, so the natural next message ("continue") is not the first thing
+                // the model has ever heard about the work. Successful turns remember themselves
+                // in converse (the answer, or the question the agent asked).
+                return try {
+                    converse(
+                        chat = chat,
+                        web = web,
+                        catalog = catalog,
+                        userText = userText,
+                        apiKey = settings.apiKey,
+                        endpointHost = endpointHost(settings.settings.baseUrl),
+                        view = view,
+                        onActivity = onActivity,
+                        onToolTrace = onToolTrace,
+                        onRetry = onRetry,
+                        onVisionNotice = onVisionNotice,
+                        onImageAttached = onImageAttached,
+                    )
+                } catch (error: AgentException) {
+                    rememberInterrupted(userText, error.code)
+                    throw error
+                } catch (error: Throwable) {
+                    rememberInterrupted(userText, "unexpected")
+                    throw error
+                }
             } finally {
                 client = null
                 webClient = null
@@ -273,8 +304,52 @@ class CadAgent(
                 ),
         )
 
+        // The plate images this turn has attached, by message index (oldest first). A turn
+        // keeps only the latest [MAX_TURN_IMAGES] renders: a render is a view, not a stream, and
+        // every message stays in the request for the whole turn. Older images are replaced by
+        // their captions, with a line saying one was dropped.
+        val plateImageMessages = ArrayList<Int>()
+        if (firstImage != null) plateImageMessages += messages.length() - 1
+        turnImagesRendered = if (firstImage != null) 1 else 0
+
+        /** Replaces the oldest attached plate image with its caption text. */
+        fun dropOldestPlateImage(): Boolean =
+            dropOldestImageMessage(messages, plateImageMessages)
+
+        /**
+         * Keeps one request under [MAX_REQUEST_BYTES].
+         *
+         * The per-image cap bounds the normal case; this is the backstop for a request whose
+         * text (long web pages, tool results) or remaining images cross the ceiling. Images go
+         * first; if the request is still too large the turn stops with a named error instead of
+         * handing the phone's heap to a serializer.
+         */
+        fun enforceRequestCeiling() {
+            val dropped = trimImagesForRequest(messages, plateImageMessages, MAX_REQUEST_BYTES)
+            if (dropped > 0) {
+                // The render's own row is already in the transcript; this line names the size
+                // reason when the request ceiling (not the image count) removed the older ones.
+                runCatching {
+                    onActivity(
+                        "dropped " + dropped + " older plate render" + (if (dropped == 1) "" else "s") +
+                            " to keep the request under the " + (MAX_REQUEST_BYTES / (1024 * 1024)) +
+                            " MB limit",
+                    )
+                }
+            }
+            val bytes = requestBytes(messages)
+            if (bytes > MAX_REQUEST_BYTES) {
+                throw AgentException(
+                    "request-too-large",
+                    "This turn's request reached " + (bytes / (1024 * 1024)) + " MB, past the " +
+                        (MAX_REQUEST_BYTES / (1024 * 1024)) + " MB request limit. Start a new " +
+                        "conversation or ask for a smaller change; the design keeps every edit " +
+                        "already made.",
+                )
+            }
+        }
+
         var rounds = 0
-        var callIds = 0
         // What the user-visible error row needs: which model round of this turn failed, and
         // whether it is still safe to re-send the same request.
         var modelRound = 0
@@ -291,7 +366,10 @@ class CadAgent(
             }
             modelRound++
             val roundStartedAt = System.currentTimeMillis()
-            fun completeOnce(): JSONObject = chat.complete(messages, activeCatalog.tools)
+            fun completeOnce(): JSONObject {
+                enforceRequestCeiling()
+                return chat.complete(messages, activeCatalog.tools)
+            }
             val reply: JSONObject = try {
                 completeOnce()
             } catch (error: AgentException) {
@@ -303,6 +381,9 @@ class CadAgent(
                     // seen, and never retry this fallback a second time.
                     visionUnsupported = true
                     stripImageParts(messages)
+                    // The images are gone: the request-ceiling bookkeeping must not try to drop
+                    // them again (their message indexes now hold text-only captions).
+                    plateImageMessages.clear()
                     runCatching { onVisionNotice(VISION_NOTICE) }
                     log("the endpoint refused an image; retrying once without it")
                     try {
@@ -392,7 +473,7 @@ class CadAgent(
                     result = executeTool(catalog, web, name, argumentsText, onActivity, view).result
                     askedThisRound = lastQuestion != null
                 } else {
-                    val callId = ++callIds
+                    val callId = ++callIdCounter
                     var produced: PlateImage? = null
                     result = traceCall(callId, name, argumentsText, apiKey, onToolTrace) {
                         val outcome = executeTool(catalog, web, name, argumentsText, onActivity, view)
@@ -402,6 +483,7 @@ class CadAgent(
                     produced?.let(capturedImages::add)
                 }
                 toolsRunInTurn++
+                toolsRunThisTurn = toolsRunInTurn
                 messages.put(
                     JSONObject()
                         .put("role", "tool")
@@ -421,23 +503,34 @@ class CadAgent(
                 return ""
             }
             if (capturedImages.isNotEmpty() && !visionUnsupported) {
-                // The picture a plate_screenshot call asked for, attached to the next user-role
+                // Each render a plate_screenshot call asked for is attached to the next user-role
                 // message of this turn as the OpenAI-compatible content array - the tool result
-                // above said it follows, and this is it.
-                messages.put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put(
-                            "content",
-                            userContent(
-                                PLATE_IMAGE_CAPTION,
-                                capturedImages,
-                                view.faceTinted && capturedImages.any { it.tintVisible },
+                // above said it follows, and this is it. One message per image keeps the
+                // per-turn cap honest: the oldest image can be replaced by its caption without
+                // touching any other part of the request.
+                for (image in capturedImages) {
+                    val index = messages.length()
+                    messages.put(
+                        JSONObject()
+                            .put("role", "user")
+                            .put(
+                                "content",
+                                userContent(
+                                    PLATE_IMAGE_CAPTION,
+                                    listOf(image),
+                                    view.faceTinted && image.tintVisible,
+                                ),
                             ),
-                        ),
-                )
-                capturedImages.forEach { image ->
-                    runCatching { onImageAttached(PLATE_IMAGE_NOTICE + image.sizeLine) }
+                    )
+                    plateImageMessages += index
+                    while (plateImageMessages.size > MAX_TURN_IMAGES) {
+                        if (!dropOldestPlateImage()) break
+                    }
+                    // Only a render still in the request is "attached"; one the cap replaced
+                    // with its caption must not be named as sent.
+                    if (index in plateImageMessages) {
+                        runCatching { onImageAttached(PLATE_IMAGE_NOTICE + image.sizeLine) }
+                    }
                 }
             }
         }
@@ -628,7 +721,15 @@ class CadAgent(
                 outcome = "no frame came back",
             ),
         )
-        val outcome = "rendered the plate: " + image.geometryLine + " · " + image.sizeLine
+        // Say in the row when this render pushed an older one out: the model reads the row, and
+        // a user copying the transcript should see that the turn keeps only the latest few.
+        turnImagesRendered++
+        val droppedNotice = if (turnImagesRendered > MAX_TURN_IMAGES) {
+            " · dropped an older render (the turn keeps the latest " + MAX_TURN_IMAGES + ")"
+        } else {
+            ""
+        }
+        val outcome = "rendered the plate: " + image.geometryLine + " · " + image.sizeLine + droppedNotice
         return ToolOutcome(
             result = AgentToolHost.Result(
                 "rendered the plate: " + image.geometryLine + ", current camera; the image follows",
@@ -925,16 +1026,50 @@ class CadAgent(
     }
 
     /**
-     * True when a 400 names an image: the provider refused the content part, not the request.
+     * True when a 400 names image INPUT as unsupported by the model.
      *
-     * Providers word it "image_url is not supported", "invalid content type: image", "vision is
-     * not available for this model" - the three markers cover the families. A 400 that is not
-     * about the image keeps its own named failure, so this never rewrites an unrelated refusal.
+     * Only that is a capability signal. A 400 about this request's bytes, format or size
+     * ("image exceeds maximum size of 512 KB", "unsupported image format", "invalid image_url:
+     * expected a base64 data URL") is about the picture that was sent, not about what the model
+     * can do: treating it as "blind" would strip every later render and tell the transcript a
+     * false sentence for the whole session. So the provider's sentence must name an image input
+     * AND a missing capability, and must not name a limit or a malformed payload.
      */
     private fun isImageRefusal(error: AgentException): Boolean {
         if (error.code != "http-error") return false
-        val text = error.message ?: return false
-        return IMAGE_REFUSAL_MARKERS.any { text.contains(it, ignoreCase = true) }
+        val text = error.message?.lowercase() ?: return false
+        val namesImageInput = IMAGE_INPUT_MARKERS.any { text.contains(it) }
+        val namesCapability = IMAGE_CAPABILITY_MARKERS.any { text.contains(it) }
+        val namesLimitOrPayload = IMAGE_LIMIT_MARKERS.any { text.contains(it) }
+        return namesImageInput && namesCapability && !namesLimitOrPayload
+    }
+
+    /**
+     * The memory entry for a turn that stopped or failed.
+     *
+     * Stop is the primary control of a turn with no round limit; without this entry the next
+     * message ("continue") is the first thing the model has ever seen about the work, and it
+     * cannot know what to continue. The design may still hold edits a tool made before the
+     * interruption, so the note says that plainly rather than pretending nothing ran.
+     */
+    private fun rememberInterrupted(userText: String, code: String) {
+        val tools = toolsRunThisTurn
+        val note = buildString {
+            if (code == "cancelled") {
+                append("The user stopped this turn before it answered.")
+            } else {
+                append("This turn failed (").append(code).append(") before it answered.")
+            }
+            if (tools > 0) {
+                append(" ").append(tools).append(" tool call")
+                if (tools != 1) append("s")
+                append(
+                    " had run, so the design may hold partial changes from them; inspect the " +
+                        "document before repeating work.",
+                )
+            }
+        }
+        remember(userText, note)
     }
 
     /**
@@ -1007,10 +1142,109 @@ class CadAgent(
         const val PLATE_IMAGE_CAPTION =
             "The plate render you asked for follows; it is the plate at the user's current camera."
 
+        /** A turn keeps this many plate renders; older ones are replaced by their captions. */
+        const val MAX_TURN_IMAGES = 4
+
         /**
-         * How a provider words an image refusal in a 400 body, so the fallback can tell it from
-         * every other malformed request.
+         * The most one completion request may serialize to before the turn stops.
+         *
+         * The response is capped at 16 MiB by [OpenAiChatClient]; a request of that order is
+         * already far past a phone's comfort, so the same number is the ceiling here. Four
+         * renders alone can pass it if the pictures are detailed; the turn drops the oldest
+         * image first and only then stops with the named error.
          */
-        private val IMAGE_REFUSAL_MARKERS = listOf("image", "vision", "multimodal")
+        const val MAX_REQUEST_BYTES = 16L * 1024L * 1024L
+
+        /** The serialized size of one request, in UTF-8 bytes. Test-visible. */
+        internal fun requestBytes(messages: JSONArray): Long =
+            messages.toString().toByteArray(Charsets.UTF_8).size.toLong()
+
+        /**
+         * Replaces one attached plate image with its caption text and a line saying it was
+         * dropped; false when the list is empty or the message no longer holds an image.
+         *
+         * The message itself stays, so indexes already recorded for other images remain valid.
+         */
+        internal fun dropOldestImageMessage(messages: JSONArray, imageMessages: MutableList<Int>): Boolean {
+            if (imageMessages.isEmpty()) return false
+            val index = imageMessages.removeAt(0)
+            val message = messages.optJSONObject(index) ?: return true
+            val content = message.opt("content") as? JSONArray ?: return true
+            val texts = ArrayList<String>()
+            for (part in 0 until content.length()) {
+                val item = content.optJSONObject(part) ?: continue
+                if (item.optString("type") == "text") texts += item.optString("text")
+            }
+            message.put(
+                "content",
+                (
+                    texts.joinToString("\n") + "\n(an earlier plate render was dropped from " +
+                        "this request: the turn keeps the latest " + MAX_TURN_IMAGES +
+                        " images)"
+                    ).trim(),
+            )
+            return true
+        }
+
+        /**
+         * Drops the oldest attached images until the request fits [maxBytes], or none are left.
+         *
+         * Returns how many images were dropped. Test-visible so the ceiling mechanism can be
+         * exercised without building a real 16 MiB request.
+         */
+        internal fun trimImagesForRequest(
+            messages: JSONArray,
+            imageMessages: MutableList<Int>,
+            maxBytes: Long,
+        ): Int {
+            var dropped = 0
+            while (requestBytes(messages) > maxBytes && dropOldestImageMessage(messages, imageMessages)) {
+                dropped++
+            }
+            return dropped
+        }
+
+        /** How a provider names an image input at all (the subject of the refusal). */
+        private val IMAGE_INPUT_MARKERS = listOf("image", "vision", "multimodal", "content part")
+
+        /** How a provider words "this model does not accept that input" - a capability. */
+        private val IMAGE_CAPABILITY_MARKERS = listOf(
+            "not supported",
+            "doesn't support",
+            "does not support",
+            "unsupported",
+            "not available",
+            "not enabled",
+            "cannot process",
+            "can't process",
+            "does not accept",
+            "doesn't accept",
+            "not accept",
+        )
+
+        /**
+         * Words that make a 400 about this request's image (size, format, payload), not about
+         * the model: with one of these present the session's vision memory must not be touched.
+         */
+        private val IMAGE_LIMIT_MARKERS = listOf(
+            "too large",
+            "exceeds",
+            "maximum size",
+            "max size",
+            "size limit",
+            "too big",
+            "too long",
+            "length limit",
+            "too many bytes",
+            "payload",
+            "dimensions",
+            "pixels",
+            "bytes",
+            // Not the bare word "format": it is inside "information", and a capability refusal
+            // often ends with "for more information ...".
+            "image format",
+            "file format",
+            "format is not supported",
+        )
     }
 }

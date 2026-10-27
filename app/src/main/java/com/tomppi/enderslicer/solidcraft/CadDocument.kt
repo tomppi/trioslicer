@@ -249,6 +249,24 @@ class CadWorkspace(root: File) {
 
     fun designFile(name: String): File = File(designs, slug(name) + DESIGN_EXTENSION)
 
+    /**
+     * A design path that no other design holds: Untitled, Untitled 2, Untitled 3...
+     *
+     * New design used to write the engine's default name into the same file every time, so
+     * starting the next design overwrote the previous one - the app's only source of truth for
+     * it. A new design (and an Open whose name is already taken by another design) asks here
+     * instead of overwriting; the caller shows the resulting name.
+     */
+    fun uniqueDesignFile(name: String): File {
+        var candidate = designFile(name)
+        var index = 2
+        while (candidate.isFile) {
+            candidate = designFile(name + " " + index)
+            index++
+        }
+        return candidate
+    }
+
     /** Every design the workspace holds, newest first. */
     fun designFiles(): List<File> = designs.listFiles { file ->
         file.isFile && file.name.endsWith(DESIGN_EXTENSION)
@@ -265,9 +283,16 @@ class CadWorkspace(root: File) {
         }
     }
 
-    /** One part's converted STL, named after the design and the body. */
+    /**
+     * One part's converted STL, named after the design and the body.
+     *
+     * The body part of the stem is injective even where [slug] is not: two bodies whose names
+     * differ only in punctuation (Body 1 / Body.1 / Body/1) slug identically, and a shared file
+     * made the second body's export overwrite the first - the plate then drew one shape twice.
+     * The raw name's short hash keeps them apart.
+     */
     fun convertedFile(document: String, body: String): File =
-        File(converted, slug(document) + "-" + slug(body) + ".stl")
+        File(converted, slug(document) + "-" + bodyStem(body) + ".stl")
 
     /** A staged copy of a file being opened; the engine can only read inside the workspace. */
     fun importFile(sourceName: String): File {
@@ -280,7 +305,7 @@ class CadWorkspace(root: File) {
 
     /** One body's tessellation, exported on its own so an edit re-tessellates only it. */
     fun bodyFile(document: String, body: String): File =
-        File(display, slug(document) + "-body-" + slug(body) + ".stl")
+        File(display, slug(document) + "-body-" + bodyStem(body) + ".stl")
 
     /** The deliberate print export a Slice consumes. */
     fun printFile(name: String, stampMillis: Long): File =
@@ -289,6 +314,21 @@ class CadWorkspace(root: File) {
     /** An artifact the user asked for by hand: STEP, STL, 3MF... */
     fun exportFile(name: String, extension: String): File =
         File(exports, slug(name) + "." + extension.lowercase().filter(Char::isLetterOrDigit))
+
+    /**
+     * The file-name stem for one body: the readable slug plus a hash of the raw name.
+     *
+     * [slug] is not injective (spaces, dots, slashes and colons all become '-'), so two engine
+     * bodies can share a stem; the hash is what makes the per-body file name identify the body.
+     */
+    fun bodyStem(body: String): String = slug(body) + "-" + bodyHash(body)
+
+    /** Eight hex characters of SHA-1 of the raw body name: stable, short, file-safe. */
+    fun bodyHash(body: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-1")
+            .digest(body.toByteArray(Charsets.UTF_8))
+        return digest.take(4).joinToString("") { byte -> String.format("%02x", byte) }
+    }
 
     companion object {
         /** The engine's design container: the source of truth for a document. */
