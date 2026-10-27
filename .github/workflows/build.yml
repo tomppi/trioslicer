@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Build a signed release APK (fails when the signing secrets are missing)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
@@ -11,6 +16,10 @@ concurrency:
 
 jobs:
   build:
+    # Engine-asset tags (solidcraft-engine-v*, cad-payload-v*, occt-engine-v*, ...) publish a
+    # binary, not an app. The app pipeline runs for branches, pull requests, workflow dispatches
+    # and app release tags (v1.9.x) only; a skipped job is a green workflow with no APK artifact.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') || startsWith(github.ref_name, 'v') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -20,6 +29,43 @@ jobs:
       NPM_CONFIG_ENGINE_STRICT: "true"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the release-tag gate below proves the tagged commit is on main.
+          fetch-depth: 0
+
+      - name: Validate the release tag
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^ *versionName *= *"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read versionName from app/build.gradle.kts" >&2
+            exit 1
+          fi
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::tag $tag does not match versionName $version in app/build.gradle.kts" >&2
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no ## [$version] section for tag $tag" >&2
+            exit 1
+          fi
+          git fetch --quiet --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $tag points at $GITHUB_SHA, which is not an ancestor of origin/main" >&2
+            echo "::error::a release must be cut from main, not from a side commit" >&2
+            exit 1
+          fi
+          echo "Release tag $tag: versionName $version, on main, CHANGELOG entry present"
+
+      - name: Name this run's artifacts
+        run: |
+          set -euo pipefail
+          # upload-artifact names cannot contain '/' or ':', and PR refs are "123/merge".
+          suffix="$(printf '%s' "${GITHUB_REF_NAME}" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
+          [ -n "$suffix" ] || suffix="run-${GITHUB_RUN_NUMBER}"
+          echo "BUILD_ARTIFACT_SUFFIX=$suffix" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:
@@ -419,7 +465,15 @@ jobs:
           [ "$size" -gt 20000000 ] || { echo "$f is only $size bytes" >&2; exit 1; }
           [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] ||
             { echo "$f is not an ELF binary" >&2; exit 1; }
-          echo "SolidCraft engine staged: $(du -h "$f" | cut -f1)"
+          # Bytes 4-5: class 2 = 64-bit, data 1 = little-endian; bytes 18-19: e_machine,
+          # little-endian, 0xB7 = EM_AARCH64. Size and magic are not enough: a host x86-64
+          # binary passed this step before the 2026-10-27 audit (infra #3).
+          [ "$(head -c 6 "$f" | tail -c 2 | od -An -tx1 | tr -d ' \n')" = "0201" ] ||
+            { echo "$f is not a 64-bit little-endian ELF" >&2; exit 1; }
+          machine="$(head -c 20 "$f" | tail -c 2 | od -An -tx1 | tr -d ' \n')"
+          [ "$machine" = "b700" ] ||
+            { echo "$f is not an AArch64 ELF (e_machine bytes $machine); the phone is arm64-v8a only" >&2; exit 1; }
+          echo "SolidCraft engine staged: $(du -h "$f" | cut -f1), AArch64 ELF"
 
 
       - name: Build pinned host CuraEngine fixture binary
@@ -469,24 +523,37 @@ jobs:
 
       # The release key is private, so it is not in the checkout: the build takes it
       # from the repository secrets and writes the same keystore.properties a local
-      # build reads. A pull request from a fork gets no secrets, so it signs with a
-      # throwaway key - enough to prove the release APK still builds - and the
-      # signer pin below is then skipped.
+      # build reads. A release ref (a tag, or workflow_dispatch with release: true) must
+      # have it: a release signed with a generated throwaway key cannot update any install
+      # of the published app, and the signer pin below would be skipped - so that build
+      # fails here, loudly. A branch push or a pull request (a fork has no secrets) keeps
+      # the warning and the throwaway key, and the upload step below never attaches a
+      # throwaway-signed APK as a release artifact.
       - name: Materialise the release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          RELEASE_DISPATCH: ${{ github.event.inputs.release }}
         run: |
           set -euo pipefail
           umask 077
           mkdir -p keystore
+          RELEASE_BUILD_REF=0
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ "${RELEASE_DISPATCH:-false}" = "true" ]; then
+            RELEASE_BUILD_REF=1
+          fi
           if [ -n "${KEYSTORE_BASE64:-}" ]; then
             printf '%s' "$KEYSTORE_BASE64" | base64 -d > keystore/release.jks
             REAL=1
           else
-            echo "::warning::no KEYSTORE_BASE64 secret (fork pull request?): signing with a throwaway key"
+            if [ "$RELEASE_BUILD_REF" = "1" ]; then
+              echo "::error::no KEYSTORE_BASE64 secret for a release build (${GITHUB_REF:-unknown ref});" >&2
+              echo "::error::refusing to sign a release APK with a throwaway key" >&2
+              exit 1
+            fi
+            echo "::warning::no KEYSTORE_BASE64 secret (branch/pull-request build): signing with a throwaway key"
             KEYSTORE_PASSWORD=$(openssl rand -hex 16)
             KEY_ALIAS=throwaway
             KEY_PASSWORD=$KEYSTORE_PASSWORD
@@ -504,6 +571,7 @@ jobs:
           PROPS
           chmod 600 keystore/release.jks keystore.properties
           echo "RELEASE_KEY_IS_REAL=$REAL" >> "$GITHUB_ENV"
+          echo "RELEASE_BUILD_REF=$RELEASE_BUILD_REF" >> "$GITHUB_ENV"
 
       - name: Build the release APK
         run: |
@@ -607,16 +675,19 @@ jobs:
           done
 
       - name: Upload APK
+        # A throwaway-signed APK is never a release artifact: a release ref without the real key
+        # fails at the keystore step, and this guard keeps any future path from attaching one.
+        if: ${{ success() && (env.RELEASE_KEY_IS_REAL == '1' || env.RELEASE_BUILD_REF != '1') }}
         uses: actions/upload-artifact@v4
         with:
-          name: enderslicercura-apk
+          name: enderslicercura-apk-${{ env.BUILD_ARTIFACT_SUFFIX }}
           path: app/build/outputs/apk/release/app-release.apk
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: enderslicercura-smart-infill-fix-build-logs
+          name: enderslicercura-smart-infill-fix-build-logs-${{ env.BUILD_ARTIFACT_SUFFIX }}
           path: |
             bumpmesh-build.log
             bumpmesh-warm-build.log

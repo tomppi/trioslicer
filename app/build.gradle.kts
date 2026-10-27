@@ -57,8 +57,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 128
-        versionName = "1.9.10"
+        versionCode = 129
+        versionName = "1.9.11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -699,6 +699,22 @@ fun checkOcctEnginePackaged(apk: File, label: String) {
     }
 }
 
+/*
+ * True when the first 20 bytes of an image are a 64-bit little-endian AArch64 ELF header.
+ *
+ * The file size and the ELF magic are not enough: a host x86-64 build passed every engine check
+ * until this existed (the 2026-10-27 audit staged one cleanly through the fetch path). Bytes 4-5
+ * are the class (2 = 64-bit) and data encoding (1 = little-endian); e_machine at bytes 18-19,
+ * little-endian, must be 0xB7, which is EM_AARCH64. The phone is arm64-v8a only.
+ */
+fun isAarch64Elf(bytes: ByteArray): Boolean {
+    fun u(index: Int) = bytes[index].toInt() and 0xFF
+    return bytes.size >= 20 &&
+        u(0) == 0x7F && u(1) == 0x45 && u(2) == 0x4C && u(3) == 0x46 &&
+        u(4) == 2 && u(5) == 1 &&
+        u(18) == 0xB7 && u(19) == 0x00
+}
+
 /**
  * The SolidCraft engine: the live CAD document on the Plate runs in this binary.
  *
@@ -711,11 +727,20 @@ fun checkOcctEnginePackaged(apk: File, label: String) {
 fun checkSolidCraftEnginePackaged(apk: File, label: String) {
     check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
     ZipFile(apk).use { zip ->
-        val entry = zip.getEntry("lib/arm64-v8a/libsolidcraft_exec.so")
-        check(entry != null && entry.size > 10_000_000L) {
+        val engineEntry = zip.getEntry("lib/arm64-v8a/libsolidcraft_exec.so") ?: error(
             "$label APK does not contain the ARM64 SolidCraft engine, so the Plate's live CAD " +
                 "document has nothing to run. Fetch it with " +
-                "scripts/fetch-solidcraft-engine-android.sh."
+                "scripts/fetch-solidcraft-engine-android.sh.",
+        )
+        check(engineEntry.size > 10_000_000L) {
+            "$label APK's SolidCraft engine is truncated (" + engineEntry.size + " bytes); fetch " +
+                "it again with scripts/fetch-solidcraft-engine-android.sh."
+        }
+        val header = zip.getInputStream(engineEntry).use { it.readNBytes(20) }
+        check(isAarch64Elf(header)) {
+            "$label APK's SolidCraft engine is not an AArch64 ELF (e_machine " +
+                (if (header.size > 19) "0x" + (header[18].toInt() and 0xFF).toString(16) else "unknown") +
+                "). The phone is arm64-v8a only; a host x86-64 build must fail here, not install."
         }
     }
 }
@@ -775,15 +800,13 @@ val verifySolidCraftEngineExecutable by tasks.registering {
                 ". Run scripts/fetch-solidcraft-engine-android.sh (or " +
                 "scripts/build-solidcraft-engine-android.sh)."
         }
-        val magic = engine.inputStream().use { input ->
-            val bytes = ByteArray(4)
-            check(input.read(bytes) == 4) { engine.absolutePath + " is too short to be an engine" }
-            bytes
+        val header = engine.inputStream().use { it.readNBytes(20) }
+        check(header.size == 20) { engine.absolutePath + " is too short to be an engine" }
+        check(isAarch64Elf(header)) {
+            engine.absolutePath + " is not an AArch64 ELF: the phone is arm64-v8a only, so a " +
+                "host x86-64 build (or a truncated or foreign binary) cannot be packaged as the " +
+                "SolidCraft engine"
         }
-        check(
-            magic[0] == 0x7f.toByte() && magic[1] == 'E'.code.toByte() &&
-                magic[2] == 'L'.code.toByte() && magic[3] == 'F'.code.toByte(),
-        ) { engine.absolutePath + " is not an ELF binary" }
         logger.lifecycle(
             "SolidCraft engine staged: " + engine.name + " (" + (engine.length() / (1024 * 1024)) + " MB)",
         )

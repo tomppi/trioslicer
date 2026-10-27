@@ -4,7 +4,50 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.11] - 2026-10-27
+
+### Fixed
+
+- **A release build without the signing secrets fails instead of shipping a throwaway-signed
+  APK.** A tag build (or a `workflow_dispatch` with `release: true`) with a missing or empty
+  `KEYSTORE_BASE64` secret used to sign the APK with a generated throwaway key, skip the
+  release-certificate pin and upload it; the update is then refused by every phone that has the
+  published app (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), and only an uninstall gets past it. It
+  now stops at the keystore step with that reason. A branch or pull-request build keeps the
+  warning and the throwaway key (a fork has no secrets), and the upload step never attaches a
+  throwaway-signed APK as a release artifact.
+- **The SolidCraft engine gate checks the architecture, not just the file size.** The fetch
+  script, the CI fetch step and the two Gradle verify tasks now require a 64-bit little-endian
+  **AArch64** ELF (`e_machine == 0xB7`), so a host x86-64 build (or a foreign or truncated
+  binary) that used to stage cleanly fails loudly instead of installing an engine the phone
+  cannot run.
+- **A release tag must be on `main` and match the version.** Tag builds now fail when
+  `versionName` differs from the tag, when `CHANGELOG.md` has no section for that version, or
+  when the tagged commit is not an ancestor of `origin/main`; the checkout fetches the full
+  history so the ancestry check can run. (The withdrawn v1.9.5 tag had been force-moved onto a
+  commit that is not on main.)
+- **Build artifacts are named per ref, and engine-asset tags no longer run the app pipeline.**
+  The APK and build-log artifacts carry the ref (e.g. `enderslicercura-apk-v1.9.11`), so a
+  release assembled by hand from an artifact can be traced to a run; `solidcraft-engine-v*`,
+  `cad-payload-v*` and the other engine tags skip the app job instead of building an APK nobody
+  can use.
+- **`docs/SOLIDCRAFT_ANDROID.md` matches the code again.** The web tools are documented as at
+  most 10 results with 2,000-character snippets/summaries and a 32,000-character fetched page,
+  the removed eight-tool-round limit (and the "continue" sentence it produced) is gone, and the
+  plate render is documented at its 1,536 px long side.
+
+### Tested
+
+- `ReleasePipelineContractTest` pins the release-pipeline contract read from the workflow and
+  build files: the tag/ancestry/version gate, the release-ref-only keystore failure and the
+  throwaway-artifact guard, the AArch64 `e_machine` checks, per-ref artifact naming and the
+  engine-tag skip, plus the raised agent caps and the withdrawn-version note in the docs and this
+  changelog.
+
 ## [1.9.10] - 2026-10-26
+
+> **1.9.8 and 1.9.9 were built but never released** (their tags and GitHub releases were
+> withdrawn); their changes are part of 1.9.10, and their sections below are kept for the record.
 
 ### Fixed
 

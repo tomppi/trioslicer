@@ -45,13 +45,25 @@ sha256_of() {
 }
 
 # Not just "the file is there": an interrupted download leaves a file, and a placeholder
-# leaves one that is not an engine. The ELF magic is the cheapest honest check.
+# leaves one that is not an engine. The ELF magic is the cheapest honest check, but it is not
+# enough: the phone runs arm64-v8a only and a host x86-64 build once staged cleanly through this
+# path (2026-10-27 audit), so the header's class/data and e_machine are checked as well.
 check_engine() {
     local f="$1"
     [ -f "$f" ] || { echo "no $f" >&2; return 1; }
-    local magic
+    local magic class machine
     magic="$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')"
     [ "$magic" = "7f454c46" ] || { echo "$f is not an ELF binary (magic $magic)" >&2; return 1; }
+    # Bytes 4-5: class 2 = 64-bit, data 1 = little-endian.
+    class="$(head -c 6 "$f" | tail -c 2 | od -An -tx1 | tr -d ' \n')"
+    [ "$class" = "0201" ] || {
+        echo "$f is not a 64-bit little-endian ELF (class/data $class)" >&2; return 1; }
+    # Bytes 18-19: e_machine little-endian; 0xB7 is EM_AARCH64 (183).
+    machine="$(head -c 20 "$f" | tail -c 2 | od -An -tx1 | tr -d ' \n')"
+    [ "$machine" = "b700" ] || {
+        echo "$f is not an AArch64 ELF (e_machine bytes $machine); the phone is arm64-v8a only" >&2
+        return 1
+    }
     [ "$(stat -c %s "$f")" -gt 10000000 ] || { echo "$f is only $(stat -c %s "$f") bytes" >&2; return 1; }
 }
 

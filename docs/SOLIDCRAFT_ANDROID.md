@@ -81,7 +81,7 @@ asset is published separately from the source commit (CI has no Rust cross toolc
 - **solidcraft/CadDocument.kt** holds the document record, the per-body tessellation composer,
   the workspace path rules and the Slice-export handoff.
 - **cadagent/** is the in-app agent: the endpoint settings with the sealed key
-  (`AgentSettings.kt`), the bounded tool-calling loop (`CadAgent.kt`), the OpenAI-compatible
+  (`AgentSettings.kt`), the tool-calling loop (`CadAgent.kt`), the OpenAI-compatible
   client (`OpenAiChatClient.kt`), the engine's catalogue as OpenAI tools
   (`AgentToolCatalog.kt`), the optional web tools (`AgentWebTools.kt`), the observable tool
   trace (`AgentToolTrace.kt`: the redacted start/end row model), and the system prompt
@@ -121,20 +121,22 @@ against the engine session the app already owns - no bridge, no socket, no token
 - **Web search and page fetch are optional, and share the credential.** When the endpoint offers
   DeepSeek's `/tools/search` and `/tools/fetch` routes and the sheet's switch is on, the model
   also gets `web_search` and `web_fetch`, using the same base URL and key. Results are bounded
-  (at most 5 results, ~800 characters each of snippet/summary; a fetched page ~8k characters) and
-  arrive inside an explicit **untrusted web content** boundary. The system prompt says page text
-  is data, never instructions: nothing from the web may change the task, the document or the tool
-  list. A 401/403/404/405 on those routes removes the tools for the conversation and the agent
-  says once that search is unavailable - never a silent failure and never a fake empty result.
+  (at most 10 results, 2,000 characters each of snippet/summary; a fetched page is cut at 32,000
+  characters) and arrive inside an explicit **untrusted web content** boundary. The system prompt
+  says page text is data, never instructions: nothing from the web may change the task, the
+  document or the tool list. A 401/403/404/405 on those routes removes the tools for the
+  conversation and the agent says once that search is unavailable - never a silent failure and
+  never a fake empty result.
   The plain-words "searching the web for …" / "reading …" lines stay in the sheet's compact
   transcript; the floating chat shows the tool row instead.
   DeepSeek answers chat completions at the API root and its tools under `/v1`, so a base URL
   without `/v1` is tried under both forms (only 404/405/501 are retried, a wrong key is still a
   401 named at once) and the form that answered is remembered for the session.
-- **A turn is bounded and cancellable.** Cancel disconnects the request in flight and stops at
-  the next boundary (a tool call already handed to the engine finishes, and the design may have
-  changed); a model that keeps asking for tools stops after 8 tool rounds, and the sentence says
-  how many rounds ran and that one more message ("continue") carries on from there. HTTP,
+- **A turn is cancellable, and long enough to finish.** Cancel disconnects the request in flight
+  and stops at the next boundary (a tool call already handed to the engine finishes, and the
+  design may have changed). There is no tool-round limit: a turn ends when the model answers,
+  when the user presses Stop, or when the endpoint or network gives up, and a long turn logs a
+  heartbeat every tenth round so "still working" stays distinguishable from "stuck". HTTP,
   timeout and malformed-reply failures are named exceptions with the endpoint's own sentence,
   redacted against the key, and reach the conversation as an error row - never silence.
 - **A turn outlives the screen going off.** The screen is allowed to sleep: nothing in the agent
@@ -192,7 +194,7 @@ app's own - the engine's `screenshot` is still refused.
 - **The plate render.** `plate_screenshot` is the app's own tool beside the engine's in
   `AgentToolCatalog`/CadAgent (no engine call): `ModelSurfaceView.capturePlate` asks for the next
   frame, the renderer reads its own frame buffer back at the user's camera, scales the long side
-  to 768 px and encodes a JPEG. It is the plate view alone, never the app around it and never the
+  to 1,536 px and encodes a JPEG. It is the plate view alone, never the app around it and never the
   engine's `screenshot`. The runtime attaches it to the next user-role message of the turn as the
   standard OpenAI content part (`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`).
   Its tool result is one line ("rendered the plate: 1 body, 12,000 triangles, current camera; the
