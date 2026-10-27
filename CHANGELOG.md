@@ -4,6 +4,32 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.17] - 2026-10-27
+
+### Fixed
+
+- **The BumpMesh studio no longer hangs on phones whose language formats numbers with a space.** The page prints its triangle
+  count using the device's locale - `225,143` in English, but `225 143` (often with a narrow no-break space) in Finnish and several
+  other locales. The studio read the last digit run, so it saw **143** triangles, and its "has the model finished loading?" gate could
+  never match the 225,143 it expected: every apply - whole object *and* painted region - sat at `importing 5%` until the fallback
+  timeout. The count is now read as the whole number before `triangles` with every group separator stripped (space, NBSP, U+202F,
+  comma, dot, apostrophe), and the parser is regression-tested on all of those forms. On the user's 225,706-triangle model the studio
+  now reports the page's 225,143 exactly and applies without the mismatch warning.
+- **A stall can no longer be silent, whatever its cause.** The load waits are bounded and named, a page-versus-studio triangle-count
+  disagreement is reported at once with both counts (a painted mask refuses rather than texturing the wrong faces; whole object keeps
+  the page's count and says so once), file dispatches are acknowledged by the page, a silent first attempt recycles the hidden WebView
+  once and retries, and Cancel during an import resets the page. All investigation logging added to find this bug was removed before
+  release: normal use writes nothing new to logcat, and a real failure writes one line with its message.
+
+### Tested
+
+- Studio tests: 37, 0 failures, including the shipped JS parser run under Node against `225,143`, `225 143`, NBSP, U+202F,
+  `225.143`, `143` and a no-count string.
+- On the dev phone with the user's exact mesh (225,706 triangles): whole object **18.6 s -> 419,164 triangles**, painted region
+  (36,002 painted faces) **11.4 s -> 272,109 triangles**, page count matching every time and no warning.
+- Known limit, unchanged and not this bug: a 419k-triangle result needs display memory; the 8 GB dev phone's 512 MB app heap cannot
+  draw it (`ModelSurfaceView` OOM in the GL thread) even though the apply itself succeeds. The Fold this was reported on applies and
+  displays 407k triangles fine.
 ## [1.9.16] - 2026-10-27
 
 ### Fixed
