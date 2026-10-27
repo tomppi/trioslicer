@@ -200,9 +200,22 @@ jobs:
           test -s app/src/main/assets/bumpmesh/vendor/meshstep/dist/index.js
           test -s app/src/main/assets/bumpmesh/vendor/meshstep/src/index.ts
           test -s app/src/main/assets/bumpmesh/vendor/meshstep/LICENSE
+          test -s app/src/main/assets/bumpmesh/library/manifest.json
+          test -s app/src/main/assets/bumpmesh/library/CREDITS.md
+          test "$(find app/src/main/assets/bumpmesh/library/textures -maxdepth 1 -type f | wc -l)" -eq 101
+          test "$(find app/src/main/assets/bumpmesh/library/textures/thumbs -maxdepth 1 -type f | wc -l)" -eq 101
+          python3 - <<'PY'
+          import json
+          manifest = json.load(open("app/src/main/assets/bumpmesh/library/manifest.json", encoding="utf-8"))
+          assert manifest["format"] == 1, manifest["format"]
+          assert manifest["count"] == 101, manifest["count"]
+          assert len(manifest["textures"]) == 101, len(manifest["textures"])
+          assert len({entry["file"] for entry in manifest["textures"]}) == 101
+          PY
           test -s app/src/main/assets/bumpmesh/SHA256SUMS
-          grep -q 'format=2' app/src/main/assets/bumpmesh/.source-version
+          grep -q 'format=4' app/src/main/assets/bumpmesh/.source-version
           grep -q 'BumpMesh=a6ac179149b8a17c71a9469dd4cb6f866c0c01d1' app/src/main/assets/bumpmesh/.source-version
+          grep -q 'textures=c46678436001b622f71ebeff763c16c186049316' app/src/main/assets/bumpmesh/.source-version
           grep -q './vendor/three/build/three.module.js' app/src/main/assets/bumpmesh/index.html
           grep -q 'android-bridge.js' app/src/main/assets/bumpmesh/index.html
           grep -q '../vendor/meshstep/dist/index.js' app/src/main/assets/bumpmesh/js/stepWorker.js
@@ -657,6 +670,10 @@ jobs:
           grep -q 'assets/bumpmesh/vendor/three/build/three.module.js' apk-contents.log
           grep -q 'assets/bumpmesh/vendor/meshstep/src/index.ts' apk-contents.log
           grep -q 'assets/bumpmesh/vendor/meshstep/LICENSE' apk-contents.log
+          grep -q 'assets/bumpmesh/library/manifest.json' apk-contents.log
+          grep -q 'assets/bumpmesh/library/CREDITS.md' apk-contents.log
+          test "$(grep -c 'assets/bumpmesh/library/textures/[^/]*\.\(png\|jpg\)' apk-contents.log)" -eq 101
+          test "$(grep -c 'assets/bumpmesh/library/textures/thumbs/[^/]*\.webp' apk-contents.log)" -eq 101
           grep -q 'assets/filasim/index.html' apk-contents.log
           grep -q 'assets/filasim/android-bridge.js' apk-contents.log
           grep -q 'assets/filasim/LICENSE' apk-contents.log

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import groovy.json.JsonOutput
 import java.io.File
 import java.io.InputStream
 import java.net.URI
@@ -866,11 +868,19 @@ val verifyReleaseApkEngines by tasks.registering {
     }
 }
 
+// The workspace (HTML/JS/Three/fflate/meshstep and its own 24 legacy textures) stays on the
+// pin its vendored web UI was verified against.
 val bumpMeshCommit = "a6ac179149b8a17c71a9469dd4cb6f866c0c01d1"
+// The full 101-texture catalogue is a separate, explicitly pinned upstream commit of the same
+// repository: textures/library holds every texture image, every thumbnail, the generated
+// catalogue manifest and its credits. Existing workspace files are not restaged from it.
+val bumpMeshTexturesCommit = "c46678436001b622f71ebeff763c16c186049316"
+val bumpMeshTextureCount = 101
+val bumpMeshRepository = "https://github.com/CNCKitchen/stlTexturizer"
 val threeVersion = "r170"
 val fflateVersion = "0.8.2"
 val meshStepVersion = "0.1.0"
-val bumpMeshAssetFormat = 2
+val bumpMeshAssetFormat = 4
 val bumpMeshOutput = layout.projectDirectory.dir("src/main/assets/bumpmesh")
 val bumpMeshAndroidBridge = layout.projectDirectory.file("src/main/bumpmesh/android-bridge.js")
 val bumpMeshRequiredRuntimePaths = listOf(
@@ -889,6 +899,8 @@ val bumpMeshRequiredRuntimePaths = listOf(
     "vendor/meshstep/dist/index.js",
     "vendor/meshstep/src/index.ts",
     "vendor/meshstep/LICENSE",
+    "library/manifest.json",
+    "library/CREDITS.md",
 )
 val bumpMeshRequiredRuntimeFiles = bumpMeshRequiredRuntimePaths.map { relativePath ->
     bumpMeshOutput.file(relativePath)
@@ -896,6 +908,7 @@ val bumpMeshRequiredRuntimeFiles = bumpMeshRequiredRuntimePaths.map { relativePa
 val bumpMeshExpectedMarker = buildString {
     appendLine("format=$bumpMeshAssetFormat")
     appendLine("BumpMesh=$bumpMeshCommit")
+    appendLine("textures=$bumpMeshTexturesCommit")
     appendLine("three=$threeVersion")
     appendLine("fflate=$fflateVersion")
     appendLine("meshstep=$meshStepVersion")
@@ -905,6 +918,8 @@ val prepareBumpMeshAssets by tasks.registering {
     group = "build setup"
     description = "Downloads and prepares the pinned offline BumpMesh workspace"
     inputs.property("bumpMeshCommit", bumpMeshCommit)
+    inputs.property("bumpMeshTexturesCommit", bumpMeshTexturesCommit)
+    inputs.property("bumpMeshTextureCount", bumpMeshTextureCount)
     inputs.property("threeVersion", threeVersion)
     inputs.property("fflateVersion", fflateVersion)
     inputs.property("meshStepVersion", meshStepVersion)
@@ -1132,6 +1147,178 @@ val prepareBumpMeshAssets by tasks.registering {
             "Unable to localize the BumpMesh worker Three.js fallback"
         }
         threeCompat.writeText(patchedThreeCompat)
+
+        // The full texture library: every image and thumbnail from the explicitly pinned
+        // texture commit, plus the catalogue manifest and credits generated from the same
+        // pinned source. The workspace above is not restaged from this commit, so its vendored
+        // HTML/JS keeps the bytes other lanes were verified against.
+        val libraryStage = File(bumpMeshStage, "library")
+        val textureArchive = download(
+            "https://github.com/CNCKitchen/stlTexturizer/archive/" + bumpMeshTexturesCommit + ".zip",
+        )
+        extractZip(archive = textureArchive, destination = libraryStage) { relative ->
+            relative.startsWith("textures/") && !relative.endsWith("/")
+        }
+        val rawBase = "https://raw.githubusercontent.com/CNCKitchen/stlTexturizer/" + bumpMeshTexturesCommit + "/"
+        val presetSource = download(rawBase + "js/presetTextures.js").toString(Charsets.UTF_8)
+        val englishSource = download(rawBase + "js/i18n/en.js").toString(Charsets.UTF_8)
+
+        val presetPattern = Regex(
+            """\{\s*name: '([^']+)',\s*url: 'textures/([^']+)',\s*thumb: 'textures/thumbs/([^']+)',\s*defaultScale: ([0-9.]+),\s*category: '([^']+)'([^}]*)\}""",
+        )
+        val extraFieldPattern = Regex("""([a-zA-Z]+): '([^']*)'""")
+        val textures = presetPattern.findAll(presetSource).map { match ->
+            val extras = extraFieldPattern
+                .findAll(match.groupValues[6])
+                .associate { it.groupValues[1] to it.groupValues[2] }
+            linkedMapOf<String, Any?>(
+                "name" to match.groupValues[1],
+                "file" to "textures/" + match.groupValues[2],
+                "thumb" to "textures/thumbs/" + match.groupValues[3],
+                "category" to match.groupValues[5],
+                "default_scale" to match.groupValues[4].toDouble(),
+                "credit" to extras["credit"],
+                "source" to extras["source"],
+            )
+        }.toList()
+        check(textures.size == bumpMeshTextureCount) {
+            "Pinned texture catalogue lists " + textures.size + " textures, expected " + bumpMeshTextureCount
+        }
+
+        val categoriesBlock = Regex(
+            """const PRESET_CATEGORIES = \[(.*?)\];""",
+            RegexOption.DOT_MATCHES_ALL,
+        ).find(presetSource)?.groupValues?.get(1)
+            ?: error("Pinned BumpMesh source has no PRESET_CATEGORIES list")
+        val categoryPattern = Regex("""\{\s*id: '([^']+)',\s*label: '([^']+)'\s*\}""")
+        val englishLabelPattern = Regex("""\"(gallery\.cat[A-Za-z]+)\": \"([^\"]+)\"""")
+        val englishLabels = englishLabelPattern
+            .findAll(englishSource)
+            .associate { it.groupValues[1] to it.groupValues[2] }
+        val categories = categoryPattern.findAll(categoriesBlock).map { match ->
+            val labelKey = match.groupValues[2]
+            linkedMapOf<String, Any?>(
+                "id" to match.groupValues[1],
+                "label" to (englishLabels[labelKey] ?: labelKey),
+            )
+        }.toList()
+        val expectedCategoryIds = setOf("geometric", "patterns", "organic", "fabric", "natural", "grip", "mold", "tires")
+        val categoryIds = categories.map { it["id"] as String }.toSet()
+        check(categoryIds == expectedCategoryIds) {
+            "Pinned catalogue categories are " + categoryIds + ", expected " + expectedCategoryIds
+        }
+        check(textures.all { it["category"] in categoryIds }) {
+            "Pinned catalogue names a category its category list does not define"
+        }
+
+        // The catalogue and the extracted tree must be the same 101 textures and 101 thumbs.
+        val expectedImages = textures.map { (it["file"] as String).substringAfterLast('/') }.toSet()
+        val expectedThumbs = textures.map { (it["thumb"] as String).substringAfterLast('/') }.toSet()
+        val stagedImages = File(libraryStage, "textures")
+            .listFiles()?.filter { it.isFile }?.map { it.name }?.toSet() ?: emptySet()
+        val stagedThumbs = File(libraryStage, "textures/thumbs")
+            .listFiles()?.filter { it.isFile }?.map { it.name }?.toSet() ?: emptySet()
+        check(stagedImages == expectedImages) {
+            "Staged texture images do not match the pinned catalogue: expected " +
+                expectedImages.size + ", staged " + stagedImages.size
+        }
+        check(stagedThumbs == expectedThumbs) {
+            "Staged texture thumbnails do not match the pinned catalogue: expected " +
+                expectedThumbs.size + ", staged " + stagedThumbs.size
+        }
+        check(stagedImages.size == bumpMeshTextureCount && stagedThumbs.size == bumpMeshTextureCount) {
+            "Expected " + bumpMeshTextureCount + " images and thumbnails, staged " +
+                stagedImages.size + " and " + stagedThumbs.size
+        }
+
+        val manifest = linkedMapOf<String, Any?>(
+            "format" to 1,
+            "generated_by" to "prepareBumpMeshAssets",
+            "source" to linkedMapOf<String, Any?>(
+                "repository" to bumpMeshRepository,
+                "commit" to bumpMeshTexturesCommit,
+                "preset_file" to "js/presetTextures.js",
+                "i18n_file" to "js/i18n/en.js",
+                "pipeline_license" to "AGPL-3.0-only",
+                "upstream_license" to "AGPL-3.0-only",
+            ),
+            "count" to textures.size,
+            "categories" to categories,
+            "credits" to linkedMapOf<String, Any?>(
+                "hero" to linkedMapOf<String, Any?>(
+                    "badge" to "HP",
+                    "title" to "Hero Patterns (CC BY 4.0)",
+                    "license" to "CC-BY-4.0",
+                    "attribution" to "Hero Patterns by Steve Schoger (https://heropatterns.com/), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).",
+                ),
+                "cc0" to linkedMapOf<String, Any?>(
+                    "badge" to "CC0",
+                    "title" to "CC0",
+                    "license" to "CC0-1.0",
+                    "attribution" to "Public-domain maps from ambientCG (https://ambientcg.com/) and Poly Haven (https://polyhaven.com/), CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).",
+                ),
+                "ff" to linkedMapOf<String, Any?>(
+                    "badge" to "FF",
+                    "title" to "Filter Forge",
+                    "attribution" to "Made with Filter Forge (https://www.filterforge.com/).",
+                ),
+            ),
+            "textures" to textures,
+        )
+        // The paths inside the manifest are relative to this asset directory, which is what
+        // AssetManager opens: "bumpmesh/library/" + entry.file / entry.thumb.
+        manifest["asset_root"] = "bumpmesh/library/"
+        File(libraryStage, "manifest.json").writeText(
+            JsonOutput.prettyPrint(JsonOutput.toJson(manifest)) + "\n",
+        )
+
+        val heroNames = textures.filter { it["credit"] == "hero" }.map { it["name"] as String }
+        val cc0Textures = textures.filter { it["credit"] == "cc0" }
+        val filterForgeNames = textures.filter { it["credit"] == "ff" }.map { it["name"] as String }
+        val uncreditedCount = textures.size - heroNames.size - cc0Textures.size - filterForgeNames.size
+        File(libraryStage, "CREDITS.md").writeText(buildString {
+            appendLine("# BumpMesh texture library credits")
+            appendLine()
+            appendLine("SPDX-License-Identifier: AGPL-3.0-only")
+            appendLine()
+            appendLine("Generated by TrioSlicer's prepareBumpMeshAssets from CNCKitchen/stlTexturizer at commit")
+            appendLine(bumpMeshTexturesCommit + ": js/presetTextures.js (catalogue, category and credit/source")
+            appendLine("fields) and README.md (the upstream Texture Credits section). The upstream project is")
+            appendLine("AGPL-3.0-only: Copyright (C) 2026 CNC Kitchen (Stefan Hermann) and contributors. TrioSlicer's")
+            appendLine("pipeline that generates this directory is AGPL-3.0-only as well; the packaged copies keep")
+            appendLine("the workspace LICENSE at assets/bumpmesh/LICENSE.")
+            appendLine()
+            appendLine("## Hero Patterns (CC BY 4.0) - " + heroNames.size + " textures")
+            appendLine()
+            appendLine("Based on Hero Patterns (https://heropatterns.com/) by Steve Schoger, licensed under")
+            appendLine("CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The SVG patterns were")
+            appendLine("rasterised by the upstream project into the displacement maps below.")
+            appendLine()
+            appendLine(heroNames.joinToString(", "))
+            appendLine()
+            appendLine("## ambientCG and Poly Haven (CC0 1.0) - " + cc0Textures.size + " textures")
+            appendLine()
+            appendLine("Public-domain maps; each texture's upstream asset page is recorded as its source in")
+            appendLine("manifest.json. Thank you to both projects.")
+            appendLine()
+            for (texture in cc0Textures) {
+                appendLine("- " + (texture["name"] as String) + ": " + (texture["source"] as String? ?: "(no source recorded)"))
+            }
+            appendLine()
+            appendLine("## Filter Forge - " + filterForgeNames.size + " textures")
+            appendLine()
+            appendLine("Made with Filter Forge (https://www.filterforge.com/).")
+            appendLine()
+            appendLine(filterForgeNames.joinToString(", "))
+            appendLine()
+            appendLine("## Other presets - " + uncreditedCount + " textures")
+            appendLine()
+            appendLine("The pinned upstream catalogue records no per-file credit for these textures; they are")
+            appendLine("distributed with stlTexturizer under its AGPL-3.0-only licence.")
+            appendLine()
+            appendLine("The manifest field credit is 'hero', 'cc0', 'ff' or null, exactly as the pinned source")
+            appendLine("records it. Display names, categories and thumbnail names are also the upstream ones.")
+        })
 
         bumpMeshAndroidBridge.asFile.copyTo(File(bumpMeshStage, "android-bridge.js"), overwrite = true)
         File(bumpMeshStage, ".source-version").writeText(expectedMarker)
