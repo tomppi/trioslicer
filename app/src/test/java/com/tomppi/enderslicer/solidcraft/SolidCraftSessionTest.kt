@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 /**
  * The typed tool surface, against a real child process implementing the engine's protocol.
  *
- * The fake engine answers with the exact body report shapes the real 0.22.1 engine was verified
+ * The fake engine answers with the exact body report shapes the real 0.24.0 engine was verified
  * to send on the phone: a box reports created_bodies, a fillet changed_bodies, an export writes
  * the file it was asked for.
  */
@@ -35,7 +35,7 @@ class SolidCraftSessionTest {
         val result = session.initialize()
         assertEquals("2025-06-18", result.optString("protocolVersion"))
         assertEquals("solidcraft", session.serverName)
-        assertEquals("0.22.1", session.serverVersion)
+        assertEquals("0.24.0", session.serverVersion)
         assertEquals("2025-06-18", session.protocolVersion)
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the SolidCraft CAD engine for Android arm64-v8a and stage it into jniLibs.
 #
-# SolidCraft (https://github.com/tangency-labs/solidcraft, MIT OR Apache-2.0, 0.22.1) is a
+# SolidCraft (https://github.com/tangency-labs/solidcraft, MIT OR Apache-2.0, 0.24.0) is a
 # pure-Rust parametric CAD engine. This builds its headless command line, `solidcraft-cli`,
 # which is the MCP server the app talks to over stdio: a child process that owns the design
 # document, exactly as the OCCT console is a child process that owns a conversion.
@@ -27,9 +27,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOLIDCRAFT_VERSION="0.22.1"
-# The commit the 0.22.1 artifacts were cut from: a checkout of a newer main is not this engine.
-SOLIDCRAFT_COMMIT="1ee65cf70a10140f8d8658f53a07481a1fa3996d"
+SOLIDCRAFT_VERSION="0.24.0"
+# The commit the 0.24.0 artifacts were cut from: a checkout of a newer main is not this engine.
+SOLIDCRAFT_COMMIT="5965439a15fdf7329d14569f7f4312b1f14a3b33"
 SOLIDCRAFT_REPO="https://github.com/tangency-labs/solidcraft.git"
 
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-/opt/android-sdk/ndk/28.2.13676358}}"
@@ -57,10 +57,15 @@ done
 command -v cargo >/dev/null || { echo "no cargo on PATH" >&2; exit 1; }
 [ -x "${CLANG}" ] || { echo "no NDK clang at ${CLANG}" >&2; exit 1; }
 [ -x "${STRIP}" ] || { echo "no NDK llvm-strip at ${STRIP}" >&2; exit 1; }
-cargo target list --installed 2>/dev/null | grep -qx "${TARGET}" || {
-    echo "the ${TARGET} Rust target is not installed; run: rustup target add ${TARGET}" >&2
-    exit 1
-}
+# Ask rustup, which owns the installed-target list: "cargo target list" is not a cargo
+# subcommand (cargo 1.98.1: "no such command: target"), so the old probe reported a target that
+# is installed as missing and blocked every build.
+if command -v rustup >/dev/null 2>&1; then
+    rustup target list --installed 2>/dev/null | grep -qx "${TARGET}" || {
+        echo "the ${TARGET} Rust target is not installed; run: rustup target add ${TARGET}" >&2
+        exit 1
+    }
+fi
 
 # 1. The source. A checkout is used as it is when it is one - the probe tree the first build
 #    was measured in - and cloned at the pinned commit otherwise, so a clean machine can

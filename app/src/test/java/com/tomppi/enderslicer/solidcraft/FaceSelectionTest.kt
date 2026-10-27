@@ -21,7 +21,7 @@ import org.junit.Test
  * Tap-to-face: the plate's tap resolved to the engine's own face, in the document's coordinates.
  *
  * The fixture is a 40 x 30 x 12 box in the document's own millimetres, with the face list shaped
- * exactly as engine 0.22.1's `model.faces` reports it (`index, name, exact, area, centroid,
+ * exactly as engine 0.24.0's `model.faces` reports it (`index, name, exact, area, centroid,
  * plane_normal, point`). The plate placement is a real one - a 90 degree turn about Z and a move
  * on the bed - so a mapping that forgot to undo it would answer with the wrong triangle or the
  * wrong face, which is what this pins.
@@ -86,7 +86,7 @@ class FaceSelectionTest {
         )
     }
 
-    /** The box's faces exactly as `model.faces {body:"Body1"}` answered on engine 0.22.1. */
+    /** The box's faces exactly as `model.faces {body:"Body1"}` answered on engine 0.24.0. */
     private fun boxFaces(
         length: Double = boxLength,
         width: Double = boxWidth,

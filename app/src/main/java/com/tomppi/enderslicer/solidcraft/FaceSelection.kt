@@ -89,7 +89,7 @@ enum class FaceSurface(val label: String) {
 /**
  * One face exactly as `model.faces {body}` (and `body_topology`) reports it.
  *
- * Verified against engine 0.22.1 on the phone: a box's face is
+ * Verified against engine 0.24.0 on the phone: a box's face is
  * `{index, name, exact, area, centroid, plane_normal, point}` and a cylinder's side carries
  * `cylinder: {origin, axis, radius}` with `plane_normal: null`.
  */
@@ -408,7 +408,7 @@ class EngineFaceQuery(
     override fun select(body: String, index: Int, point: FacePoint): Boolean {
         val live = session() ?: throw McpException("the CAD engine is not running")
         // The engine's select.set takes a face as {body, index, point}: the point is where the
-        // user picked it and the index is which face of that body. Verified against 0.22.1 on
+        // user picked it and the index is which face of that body. Verified against 0.24.0 on
         // the phone - a missing field is refused by name.
         val item = JSONObject()
             .put("type", "face")

@@ -380,21 +380,23 @@ taken and recorded.
 ## SolidCraft engine (`libsolidcraft_exec.so`)
 
 - Project: `tangency-labs/solidcraft` (`https://github.com/tangency-labs/solidcraft`)
-- Pinned version: `0.22.1`
-- License: **MIT OR Apache-2.0**, at your option
+- Pinned version: `0.24.0`
+- License: **MIT OR Apache-2.0**, at your option (unchanged in 0.24.0: upstream's LICENSE-MIT,
+  LICENSE-APACHE and NOTICE are identical to 0.22.1's, checked between the two tags)
 - Copyright: 2026 SolidCraft contributors
 
 The plate's live CAD document is a SolidCraft document: a pure-Rust parametric CAD engine with its
 own B-rep kernel (the `truck` crates), sketch solver, sheet metal, plastic-feature and assembly
 families. The app packages its console as a native library the way it packages the OCCT console -
-`app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so`, 63 MB stripped - and runs it as a child
+`app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so`, 62.6 MB (65,657,208 bytes) stripped - and
+runs it as a child
 process, speaking its own stdio MCP server. The app never uses the engine's viewport or its GPU
 renderer: the plate is the viewport, and the engine's `screenshot` tool is refused by the bridge.
 
 **Provenance.** `scripts/build-solidcraft-engine-android.sh` cross-compiles the console from the
 pinned upstream tag for `aarch64-linux-android` (cargo, `--release`, stripped). The binary is
 unmodified upstream source - no files are patched - and this repository publishes it as the
-`solidcraft-engine-v0.22.1` release asset, which
+`solidcraft-engine-v0.24.0` release asset, which
 `scripts/fetch-solidcraft-engine-android.sh` downloads and verifies by SHA-256 before staging.
 The two licence texts and upstream's NOTICE are tracked at
 [`native/solidcraft/licenses/`](native/solidcraft/licenses).

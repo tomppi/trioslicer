@@ -11,7 +11,7 @@ import kotlin.concurrent.thread
 /**
  * The bundled SolidCraft CAD engine: a child process speaking MCP over stdio.
  *
- * SolidCraft (0.22.1) is the parametric CAD kernel this app uses for its live CAD document.
+ * SolidCraft (0.24.0) is the parametric CAD kernel this app uses for its live CAD document.
  * It is a PIE executable staged as libsolidcraft_exec.so, and it runs as its own process for
  * the same reason the Python CAD engine does: the engine holds a design for the life of a
  * session, so a crash or a memory blow-up in a boolean takes down only itself, and the app
@@ -32,7 +32,7 @@ object SolidCraftEngine {
     private const val TAG = "SolidCraftEngine"
 
     /** The release this app is pinned to; the fetch script stages the matching binary. */
-    const val VERSION = "0.22.1"
+    const val VERSION = "0.24.0"
 
     /** The existing engines hold 9876 and 9877; this one is the third. */
     const val DEFAULT_PORT = SolidCraftBridge.DEFAULT_PORT

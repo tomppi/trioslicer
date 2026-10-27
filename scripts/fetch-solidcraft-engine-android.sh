@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Places the SolidCraft CAD engine into the app package.
 #
-#   libsolidcraft_exec.so   SolidCraft 0.22.1's headless command line, i.e. its stdio MCP
+#   libsolidcraft_exec.so   SolidCraft 0.24.0's headless command line, i.e. its stdio MCP
 #                           server, cross-compiled for arm64-v8a. It is a PIE executable
 #                           staged under a .so name so Android unpacks it into the app's
 #                           native library directory, exactly as libocct_exec.so is.
@@ -13,7 +13,7 @@
 #
 #   https://github.com/<repo>/releases/download/<SOLIDCRAFT_ENGINE_TAG>/solidcraft-engine-arm64-<version>.tar.gz
 #
-#   Default: downloads that asset (SOLIDCRAFT_ENGINE_TAG, default solidcraft-engine-v0.22.1).
+#   Default: downloads that asset (SOLIDCRAFT_ENGINE_TAG, default solidcraft-engine-v0.24.0).
 #   SOLIDCRAFT_ENGINE_DIR:    use a local tree instead - a directory holding jniLibs/arm64-v8a,
 #                            or one holding libsolidcraft_exec.so directly.
 #   SOLIDCRAFT_ENGINE_SHA256: expected digest of the asset; set it when re-pinning.
@@ -29,7 +29,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${GITHUB_REPOSITORY:-tomppi/trioslicer}"
-VERSION="${SOLIDCRAFT_ENGINE_VERSION:-v0.22.1}"
+VERSION="${SOLIDCRAFT_ENGINE_VERSION:-v0.24.0}"
 TAG="${SOLIDCRAFT_ENGINE_TAG:-solidcraft-engine-${VERSION}}"
 ASSET="solidcraft-engine-arm64-${VERSION}.tar.gz"
 APP_JNILIBS="${APP_JNILIBS:-$ROOT/app/src/main/jniLibs/arm64-v8a}"
@@ -37,7 +37,7 @@ DOWNLOAD_DIR="$ROOT/.build/solidcraft-engine-download"
 
 # The engine is executed by the app, so its digest is pinned: a deliberate re-pin sets
 # SOLIDCRAFT_ENGINE_SHA256 to the digest of the new asset.
-SOLIDCRAFT_ENGINE_SHA256_PINNED="0dc4703ed2ed658fec46fd169291b0706d86f098a9736063b60c4ae4800091be"
+SOLIDCRAFT_ENGINE_SHA256_PINNED="82039615e5af8dd4c62cd95217d3baa500306439e70815230545f5c816699120"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

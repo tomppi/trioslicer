@@ -11,7 +11,7 @@ import org.junit.Test
 /**
  * What the live view learns from an agent's call.
  *
- * The payloads are the exact shapes the real 0.22.1 engine was verified to send on the phone:
+ * The payloads are the exact shapes the real 0.24.0 engine was verified to send on the phone:
  * execute answers with created/changed/removed body names and no error flag, undo and redo
  * answer without any body fields, and a failed tool is a result with isError set.
  */

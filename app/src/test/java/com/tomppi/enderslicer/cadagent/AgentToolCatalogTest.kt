@@ -10,7 +10,7 @@ import org.junit.Test
 /**
  * The catalogue is the engine's, converted rather than restated.
  *
- * The fixture is shaped exactly like the 0.22.1 engine's `tools/list` answer (name, title,
+ * The fixture is shaped exactly like the 0.24.0 engine's `tools/list` answer (name, title,
  * description, inputSchema, annotations); the conversion must pass the engine's schema through
  * untouched, hide only the five tools the plate cannot use, and add the app's two web tools only
  * when they are allowed.
@@ -172,6 +172,32 @@ class AgentToolCatalogTest {
         assertEquals("boolean", properties.getJSONObject("allow_text").getString("type"))
         assertEquals(1, parameters.getJSONArray("required").length())
         assertEquals("question", parameters.getJSONArray("required").getString(0))
+    }
+
+    @Test
+    fun aNewEngineToolReachesTheModelWhileTheDesktopFiveStayHidden() {
+        // 0.24.0 kept the same 19 tools, but the app does not restate the list: a tool a later
+        // engine adds must reach the model's definitions unchanged. The synthetic tool below has
+        // a name the app has never heard of, shaped like a real MCP tool.
+        val catalog = AgentToolCatalog.fromEngine(
+            engineCatalog().put(engineTool("weldment_create")),
+            includeWebTools = false,
+        )
+        assertTrue(
+            "a new engine tool must reach the model: " + catalog.names,
+            "weldment_create" in catalog.names,
+        )
+        assertEquals(expectedNames + "weldment_create", catalog.names)
+        assertEquals(
+            "the five desktop-only tools stay hidden",
+            setOf("screenshot", "crash_reports", "running", "pending", "skill_reference"),
+            catalog.hiddenNames,
+        )
+        val definition = (0 until catalog.tools.length())
+            .map { catalog.tools.getJSONObject(it).getJSONObject("function") }
+            .first { it.getString("name") == "weldment_create" }
+        assertEquals("Description of weldment_create", definition.getString("description"))
+        assertFalse("a legal new name is not skipped", "weldment_create" in catalog.skippedNames)
     }
 
     @Test

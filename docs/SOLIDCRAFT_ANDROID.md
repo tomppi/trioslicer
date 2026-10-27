@@ -1,7 +1,7 @@
 # SolidCraft: the live CAD engine
 
 TrioSlicer's main plate can show a **CAD document** instead of a mesh. The document is a
-SolidCraft 0.22.1 design held by a SolidCraft engine process; the agent editing it is the author,
+SolidCraft 0.24.0 design held by a SolidCraft engine process; the agent editing it is the author,
 and the plate is a live view of the engine's document. The human keeps every plate function he
 had - move, rotate, scale, lay flat, split, snap fit, paint, Slice, Export, the layer and path
 views - because those act on a **derived mesh**, not on the document.
@@ -18,19 +18,20 @@ is deliberately not in it.
 
 | part | what it is |
 |---|---|
-| app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so | SolidCraft 0.22.1's solidcraft-cli, cross-compiled for arm64-v8a with --no-default-features, stripped. It is a PIE executable staged under a .so name so Android unpacks it into the app's native library directory; libocct_exec.so is the same pattern. 63 MB. |
+| app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so | SolidCraft 0.24.0's solidcraft-cli, cross-compiled for arm64-v8a with --no-default-features, stripped. It is a PIE executable staged under a .so name so Android unpacks it into the app's native library directory; libocct_exec.so is the same pattern. 62.6 MB (65,657,208 bytes). |
 | scripts/build-solidcraft-engine-android.sh | the cargo cross-build (NDK r28c, linker aarch64-linux-android24-clang), the strip, the staging, and --package for the release tarball. |
-| scripts/fetch-solidcraft-engine-android.sh | the SHA-256-pinned download of that tarball as a release asset (tag solidcraft-engine-v0.22.1), or a local tree through SOLIDCRAFT_ENGINE_DIR. |
+| scripts/fetch-solidcraft-engine-android.sh | the SHA-256-pinned download of that tarball as a release asset (tag solidcraft-engine-v0.24.0), or a local tree through SOLIDCRAFT_ENGINE_DIR. |
 
 Rebuilding from source:
 
     scripts/build-solidcraft-engine-android.sh --package
     # prints the tarball's sha256 and the release command
-    gh release create solidcraft-engine-v0.22.1 .build/solidcraft-engine/solidcraft-engine-arm64-v0.22.1.tar.gz
+    gh release create solidcraft-engine-v0.24.0 .build/solidcraft-engine/solidcraft-engine-arm64-v0.24.0.tar.gz
 
 The digest is pinned in the fetch script; **re-pin it deliberately**, the way the OCCT and CAD
 payload digests are pinned. "gradlew :app:verifySolidCraftEngineExecutable" checks that a staged
-binary is an ELF engine of a plausible size, and is not wired into assemble because the release
+binary is a plausible-size 64-bit little-endian **AArch64** ELF (e_machine 0xB7) - a host x86-64
+build must fail there, not install - and is not wired into assemble because the release
 asset is published separately from the source commit (CI has no Rust cross toolchain).
 
 ## The pieces
@@ -507,7 +508,14 @@ are the upstream ones (docs/mcp.md in the SolidCraft repository). Two rules are 
   the agent can open files inside its own session.
 - A document change after a split or a snap joint marks the plate stale (with a named reason and a
   Rebuild action) rather than re-slicing the new shape into the old layout.
-- Display and print tessellations are the same STL export: SolidCraft 0.22.1's file.export has no
+- Display and print tessellations are the same STL export: SolidCraft 0.24.0's file.export has no
   tessellation-quality parameter. "Display" and "print" name *when* the tessellation is taken, not
-  two different qualities.
+  two different qualities. (0.24 added a `quality` option to `file.save_mesh`, the per-body export
+  the app's Convert to STL uses; the app does not pass it yet, so both paths stay at the default.)
+- **A design file is format 39 and downgrade is refused.** The engine opens every earlier design
+  (a 0.22-era workspace design was opened and measured unchanged), but 0.22 and 0.23 refuse a
+  design 0.24 saved: *this design was saved by a newer SolidCraft (file format 39; this version
+  reads formats up to 37): update SolidCraft to open it*. The app bundles 0.24 only, so a design
+  it saves cannot be opened by an older app build; export STEP/STL/3MF to move a design to an
+  older install.
 - The engine is arm64-v8a only; on other ABIs the status says the binary is not packaged.

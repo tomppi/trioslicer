@@ -193,6 +193,34 @@ class SolidCraftBridgeTest {
     }
 
     @Test
+    fun aToolTheAppHasNeverHeardOfIsForwardedByTheBridge() {
+        // The bridge forwards the engine's tools/list verbatim: an external agent sees a tool a
+        // later engine adds without an app change, and only tools/call is policy-checked.
+        val forwarder = FakeForwarder()
+        forwarder.onRequest = { _, _, _ ->
+            JSONObject().put(
+                "tools",
+                JSONArray()
+                    .put(JSONObject().put("name", "screenshot"))
+                    .put(JSONObject().put("name", "weldment_create")),
+            )
+        }
+        val bridge = SolidCraftBridge("secret", forwarder, onDocumentChanged = {})
+        val reply = JSONObject(
+            bridge.handleLine(
+                line(
+                    JSONObject().put("jsonrpc", "2.0").put("id", 21).put("method", "tools/list")
+                        .put("token", "secret").put("params", JSONObject()),
+                ),
+            )!!,
+        )
+        val tools = reply.getJSONObject("result").getJSONArray("tools")
+        val names = (0 until tools.length()).map { tools.getJSONObject(it).getString("name") }
+        assertEquals(listOf("screenshot", "weldment_create"), names)
+        assertEquals("tools/list", forwarder.lastMethod)
+    }
+
+    @Test
     fun anEngineTimeoutIsReportedAsUncertainRatherThanRetried() {
         val forwarder = FakeForwarder()
         forwarder.onRequest = { _, _, _ ->

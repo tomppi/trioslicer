@@ -47,7 +47,7 @@ class FakeSolidCraftEngine(args: Array<String>) {
                 JSONObject()
                     .put("protocolVersion", "2025-06-18")
                     .put("capabilities", JSONObject())
-                    .put("serverInfo", JSONObject().put("name", "solidcraft").put("version", "0.22.1"))
+                    .put("serverInfo", JSONObject().put("name", "solidcraft").put("version", "0.24.0"))
                     .put("instructions", "fake engine"),
             )
             "ping" -> result(id, JSONObject())

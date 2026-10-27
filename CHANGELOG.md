@@ -4,6 +4,48 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.12] - 2026-10-27
+
+### Changed
+
+- **The bundled SolidCraft engine moves from 0.22.1 to 0.24.0.** A fresh arm64-v8a build of
+  upstream tag v0.24.0 (commit 5965439a, MIT OR Apache-2.0, 62.6 MB / 65,657,208 bytes, AArch64
+  ELF) replaces the old binary, and the `solidcraft-engine-v0.24.0` release asset is pinned by
+  SHA-256 `82039615e5af8dd4c62cd95217d3baa500306439e70815230545f5c816699120` in the fetch script.
+  **The app's contract against it is unchanged, re-verified on the phone:** the MCP tool surface
+  is the same 19 tools by the same names; `select.set` with a face item, `model.faces` (box and
+  cylinder, including the `cylinder` block), `solid.offset_face`, per-body `file.save_mesh`, and
+  every `plastic.*` recipe answer exactly as they did on 0.22.1 - and every plastic volume, face
+  and triangle count measured for the runbook is identical on 0.24.0.
+- **Design files are now format 39, and the downgrade is one-way.** 0.24.0 opens every earlier
+  design (a 0.22-era design from the app's workspace opened and measured unchanged), but 0.22 and
+  0.23 refuse a design 0.24 saved: *this design was saved by a newer SolidCraft (file format 39;
+  this version reads formats up to 37)*. The app bundles 0.24 only, so a design saved by this
+  build cannot be opened by an older app - documented in `docs/SOLIDCRAFT_ANDROID.md` and the
+  runbook, with "export STEP/STL/3MF" as the way to move a design to an older install.
+- **The runbook teaches what 0.24 adds, measured on the phone.** The catalogue grew 461 -> 474
+  commands in the same 39 families: `sketch.arc3d` (a 3D arc through three world points - measured
+  r10 / 90 degrees / exact centre), WELDMENTS `frame.member` (two measured rect-tube members:
+  44,400 and 35,520 mm3, 10 faces each), left/right-handed `solid.thread` (the modelled left M8
+  is the mirror: 824.834 mm3, 5,337 faces, 52,088 STL triangles), `file.save_mesh quality`
+  (45,456 / 181,920 / 727,392 triangles for a 100 mm sphere), and read-only `document.revision`.
+  `plastic.snap_fit` gained `base_height` (measured: it extends the base below the picked face
+  and can pierce a 2 mm shell floor) and `new_body` (the 144 mm3 catch becomes its own part). The
+  nine new `view.*` and the component-colour commands are documented as engine-viewport only -
+  they do not render on the plate.
+- **No app behaviour changed besides the engine and the regenerated runbook asset.** The app's
+  cached engine version constant, the notices/runbook/assets and the tests that pin the engine's
+  identity now say 0.24.0; the app's code paths are the same.
+
+### Tested
+
+- The full `:app:testDebugUnitTest` suite: **2,131 tests, 0 failures, 35 skipped** (the 35 are
+  the suite's usual device/engine-gated skips). `AgentToolCatalogTest` gained a synthetic
+  `tools/list` test proving a tool the app has never heard of (`weldment.create`) reaches the
+  model's tool definitions while the five desktop-only tools stay hidden, and
+  `SolidCraftBridgeTest` proves the bridge forwards an unknown new tool unchanged;
+  `SolidCraftSessionTest` and `FakeSolidCraftEngine` now answer as engine 0.24.0.
+
 ## [1.9.11] - 2026-10-27
 
 ### Fixed
