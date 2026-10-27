@@ -210,6 +210,17 @@ data class MainUiState(
     val canUndoPlacement: Boolean = false,
     /** What undoing would take back, for the button's own label. */
     val undoPlacementLabel: String? = null,
+    /**
+     * The native BumpMesh studio's sheet: its settings, estimate, limit and progress.
+     *
+     * Open only while the sheet is drawn; the undo history lives in the ViewModel and is
+     * separate from the placement history, so the two "undo" rows never mean one another.
+     */
+    val bumpMeshStudio: BumpMeshStudioState = BumpMeshStudioState(),
+    /** The side rail's texture-undo row: the top of the stack, or null while it is empty. */
+    val textureUndoLabel: String? = null,
+    /** How many texture applies the bounded undo stack still holds. */
+    val textureUndoCount: Int = 0,
     val paintMode: SupportPaintMode = SupportPaintMode.NONE,
     /**
      * True while the Split tool is open: the model view previews the cut.

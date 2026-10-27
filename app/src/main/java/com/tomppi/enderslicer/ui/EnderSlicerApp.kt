@@ -318,6 +318,11 @@ fun EnderSlicerApp(
     var modelHintsDismissed by rememberSaveable { mutableStateOf(false) }
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
+    // The studio's "Paint the region" closes its sheet and arms the paint brush; the paint bar
+    // itself is local UI state, so one effect turns the armed flag into the bar on screen.
+    LaunchedEffect(state.bumpMeshStudio.paintArmed) {
+        if (state.bumpMeshStudio.paintArmed) supportPaintUiOpen = true
+    }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
@@ -1876,6 +1881,9 @@ fun EnderSlicerApp(
                 onSlice = viewModel::sliceModel,
                 onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                 onTools = { modelToolsOpen = true },
+                onTextureSurface = viewModel::openBumpMeshStudio,
+                textureUndoLabel = state.textureUndoLabel,
+                onUndoTexture = viewModel::undoTextureChange,
                 cadDocument = state.cadDocument != null,
                 // The one human edit surface a CAD document has: start the engine and open
                 // the sheet the chat and the exports live in.
@@ -2019,6 +2027,15 @@ fun EnderSlicerApp(
                                                 meshLimitOpen = true
                                             },
                                             enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Texture surface") },
+                                            leadingIcon = { Icon(AppIcons.Camera, contentDescription = null) },
+                                            onClick = {
+                                                plateOverflowExpanded = false
+                                                viewModel.openBumpMeshStudio()
+                                            },
+                                            enabled = state.mesh != null && !state.isBusy,
                                         )
                                         HorizontalDivider()
                                         MenuSectionLabel("Storage")
@@ -3217,6 +3234,7 @@ fun EnderSlicerApp(
                         onExportLog = { diagnosticExportPicker.launch("enderslicer-diagnostic.txt") },
                         onImportConfig = { configImportPicker.launch(arrayOf("application/json", "*/*")) },
                         onBumpMesh = ::launchBumpMesh,
+                        onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
@@ -3577,24 +3595,52 @@ fun EnderSlicerApp(
         )
     }
 
+    // The native BumpMesh studio: apply a texture to the selected plate object in place, with
+    // its own bounded undo history feeding the side rail. The full WebView BumpMesh page is a
+    // separate route (More > Experimental > BumpMesh texturizer) and stays available; the
+    // studio also offers it one press away.
+    if (state.bumpMeshStudio.open) {
+        AppBottomSheet(
+            onDismissRequest = viewModel::closeBumpMeshStudio,
+            sheetMaxWidth = adaptiveSheetMaxWidth(),
+        ) {
+            BumpMeshStudioSheet(
+                state = state.bumpMeshStudio,
+                actions = BumpMeshStudioActions(
+                    onClose = viewModel::closeBumpMeshStudio,
+                    onSearch = viewModel::bumpMeshSearch,
+                    onCategory = viewModel::bumpMeshCategory,
+                    onTexture = viewModel::bumpMeshTexture,
+                    onMapping = viewModel::bumpMeshMapping,
+                    onTileMm = viewModel::bumpMeshTileMm,
+                    onHeightMm = viewModel::bumpMeshHeightMm,
+                    onSmoothing = viewModel::bumpMeshSmoothing,
+                    onRefineMm = viewModel::bumpMeshRefineMm,
+                    onWholeObject = viewModel::bumpMeshWholeObject,
+                    onTier = viewModel::bumpMeshTier,
+                    onConfirmTier = viewModel::bumpMeshConfirmTier,
+                    onPaintRegion = viewModel::bumpMeshArmPaint,
+                    onRaiseLimit = viewModel::bumpMeshRaiseLimit,
+                    onApply = viewModel::applyBumpMeshTexture,
+                    onCancel = viewModel::cancelBumpMeshApply,
+                    onOpenWebWorkspace = {
+                        viewModel.closeBumpMeshStudio()
+                        launchBumpMesh()
+                    },
+                ),
+                engineUnavailableReason = viewModel.bumpMeshEngineUnavailableReason,
+            )
+        }
+    }
+
     // The CAD agent sheet: the whole human surface on a live CAD document besides looking at
     // it, slicing it and exporting it. Kept above the AI chat so the sheet is never behind it.
     if (solidCraftSheetOpen && selectedTab == AppTab.PLATE) {
-        // The CAD sheet gets the width the plate has. Material caps a bottom sheet at 640dp,
-        // which left a strip of the Fold's inner display unused beside the Smart Infill panel
-        // the user compared it to; that panel fills the plate (window minus its 12dp margins).
-        // Below 600dp the Material default is kept, and on a phone it is the whole window
-        // anyway. A wide window in landscape therefore gets the wide sheet too: this is
-        // width-driven, with no device check.
-        val windowWidthDp = LocalConfiguration.current.screenWidthDp.dp
-        val cadSheetMaxWidth = if (windowWidthDp >= 600.dp) {
-            minOf(windowWidthDp - 24.dp, 960.dp)
-        } else {
-            BottomSheetDefaults.SheetMaxWidth
-        }
+        // The CAD sheet gets the width the plate has (adaptiveSheetMaxWidth: window minus the
+        // Smart Infill panel's margins, Material's 640 dp default below 600 dp).
         AppBottomSheet(
             onDismissRequest = { viewModel.closeSolidCraftSheet() },
-            sheetMaxWidth = cadSheetMaxWidth,
+            sheetMaxWidth = adaptiveSheetMaxWidth(),
         ) {
             val exportBase = state.cadDocument?.name
                 ?.replace(Regex("[^A-Za-z0-9._-]"), "-")
@@ -4029,6 +4075,7 @@ private fun MoreScreen(
     onImportConfig: () -> Unit,
     onExportLog: () -> Unit,
     onBumpMesh: () -> Unit,
+    onBumpMeshStudio: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
@@ -4100,6 +4147,17 @@ private fun MoreScreen(
                 enabled = state.mesh != null && !state.isBusy,
                 badge = "EXP",
                 onClick = onBumpMesh,
+            )
+            MoreDivider()
+            // The native studio, beside the full WebView page: the fast in-place path and the
+            // complete/detailed path live in the same card, one menu press from each other.
+            MoreRow(
+                icon = AppIcons.Camera,
+                title = "Texture surface",
+                subtitle = "Native BumpMesh studio - apply in place, undo in the side rail",
+                enabled = state.mesh != null && !state.isBusy,
+                badge = "EXP",
+                onClick = onBumpMeshStudio,
             )
             MoreDivider()
             extraItems()
@@ -4315,6 +4373,23 @@ internal fun TopBarTextAction(
         contentPadding = PaddingValues(horizontal = 12.dp),
     ) {
         Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * The width a wide plate sheet may use: the window minus the Smart Infill panel's 12 dp margins,
+ * capped at 960 dp. Below 600 dp the Material default is kept - on a phone it is the whole
+ * window anyway. Shared by the CAD agent sheet and the native BumpMesh studio (both wide sheets,
+ * neither may bring its own formula); every other AppBottomSheet caller keeps the default.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun adaptiveSheetMaxWidth(): Dp {
+    val windowWidthDp = LocalConfiguration.current.screenWidthDp.dp
+    return if (windowWidthDp >= 600.dp) {
+        minOf(windowWidthDp - 24.dp, 960.dp)
+    } else {
+        BottomSheetDefaults.SheetMaxWidth
     }
 }
 
@@ -5103,6 +5178,11 @@ internal fun SessionRail(
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
+    /** Opens the native BumpMesh studio for the selected plate object. */
+    onTextureSurface: () -> Unit = {},
+    /** The rail's texture-undo row: the top of the stack, or null while it is empty. */
+    textureUndoLabel: String? = null,
+    onUndoTexture: () -> Unit = {},
     /** True when the plate is drawing the engine's CAD document. */
     cadDocument: Boolean = false,
     /** Starts the CAD agent and opens its sheet, where a change can be asked for. */
@@ -5342,6 +5422,43 @@ internal fun SessionRail(
             ) {
                 RailButtonLabel("Model tools")
             }
+            // The native BumpMesh studio: the fast in-place texture path. Only composed when
+            // there is a plate object to texture, so the rail keeps its old height on an empty
+            // plate (the session rows below are a lazy list and rely on that room). The full
+            // WebView page stays where it always was - More > Experimental.
+            if (state.mesh != null) {
+                OutlinedButton(
+                    onClick = onTextureSurface,
+                    enabled = !state.isBusy,
+                    contentPadding = PaddingValues(
+                        horizontal = EnderSlicerDimens.Space4,
+                        vertical = EnderSlicerDimens.Space4,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = EnderSlicerDimens.Space8),
+                ) {
+                    RailButtonLabel("Texture surface")
+                }
+            }
+            // The user's own ask: an Undo row in the side bar while a texture is active.
+            // It replaces the mesh, so it is separate from the transform card's placement undo.
+            textureUndoLabel?.let { label ->
+                OutlinedButton(
+                    onClick = onUndoTexture,
+                    enabled = !state.isBusy,
+                    contentPadding = PaddingValues(
+                        horizontal = EnderSlicerDimens.Space4,
+                        vertical = EnderSlicerDimens.Space4,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = EnderSlicerDimens.Space8)
+                        .testTag(SESSION_RAIL_TEXTURE_UNDO_TAG),
+                ) {
+                    RailButtonLabel(label)
+                }
+            }
             // The agent is the CAD document's author: this is where a human asks for a
             // change, and it is beside the model tools because those still work - they edit
             // the plate's derived mesh, never the document.
@@ -5509,6 +5626,9 @@ private fun SidebarHandle(
 
 /** The rail's own + row, tagged so a test can find it in either layout. */
 internal const val SESSION_RAIL_ADD_TAG = "session-rail-add"
+
+/** The side rail's texture-undo row; present only while a texture can be taken back. */
+internal const val SESSION_RAIL_TEXTURE_UNDO_TAG = "session-rail-texture-undo"
 
 /**
  * What the sidebar picker's back button says: where it returns to, named by the tab

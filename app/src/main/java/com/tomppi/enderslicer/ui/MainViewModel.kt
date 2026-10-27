@@ -376,6 +376,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var importedPrusaBaseline: AppStateStore.PrusaSnapshotBaseline? = null
     private var importedOrcaBaseline: AppStateStore.OrcaSnapshotBaseline? = null
 
+    // The native BumpMesh studio's two session objects: the host seam and its bounded undo
+    // history. The per-apply job is kept so the sheet's Cancel can stop the turn as well as the
+    // engine. The host is created lazily on first use (it owns a WebView once the engine lane
+    // lands, so the sheet's open is the right moment) and closed with this ViewModel.
+    private val bumpMeshEngine: BumpMeshTextureEngine by lazy {
+        BumpMeshTextureEngines.create(getApplication(), viewModelScope)
+    }
+    private val textureUndoHistory = TextureUndoStack()
+    private var bumpMeshApplyJob: Job? = null
+
+    /** Null while the native host is available; its refusal sentence when it is not. */
+    internal val bumpMeshEngineUnavailableReason: String?
+        get() = bumpMeshEngine.unavailableReason
+
     /**
      * The joint's booleans, one at a time and only after a pause.
      *
@@ -525,6 +539,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // the newest one.
         if (BlenderEngine.onStlExported != null) BlenderEngine.onStlExported = null
         if (CadEngine.onExport != null) CadEngine.onExport = null
+        runCatching { bumpMeshEngine.close() }
         // Ends the turn, not the engine: a blocking agent loop only stops when its own
         // cancel() is called, and its finally is the only place the keeper, the wake lock and
         // the document's authorship are released. A finished Activity (Back/swipe away) must
@@ -8016,6 +8031,322 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** A placed model as the engine is handed it: the staged mesh and its paint. */
     private class StagedModel(val mesh: StlMesh, val paint: SupportPaintState)
+
+    // --- BumpMesh texture studio ----------------------------------------------------------
+
+    /**
+     * Opens the native studio for the selected plate object.
+     *
+     * It textures a plate mesh, not the CAD document: a live document's plate object is the
+     * engine's display tessellation and would lose the texture on the next repaint, so that
+     * case refuses by name and asks for Convert instead. A converted part is an ordinary STL
+     * object and works like any import.
+     */
+    fun openBumpMeshStudio() {
+        val state = _uiState.value
+        if (state.isBusy) return
+        val model = state.selectedModel
+        val document = state.cadDocument
+        val refusal = bumpMeshStudioLiveDocumentRefusal(
+            modelId = model?.id,
+            documentLoaded = document != null,
+            documentConverted = document?.converted == true,
+        )
+        if (refusal != null) {
+            _uiState.update { it.copy(statusMessage = refusal) }
+            return
+        }
+        val limit = MeshTriangleLimits.current()
+        // The pinned library manifest (101 textures) is the gallery; the host's own scan is the
+        // fallback when a build has not staged the library.
+        val textures = BumpMeshTextureCatalog.load(getApplication())
+            .ifEmpty { bumpMeshEngine.textures() }
+        bumpMeshEngine.warmUp()
+        _uiState.update {
+            it.copy(
+                bumpMeshStudio = bumpMeshStudioOpened(model, limit, textures),
+                textureUndoLabel = textureUndoHistory.railLabel,
+                textureUndoCount = textureUndoHistory.size,
+            )
+        }
+    }
+
+    /** Closes the sheet; a running apply keeps running only if the user did not Cancel. */
+    fun closeBumpMeshStudio() {
+        _uiState.update {
+            it.copy(bumpMeshStudio = it.bumpMeshStudio.copy(open = false, paintArmed = false))
+        }
+    }
+
+    private fun updateBumpMeshStudio(
+        transform: (BumpMeshStudioState) -> BumpMeshStudioState,
+    ) {
+        _uiState.update { it.copy(bumpMeshStudio = transform(it.bumpMeshStudio)) }
+    }
+
+    fun bumpMeshSearch(value: String) = updateBumpMeshStudio { it.withSearch(value) }
+
+    fun bumpMeshCategory(value: String?) = updateBumpMeshStudio { it.withCategory(value) }
+
+    fun bumpMeshTexture(texture: BumpMeshTextureRef) =
+        updateBumpMeshStudio { it.withTexture(texture) }
+
+    fun bumpMeshMapping(mode: BumpMeshMappingMode) = updateBumpMeshStudio { it.withMapping(mode) }
+
+    fun bumpMeshTileMm(value: Float) = updateBumpMeshStudio { it.withTileMm(value) }
+
+    fun bumpMeshHeightMm(value: Float) = updateBumpMeshStudio { it.withHeightMm(value) }
+
+    fun bumpMeshSmoothing(value: Float) = updateBumpMeshStudio { it.withSmoothing(value) }
+
+    fun bumpMeshRefineMm(value: Float) = updateBumpMeshStudio { it.withRefineMm(value) }
+
+    fun bumpMeshWholeObject(whole: Boolean) = updateBumpMeshStudio { it.withWholeObject(whole) }
+
+    fun bumpMeshTier(tier: BumpMeshTier) {
+        updateBumpMeshStudio { it.withTier(tier) }
+    }
+
+    fun bumpMeshConfirmTier() = updateBumpMeshStudio { it.withTierConfirmed() }
+
+    /**
+     * Raises the app's own mesh triangle limit to what the chosen tier needs.
+     *
+     * The button is explicit because the limit is the user's: the studio never raises it by
+     * itself, and the alternative - letting the page decimate to the lower limit - is the
+     * silent cap the user asked us to refuse instead.
+     */
+    fun bumpMeshRaiseLimit() {
+        val studio = _uiState.value.bumpMeshStudio
+        val required = studio.limitCheck.required
+        val saved = MeshTriangleLimits.save(getApplication(), required)
+        updateBumpMeshStudio { it.withLimit(saved) }
+        _uiState.update {
+            it.copy(
+                statusMessage = "Mesh triangle limit raised to " +
+                    MeshTriangleLimits.formatCount(saved) + " for the texture studio.",
+            )
+        }
+    }
+
+    /**
+     * Closes the sheet and arms the plate's own paint brush.
+     *
+     * The mask is the support-paint brush's Draw (enforcer) triangles - it is the plate's only
+     * per-triangle editor, and using it here means the studio needs no second paint system.
+     * The paint is cleared by an apply (see [applyBumpMeshTexture]) so it can never quietly
+     * become support material.
+     */
+    fun bumpMeshArmPaint() {
+        val state = _uiState.value
+        if (state.selectedModel == null || state.isBusy) return
+        setPaintMode(SupportPaintMode.ENFORCER)
+        _uiState.update {
+            it.copy(
+                bumpMeshStudio = it.bumpMeshStudio.copy(open = false, paintArmed = true),
+                statusMessage = "Paint the region with the Draw brush; it becomes the studio's " +
+                    "include mask. Reopen Texture surface when done.",
+            )
+        }
+    }
+
+    /**
+     * Applies the sheet's settings in place.
+     *
+     * The selected plate object keeps its id, name and placement; only its source mesh (and so
+     * its displayed mesh) is replaced. The previous object is pushed onto the bounded texture
+     * undo stack, the paint is cleared because the mesh's triangle numbering just changed, and
+     * the published slice is invalidated so the plate tells the user to slice again.
+     */
+    fun applyBumpMeshTexture() {
+        val snapshot = _uiState.value
+        val studio = snapshot.bumpMeshStudio
+        val model = snapshot.selectedModel
+        if (studio.applying) return
+        if (model == null) {
+            updateBumpMeshStudio { it.failed("Select a plate object first.") }
+            return
+        }
+        studio.applyBlockedReason?.let { reason ->
+            updateBumpMeshStudio { it.failed(reason) }
+            return
+        }
+        val unavailable = bumpMeshEngine.unavailableReason
+        if (unavailable != null) {
+            updateBumpMeshStudio { it.failed(unavailable) }
+            return
+        }
+        val texture = studio.texture ?: return
+        val mask = if (studio.wholeObject) {
+            null
+        } else {
+            textureMaskOf(model.supportPaint, model.sourceMesh.triangleCount)
+        }
+        if (!studio.wholeObject && mask == null) {
+            updateBumpMeshStudio {
+                it.failed("Paint a region on the plate first, or switch back to Whole object.")
+            }
+            return
+        }
+        if (!beginOperation("Texturing " + model.name + "…")) return
+        updateBumpMeshStudio { it.starting() }
+        bumpMeshApplyJob = viewModelScope.launch {
+            try {
+                val sourceStl = withContext(Dispatchers.IO) {
+                    val directory = java.io.File(app.cacheDir, "bumpmesh-source")
+                    directory.mkdirs()
+                    val file = java.io.File(directory, "studio-" + System.nanoTime() + ".stl")
+                    StlMeshWriter.writeBinary(model.sourceMesh, file)
+                    file
+                }
+                val request = BumpMeshApplyRequest(
+                    sourceStl = sourceStl,
+                    sourceTriangles = model.sourceMesh.triangleCount,
+                    texture = texture,
+                    mapping = studio.mapping,
+                    tileMm = studio.tileMm,
+                    heightMm = studio.heightMm,
+                    smoothing = studio.smoothing,
+                    refineMm = studio.refineMm,
+                    maxTriangles = studio.tier.outputCap,
+                    mask = mask,
+                )
+                val result = bumpMeshEngine.apply(request) { phase, fraction ->
+                    // The engine may report from its own thread; the state flow is the one
+                    // thread-safe channel back to Compose.
+                    _uiState.update { state ->
+                        state.copy(
+                            bumpMeshStudio = state.bumpMeshStudio.progressed(phase, fraction),
+                        )
+                    }
+                }
+                val parsed = withContext(Dispatchers.IO) {
+                    StlParser.parse(
+                        file = result.stl,
+                        displayName = model.name,
+                        maxTriangles = maxOf(MeshTriangleLimits.current(), result.triangles),
+                    )
+                }
+                val current = _uiState.value
+                val stillThere = current.models.firstOrNull { it.id == model.id }
+                if (stillThere == null) {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            bumpMeshStudio = it.bumpMeshStudio.failed(
+                                "That object left the plate while the texture was running; " +
+                                    "nothing was changed.",
+                            ),
+                        )
+                    }
+                    return@launch
+                }
+                val replaced = stillThere.copy(
+                    sourceMesh = parsed,
+                    mesh = stillThere.placement.transformed(parsed),
+                    // A new triangle numbering: the old paint cannot name these triangles.
+                    supportPaint = SupportPaintState(
+                        brushRadiusMm = stillThere.supportPaint.brushRadiusMm,
+                    ),
+                )
+                textureUndoHistory.push(
+                    TextureUndoEntry(
+                        objectId = stillThere.id,
+                        textureName = texture.displayName,
+                        before = stillThere,
+                        appliedSourceMesh = parsed,
+                    ),
+                )
+                val repair = result.repairWarnings.firstOrNull()
+                val resultLine = "Applied " + texture.displayName + " · " +
+                    MeshTriangleLimits.formatCount(result.triangles) + " triangles"
+                _uiState.update { state ->
+                    state.withModel(stillThere.id) { replaced }
+                        .withoutPublishedSlice(
+                            resultLine + " to " + replaced.name +
+                                " · slice again to export G-code",
+                        )
+                        .copy(
+                            isBusy = false,
+                            bumpMeshStudio = state.bumpMeshStudio.finished(resultLine, repair),
+                            textureUndoLabel = textureUndoHistory.railLabel,
+                            textureUndoCount = textureUndoHistory.size,
+                        )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                _uiState.update {
+                    it.copy(isBusy = false, bumpMeshStudio = it.bumpMeshStudio.cancelled())
+                }
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        bumpMeshStudio = it.bumpMeshStudio.failed(
+                            error.message ?: "The texture apply failed",
+                        ),
+                    )
+                }
+            } finally {
+                bumpMeshApplyJob = null
+            }
+        }
+    }
+
+    /** Stops the running apply; the sheet says the mesh was not changed. */
+    fun cancelBumpMeshApply() {
+        bumpMeshEngine.cancel()
+        bumpMeshApplyJob?.cancel()
+        bumpMeshApplyJob = null
+        _uiState.update {
+            it.copy(isBusy = false, bumpMeshStudio = it.bumpMeshStudio.cancelled())
+        }
+    }
+
+    /**
+     * Takes the top texture back off the selected object.
+     *
+     * The step is only used while the object still carries the mesh that apply installed; an
+     * import, a split or another apply since then drops it with a named sentence instead of
+     * pasting an older texture over a mesh it does not belong to.
+     */
+    fun undoTextureChange() {
+        val entry = textureUndoHistory.pop() ?: return
+        val state = _uiState.value
+        val current = state.models.firstOrNull { it.id == entry.objectId }
+        if (current == null) {
+            _uiState.update {
+                it.copy(
+                    textureUndoLabel = textureUndoHistory.railLabel,
+                    textureUndoCount = textureUndoHistory.size,
+                    statusMessage = "That object is no longer on the plate; the texture undo " +
+                        "step was dropped.",
+                )
+            }
+            return
+        }
+        if (current.sourceMesh !== entry.appliedSourceMesh) {
+            _uiState.update {
+                it.copy(
+                    textureUndoLabel = textureUndoHistory.railLabel,
+                    textureUndoCount = textureUndoHistory.size,
+                    statusMessage = "The mesh changed since this texture; undoing it would " +
+                        "replace a different mesh, so the step was dropped.",
+                )
+            }
+            return
+        }
+        _uiState.update { snapshot ->
+            snapshot.withModel(entry.objectId) { entry.before }
+                .withoutPublishedSlice(
+                    "Undid texture " + entry.textureName + " on " + entry.before.name +
+                        " · slice again to export G-code",
+                )
+                .copy(
+                    textureUndoLabel = textureUndoHistory.railLabel,
+                    textureUndoCount = textureUndoHistory.size,
+                )
+        }
+    }
 
     /**
      * Puts the model back where it was before the last placement change.
