@@ -1,9 +1,13 @@
 package com.tomppi.enderslicer.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,6 +62,63 @@ import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+
+
+/**
+ * The width at which the sheet splits in two. It is the sheet's own available width, never the
+ * device: the same app must give the Fold two panes and a bar phone one column. Two 300dp
+ * panes still read as real columns, and a bottom sheet on a phone-class width never gets here.
+ */
+private val SHEET_TWO_PANE_BREAKPOINT = 600.dp
+
+/**
+ * One pane of the wide sheet: its title, its own scroll, and an optional pinned footer (the
+ * conversation's composer). The compact column does not use it - it is the whole sheet there.
+ */
+@Composable
+private fun SheetPane(
+    title: String,
+    modifier: Modifier = Modifier,
+    footer: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(modifier = modifier.fillMaxHeight()) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(
+                start = EnderSlicerDimens.CardPadding,
+                end = EnderSlicerDimens.CardPadding,
+                top = EnderSlicerDimens.Space8,
+                bottom = EnderSlicerDimens.Space4,
+            ),
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    start = EnderSlicerDimens.CardPadding,
+                    end = EnderSlicerDimens.CardPadding,
+                    top = EnderSlicerDimens.Space4,
+                    bottom = EnderSlicerDimens.Space8,
+                ),
+            verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+            content = content,
+        )
+        if (footer != null) {
+            HorizontalDivider()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(EnderSlicerDimens.CardPadding),
+            ) {
+                footer()
+            }
+        }
+    }
+}
 
 /**
  * The CAD agent sheet: what a SolidCraft CAD document is, and the whole human surface on it.
@@ -187,23 +249,23 @@ internal fun SolidCraftSheet(
         }
     }
     var draft by rememberSaveable { mutableStateOf("") }
-    val scroll = rememberScrollState()
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .verticalScroll(scroll)
-            .padding(EnderSlicerDimens.CardPadding),
-        verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
-    ) {
-        Text("CAD agent", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "SolidCraft runs as the app's own CAD engine. The document is the engine's, and " +
-                "the agent is its only author: you can look at it, slice it and export it, and " +
-                "ask for changes here. Nothing on the plate edits it.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    // The sheet's cards, each defined once. The compact column and the wide sheet's two panes
+    // call the same definitions in different arrangements, so the copy and the state handling
+    // cannot drift apart between them - the rule the Smart Infill workbench already follows.
+
+    val header: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4)) {
+            Text("CAD agent", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "The engine's document - the agent authors it, the plate only shows it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    val engineCard: @Composable () -> Unit = {
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             shape = MaterialTheme.shapes.small,
@@ -240,15 +302,14 @@ internal fun SolidCraftSheet(
                     )
                     if (live.derivedStale) {
                         Text(
-                            live.staleReason ?: "the plate holds a split made from the previous shape",
+                            live.staleReason ?: "the plate holds a split from the previous shape",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
                     if (!live.converted) {
                         Text(
-                            "Slice needs an STL: press Convert to STL on the plate's actions, " +
-                                "or Convert in the SolidCraft menu",
+                            "Slice needs an STL - press Convert to STL first.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -256,6 +317,9 @@ internal fun SolidCraftSheet(
                 }
             }
         }
+    }
+
+    val connectRow: @Composable () -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
             Button(
                 onClick = onConnect,
@@ -270,10 +334,9 @@ internal fun SolidCraftSheet(
                 modifier = Modifier.weight(1f),
             ) { Text("Stop engine") }
         }
-        // How an agent reaches this app's engines. Blender's MCP addon, the Python CAD engine
-        // and SolidCraft all bind 127.0.0.1; this switch has the app republish all three on
-        // the device's network address at their own ports, so a laptop on the same network has
-        // a line to paste and needs nothing else but the token for the engine it drives.
+    }
+
+    val networkCard: @Composable () -> Unit = {
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             shape = MaterialTheme.shapes.small,
@@ -299,11 +362,7 @@ internal fun SolidCraftSheet(
                 }
                 if (!networkEnabled) {
                     Text(
-                        "Off - this device only. The Blender MCP addon (9876), the CAD engine " +
-                            "(9877) and SolidCraft (9878) listen on 127.0.0.1 inside this phone; " +
-                            "another device reaches them only through an adb forward or a tailnet " +
-                            "serve rule. Copy the token for the engine you are driving and give it " +
-                            "to the agent together with the skill.",
+                        "This device only. Copy a token to let another computer in.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -325,121 +384,84 @@ internal fun SolidCraftSheet(
                         }
                     }
                     Text(
-                        "Turning this on publishes Blender's, the CAD engine's and SolidCraft's " +
-                            "MCP ports on this device's network address. Any device that can reach " +
-                            "an address and has that engine's token can drive it: every engine's " +
-                            "own token check is unchanged, the forwarder adds no authentication of " +
-                            "its own and never logs message content.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Copy puts ONE line on the clipboard - the address and that engine's own " +
-                            "token - so one fingerprint prompt and one paste are enough. The token " +
-                            "is never shown on this screen, and a row says so when its engine has " +
-                            "not been started yet and the token does not exist.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Turning it off closes every published listener again; the engines keep " +
-                            "running.",
+                        "Copy puts an engine's address and token on the clipboard.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
-        // The token-only copy is the fallback hand-over: it is the only way to copy a token
-        // when no published row can offer the one-line form - the switch is off, or there is
-        // no network address. While a row IS copying address + token together, this button
-        // would be a second, weaker path to the same credential, so it is hidden then.
-        val rowsCarryToken = networkEnabled && bridgeLines.any { line ->
-            line.line != null && line.address != null && line.target.port in tokenPorts
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            if (!rowsCarryToken) {
-                OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                    Text("Copy MCP token")
+    }
+
+    // The token-only copy is the fallback hand-over when no published row offers the one-line
+    // form; while a row IS copying address + token, this button would be a second path.
+    val rowsCarryToken = networkEnabled && bridgeLines.any { line ->
+        line.line != null && line.address != null && line.target.port in tokenPorts
+    }
+
+    val openFileSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                if (!rowsCarryToken) {
+                    OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                        Text("Copy MCP token")
+                    }
                 }
-            }
-            OutlinedButton(
-                onClick = onOpenFile,
-                enabled = document == null,
-                modifier = if (rowsCarryToken) Modifier.fillMaxWidth() else Modifier.weight(1f),
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                Text("Open CAD file")
-            }
-        }
-        if (document == null) {
-            Text(
-                "Open a STEP, IGES, 3MF, OBJ or glTF file as a CAD document. It stays the " +
-                    "engine's document - the plate shows its display tessellation, and the " +
-                    "STL is only made when you press Slice.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (document?.derivedStale == true) {
-            Button(onClick = onRebuild, modifier = Modifier.fillMaxWidth()) {
-                Text("Rebuild plate from the document")
-            }
-            Text(
-                "The split or snap layout on the plate was made from the document's previous " +
-                    "shape. Rebuilding takes the current shape and drops that layout; the " +
-                    "document itself is untouched.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        HorizontalDivider()
-        Text("Export the document", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            listOf("step", "stl", "3mf").forEach { format ->
                 OutlinedButton(
-                    onClick = { onExport(format) },
-                    enabled = document != null && ready,
-                    modifier = Modifier.weight(1f),
+                    onClick = onOpenFile,
+                    enabled = document == null,
+                    modifier = if (rowsCarryToken) Modifier.fillMaxWidth() else Modifier.weight(1f),
                 ) {
-                    Text(format.uppercase())
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                    Text("Open CAD file")
                 }
             }
+            if (document == null) {
+                Text(
+                    "Open STEP, IGES, 3MF, OBJ or glTF as the CAD document.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
-        Text(
-            "This writes the engine's document as a file and leaves it unchanged. Slice " +
-                "exports a fresh STL only when the document has changed since the last slice; " +
-                "an unchanged document reuses that STL and the status line says so.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        HorizontalDivider()
-        Text("Select a face on the plate", style = MaterialTheme.typography.titleSmall)
-        if (document == null) {
-            // The mode is not offered for a mesh, and this says so by name: an imported STL has
-            // triangles, not the engine's faces, so there is nothing for select.set to select.
+    }
+
+    val exportSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            Text("Export the document", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                listOf("step", "stl", "3mf").forEach { format ->
+                    OutlinedButton(
+                        onClick = { onExport(format) },
+                        enabled = document != null && ready,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(format.uppercase()) }
+                }
+            }
             Text(
-                if (plateObjectName != null) {
-                    "Face selection needs a live CAD document. The plate holds the imported " +
-                        "mesh \"" + plateObjectName + "\", whose triangles are not the engine's " +
-                        "faces. Import > Open CAD document opens a STEP, IGES, 3MF, OBJ or glTF " +
-                        "file as one."
-                } else {
-                    "Face selection needs a live CAD document, and the plate holds no model yet. " +
-                        "Import > Open CAD document opens a STEP, IGES, 3MF, OBJ or glTF file as " +
-                        "one, or ask the agent to build something first."
-                },
+                "Writes a file. Leaves the document unchanged.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            if (selectedFace != null) {
+        }
+    }
+
+    val faceSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            Text("Select a face on the plate", style = MaterialTheme.typography.titleSmall)
+            if (document == null) {
+                Text(
+                    "Build or open a document first.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (selectedFace != null) {
                 Text(selectedFace.hudLine(), style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "Tap Clear to drop it, or Select to pick a different face.",
+                    "Tap Clear to drop it, or Select for another face.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -451,10 +473,7 @@ internal fun SolidCraftSheet(
                 }
             } else {
                 Text(
-                    "A tap on the plate names the engine face under it: the plate tints it amber, " +
-                        "the engine's selection follows it, and the agent's next message carries " +
-                        "its body, name, area, centroid and normal. Face select and support paint " +
-                        "are separate: a selection never paints, and a paint stroke never selects.",
+                    "Tap a face to name it for the agent. Selecting never paints.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -463,155 +482,260 @@ internal fun SolidCraftSheet(
                 }
             }
         }
-        HorizontalDivider()
-        Text("Ask the agent to change it", style = MaterialTheme.typography.titleSmall)
-        // Which agent authors the document, said plainly. In-app is the default: the model
-        // endpoint is called straight from this phone, so nothing has to be running on a desk.
-        // The harness stays as the advanced path - an agent on a computer that reaches this
-        // phone's engine bridge.
-        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            AgentMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = agentSettings.mode == mode,
-                    onClick = { onAgentModeChange(mode) },
-                    label = { Text(mode.label) },
-                )
-            }
-        }
-        Text(
-            agentSettings.drivingSentence(),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // The one line that is always true, in every state: who is the document's author.
-        Text(
-            authorState.authorLine,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (authorState.inAppPaused) {
-                MaterialTheme.colorScheme.error
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-        )
-        if (agentSettings.mode == AgentMode.IN_APP) {
-            InAppAgentSettings(
-                settings = agentSettings,
-                webNotice = inAppWebNotice,
-                onSave = onAgentSettingsSave,
-                onClearKey = onAgentKeyClear,
-                onWebSearchChange = onAgentWebSearchChange,
-                onLendViewChange = onAgentLendViewChange,
-            )
-        }
-        // An external agent is attached to this document: the in-app agent is paused, and Take
-        // over is the one action offered. It closes the external connection, and the confirmation
-        // says the outbound agent has to reconnect.
-        val pausedByExternal = agentSettings.mode == AgentMode.IN_APP && authorState.inAppPaused
-        if (pausedByExternal) {
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(EnderSlicerDimens.Space8)) {
-                    Text(authorState.pausedLine, style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Only one agent may author the document. The external agent is connected " +
-                            "to the engine bridge; take the document back to ask the in-app agent " +
-                            "for a change.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { confirmTakeOver = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Take over") }
+    }
+
+    val rebuildSection: @Composable () -> Unit = {
+        if (document?.derivedStale == true) {
+            Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                Button(onClick = onRebuild, modifier = Modifier.fillMaxWidth()) {
+                    Text("Rebuild plate from the document")
                 }
-            }
-        }
-        // Both agents write the same transcript, so the conversation the user sees does not
-        // change with the choice of author.
-        // Tool rows belong to the floating chat's transcript; this compact box shows the prose
-        // exchanges only, so it keeps reading as a conversation.
-        val prose = messages.filter { it.tool == null }
-        if (prose.isNotEmpty()) {
-            prose.takeLast(6).forEach { message ->
                 Text(
-                    (if (message.fromUser) "You: " else "Agent: ") + message.text.take(400),
+                    "Rebuild takes the current shape and drops the split layout.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        chatStatus?.let {
-            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-        }
-        val canSend = when {
-            chatBusy -> false
-            // The in-app composer is disabled while an external agent is attached: the paused
-            // block above is the only action then, and the authorship object refuses a turn
-            // even if a stale screen tried to send one.
-            agentSettings.mode == AgentMode.IN_APP -> agentSettings.isConfigured && authorState.canInAppEdit
-            else -> chatConfigured
-        }
-        if (!chatBusy && !canSend && !pausedByExternal) {
+    }
+
+    // One close card for both layouts: the compact column adds Done to it, the wide sheet keeps
+    // Done in its header so the pane's last line is the document action.
+    val closeSection: @Composable (Boolean) -> Unit = { includeDone ->
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            if (includeDone) {
+                Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                    OutlinedButton(
+                        onClick = onCloseDocument,
+                        enabled = document != null,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Close document") }
+                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Done") }
+                }
+            } else {
+                OutlinedButton(
+                    onClick = onCloseDocument,
+                    enabled = document != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Close document") }
+            }
             Text(
-                if (agentSettings.mode == AgentMode.IN_APP) {
-                    "Set the endpoint above and this box talks to it directly - the phone is " +
-                        "the whole agent. The key is sealed in the device keystore and is never " +
-                        "shown again."
-                } else {
-                    "The harness is not connected. Open it from Ask AI in the sidebar rail " +
-                        "and connect it first; this box then sends to the same CAD conversation."
-                },
-                style = MaterialTheme.typography.bodySmall,
+                "Closing keeps the design file in the workspace.",
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if ((canSend || chatBusy) && !pausedByExternal) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    placeholder = { Text("Ask for a change") },
-                    maxLines = 3,
-                    enabled = !chatBusy,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                if (chatBusy) {
-                    OutlinedButton(onClick = onCancelAgent) { Text("Cancel") }
-                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
+    }
+
+    // An external agent is attached to this document: the in-app agent is paused, and Take over
+    // is the one action offered. It closes the external connection, and the confirmation says
+    // the outbound agent has to reconnect.
+    val pausedByExternal = agentSettings.mode == AgentMode.IN_APP && authorState.inAppPaused
+
+    val authorshipSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+                AgentMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = agentSettings.mode == mode,
+                        onClick = { onAgentModeChange(mode) },
+                        label = { Text(mode.label) },
+                    )
                 }
-                Button(
-                    onClick = {
-                        val text = draft.trim()
-                        if (text.isNotEmpty()) {
-                            onAsk(text)
-                            draft = ""
-                        }
-                    },
-                    enabled = !chatBusy && draft.isNotBlank(),
-                ) { Text(if (chatBusy) "Working…" else "Send") }
+            }
+            Text(
+                agentSettings.drivingSentence(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                authorState.authorLine,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (authorState.inAppPaused) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            if (agentSettings.mode == AgentMode.IN_APP) {
+                InAppAgentSettings(
+                    settings = agentSettings,
+                    webNotice = inAppWebNotice,
+                    onSave = onAgentSettingsSave,
+                    onClearKey = onAgentKeyClear,
+                    onWebSearchChange = onAgentWebSearchChange,
+                    onLendViewChange = onAgentLendViewChange,
+                )
+            }
+            if (pausedByExternal) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(EnderSlicerDimens.Space8)) {
+                        Text(authorState.pausedLine, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "One agent authors at a time - take the document back to use the in-app agent.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(
+                            onClick = { confirmTakeOver = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Take over") }
+                    }
+                }
             }
         }
-        HorizontalDivider()
-        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            OutlinedButton(
-                onClick = onCloseDocument,
-                enabled = document != null,
-                modifier = Modifier.weight(1f),
-            ) { Text("Close document") }
-            TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Done") }
-        }
-        Text(
-            "Closing takes the document off the plate; its design file stays in the " +
-                "SolidCraft workspace. The agent sheet is the only destructive control a " +
-                "spectator has.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
+
+    // Both agents write the same transcript, so the conversation the user sees does not change
+    // with the choice of author. Tool rows belong to the floating chat's transcript.
+    val prose = messages.filter { it.tool == null }
+
+    val transcriptSection: @Composable () -> Unit = {
+        if (prose.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4)) {
+                prose.takeLast(6).forEach { message ->
+                    Text(
+                        (if (message.fromUser) "You: " else "Agent: ") + message.text.take(400),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    val canSend = when {
+        chatBusy -> false
+        // The in-app composer is disabled while an external agent is attached: the paused block
+        // is the only action then, and the authorship object refuses a stale send anyway.
+        agentSettings.mode == AgentMode.IN_APP -> agentSettings.isConfigured && authorState.canInAppEdit
+        else -> chatConfigured
+    }
+
+    // The composer is the conversation pane's pinned footer: it stays put while the transcript
+    // scrolls, which is the one thing the two-pane layout buys over a long column.
+    val composerSection: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
+            chatStatus?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (!chatBusy && !canSend && !pausedByExternal) {
+                Text(
+                    if (agentSettings.mode == AgentMode.IN_APP) {
+                        "Set the endpoint above - the phone is the whole agent."
+                    } else {
+                        "Not connected - open it from Ask AI in the sidebar rail."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if ((canSend || chatBusy) && !pausedByExternal) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        placeholder = { Text("Ask for a change") },
+                        maxLines = 3,
+                        enabled = !chatBusy,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                    if (chatBusy) {
+                        OutlinedButton(onClick = onCancelAgent) { Text("Cancel") }
+                        Spacer(Modifier.width(EnderSlicerDimens.Space4))
+                    }
+                    Button(
+                        onClick = {
+                            val text = draft.trim()
+                            if (text.isNotEmpty()) {
+                                onAsk(text)
+                                draft = ""
+                            }
+                        },
+                        enabled = !chatBusy && draft.isNotBlank(),
+                    ) { Text(if (chatBusy) "Working…" else "Send") }
+                }
+            }
+        }
+    }
+
+    // Wide screens get two panes: the document and engine on the left, the conversation on the
+    // right with its composer held at the bottom of the pane. The breakpoint is the sheet's own
+    // width - the same app must adapt when the Fold is open or closed, with no device check.
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        if (maxWidth >= SHEET_TWO_PANE_BREAKPOINT) {
+            Column(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = EnderSlicerDimens.CardPadding, vertical = EnderSlicerDimens.Space8),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(modifier = Modifier.weight(1f)) { header() }
+                    TextButton(onClick = onDismiss) { Text("Done") }
+                }
+                HorizontalDivider()
+                Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    SheetPane(title = "Document", modifier = Modifier.weight(1f)) {
+                        engineCard()
+                        connectRow()
+                        HorizontalDivider()
+                        exportSection()
+                        HorizontalDivider()
+                        faceSection()
+                        HorizontalDivider()
+                        closeSection(false)
+                        rebuildSection()
+                        HorizontalDivider()
+                        networkCard()
+                        openFileSection()
+                    }
+                    VerticalDivider()
+                    SheetPane(
+                        title = "Ask the agent",
+                        modifier = Modifier.weight(1.1f),
+                        footer = composerSection,
+                    ) {
+                        authorshipSection()
+                        transcriptSection()
+                    }
+                }
+            }
+        } else {
+            val compactScroll = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(compactScroll)
+                    .padding(EnderSlicerDimens.CardPadding),
+                verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8),
+            ) {
+                header()
+                engineCard()
+                connectRow()
+                networkCard()
+                openFileSection()
+                rebuildSection()
+                HorizontalDivider()
+                exportSection()
+                HorizontalDivider()
+                faceSection()
+                HorizontalDivider()
+                Text("Ask the agent", style = MaterialTheme.typography.titleSmall)
+                authorshipSection()
+                transcriptSection()
+                composerSection()
+                HorizontalDivider()
+                closeSection(true)
+            }
+        }
+    }
+
     // Take over is destructive to the external agent's session, not to the document: its
     // connection ends and it has to reconnect before it can edit again.
     if (confirmTakeOver) {
@@ -718,8 +842,7 @@ private fun InAppAgentSettings(
             }
         }
         Text(
-            "Key: " + settings.keyMask + " · sealed with this device's keystore, never shown " +
-                "again, never logged and never part of the chat transcript.",
+            "Sealed in the device keystore - never shown, never logged.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -728,10 +851,9 @@ private fun InAppAgentSettings(
                 Text("Web search & page fetch", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     if (settings.webSearch) {
-                        "On · the agent can search and read pages through this endpoint, with " +
-                            "this same key; their text arrives marked as untrusted data."
+                        "The agent can search and read pages. Their text is untrusted."
                     } else {
-                        "Off · the agent stays on the phone and builds from your own words."
+                        "Off - the agent stays on the phone."
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -744,12 +866,9 @@ private fun InAppAgentSettings(
                 Text("Lend the agent my view", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     if (settings.lendView) {
-                        "On · a message about a face you picked also carries a render of the " +
-                            "plate at your camera, with that face tinted amber. The agent can " +
-                            "see which face you mean instead of inferring it from the words."
+                        "A picked face's message also sends a render with it tinted amber."
                     } else {
-                        "Off · the agent is told the face's body, name, area and direction in " +
-                            "words, and no picture is sent."
+                        "Off - the face is described in words only."
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -762,8 +881,7 @@ private fun InAppAgentSettings(
         }
         if (settings.isCleartextRemote) {
             Text(
-                "This is plain http to another machine: the key and every prompt travel " +
-                    "unencrypted. Use https unless this is your own network.",
+                "Plain http: the key and prompts travel unencrypted - use https.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error,
             )

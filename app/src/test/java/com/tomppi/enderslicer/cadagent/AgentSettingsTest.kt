@@ -188,6 +188,6 @@ class AgentSettingsTest {
         val settings = AgentSettings(hasApiKey = true)
         assertEquals(AgentSettings.MASKED_KEY, settings.keyMask)
         assertFalse(settings.drivingSentence().contains("secret"))
-        assertTrue(settings.drivingSentence().contains("this phone"))
+        assertTrue(settings.drivingSentence().contains("This phone"))
     }
 }

@@ -4,6 +4,30 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.13] - 2026-10-27
+
+### Changed
+
+- **The CAD agent sheet is two panes on a foldable or tablet and one column on a phone.** The
+  sheet measures its own available width (`BoxWithConstraints`, 600 dp); at or above it the
+  document and engine sit in the left pane and the conversation in the right, with the composer
+  pinned to the bottom of its pane while the transcript scrolls. Below it the single scrolling
+  column keeps its order and content. Every card is one composable called by both layouts, so
+  the two arrangements cannot drift apart - the rule the Smart Infill workbench already follows.
+- **The sheet's copy is one line per section instead of paragraphs.** The engine/authorship
+  sentence, the network-off line, the export and open-file hints, the API-key handling, the
+  web-tools trust line and the driving line are all short now; the facts that would become a
+  lie if dropped (the agent is still the only author, the key is still sealed in the device
+  keystore, web text is still untrusted, Convert is still the human's press) are kept.
+
+### Tested
+
+- `./gradlew :app:testDebugUnitTest --rerun-tasks` - 2,131 tests, 0 failures, 0 errors
+  (35 skipped) across 385 classes.
+- On the dev phone, the sheet was checked at the Fold inner display (2160x1812 @ 373 dpi,
+  two panes with the composer under the transcript) and at 1080x2400 @ 440 dpi (one column);
+  screenshots are in `.build/walk-131/`.
+
 ## [1.9.12] - 2026-10-27
 
 ### Changed

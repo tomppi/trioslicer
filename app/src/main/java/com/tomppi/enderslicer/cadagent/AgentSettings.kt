@@ -106,15 +106,11 @@ data class AgentSettings(
     /** What the sheet says is driving the document right now. */
     fun drivingSentence(): String = when (mode) {
         AgentMode.IN_APP -> if (isConfigured) {
-            "Driving: the app's own agent, calling " + baseUrl.trim() + " (" + model.trim() +
-                ") directly from this phone. No computer in the loop."
+            "This phone → " + model.trim()
         } else {
-            "Driving: the app's own agent. Set the endpoint below - it is called directly " +
-                "from this phone, so nothing has to be running on a desk."
+            "This phone → set the endpoint below."
         }
-        AgentMode.HARNESS ->
-            "Driving: the harness on your computer. The agent runs there and reaches this " +
-                "phone's engine bridge - the desk path, kept as the advanced option."
+        AgentMode.HARNESS -> "Computer → this phone's engine bridge."
     }
 
     companion object {
