@@ -214,15 +214,6 @@ private const val SNAP_PREVIEW_DEBOUNCE_MILLIS = 220L
 private const val CAD_PERSIST_INTERVAL_MILLIS = 1_500L
 
 /**
- * The file kinds that open as a CAD document through the engine's io crate.
- *
- * STEP and IGES are also the two formats Import model converts to a mesh through OpenCASCADE;
- * which route a file takes is the menu item the user picked, and the status line says which
- * one answered. 3MF, OBJ and glTF had no CAD route at all before this.
- */
-private val CAD_DOCUMENT_EXTENSIONS = setOf("step", "stp", "iges", "igs", "3mf", "obj", "glb", "gltf", "solidcraft")
-
-/**
  * The joint's scale slider: half-size to double.
  *
  * One control for the whole joint. [SnapFitParameters] multiplies every
@@ -1112,65 +1103,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val prepared = withContext(Dispatchers.IO) {
                     retainReadPermission(uri)
-                    val sourceName = displayName(uri)
-                    val extension = sourceName.substringAfterLast('.', "").lowercase()
-                    if (extension !in CAD_DOCUMENT_EXTENSIONS) {
-                        throw IllegalStateException(
+                    val rawName = displayName(uri)
+                    // The provider may have made the displayed name unique ("part.step (1)"):
+                    // canonicalise it to a real CAD name instead of refusing the file on the
+                    // suffix. The bytes are still staged under the canonical name.
+                    val sourceName = cadDocumentOpenName(rawName)
+                        ?: throw IllegalStateException(
                             "SolidCraft opens STEP, IGES, 3MF, OBJ and glTF files; " +
-                                sourceName + " is not one of them",
+                                rawName + " is not one of them",
                         )
+                    openCadDocumentCopy(sourceName) { output ->
+                        app.contentResolver.openInputStream(uri)?.use { input ->
+                            input.copyTo(output)
+                        } ?: throw IllegalStateException("could not read " + rawName)
                     }
-                    if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
-                    val session = SolidCraftEngine.session()
-                        ?: throw IllegalStateException("the CAD agent session disappeared")
-                    val workspace = cadWorkspace()
-                    val staged = workspace.importFile(sourceName)
-                    app.contentResolver.openInputStream(uri)?.use { input ->
-                        staged.outputStream().use { output -> input.copyTo(output) }
-                    } ?: throw IllegalStateException("could not read " + sourceName)
-                    session.open(staged.absolutePath)
-                    val baseName = sourceName.substringBeforeLast('.', sourceName)
-                        .ifBlank { "CAD document" }
-                    // An Open whose name is already another design in the workspace must not
-                    // overwrite it: the design file is the app's only source of truth.
-                    val design = workspace.uniqueDesignFile(baseName)
-                    val name = design.nameWithoutExtension
-                    session.save(design.absolutePath)
-                    cadOpenDesignPath = design.absolutePath
-                    if (!refreshCadAllBodies(session, workspace, name)) {
-                        throw IllegalStateException(
-                            "the engine opened " + sourceName + " but reported no bodies to draw",
-                        )
-                    }
-                    PreparedCadOpen(name, sourceName, design, cadBodies.count, cadBodies.triangleCount())
                 }
-                // An opened file is a new document, not an edit of whatever was on the plate:
-                // it replaces the document's plate object (and any split layout made from the
-                // old one), exactly as opening a model does in mesh mode.
-                publishCadParts(
-                    name = prepared.name,
-                    designPath = prepared.design.absolutePath,
-                    sourcePath = prepared.sourceName,
-                    editMillis = null,
-                    replaceDerived = true,
-                )
-                val resetNote = resetInAppConversationForDocumentSwitch()
-                _uiState.update {
-                    it.copy(
-                        isBusy = false,
-                        statusMessage = "Opened " + prepared.sourceName + " as a CAD document " +
-                            "(SolidCraft engine) · " + prepared.bodies + " bodies · " +
-                            "%,d".format(prepared.triangles) +
-                            " triangles display tessellation · saved as " + prepared.design.name +
-                            " · the agent can now edit it" + resetNote,
-                    )
-                }
-                scheduleCadPersist(force = true)
-                dropFaceSelection("a different CAD document was opened")
+                publishOpenedCadDocument(prepared)
             } catch (error: Throwable) {
                 showOperationFailure(error)
             }
         }
+    }
+
+    /**
+     * Stage one file as a workspace design and read its bodies; blocking, IO thread.
+     *
+     * [write] writes the file's bytes into the staged copy. The caller passes an already
+     * canonical [sourceName] (real CAD extension, provider duplicate suffix stripped), so the
+     * name the workspace and design use is the document's name, not the destination's.
+     */
+    private fun openCadDocumentCopy(
+        sourceName: String,
+        write: (java.io.OutputStream) -> Unit,
+    ): PreparedCadOpen {
+        if (!ensureCadEngine()) throw IllegalStateException(SolidCraftEngine.status(app))
+        val session = SolidCraftEngine.session()
+            ?: throw IllegalStateException("the CAD agent session disappeared")
+        val workspace = cadWorkspace()
+        val staged = workspace.importFile(sourceName)
+        staged.outputStream().use(write)
+        session.open(staged.absolutePath)
+        val baseName = sourceName.substringBeforeLast('.', sourceName)
+            .ifBlank { "CAD document" }
+        // An Open whose name is already another design in the workspace must not overwrite it:
+        // the design file is the app's only source of truth.
+        val design = workspace.uniqueDesignFile(baseName)
+        val name = design.nameWithoutExtension
+        session.save(design.absolutePath)
+        cadOpenDesignPath = design.absolutePath
+        if (!refreshCadAllBodies(session, workspace, name)) {
+            throw IllegalStateException(
+                "the engine opened " + sourceName + " but reported no bodies to draw",
+            )
+        }
+        return PreparedCadOpen(
+            name = name,
+            sourceName = sourceName,
+            design = design,
+            bodies = cadBodies.count,
+            triangles = cadBodies.triangleCount(),
+        )
+    }
+
+    /** Apply one prepared Open to the plate; main thread, after [openCadDocumentCopy]. */
+    private fun publishOpenedCadDocument(prepared: PreparedCadOpen) {
+        // An opened file is a new document, not an edit of whatever was on the plate: it
+        // replaces the document's plate object (and any split layout made from the old one),
+        // exactly as opening a model does in mesh mode.
+        publishCadParts(
+            name = prepared.name,
+            designPath = prepared.design.absolutePath,
+            sourcePath = prepared.sourceName,
+            editMillis = null,
+            replaceDerived = true,
+        )
+        val resetNote = resetInAppConversationForDocumentSwitch()
+        _uiState.update {
+            it.copy(
+                isBusy = false,
+                statusMessage = "Opened " + prepared.sourceName + " as a CAD document " +
+                    "(SolidCraft engine) · " + prepared.bodies + " bodies · " +
+                    "%,d".format(prepared.triangles) +
+                    " triangles display tessellation · saved as " + prepared.design.name +
+                    " · the agent can now edit it" + resetNote,
+            )
+        }
+        scheduleCadPersist(force = true)
+        dropFaceSelection("a different CAD document was opened")
     }
 
     /**
@@ -8633,13 +8652,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Opens the STEP the user just saved through the existing SolidCraft/Open-CAD route. */
+    /**
+     * Opens the STEP the user just saved through the existing SolidCraft/Open-CAD route.
+     *
+     * It opens the STEP the engine wrote - copied under its canonical name - not the SAF
+     * destination's display name. The provider is free to make that name unique by appending
+     * " (1)" after the extension, which is not a filename the extension gate should ever see;
+     * the bytes are identical to the saved file. If the engine cache was pruned since the save,
+     * the saved content is copied through the canonical name instead.
+     */
     fun openSavedMeshToStepAsCad() {
-        val savedUri = _uiState.value.meshToStep.savedUri ?: return
+        val sheet = _uiState.value.meshToStep
+        val savedUri = sheet.savedUri ?: return
+        val cached = sheet.result?.stepPath
+            ?.let(::File)
+            ?.takeIf { it.isFile && it.length() > 0L }
+        // A name we cannot canonicalise (an odd provider display name with no CAD extension)
+        // still opens the bytes we wrote, under a name we know is valid.
+        val canonical = cadDocumentOpenName(sheet.savedName ?: cached?.name ?: "")
+            ?: "Mesh-STEP.step"
         // The press is the answer to the sheet; the document route reports its own status on
         // the plate, so the sheet must not stay on top of the result it just opened.
         updateMeshToStep { it.closed() }
-        openCadDocument(Uri.parse(savedUri))
+        if (!beginOperation("Opening the CAD document…")) return
+        viewModelScope.launch {
+            try {
+                val prepared = withContext(Dispatchers.IO) {
+                    if (cached != null) {
+                        openCadDocumentCopy(canonical) { output ->
+                            cached.inputStream().use { input -> input.copyTo(output) }
+                        }
+                    } else {
+                        // The cache is gone (another conversion, a restart): the user's saved
+                        // bytes are still the document.
+                        retainReadPermission(Uri.parse(savedUri))
+                        openCadDocumentCopy(canonical) { output ->
+                            app.contentResolver.openInputStream(Uri.parse(savedUri))?.use { input ->
+                                input.copyTo(output)
+                            } ?: throw IllegalStateException(
+                                "could not read the saved STEP " +
+                                    (sheet.savedName ?: canonical),
+                            )
+                        }
+                    }
+                }
+                publishOpenedCadDocument(prepared)
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
     }
 
     private fun updateMeshToStep(

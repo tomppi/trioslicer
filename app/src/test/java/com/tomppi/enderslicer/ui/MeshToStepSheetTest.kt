@@ -165,6 +165,31 @@ class MeshToStepSheetTest {
     }
 
     @Test
+    fun aProviderSuffixedSavedNameStillEnablesOpenAsCad() {
+        var opens = 0
+        render(
+            state(
+                result = MeshToStepResultInfo(
+                    stepPath = "/cache/Arc-Overhang-TestPrint-cad.step",
+                    faces = 31,
+                    millis = 12_000,
+                ),
+                savedName = "Arc-Overhang-TestPrint-cad.step (1)",
+                savedUri = "content://saved",
+            ),
+            MeshToStepActions(onOpenAsCad = { opens++ }),
+        )
+        compose.onNodeWithText("Saved STEP to Arc-Overhang-TestPrint-cad.step (1).")
+            .assertExists()
+        compose.onNodeWithTag(MESH_TO_STEP_OPEN_CAD_TAG)
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        compose.waitForIdle()
+        assertEquals(1, opens)
+    }
+
+    @Test
     fun aRunningConversionShowsItsStageAndARealCancel() {
         var cancels = 0
         render(

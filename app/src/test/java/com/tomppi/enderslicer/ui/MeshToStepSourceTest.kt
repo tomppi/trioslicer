@@ -89,13 +89,26 @@ class MeshToStepSourceTest {
         val viewModel = source("ui/MainViewModel.kt")
         assertTrue(viewModel.contains("fun saveMeshToStep(uri: Uri)"))
         assertTrue(viewModel.contains("fun openSavedMeshToStepAsCad()"))
-        assertTrue(viewModel.contains("openCadDocument(Uri.parse(savedUri))"))
+        assertFalse(
+            "Open as CAD no longer hands the provider's display name to the open gate",
+            viewModel.contains("openCadDocument(Uri.parse(savedUri))"),
+        )
         val openAsCad = viewModel
             .substringAfter("fun openSavedMeshToStepAsCad()")
             .substringBefore("private fun updateMeshToStep")
+        assertTrue("it opens the STEP the engine wrote", openAsCad.contains("result?.stepPath"))
+        assertTrue(
+            "the name is canonicalised before use",
+            openAsCad.contains("cadDocumentOpenName("),
+        )
+        assertTrue(
+            "the bytes are staged under the canonical name",
+            openAsCad.contains("openCadDocumentCopy(canonical)"),
+        )
+        assertTrue(openAsCad.contains("publishOpenedCadDocument(prepared)"))
         assertTrue(
             "the sheet closes before the CAD route takes over the plate",
-            openAsCad.indexOf("it.closed()") in 0 until openAsCad.indexOf("openCadDocument"),
+            openAsCad.indexOf("it.closed()") in 0 until openAsCad.indexOf("beginOperation"),
         )
         assertTrue(
             "the status sentence names where the file went",
@@ -106,6 +119,31 @@ class MeshToStepSourceTest {
             viewModel.contains("Mesh -> STEP failed: "),
         )
         assertTrue(viewModel.contains("state.meshToStep.failed(sentence)"))
+    }
+
+    @Test
+    fun theOpenGateCanonicalisesProviderDuplicateNames() {
+        val viewModel = source("ui/MainViewModel.kt")
+        assertTrue(viewModel.contains("fun openCadDocument(uri: Uri)"))
+        val openGate = viewModel
+            .substringAfter("fun openCadDocument(uri: Uri)")
+            .substringBefore("private fun openCadDocumentCopy")
+        assertTrue(openGate.contains("cadDocumentOpenName(rawName)"))
+        assertTrue(
+            "the named refusal still names the provider's raw display name",
+            openGate.contains("rawName + " + "\"" + " is not one of them" + "\""),
+        )
+        assertTrue(
+            "the staged file is named from the canonical name, not the display name",
+            viewModel.contains("openCadDocumentCopy(sourceName)"),
+        )
+        val helper = source("ui/CadDocumentOpenName.kt")
+        assertTrue(helper.contains("fun cadDocumentOpenName("))
+        assertTrue(helper.contains("CAD_DOCUMENT_EXTENSIONS"))
+        assertTrue(
+            "the canonicaliser strips provider suffixes with a duplicate-counter pattern",
+            helper.contains("Regex("),
+        )
     }
 
     @Test
