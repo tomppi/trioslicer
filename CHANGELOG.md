@@ -4,6 +4,23 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.1] - 2026-10-28
+
+### Fixed
+
+- **Deleting a CAD document's plate object now ends the live document, so Slice unlocks again.** The plate's object-menu
+  Delete (long-press card's Remove model, and Model tools Remove) called removeModel(), which removed the plate object but
+  never touched the live-document state. The Slice gate reads that state, so after deleting a CAD document's last object Slice
+  kept refusing with *Slice needs an STL - convert the CAD document first* - and importing an STL did not help, because only a
+  full plate clear reset the document. Deleting the last live part now ends the document exactly like closing it (persists the
+  design, stops the engine session, clears the CAD caches, resets the in-app conversation, clears the gate), so a mesh imported
+  afterwards slices normally. Deleting one part of a multi-part document keeps the document live with the remaining parts and
+  the refusal stays, as it should. The two outcomes are named: *Deleted <name>; the CAD document is no longer on the plate - its
+  design file stays in the SolidCraft workspace; import a mesh and Slice can run again* and *Deleted <name>; the CAD document is
+  still live with N part(s) left - convert it to STL before Slice can run.* Imported/converted STL deletes, Clear plate, Close
+  document and Convert to STL are unchanged; CadPlateDeleteTest pins every transition, and the device walk reproduced the report
+  on 1.12.0 before confirming the fix (after delete + STL import, Slice ran: Sliced · 100 layers).
+
 ## [1.12.0] - 2026-10-28
 
 ### Added
