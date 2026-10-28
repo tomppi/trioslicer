@@ -2,6 +2,7 @@ package com.tomppi.enderslicer.nativebridge
 
 import android.content.Context
 import android.system.Os
+import java.nio.file.Files
 import android.util.Log
 import com.tomppi.enderslicer.engine.AssetTreeExtractor
 import java.io.File
@@ -302,6 +303,25 @@ object CadEngine {
     fun sitePackages(context: Context): File =
         File(context.filesDir, "cad/lib/python3.11/site-packages")
 
+    /**
+     * Re-creates the interpreter's soname aliases after the CAD tree was extracted or rewritten.
+     *
+     * [ensureExtracted] deletes and rewrites files/cad, so a link made before an extraction is
+     * gone afterwards. Anything that borrows this Python without starting the CAD engine (the
+     * Mesh-to-STEP converter is the first) must call this after extraction and before starting
+     * the interpreter, or the linker cannot find libpython3.11.so.1.0 on a fresh install.
+     *
+     * Cheap (an unlink and a symlink) and safe to call on every start; the aliases point into
+     * the install directory, which changes on every app update.
+     *
+     * @return true when libpython3.11.so.1.0 is a symlink after the call.
+     */
+    fun ensurePythonLink(context: Context): Boolean {
+        val libexec = File(context.filesDir, "cad/libexec")
+        linkPythonLibrary(libexec, File(context.applicationInfo.nativeLibraryDir))
+        return Files.isSymbolicLink(File(libexec, "libpython3.11.so.1.0").toPath())
+    }
+
     private fun engineExecutable(context: Context): File =
         File(context.applicationInfo.nativeLibraryDir, "libklipper_exec.so")
 
@@ -493,8 +513,9 @@ object CadEngine {
      * imported at all: `dlopen failed: cannot locate symbol "crc32_z" referenced by
      * /system/lib64/libEGL.so`. The system already provides `libz.so`, so nothing is needed.
      *
-     * `Os.symlink` rather than `java.nio.file.Files`: this is the Android API for it, and the
-     * Klipper host links its own copy the same way.
+     * `Os.symlink` is the Android API for this and the Klipper host links its own copy the same
+     * way; `java.nio.file.Files.createSymbolicLink` (the same syscall, API 26+) is the fallback
+     * so the link path is exercised by JVM unit tests, where `Os` is not implemented.
      *
      * Both links point into the install directory, which changes on every update, so they are
      * rebuilt on every start rather than left to be discovered as stale. A stale one is worse
@@ -518,9 +539,19 @@ object CadEngine {
                 // outcome as deleting one - and it removes a stale link that exists() cannot
                 // see, because exists() follows it.
                 link.delete()
-                Os.symlink(target.absolutePath, link.absolutePath)
+                createSymbolicLink(target, link)
                 if (!link.exists()) Log.w(TAG, "$name does not resolve after linking")
             }.onFailure { Log.w(TAG, "could not link $name", it) }
+        }
+    }
+
+    /** One symlink(2) call; [Os] on Android, java.nio.file.Files where the JVM has no Os. */
+    private fun createSymbolicLink(target: File, link: File) {
+        runCatching { Os.symlink(target.absolutePath, link.absolutePath) }
+        // Robolectric's Os is a no-op rather than an error, so check the result; on Android
+        // this only runs if Os did not create the link.
+        if (!Files.isSymbolicLink(link.toPath())) {
+            Files.createSymbolicLink(link.toPath(), target.toPath())
         }
     }
 
@@ -580,7 +611,7 @@ object CadEngine {
         val home = File(context.filesDir, "cad")
         val sitePackages = File(home, "lib/python3.11/site-packages")
         val libexec = File(home, "libexec")
-        linkPythonLibrary(libexec, File(context.applicationInfo.nativeLibraryDir))
+        ensurePythonLink(context)
         if (!sitePackages.isDirectory) {
             Log.e(TAG, "the CAD dependencies are not installed at ${sitePackages.absolutePath}")
             failure = "the CAD engine's Python packages are not installed"

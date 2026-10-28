@@ -355,8 +355,18 @@ class MeshToStepEngine(private val context: Context) : Closeable {
                 )
             }
         }
+        // The CAD extraction above (or an earlier one by another screen) rewrites files/cad
+        // and deletes the interpreter's soname alias, which only CadEngine.startEngine used
+        // to make. The first Mesh-to-STEP conversion on a fresh install extracts that tree
+        // itself, so the alias must be ensured *after* the extraction and before the process
+        // starts - otherwise the linker cannot find libpython3.11.so.1.0.
+        val linkError = ensureInterpreterLink(context)
+        if (linkError != null) {
+            throw ConversionException(linkError, ConversionException.Kind.PAYLOAD_MISSING)
+        }
         return PythonPayload(home, cadSite, payloadSite)
     }
+
 
     private data class PythonPayload(
         val home: File,
@@ -507,6 +517,22 @@ class MeshToStepEngine(private val context: Context) : Closeable {
             runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
             }.getOrNull() ?: "0"
+
+        /**
+         * Ensures the interpreter's libpython3.11.so.1.0 alias exists after payload extraction.
+         *
+         * The CAD tree extraction (by this seam on a fresh install, or by another screen)
+         * rewrites files/cad and drops that symlink; it must be re-created before the
+         * interpreter starts or the linker cannot find libpython3.11.so.1.0.
+         *
+         * @return null when the alias is a symlink, or a sentence for the user.
+         */
+        internal fun ensureInterpreterLink(context: Context): String? =
+            if (CadEngine.ensurePythonLink(context)) {
+                null
+            } else {
+                "the app's Python library link could not be created, so the mesh-to-STEP converter cannot start"
+            }
 
         /** The stamp and sentinel check behind [isPrepared]; shared by the lazy path. */
         internal fun assetsPrepared(directory: File, stamp: File, marker: String): Boolean =
