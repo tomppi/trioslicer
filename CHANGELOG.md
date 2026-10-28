@@ -4,6 +4,55 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-10-28
+
+### Added
+
+- **Mesh -> STEP: turn the plate's mesh into an editable STEP file with real CAD faces, on the phone.** *More -> Experimental ->
+  Mesh -> STEP* (and the plate overflow's *Convert to STEP (CAD)...*) runs the Mesh-Mix-S2C engine - bundled as unmodified Python
+  (**v1.6.0**, `4cf72ea5`, AGPL-3.0-only) on the CPython and OCP 7.9.3.1 payload the app already ships - against the selected mesh.
+  Presets **Auto / CAD / Precise / Exact** (Auto picks CAD on mechanical parts), quality 0-1, unit mm/inch, the engine's own
+  live stages, and a **Cancel** that works from the first second. The result is checked against the mesh first (faces, solids,
+  validity, fidelity tolerance, repair warnings), then **Save STEP...** writes it wherever the user chooses and **Open as CAD**
+  loads it as a live CAD document. The result is a new plate workflow, not a replacement: the mesh stays on the plate until the
+  user opens the STEP.
+- **First-run engines screen learns the new payload.** *Prepare the engines* now has a **Mesh to STEP** row, prepared last in
+  dependency order (Klipper Python -> CAD payload -> mesh-to-STEP scripts), ticked by default, with the same extractor and stamp
+  as a first conversion, so a prepared install never pays a surprise extraction inside a conversion.
+
+### Fixed
+
+- **A fresh install's first Mesh -> STEP conversion could die in the linker.** `libklipper_exec.so` is linked against
+  `libpython3.11.so.1.0` while the APK can only ship `libpython3.11.so`; the soname alias was created only when the CAD engine
+  started, so a conversion that extracted the payload itself started the interpreter without it. The alias is now created by one
+  idempotent helper (`CadEngine.ensurePythonLink`) before every conversion, with a named error instead of a linker crash.
+- **After an app update the converter could use the previous install's payloads.** Its extraction decision now uses the owners'
+  install stamps (`KlipperPayload.isExtracted`, `CadEngine.isExtracted`, the same checks the preparation screen shows) instead of
+  directory existence, so a stale tree is re-extracted (cancellable, with the *Preparing the Python CAD payload (N files)* phase)
+  rather than silently reused - matching every other engine.
+
+### Tested
+
+- Device walk on the dev phone (release build, Fold-sized window): cantilever bracket 1,928 tri **20.5 s** (12.9 s engine) ->
+  **31 faces, 1 solid, valid**, STEP saved; calibration cube 136 tri **11.9 s** -> 40 faces, valid; the saved STEP reopened as a
+  live CAD document and Slice correctly refused it until converted; a 24,792-triangle conversion **cancelled at ~8 s** ended
+  *Cancelled - no STEP file was written.* with no cache STEP left behind; the preparation screen showed the Mesh to STEP row
+  Ready.
+- Suite: **2,273 tests, 0 failures** before the readiness fix, **plus** 38 mesh2step tests including the new extraction/payload
+  readiness cases.
+
+### Limits (recorded, not hidden)
+
+- **Organic and sculpted meshes are slow**: the engine's fit-and-check loop ran past 25 minutes on a desktop for a 3DBenchy-class
+  mesh, so on a phone it is an hour or more and is not a recommended path. **Smooth is disabled** in this build - it needs the
+  organic quad remesher (`pynanoinstantmeshes`), which is deliberately not shipped.
+- **Damaged meshes may fail with the engine's own error**: the repair libraries (`pymeshfix`, `manifold3d`) are not shipped; the
+  optional accelerators were measured (`rtree`, `fast_simplification`, `trimesh` too) and none is required for a clean mechanical
+  STL, so the sheet names what is unavailable rather than pretending.
+- Non-STL inputs from the plate are out of scope (the app always hands the engine an STL).
+- Third-party notices: the Mesh-Mix-S2C section pins the version/commit, names the three AGPL-3.0-only adapter files and the two
+  OCP 7.9 API gaps they bridge, and the upstream licence/notices are staged beside the engine with committed hashes; an APK/CI
+  gate verifies them.
 ## [1.9.17] - 2026-10-27
 
 ### Fixed
