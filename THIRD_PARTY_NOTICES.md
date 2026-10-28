@@ -41,19 +41,30 @@ uses for multi-part files) and the two-shape `BRepExtrema_DistShapeShape` constr
 the fidelity comparison is built with `LoadS1`/`LoadS2`/`PerformDist`). Both adapters are no-ops
 on an OCP that exposes the OCP 8 API. The OCP payload is never modified.
 
-The one optional accelerator the app ships is the Smooth preset's quad remesher:
-PyNanoInstantMeshes 0.0.3 by Mark Boss (BSD-3-Clause), cross-built for the app's bionic
-CPython 3.11 / arm64 and staged under `assets/mesh2step/lib/pynanoinstantmeshes/` with the
-vendored Instant Meshes 2.0 sources (BSD-3-Clause, Wenzel Jakob, Daniele Panozzo, Marco Tarini,
-Olga Sorkine-Hornung), Eigen (MPL-2.0) and TBB 2020.2 (Apache-2.0); the licence texts are
-staged beside the module in `lib/pynanoinstantmeshes/licenses/`. The TBB is linked statically
-and the module links `libpython3.11.so.1.0` and the app's `libc++_shared.so`. The engine code
-is unmodified: the module is a drop-in import from the launcher's bundled `lib/` path. The
-remaining optional accelerators - `trimesh`, `manifold3d`, `rtree`, `pymeshfix`,
-`fast_simplification` - are absent, so MeshFix repair, non-STL input and their fallbacks still
-fail with the engine's named error instead of being silently substituted. The upstream
-`THIRD_PARTY_NOTICES.md` lists the licences of those components for completeness.
+The six optional accelerators the real program bundles are shipped too, restoring parity:
+the engine's non-STL loading, MeshFix repair, Manifold cleanup/merge, decimation and
+spatial-candidate paths now behave like the desktop program instead of falling back. All are
+drop-in imports under `assets/mesh2step/lib/`; the engine code is unmodified.
 
+| component | version | licence | use |
+|---|---|---|---|
+| trimesh | 5.1.1 | MIT | non-STL input loading |
+| manifold3d / Manifold | 3.5.4 | Apache-2.0 | overlap merging, hole triangulation, decimation cleanup |
+| fast_simplification | 0.2.0 | MIT | quadric decimation for large meshes/previews |
+| pymeshfix / MeshFix | 0.18.1 / MeshFix 2.1 (bundled) | AGPL-3.0 (PyMeshFix) / GPL-3.0 (MeshFix) | full mesh repair; both are compatible with this AGPL-3.0-only app |
+| rtree / libspatialindex | 1.4.1 / 2.1.0 | MIT / MIT | R-tree candidate search in the mesh checks |
+| pynanoinstantmeshes / Instant Meshes | 0.0.3 | BSD-3-Clause (binding) / BSD-3-Clause (Instant Meshes; Eigen MPL-2.0, TBB Apache-2.0) | Smooth preset quad remeshing |
+
+The compiled modules are cross-built for the app's bionic CPython 3.11 / arm64; trimesh is
+vendored pure Python (wheel sha256 pinned). rtree binds libspatialindex at runtime and needs
+libspatialindex >= 2.1 (2.0.0 lacks the bulk-insert API), so both `libspatialindex_c.so` and
+`libspatialindex.so` are staged in `lib/rtree/lib` and load from each other via `$ORIGIN`.
+Licence texts are staged in `assets/mesh2step/lib/LICENSES/` (and
+`lib/pynanoinstantmeshes/licenses/` for the Smooth accelerator); the pinned source sha256 of
+every package is in `assets/mesh2step/.source-version`, and each package is reproducible from
+its `scripts/build-*-android.sh`. The remaining optional extras some of these packages can
+use (lxml, pillow, shapely, embreex, scikit-image, pyvista) are not bundled; the engine keeps
+its named fallbacks for those.
 ## BumpMesh / stlTexturizer
 
 - Project: `CNCKitchen/stlTexturizer`

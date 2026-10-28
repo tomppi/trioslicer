@@ -92,7 +92,7 @@ class MeshToStepAssetsTest {
         assumeTrue("python3 is needed for the asset verifier", python())
         val (code, output) = runVerifier(assets)
         assertEquals("verifier said:\n" + output, 0, code)
-        assertTrue(output, output.contains("Verified 35 Mesh-Mix-S2C engine files"))
+        assertTrue(output, output.contains("Verified 206 Mesh-Mix-S2C engine files"))
     }
 
     @Test
@@ -131,6 +131,63 @@ class MeshToStepAssetsTest {
                 "lib/pynanoinstantmeshes/_pynim.cpython-311.so",
             ),
         )
+    }
+
+    @Test
+    fun allSixAcceleratorsArePackagedForThisInterpreter() {
+        val compiled = listOf(
+            "lib/manifold3d.cpython-311.so",
+            "lib/fast_simplification/_simplify.cpython-311.so",
+            "lib/fast_simplification/_replay.cpython-311.so",
+            "lib/pymeshfix/_meshfix.cpython-311.so",
+            "lib/rtree/lib/libspatialindex_c.so",
+            "lib/rtree/lib/libspatialindex.so",
+            "lib/pynanoinstantmeshes/_pynim.cpython-311.so",
+        )
+        for (relative in compiled) {
+            val file = File(assets, relative)
+            assertTrue("compiled accelerator is missing: " + relative, file.isFile)
+            val header = file.inputStream().use { it.readNBytes(20) }
+            assertEquals(relative + " is not an ELF file", 0x7f, header[0].toInt() and 0xff)
+            assertEquals(relative + " is not a 64-bit ELF", 2, header[4].toInt() and 0xff)
+            assertEquals(relative + " is not little-endian", 1, header[5].toInt() and 0xff)
+            fun u16(offset: Int) = (header[offset].toInt() and 0xff) or
+                ((header[offset + 1].toInt() and 0xff) shl 8)
+            assertEquals(relative + " is not a shared object", 3, u16(16))
+            assertEquals(relative + " is not AArch64", 183, u16(18))
+        }
+        assertTrue(File(assets, "lib/trimesh/__init__.py").isFile)
+        assertTrue(
+            "fast_simplification does not expose simplify",
+            File(assets, "lib/fast_simplification/__init__.py").readText().contains("from .simplify import"),
+        )
+        assertTrue(
+            "pymeshfix does not expose MeshFix/PyTMesh",
+            File(assets, "lib/pymeshfix/__init__.py").readText().contains("from pymeshfix._meshfix import"),
+        )
+        assertTrue(
+            "rtree does not look for libspatialindex",
+            File(assets, "lib/rtree/finder.py").readText().contains("libspatialindex_c"),
+        )
+        val licences = mapOf(
+            "lib/LICENSES/trimesh-MIT.txt" to "MIT",
+            "lib/LICENSES/manifold3d-Apache-2.0.txt" to "Apache License",
+            "lib/LICENSES/fast_simplification-MIT.txt" to "MIT",
+            "lib/LICENSES/meshfix-GPL-3.0.txt" to "GNU GENERAL PUBLIC LICENSE",
+            "lib/LICENSES/pymeshfix-AGPL-3.0.txt" to "GNU AFFERO GENERAL PUBLIC LICENSE",
+            "lib/LICENSES/rtree-MIT.txt" to "MIT",
+            "lib/LICENSES/libspatialindex-MIT.txt" to "MIT",
+        )
+        for ((relative, needle) in licences) {
+            assertTrue(
+                "licence missing or wrong: " + relative,
+                File(assets, relative).readText().contains(needle),
+            )
+        }
+        val manifest = File(assets, "SHA256SUMS").readText()
+        for (relative in compiled + listOf("lib/trimesh/__init__.py", "lib/rtree/lib/libspatialindex.so")) {
+            assertTrue("manifest does not cover " + relative, manifest.contains(relative))
+        }
     }
 
     @Test
