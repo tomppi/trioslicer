@@ -63,6 +63,27 @@ enum class MeshToStepUnit(val label: String, val value: String) {
     INCH("inch", "in"),
 }
 
+/**
+ * How much mesh repair the engine may do before converting, mapped onto its RepairMode by name.
+ *
+ * The labels and meanings mirror the engine lane's enum; Auto is the engine's default for every
+ * preset, so the request maps to no extra flag unless the user picks Off or Aggressive.
+ */
+enum class MeshToStepRepairMode(val label: String, val meaning: String) {
+    AUTO(
+        "Auto",
+        "Fill small holes and split pinched corners, as the engine does by default.",
+    ),
+    OFF(
+        "Off",
+        "Convert the mesh as it is.",
+    ),
+    AGGRESSIVE(
+        "Aggressive",
+        "Also run the full MeshFix repair; this can take minutes on damaged meshes.",
+    ),
+}
+
 /** What a finished conversion reported, kept so the sheet can summarise it after the engine goes quiet. */
 data class MeshToStepResultInfo(
     /** The cache file the engine wrote; Save copies it to the user's own destination. */
@@ -101,6 +122,12 @@ data class MeshToStepState(
      */
     val quality: Float = 0.7f,
     val unit: MeshToStepUnit = MeshToStepUnit.MM,
+    val repair: MeshToStepRepairMode = MeshToStepRepairMode.AUTO,
+    /**
+     * Off keeps touching or overlapping shells as separate solids (the engine's default); on
+     * asks it to merge them into one solid with manifold cleanup, which can take minutes.
+     */
+    val mergeOverlaps: Boolean = false,
     val converting: Boolean = false,
     val stage: String? = null,
     val progress: Float = 0f,
@@ -113,6 +140,17 @@ data class MeshToStepState(
     val error: String? = null,
 ) {
     val presetMeaning: String get() = preset.meaning
+
+    val repairMeaning: String get() = repair.meaning
+
+    /**
+     * The mistake-proof sentence under the merge switch: what each position means, and that the
+     * merge is the slow, deliberate choice - never a promise that it fixes every mesh.
+     */
+    val mergeOverlapsCopy: String
+        get() = "Off keeps touching or overlapping shells as separate solids (two bodies in " +
+            "one STEP). On merges them into one solid with the engine's manifold cleanup; that " +
+            "can take minutes on damaged meshes, and it cannot fix every mesh."
 
     /** The short band next to the dial; the two ends of the slider carry the arrows. */
     /**
@@ -222,6 +260,16 @@ data class MeshToStepState(
     fun withUnit(value: MeshToStepUnit): MeshToStepState {
         if (converting) return this
         return copy(unit = value, error = null)
+    }
+
+    fun withRepair(value: MeshToStepRepairMode): MeshToStepState {
+        if (converting) return this
+        return copy(repair = value, error = null)
+    }
+
+    fun withMergeOverlaps(value: Boolean): MeshToStepState {
+        if (converting) return this
+        return copy(mergeOverlaps = value, error = null)
     }
 
     fun starting(): MeshToStepState = copy(

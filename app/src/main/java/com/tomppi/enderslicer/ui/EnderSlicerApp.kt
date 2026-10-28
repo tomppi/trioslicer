@@ -3679,6 +3679,8 @@ fun EnderSlicerApp(
                     onPreset = viewModel::meshToStepPreset,
                     onQuality = viewModel::meshToStepQuality,
                     onUnit = viewModel::meshToStepUnit,
+                    onRepair = viewModel::meshToStepRepair,
+                    onMergeOverlaps = viewModel::meshToStepMergeOverlaps,
                     onStart = viewModel::startMeshToStep,
                     onCancel = viewModel::cancelMeshToStep,
                     onSaveStep = {

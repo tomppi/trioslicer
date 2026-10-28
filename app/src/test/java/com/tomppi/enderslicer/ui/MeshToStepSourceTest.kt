@@ -109,6 +109,31 @@ class MeshToStepSourceTest {
     }
 
     @Test
+    fun repairAndMergeAreWiredToTheRealSeam() {
+        val seam = source("ui/MeshToStepEngine.kt")
+        assertTrue(seam.contains("val repair: MeshToStepRepairMode"))
+        assertTrue(seam.contains("val mergeOverlaps: Boolean"))
+        assertTrue(
+            "the adapter maps the ui repair mode by name onto the engine's RepairMode",
+            seam.contains("MeshToStepEngine.RepairMode") &&
+                seam.contains(".valueOf(request.repair.name)"),
+        )
+        assertTrue(seam.contains("mergeOverlaps = request.mergeOverlaps"))
+        val requestFor = seam
+            .substringAfter("internal fun meshToStepRequestFor(")
+            .substringBefore("/** What the sheet keeps")
+        assertTrue(requestFor.contains("repair = state.repair"))
+        assertTrue(requestFor.contains("mergeOverlaps = state.mergeOverlaps"))
+
+        val viewModel = source("ui/MainViewModel.kt")
+        assertTrue(viewModel.contains("fun meshToStepRepair("))
+        assertTrue(viewModel.contains("fun meshToStepMergeOverlaps("))
+        val app = source("ui/EnderSlicerApp.kt")
+        assertTrue(app.contains("onRepair = viewModel::meshToStepRepair"))
+        assertTrue(app.contains("onMergeOverlaps = viewModel::meshToStepMergeOverlaps"))
+    }
+
+    @Test
     fun smoothIsARealPresetOnTheSheetNow() {
         val model = source("ui/MeshToStepModel.kt")
         val sheet = source("ui/MeshToStepSheet.kt")

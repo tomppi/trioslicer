@@ -20,6 +20,8 @@ internal data class MeshToStepRequest(
     val preset: MeshToStepPreset,
     val quality: Float,
     val unit: String = "mm",
+    val repair: MeshToStepRepairMode = MeshToStepRepairMode.AUTO,
+    val mergeOverlaps: Boolean = false,
 )
 
 internal data class MeshToStepProgress(
@@ -86,6 +88,9 @@ private class HostMeshToStepEngine(context: Context) : MeshToStepEngine {
                 preset = com.tomppi.enderslicer.mesh2step.MeshToStepEngine.Preset.valueOf(request.preset.name),
                 quality = request.quality.coerceIn(0f, 1f),
                 unit = request.unit,
+                mergeOverlaps = request.mergeOverlaps,
+                repair = com.tomppi.enderslicer.mesh2step.MeshToStepEngine.RepairMode
+                    .valueOf(request.repair.name),
             ),
         ) { progress ->
             onProgress(
@@ -118,6 +123,8 @@ internal fun meshToStepRequestFor(sourceStl: File, state: MeshToStepState): Mesh
         preset = state.preset,
         quality = state.quality.coerceIn(0f, 1f),
         unit = state.unit.value,
+        repair = state.repair,
+        mergeOverlaps = state.mergeOverlaps,
     )
 
 /** What the sheet keeps after a conversion: the cache file, faces and warnings. */

@@ -8444,6 +8444,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun meshToStepUnit(value: MeshToStepUnit) =
         updateMeshToStep { it.withUnit(value) }
 
+    fun meshToStepRepair(value: MeshToStepRepairMode) =
+        updateMeshToStep { it.withRepair(value) }
+
+    fun meshToStepMergeOverlaps(value: Boolean) =
+        updateMeshToStep { it.withMergeOverlaps(value) }
+
     /**
      * Starts the conversion.
      *

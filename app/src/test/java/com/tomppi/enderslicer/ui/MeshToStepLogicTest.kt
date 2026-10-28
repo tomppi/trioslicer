@@ -121,6 +121,43 @@ class MeshToStepLogicTest {
     }
 
     @Test
+    fun repairAndMergeMapOntoTheEngineRequestWithHonestDefaults() {
+        // Defaults: Auto repair and no merge, which emit no engine flags (the engine's own
+        // default argv), so an untouched sheet behaves exactly as before.
+        val defaults = MeshToStepState()
+        assertEquals(MeshToStepRepairMode.AUTO, defaults.repair)
+        assertFalse(defaults.mergeOverlaps)
+        val defaultRequest = meshToStepRequestFor(File("/tmp/s.stl"), defaults)
+        assertEquals(MeshToStepRepairMode.AUTO, defaultRequest.repair)
+        assertFalse(defaultRequest.mergeOverlaps)
+
+        // Every mode and both merge positions travel through the one mapping.
+        MeshToStepRepairMode.entries.forEach { mode ->
+            val request = meshToStepRequestFor(
+                File("/tmp/s.stl"),
+                MeshToStepState(repair = mode, mergeOverlaps = true),
+            )
+            assertEquals(mode, request.repair)
+            assertTrue(request.mergeOverlaps)
+        }
+        assertTrue(MeshToStepRepairMode.OFF.meaning.contains("as it is"))
+        assertTrue(MeshToStepRepairMode.AUTO.meaning.contains("small holes"))
+        assertTrue(MeshToStepRepairMode.AGGRESSIVE.meaning.contains("MeshFix"))
+        assertEquals("Aggressive", MeshToStepRepairMode.AGGRESSIVE.label)
+
+        // The merge copy is explicit about both positions and does not promise a fix.
+        val mergeCopy = defaults.mergeOverlapsCopy
+        assertTrue(mergeCopy.contains("separate solids"))
+        assertTrue(mergeCopy.contains("one solid"))
+        assertTrue(mergeCopy.contains("cannot fix every mesh"))
+
+        // A running conversion is not re-configured under the engine's feet.
+        val converting = MeshToStepState(converting = true)
+        assertEquals(MeshToStepRepairMode.AUTO, converting.withRepair(MeshToStepRepairMode.AGGRESSIVE).repair)
+        assertFalse(converting.withMergeOverlaps(true).mergeOverlaps)
+    }
+
+    @Test
     fun theCostBandIsTheSpikesHonestShape() {
         // The engine lane's mechanical test part: 1,928 triangles, 8.09 s, 31 faces (x86).
         val mechanical = MeshToStepState(

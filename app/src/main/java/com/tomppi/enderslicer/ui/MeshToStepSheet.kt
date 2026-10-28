@@ -18,6 +18,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,6 +45,8 @@ internal data class MeshToStepActions(
     val onPreset: (MeshToStepPreset) -> Unit = {},
     val onQuality: (Float) -> Unit = {},
     val onUnit: (MeshToStepUnit) -> Unit = {},
+    val onRepair: (MeshToStepRepairMode) -> Unit = {},
+    val onMergeOverlaps: (Boolean) -> Unit = {},
     val onStart: () -> Unit = {},
     val onCancel: () -> Unit = {},
     /** Opens the SAVE picker; the ViewModel copies the cache STEP to the chosen destination. */
@@ -154,6 +157,45 @@ internal fun MeshToStepSheet(
                     label = { Text(unit.label) },
                 )
             }
+        }
+
+        Text("Repair", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MeshToStepRepairMode.entries.forEach { mode ->
+                FilterChip(
+                    selected = state.repair == mode,
+                    enabled = !state.converting,
+                    onClick = { actions.onRepair(mode) },
+                    label = { Text(mode.label) },
+                    modifier = Modifier.testTag(MESH_TO_STEP_REPAIR_TAG + mode.name),
+                )
+            }
+        }
+        Text(
+            state.repairMeaning,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Merge overlapping parts", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    state.mergeOverlapsCopy,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.mergeOverlaps,
+                onCheckedChange = actions.onMergeOverlaps,
+                enabled = !state.converting,
+                modifier = Modifier.testTag(MESH_TO_STEP_MERGE_TAG),
+            )
         }
 
         Surface(
@@ -291,5 +333,7 @@ internal fun MeshToStepSheet(
 /** Tags the sheet's two state-dependent buttons, so a test presses a button, not a coordinate. */
 internal const val MESH_TO_STEP_START_TAG = "mesh-to-step-start"
 internal const val MESH_TO_STEP_CANCEL_TAG = "mesh-to-step-cancel"
+internal const val MESH_TO_STEP_MERGE_TAG = "mesh-to-step-merge-overlaps"
+internal const val MESH_TO_STEP_REPAIR_TAG = "mesh-to-step-repair-"
 internal const val MESH_TO_STEP_SAVE_TAG = "mesh-to-step-save"
 internal const val MESH_TO_STEP_OPEN_CAD_TAG = "mesh-to-step-open-cad"

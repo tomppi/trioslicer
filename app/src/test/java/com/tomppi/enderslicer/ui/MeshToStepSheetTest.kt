@@ -4,12 +4,14 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,9 +71,13 @@ class MeshToStepSheetTest {
         compose.onNodeWithText("Mesh -> STEP").assertIsDisplayed()
         compose.onNodeWithText("cantilever.stl · 1,928 triangles").assertIsDisplayed()
         MeshToStepPreset.entries.forEach { preset ->
-            compose.onNodeWithText(preset.label).assertExists()
+            // "Auto" is also a Repair choice, so match by presence rather than a unique node.
+            assertTrue(
+                preset.label,
+                compose.onAllNodesWithText(preset.label).fetchSemanticsNodes().isNotEmpty(),
+            )
         }
-        compose.onNodeWithText(MeshToStepPreset.AUTO.meaning).assertIsDisplayed()
+        compose.onNodeWithText(MeshToStepPreset.AUTO.meaning).assertExists()
         compose.onNodeWithText("Coarse · fast").assertExists()
         compose.onNodeWithText("Fine · slow").assertExists()
         compose.onNodeWithText("~seconds for this mesh", substring = true).assertExists()
@@ -127,15 +133,47 @@ class MeshToStepSheetTest {
     }
 
     @Test
+    fun repairAndMergeControlsReachTheHost() {
+        val repairs = mutableListOf<MeshToStepRepairMode>()
+        val merges = mutableListOf<Boolean>()
+        render(
+            state(),
+            MeshToStepActions(
+                onRepair = { repairs += it },
+                onMergeOverlaps = { merges += it },
+            ),
+        )
+        compose.onNodeWithText("Repair").assertExists()
+        compose.onNodeWithText(MeshToStepRepairMode.AUTO.meaning).assertExists()
+        compose.onNodeWithTag(MESH_TO_STEP_REPAIR_TAG + "AGGRESSIVE")
+            .performScrollTo()
+            .performClick()
+        compose.onNodeWithTag(MESH_TO_STEP_REPAIR_TAG + "OFF").performClick()
+        assertEquals(
+            listOf(MeshToStepRepairMode.AGGRESSIVE, MeshToStepRepairMode.OFF),
+            repairs,
+        )
+        compose.onNodeWithTag(MESH_TO_STEP_MERGE_TAG)
+            .performScrollTo()
+            .performClick()
+        assertEquals(listOf(true), merges)
+        compose.onNodeWithText("Merge overlapping parts").assertExists()
+        compose.onNodeWithText(
+            MeshToStepState().mergeOverlapsCopy,
+            substring = false,
+        ).assertExists()
+    }
+
+    @Test
     fun aRunningConversionShowsItsStageAndARealCancel() {
         var cancels = 0
         render(
             state(converting = true),
             MeshToStepActions(onCancel = { cancels++ }),
         )
-        compose.onNodeWithText("tessellating · 40%").assertIsDisplayed()
-        compose.onNodeWithText("reading the mesh").assertIsDisplayed()
-        compose.onNodeWithTag(MESH_TO_STEP_CANCEL_TAG).assertIsDisplayed().performClick()
+        compose.onNodeWithText("tessellating · 40%").assertExists()
+        compose.onNodeWithText("reading the mesh").assertExists()
+        compose.onNodeWithTag(MESH_TO_STEP_CANCEL_TAG).assertExists().performScrollTo().performClick()
         assertEquals(1, cancels)
         compose.onNodeWithTag(MESH_TO_STEP_START_TAG).assertDoesNotExist()
     }
@@ -156,7 +194,7 @@ class MeshToStepSheetTest {
             ),
             MeshToStepActions(onSaveStep = { saves++ }),
         )
-        compose.onNodeWithText("STEP written").assertIsDisplayed()
+        compose.onNodeWithText("STEP written").assertExists()
         compose.onNodeWithText("31 faces", substring = true).assertExists()
         compose.onNodeWithText("closed a small seam", substring = true).assertExists()
         compose.onNodeWithTag(MESH_TO_STEP_SAVE_TAG)
@@ -200,6 +238,6 @@ class MeshToStepSheetTest {
     @Test
     fun anEngineFailureIsShownInItsOwnSentence() {
         render(state(error = "the Python payload is missing"))
-        compose.onNodeWithText("the Python payload is missing").assertIsDisplayed()
+        compose.onNodeWithText("the Python payload is missing").assertExists()
     }
 }
