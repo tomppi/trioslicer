@@ -32,11 +32,16 @@ upstream `LICENSE` and `THIRD_PARTY_NOTICES.md` staged beside it and hashes pinn
 interpreter) with the existing CAD payload's OCP 7.9.3.1, numpy 2.1.3 and scipy 1.14.1 on
 `PYTHONPATH`; the 533 MB payload is not rebuilt and no second interpreter is added.
 
-TrioSlicer adds two AGPL-3.0-only files, both with SPDX headers: `launcher.py` starts the
-engine, and `ocp_compat.py` maps the OCP 8.0.1 `OCP.collections` names the engine imports onto
-the collection classes that already exist in the OCP 7.9.3.1 payload. The OCP payload is never
-modified. No optional accelerator is shipped: `trimesh`, `manifold3d`, `rtree`, `pymeshfix`,
-`fast_simplification` and `pynanoinstantmeshes` are absent, so the engine's own fallbacks are
+TrioSlicer adds three AGPL-3.0-only files, all with SPDX headers: `launcher.py` starts the
+engine; `ocp_compat.py` maps the OCP 8.0.1 `OCP.collections` names the engine imports onto the
+collection classes that already exist in the OCP 7.9.3.1 payload; and `engine_compat.py` bridges
+two more gaps in that partial cross-compiled API - `STEPControl_Reader.TransferRoots()` (absent,
+so STEP read-back verification goes through the `STEPCAFControl_Reader` path the engine already
+uses for multi-part files) and the two-shape `BRepExtrema_DistShapeShape` constructor (absent, so
+the fidelity comparison is built with `LoadS1`/`LoadS2`/`PerformDist`). Both adapters are no-ops
+on an OCP that exposes the OCP 8 API. The OCP payload is never modified. No optional
+accelerator is shipped: `trimesh`, `manifold3d`, `rtree`, `pymeshfix`, `fast_simplification`
+and `pynanoinstantmeshes` are absent, so the engine's own fallbacks are
 used and features that require them (the Smooth preset's quad remeshing, MeshFix repair of
 damaged meshes, non-STL input formats) fail with the engine's named error instead of being
 silently substituted. The upstream `THIRD_PARTY_NOTICES.md` lists the licences of those

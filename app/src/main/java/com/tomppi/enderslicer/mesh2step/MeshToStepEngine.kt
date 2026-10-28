@@ -315,68 +315,18 @@ class MeshToStepEngine(private val context: Context) : Closeable {
     // ---------------------------------------------------------------- preparation
 
     /**
-     * Copies assets/mesh2step into files/mesh2step for this install.
+     * Extracts the converter scripts for the lazy conversion path.
      *
-     * The stamp is the package's lastUpdateTime, so an install replaces stale engine code and
-     * a re-run of the same install is a cheap no-op. The tree is small (about 0.6 MB of Python)
-     * and a missing sentinel is reported as a packaging failure rather than as a Python error.
+     * This is the same extractor and stamp as the public [prepare]/[isPrepared], so the
+     * preparation screen and a first conversion cannot write two different trees.
      */
     private fun ensureEngineAssets(): File {
-        val destination = File(context.filesDir, ENGINE_DIR)
-        val stamp = File(context.filesDir, STAMP)
-        val marker = updateMarker()
-        if (stamp.isFile &&
-            runCatching { stamp.readText() }.getOrNull() == marker &&
-            engineAssetsComplete(destination)
-        ) {
-            return destination
+        val error = prepare(context) { _, _ -> }
+        if (error != null) {
+            throw ConversionException(error, ConversionException.Kind.ENGINE_MISSING)
         }
-        if (destination.exists() && !destination.deleteRecursively()) {
-            throw ConversionException(
-                "the mesh-to-STEP converter files could not be replaced",
-                ConversionException.Kind.IO,
-            )
-        }
-        if (!destination.mkdirs() && !destination.isDirectory) {
-            throw ConversionException(
-                "the mesh-to-STEP converter files could not be unpacked",
-                ConversionException.Kind.IO,
-            )
-        }
-        try {
-            AssetTreeExtractor.copyTree(
-                assets = context.assets,
-                from = ENGINE_ASSET_DIR,
-                destination = destination,
-            )
-        } catch (error: Exception) {
-            throw ConversionException(
-                "the mesh-to-STEP converter files could not be unpacked: " +
-                    (error.message ?: error.javaClass.simpleName),
-                ConversionException.Kind.IO,
-                error,
-            )
-        }
-        if (!engineAssetsComplete(destination)) {
-            throw ConversionException(
-                "the mesh-to-STEP converter files are not packaged in this APK",
-                ConversionException.Kind.ENGINE_MISSING,
-            )
-        }
-        runCatching { stamp.writeText(marker) }
-        return destination
+        return engineDirectory(context)
     }
-
-    private fun engineAssetsComplete(directory: File): Boolean =
-        ENGINE_SENTINELS.all { File(directory, it).isFile } &&
-            runCatching {
-                directory.walkTopDown().count { it.isFile } >= MINIMUM_ENGINE_FILES
-            }.getOrDefault(false)
-
-    private fun updateMarker(): String =
-        runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
-        }.getOrNull() ?: "0"
 
     /**
      * Makes sure the app's CPython and the CAD payload that owns OCP/numpy/scipy are on disk.
@@ -504,21 +454,123 @@ class MeshToStepEngine(private val context: Context) : Closeable {
             (millis / 60_000L).toString() + " min"
         }
 
-    private companion object {
-        const val TAG = "MeshToStep"
-        const val ENGINE_ASSET_DIR = "mesh2step"
-        const val ENGINE_DIR = "mesh2step"
-        const val STAMP = "mesh2step.extracted"
-        const val LAUNCHER = "launcher.py"
-        const val MINIMUM_ENGINE_FILES = 26
-        const val KEEP_RUNS = 4
-        const val LOG_KEEP = 200
-        const val MINIMUM_TIMEOUT_MILLIS = 5_000L
+    companion object {
+        // ------------------------------------------------------------ preparation seam
+
+        /**
+         * True when the converter's scripts are already extracted for this install and the
+         * stamp still matches the package's lastUpdateTime. It never extracts anything.
+         *
+         * The preparation screen uses this for the Mesh-to-STEP row; a true answer means the
+         * first conversion will not have to copy the scripts.
+         */
+        fun isPrepared(context: Context): Boolean = assetsPrepared(
+            directory = engineDirectory(context),
+            stamp = stampFile(context),
+            marker = installMarker(context),
+        )
+
+        /**
+         * Extracts assets/mesh2step into files/mesh2step (about 0.6 MB of Python), reusing
+         * the exact extractor and stamp the lazy conversion path uses. Idempotent: a tree
+         * already extracted for this install is a no-op.
+         *
+         * This deliberately extracts only the converter scripts. The Klipper CPython and the
+         * CAD payload are prepared by their own owners in dependency order before this row;
+         * convert() borrows them through CadEngine.ensureExtracted and never prepares them.
+         *
+         * @param onProgress files copied and bytes written so far, once per file.
+         * @return null when ready (now or already), or a sentence for the user.
+         */
+        fun prepare(context: Context, onProgress: (files: Int, bytes: Long) -> Unit): String? =
+            installEngineAssets(
+                directory = engineDirectory(context),
+                stamp = stampFile(context),
+                marker = installMarker(context),
+                onProgress = onProgress,
+                copy = { destination, report ->
+                    val progress = AssetTreeExtractor.Progress()
+                    AssetTreeExtractor.copyTree(
+                        assets = context.assets,
+                        from = ENGINE_ASSET_DIR,
+                        destination = destination,
+                        progress = progress,
+                    ) { report(it.files, it.bytes) }
+                },
+            )
+
+        private fun engineDirectory(context: Context): File = File(context.filesDir, ENGINE_DIR)
+
+        private fun stampFile(context: Context): File = File(context.filesDir, STAMP)
+
+        private fun installMarker(context: Context): String =
+            runCatching {
+                context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
+            }.getOrNull() ?: "0"
+
+        /** The stamp and sentinel check behind [isPrepared]; shared by the lazy path. */
+        internal fun assetsPrepared(directory: File, stamp: File, marker: String): Boolean =
+            stamp.isFile &&
+                runCatching { stamp.readText() }.getOrNull() == marker &&
+                engineAssetsComplete(directory)
+
+        /**
+         * One install path for both the preparation screen and the lazy converter.
+         *
+         * A tree already stamped for this install is left untouched (no copy, no progress
+         * callbacks). A stale or incomplete tree is replaced; the stamp is written last, so
+         * an interrupted copy is retried on the next call instead of being mistaken for ready.
+         */
+        internal fun installEngineAssets(
+            directory: File,
+            stamp: File,
+            marker: String,
+            onProgress: (files: Int, bytes: Long) -> Unit,
+            copy: (destination: File, report: (files: Int, bytes: Long) -> Unit) -> Unit,
+        ): String? {
+            if (assetsPrepared(directory, stamp, marker)) return null
+            if (directory.exists() && !directory.deleteRecursively()) {
+                return "the mesh-to-STEP converter files could not be replaced"
+            }
+            if (!directory.mkdirs() && !directory.isDirectory) {
+                return "the mesh-to-STEP converter files could not be unpacked"
+            }
+            try {
+                copy(directory) { files, bytes -> onProgress(files, bytes) }
+            } catch (error: Exception) {
+                return "the mesh-to-STEP converter files could not be unpacked: " +
+                    (error.message ?: error.javaClass.simpleName)
+            }
+            if (!engineAssetsComplete(directory)) {
+                return "the mesh-to-STEP converter files are not packaged in this APK"
+            }
+            return if (runCatching { stamp.writeText(marker) }.isSuccess) {
+                null
+            } else {
+                "the mesh-to-STEP converter files could not be stamped for this install"
+            }
+        }
+
+        private fun engineAssetsComplete(directory: File): Boolean =
+            ENGINE_SENTINELS.all { File(directory, it).isFile } &&
+                runCatching {
+                    directory.walkTopDown().count { it.isFile } >= MINIMUM_ENGINE_FILES
+                }.getOrDefault(false)
+
+        private const val TAG = "MeshToStep"
+        private const val ENGINE_ASSET_DIR = "mesh2step"
+        private const val ENGINE_DIR = "mesh2step"
+        private const val STAMP = "mesh2step.extracted"
+        private const val LAUNCHER = "launcher.py"
+        private const val MINIMUM_ENGINE_FILES = 26
+        private const val KEEP_RUNS = 4
+        private const val LOG_KEEP = 200
+        private const val MINIMUM_TIMEOUT_MILLIS = 5_000L
 
         /** Wall-clock bound for one conversion; Request.timeoutMillis overrides it. */
-        const val DEFAULT_TIMEOUT_MILLIS = 15L * 60L * 1000L
+        private const val DEFAULT_TIMEOUT_MILLIS = 15L * 60L * 1000L
 
-        val ENGINE_SENTINELS = listOf(
+        private val ENGINE_SENTINELS = listOf(
             "launcher.py",
             "ocp_compat.py",
             "mmm_engine.py",
