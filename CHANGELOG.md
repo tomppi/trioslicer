@@ -4,6 +4,44 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-10-28
+
+### Added
+
+- **The Mesh -> STEP "Smooth" preset works: organic and sculpted meshes now convert with a real quad remesher.**
+  1.10.0 deliberately shipped Smooth disabled because the remesher was missing; this release cross-builds
+  **PyNanoInstantMeshes 0.0.3** (the binding around Instant Meshes' nano quad remeshing) for the app's **bionic CPython
+  3.11 / arm64**, stages it under `assets/mesh2step/lib/pynanoinstantmeshes/` with its licence texts, and puts it on the
+  launcher's `sys.path`. The vendored engine is still unmodified: the module is a drop-in import that the engine's own
+  Smooth path calls.
+- **Reproducible, pinned build**: `scripts/build-pynanoinstantmeshes-android.sh` downloads the pinned sdist
+  (sha256 pinned) and a pinned nanobind wheel, builds with the NDK clang + the Android CPython 3.11 prefix, and patches
+  only a work copy (cp311 instead of stable-ABI; C++14 for the 2017 Instant Meshes sources; static Android TBB 2020.2).
+  `.source-version`, `SHA256SUMS` (35 files), the asset verifier (AArch64 ELF + package import + licence files) and CI
+  gate the result; `SOURCE.md` records the build.
+- **Smooth is honest about its cost.** The sheet's copy and cost bands say: clean small organic mesh = seconds to about
+  a minute; messy, damaged, multi-shell or larger = minutes; mechanical parts stay on Auto/CAD/Precise. Measured on the
+  dev phone: clean 1,280-triangle icosphere **33.0 s** (13.5 s engine; UI default quality) -> 57 faces, 1 solid, valid,
+  STEP saved; the same mesh at engine q0.3 is 9.22 s / 47 faces. A 512-triangle two-shell mushroom takes ~4.5 minutes and
+  returns a valid fallback with an `inside_out` warning; a self-intersecting 2,304-triangle dome takes 37.9 s and falls
+  back to a faceted layout. The sheet shows those warnings, never a silent degradation.
+- First-run **Prepare the engines**: the Mesh to STEP row's estimate rises to 2 MB for the ~1.8 MB staged assets
+  (scripts + remesher); dependencies and the prepare path are unchanged.
+
+### Notices
+
+- `THIRD_PARTY_NOTICES` and the engine's `SOURCE.md` now name the one optional accelerator the app ships:
+  **PyNanoInstantMeshes 0.0.3 (BSD-3-Clause, Mark Boss)**, with the vendored **Instant Meshes (BSD-3-Clause)**,
+  **Eigen (MPL-2.0)** and **TBB 2020.2 (Apache-2.0)**, all four licence texts staged beside the module. The remaining
+  optional accelerators (`trimesh`, `manifold3d`, `rtree`, `pymeshfix`, `fast_simplification`) stay absent, so damaged-mesh
+  repair and non-STL input still fail with the engine's named error.
+
+### Tested
+
+- Device walk (release APK, dev phone, Fold-sized window): Smooth selected, converted the clean icosphere end-to-end,
+  result shown and STEP saved through the user's own picker; mechanical presets unchanged from 1.10.0.
+- Suite: full unit suite plus 39 mesh2step tests incl. the new accelerator asset test (AArch64 ELF, package import,
+  licence texts, manifest entry).
 ## [1.10.0] - 2026-10-28
 
 ### Added
