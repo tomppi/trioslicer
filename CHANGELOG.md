@@ -4,6 +4,43 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-10-28
+
+### Added
+
+- **Mesh -> STEP now has the real program's full toolkit.** The six optional accelerators the upstream Mesh-Mix-S2C bundles
+  (its requirements.txt pins all six; both PyInstaller specs collect them) are shipped for the app's bionic CPython 3.11/arm64:
+  **trimesh 5.1.1** (MIT), **manifold3d 3.5.4** (Apache-2.0), **fast_simplification 0.2.0** (MIT), **pymeshfix 0.18.1**
+  (AGPL-3.0, wrapping MeshFix GPL-3.0), **rtree 1.4.1** (MIT) with **libspatialindex 2.1.0** (MIT), on top of
+  **pynanoinstantmeshes 0.0.3** from 1.11.0. They are drop-in imports for unmodified engine code, staged under
+  assets/mesh2step/lib (206 files, 6,977,131 B) with all licence texts, pinned/reproducible build scripts, SHA256SUMS and
+  verifier/CI gates (AArch64 ELF + package-import + licence checks). The first-run Mesh to STEP estimate rises to 8 MB.
+- **The sheet exposes the two capabilities those libraries unlock**, so the parity is reachable from the app:
+  - **Repair: Auto / Off / Aggressive.** Auto is the engine's built-in hole/pinch filler (and the default, so untouched sheets
+    behave exactly as in 1.11.0); Off converts the mesh as it is; Aggressive adds the full MeshFix repair and can take minutes
+    on damaged meshes.
+  - **Merge overlapping parts.** Off keeps touching/overlapping shells as separate solids (the old behaviour); on merges them
+    into one solid through the Manifold cleanup and can take longer.
+
+### Tested
+
+- Device walk (release APK, dev phone): a damaged two-shell mushroom converted with **Merge ON** gave **1 solid** (was 2),
+  350 faces, valid, 881,924 B saved, 179.0 s wall / 3 min 00 s engine (the engine's CLI proof on the same case: 165.59 s,
+  350 faces, 1 solid, 881,900 B, merged into one solid). Warnings were shown honestly (flat-face note, fidelity 100% within
+  0.12 mm, largest 0.03 mm, 128 pinched points).
+- Mechanical regression: cantilever 1,928 triangles, Auto defaults -> 31 faces, 1 solid, valid, unchanged (12.4 s engine).
+- Smooth regression: clean 1,280-triangle icosphere, q0.7 -> 57 faces, 1 solid, valid, unchanged (13.2 s engine).
+- Engine-level proof from the build lane: cube.obj now converts through trimesh, a holey cube closes to 1 solid with
+  aggressive repair, a 17,664-crossing dome still returns its (unchanged) faceted fallback, and mechanical/Smooth results
+  are identical with the libraries blocked.
+
+### Notices
+
+- THIRD_PARTY_NOTICES and assets/mesh2step/SOURCE.md name all six accelerators with pinned versions and licences, record
+  that they restore real-program parity, and note that PyMeshFix/MeshFix are AGPL-3.0/GPL-3.0 (compatible with TrioSlicer's
+  AGPL) and that rtree needs libspatialindex. The optional extras those packages can use (lxml, pillow, shapely, embreex,
+  scikit-image, pyvista) are still not bundled - the engine keeps its named fallbacks.
+
 ## [1.11.0] - 2026-10-28
 
 ### Added
