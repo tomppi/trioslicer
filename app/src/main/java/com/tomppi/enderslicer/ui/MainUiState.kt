@@ -1220,6 +1220,46 @@ data class MainUiState(
      * The plate reads this, not a composable's own state: a rotation must not change what the
      * Slice button decides, and the gate is a fact about the document, not about the screen.
      */
+    /**
+     * What removing [id] from the plate means for the live CAD document, or null when [id] is
+     * neither a mesh nor a converted STL nor a split half - deleting those is an ordinary
+     * object delete and never touches the document.
+     *
+     * The document's plate objects are its only owner on the plate: the last one leaving ends
+     * the document exactly like closing it, so the CAD slice gate cannot keep refusing Slice
+     * with nothing live on the plate. One part leaving a multi-part document keeps it live;
+     * the plate draws one fewer part and the document stays refused until it is converted.
+     */
+    fun cadRemovalFor(id: String): CadPlateRemoval? {
+        val document = cadDocument ?: return null
+        if (document.converted) return null
+        val liveIds = document.parts.map { it.objectId }.toSet() +
+            listOfNotNull(document.displayObjectId)
+        if (id !in liveIds) return null
+        val remainingParts = document.parts.filterNot { it.objectId == id }
+        val remainingLegacy = listOfNotNull(document.displayObjectId).filter { it != id }
+        val remainingOnPlate = remainingParts.count { part ->
+            models.any { it.id == part.objectId }
+        } + remainingLegacy.count { legacyId -> models.any { it.id == legacyId } }
+        if (remainingOnPlate == 0) {
+            return CadPlateRemoval(document = null, endsDocument = true)
+        }
+        return CadPlateRemoval(
+            document = document.copy(
+                parts = remainingParts,
+                displayObjectId = remainingLegacy.firstOrNull(),
+                bodyCount = remainingParts.size + remainingLegacy.size,
+            ),
+            endsDocument = false,
+        )
+    }
+
+    /** The outcome of removing one of a live CAD document's plate objects. */
+    data class CadPlateRemoval(
+        val document: CadDocument?,
+        val endsDocument: Boolean,
+    )
+
     val cadSliceBlockedReason: String? get() = CadSliceGate.reasonFor(cadDocument)
 
     /** True when the only thing between the plate and a Slice is the human's Convert press. */

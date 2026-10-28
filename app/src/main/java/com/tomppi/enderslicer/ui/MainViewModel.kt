@@ -3523,8 +3523,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeModel(id: String) {
         val state = _uiState.value
         val removed = state.models.firstOrNull { it.id == id } ?: return
+        // A live CAD document's plate object is the document's only owner on the plate. Taking
+        // the last one off must end the document the way closing it does, or the CAD slice gate
+        // keeps refusing Slice with nothing live on the plate; taking one part of a multi-part
+        // document leaves the document live and refused until the human converts it.
+        val cadRemoval = state.cadRemovalFor(id)
+        val endsLiveDocument = cadRemoval?.endsDocument == true
         if (!beginOperation("Removing ${removed.name}…")) return
         placementHistory.clear()
+        var removalStatus = when {
+            endsLiveDocument ->
+                "Deleted ${removed.name}; the CAD document is no longer on the plate - its " +
+                    "design file stays in the SolidCraft workspace; import a mesh and Slice " +
+                    "can run again"
+            cadRemoval != null -> {
+                val left = cadRemoval.document?.parts?.size ?: 0
+                "Deleted ${removed.name}; the CAD document is still live with $left part" +
+                    (if (left == 1) "" else "s") + " left - convert it to STL before Slice can run"
+            }
+            else -> "Removed ${removed.name}; slice again to export G-code"
+        }
         // The state is built from whatever is current when it is committed, not from a snapshot
         // taken before the save: a slice finishing during that save used to have its result
         // overwritten by the snapshot.
@@ -3532,15 +3550,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // withoutModel is what takes the object off the plate. Rebuilding the state from
             // [current] and forgetting this call left the object in place while its file was
             // deleted underneath it.
-            current.withoutModel(id)
-                .withoutPublishedSlice("Removed ${removed.name}; slice again to export G-code")
+            val base = current.withoutModel(id)
+                .withoutPublishedSlice(removalStatus)
                 .copy(canUndoPlacement = false, undoPlacementLabel = null, isBusy = false)
                 // The object that left may have been a half, so the session and its previewed
                 // halves go; the pair itself stays, and says it is stale if one of them went.
                 .withoutSnap()
+            when {
+                endsLiveDocument -> base.copy(cadDocument = null)
+                cadRemoval != null -> base.copy(cadDocument = cadRemoval.document)
+                else -> base
+            }
         }
         viewModelScope.launch {
             runCatching {
+                if (cadRemoval != null && !endsLiveDocument) {
+                    // Its body is no longer drawn on the plate, so the body-to-object mapping
+                    // must not point at the deleted object.
+                    cadPartIds.entries.removeAll { it.value == id }
+                }
+                if (endsLiveDocument) {
+                    // closeCadDocument's work: the design file is saved, the engine session the
+                    // document owned is stopped, and the caches that described its picture go.
+                    withContext(Dispatchers.IO) {
+                        cadPersistLock.withLock { persistCadWorkspaceNow() }
+                        SolidCraftEngine.stop()
+                    }
+                    SolidCraftEngine.onDocumentChanged = null
+                    cadOpenDesignPath = null
+                    cadBodies.clear()
+                    cadPartIds.clear()
+                    cadDerivedPlateIds.clear()
+                    cadComposerComplete = false
+                    placementHistory.clear()
+                    removalStatus += resetInAppConversationForDocumentSwitch()
+                }
                 val next = commit(_uiState.value)
                 if (next.models.isEmpty()) {
                     // The last object is gone, so there is no plate left to describe. The
