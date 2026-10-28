@@ -26,8 +26,34 @@ Additions from TrioSlicer (both AGPL-3.0-only, SPDX headers in the files):
   nothing on an OCP that has `TransferRoots`.
 
 Runtime: the app's only CPython (the Klipper payload, 3.11) with the existing CAD payload's
-`OCP`, `numpy` and `scipy` on `PYTHONPATH`. No optional accelerator is required for a clean
-mechanical STL; `trimesh`, `manifold3d`, `rtree`, `pymeshfix`, `fast_simplification` and
-`pynanoinstantmeshes` are not shipped, so the factory fallbacks are used and features that
-require them (quad remeshing for the Smooth preset, MeshFix repair of damaged meshes, non-STL
-input formats) fail with the engine's own error instead of being silently substituted.
+`OCP`, `numpy` and `scipy` on `PYTHONPATH`.
+
+## Optional accelerator: PyNanoInstantMeshes 0.0.3 (Smooth preset)
+
+The one optional accelerator the app ships. The engine's `mmm/smooth.py` imports
+`pynanoinstantmeshes` for its quad remeshing pass (the CAD/mechanical presets do not use it);
+the vendored engine code is unmodified and the binding is a drop-in import from `lib/`.
+
+- Package: PyNanoInstantMeshes 0.0.3 by Mark Boss, BSD-3-Clause.
+  Source sdist sha256: `d827eba612753a4bad6e8f644b8cc6c195e47f4afc6936823c0be5c47bb3c23f`.
+- Staged: `lib/pynanoinstantmeshes/__init__.py` (upstream, byte-identical) and
+  `lib/pynanoinstantmeshes/_pynim.cpython-311.so`, cross-built here and not taken from PyPI.
+- Build: `scripts/build-pynanoinstantmeshes-android.sh` reproduces the module from the pinned
+  sdist. It patches only the build files in a work copy (never our assets): nanobind 3.1.0
+  (wheel sha256 `96984dbe8154ffb86e653b1b60aaeed6985c710c5e75ad0279eb87943c66292d`) drops the
+  cp312 stable-ABI flag for our cp311 target; the vendored TBB 2020.2 is built static for
+  Android (no `-lpthread` on bionic, no host `try_run`, generated version template); the
+  Instant Meshes sources are compiled as C++14 because they still use `std::unary_function`,
+  while the nanobind module is C++17. Toolchain: the NDK clang for arm64 API 24 (matching the
+  Klipper Python build), the Android CPython 3.11 prefix `.build/py311-android`, and the
+  target extension suffix `.cpython-311.so`.
+- Runtime: the module has `DT_NEEDED` on `libpython3.11.so.1.0`, `libc++_shared.so` and the
+  Android system libraries. Both non-system libraries are on the runtime path the seam already
+  sets (`files/cad/libexec` carries the libpython soname alias and the app's native library
+  directory carries `libc++_shared.so`).
+- Licences staged beside it in `lib/pynanoinstantmeshes/licenses/`: Instant Meshes BSD-3
+  (native/LICENSE.txt), Eigen MPL-2.0, TBB Apache-2.0 and the binding's BSD-3 notice.
+- The other optional accelerators (`trimesh`, `manifold3d`, `rtree`, `pymeshfix`,
+  `fast_simplification`) remain absent: they are only needed for non-STL input and
+  damaged-mesh repair, and those paths still fail with the engine's named error rather than a
+  silent substitution.

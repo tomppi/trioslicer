@@ -256,9 +256,19 @@ jobs:
           test -s app/src/main/assets/mesh2step/LICENSE
           test -s app/src/main/assets/mesh2step/THIRD_PARTY_NOTICES.md
           test -s app/src/main/assets/mesh2step/SHA256SUMS
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/__init__.py
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/_pynim.cpython-311.so
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/licenses/INSTANT-MESHES.txt
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/licenses/EIGEN-MPL2.txt
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/licenses/TBB-APACHE-2.0.txt
+          test -s app/src/main/assets/mesh2step/lib/pynanoinstantmeshes/licenses/PYNANOINSTANTMESHES.txt
           grep -q 'format=1' app/src/main/assets/mesh2step/.source-version
           grep -q 'engine=1.6.0' app/src/main/assets/mesh2step/.source-version
           grep -q 'commit=4cf72ea5900f40d99116bda7877a8e7550ec604f' app/src/main/assets/mesh2step/.source-version
+          grep -q 'accelerator=pynanoinstantmeshes' app/src/main/assets/mesh2step/.source-version
+          grep -q 'accelerator_version=0.0.3' app/src/main/assets/mesh2step/.source-version
+          grep -q 'accelerator_source_sha256=d827eba612753a4bad6e8f644b8cc6c195e47f4afc6936823c0be5c47bb3c23f' app/src/main/assets/mesh2step/.source-version
+          grep -q 'os.path.join(here, "lib")' app/src/main/assets/mesh2step/launcher.py
           grep -q 'ocp_compat' app/src/main/assets/mesh2step/launcher.py
           grep -q 'OCP.collections' app/src/main/assets/mesh2step/ocp_compat.py
           ! grep -R 'https://cdn.jsdelivr.net' app/src/main/assets/mesh2step
@@ -695,6 +705,9 @@ jobs:
           grep -q 'assets/mesh2step/mmm/pipeline.py' apk-contents.log
           grep -q 'assets/mesh2step/launcher.py' apk-contents.log
           grep -q 'assets/mesh2step/ocp_compat.py' apk-contents.log
+          grep -q 'assets/mesh2step/lib/pynanoinstantmeshes/_pynim.cpython-311.so' apk-contents.log
+          grep -q 'assets/mesh2step/lib/pynanoinstantmeshes/licenses/TBB-APACHE-2.0.txt' apk-contents.log
+          grep -q 'assets/mesh2step/lib/pynanoinstantmeshes/licenses/INSTANT-MESHES.txt' apk-contents.log
           grep -q 'assets/mesh2step/LICENSE' apk-contents.log
           grep -q 'assets/mesh2step/SHA256SUMS' apk-contents.log
           grep -q 'assets/bumpmesh/library/manifest.json' apk-contents.log

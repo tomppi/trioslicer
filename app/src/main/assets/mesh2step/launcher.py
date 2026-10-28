@@ -10,6 +10,10 @@ two small adapters are installed before the engine is imported:
 - engine_compat: reads STEP files back through the available XCAF reader, because this
   payload's STEPControl_Reader has no TransferRoots().
 
+The bundled lib/ directory carries the one optional accelerator we ship, the
+PyNanoInstantMeshes binding for the engine's Smooth (quad remeshing) path. It is a drop-in
+import for unmodified engine code, so it is only put on sys.path, never patched.
+
 Neither the OCP payload nor any vendored engine file is modified.
 """
 import os
@@ -20,6 +24,9 @@ def main(argv):
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)
+    bundled = os.path.join(here, "lib")
+    if bundled not in sys.path:
+        sys.path.insert(0, bundled)
     import ocp_compat
 
     ocp_compat.install()

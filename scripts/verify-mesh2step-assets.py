@@ -28,6 +28,12 @@ PIN = {
     "source": "STL2CURVES-MMM/Mesh-Mix-S2C",
     "tag": "v1.6.0",
     "commit": "4cf72ea5900f40d99116bda7877a8e7550ec604f",
+    "accelerator": "pynanoinstantmeshes",
+    "accelerator_version": "0.0.3",
+    "accelerator_source_sha256": (
+        "d827eba612753a4bad6e8f644b8cc6c195e47f4afc6936823c0be5c47bb3c23f"
+    ),
+    "accelerator_build": "android-24-arm64-cpython-311",
 }
 
 MMM_MODULES = (
@@ -62,7 +68,19 @@ REQUIRED_FILES = (
     "THIRD_PARTY_NOTICES.md",
     "SOURCE.md",
     SOURCE_MARKER,
+    "lib/pynanoinstantmeshes/__init__.py",
+    "lib/pynanoinstantmeshes/licenses/INSTANT-MESHES.txt",
+    "lib/pynanoinstantmeshes/licenses/EIGEN-MPL2.txt",
+    "lib/pynanoinstantmeshes/licenses/TBB-APACHE-2.0.txt",
+    "lib/pynanoinstantmeshes/licenses/PYNANOINSTANTMESHES.txt",
 ) + tuple("mmm/" + module + ".py" for module in MMM_MODULES)
+
+# The one optional accelerator we ship: the Smooth preset's quad remesher, cross-built
+# for the app's own CPython 3.11 / bionic / arm64. It is a drop-in import for unmodified
+# engine code; see SOURCE.md and scripts/build-pynanoinstantmeshes-android.sh.
+ACCELERATOR_DIR = "lib/pynanoinstantmeshes"
+ACCELERATOR_MODULE = ACCELERATOR_DIR + "/_pynim.cpython-311.so"
+ACCELERATOR_PACKAGE = ACCELERATOR_DIR + "/__init__.py"
 
 # The names Mesh-Mix-S2C imports from OCP.collections (OCP 8.0); the shim maps them
 # onto OCP 7.9 generic collection classes. A missing name is an engine import failure.
@@ -147,6 +165,29 @@ def validate_required(root: pathlib.Path) -> None:
     engine = (root / "mmm_engine.py").read_text(encoding="utf-8")
     if "mmm.cli" not in engine:
         raise RuntimeError("mmm_engine.py does not start the engine CLI")
+
+    accelerator = root / ACCELERATOR_MODULE
+    if not accelerator.is_file():
+        raise RuntimeError("PyNanoInstantMeshes accelerator is missing: " + ACCELERATOR_MODULE)
+    staged_modules = sorted(path.name for path in (root / ACCELERATOR_DIR).glob("_pynim*.so"))
+    if staged_modules != ["_pynim.cpython-311.so"]:
+        raise RuntimeError(
+            "PyNanoInstantMeshes module set changed: staged=" + ",".join(staged_modules)
+        )
+    header = accelerator.read_bytes()[:20]
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        raise RuntimeError("PyNanoInstantMeshes accelerator is not an ELF file")
+    if header[4] != 2 or header[5] != 1:
+        raise RuntimeError("PyNanoInstantMeshes accelerator must be 64-bit little-endian ELF")
+    if int.from_bytes(header[16:18], "little") != 3:
+        raise RuntimeError("PyNanoInstantMeshes accelerator is not a shared object")
+    if int.from_bytes(header[18:20], "little") != 183:
+        raise RuntimeError("PyNanoInstantMeshes accelerator is not AArch64")
+    package = (root / ACCELERATOR_PACKAGE).read_text(encoding="utf-8")
+    if "from ._pynim import remesh" not in package:
+        raise RuntimeError("PyNanoInstantMeshes package does not expose remesh")
+    if 'os.path.join(here, "lib")' not in launcher:
+        raise RuntimeError("Mesh-Mix-S2C launcher does not add the bundled accelerator directory")
 
     # Compiled bytecode is a build-host artefact (and the wrong CPython tag); shipping it
     # would also make the asset set depend on what ran the verifier.

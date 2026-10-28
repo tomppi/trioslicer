@@ -55,6 +55,10 @@ class MeshToStepAssetsTest {
     @Test
     fun theLauncherInstallsTheShimBeforeTheEngine() {
         val launcher = File(assets, "launcher.py").readText()
+        assertTrue(
+            "the launcher must put the bundled accelerator directory on sys.path",
+            launcher.contains("os.path.join(here, \"lib\")"),
+        )
         val shimInstall = launcher.indexOf("ocp_compat")
         val engineImport = launcher.indexOf("from mmm.cli import main")
         assertTrue("the launcher does not import the shim", shimInstall >= 0)
@@ -88,7 +92,45 @@ class MeshToStepAssetsTest {
         assumeTrue("python3 is needed for the asset verifier", python())
         val (code, output) = runVerifier(assets)
         assertEquals("verifier said:\n" + output, 0, code)
-        assertTrue(output, output.contains("Verified 29 Mesh-Mix-S2C engine files"))
+        assertTrue(output, output.contains("Verified 35 Mesh-Mix-S2C engine files"))
+    }
+
+    @Test
+    fun theSmoothAcceleratorIsPackagedForThisInterpreter() {
+        val library = File(assets, "lib/pynanoinstantmeshes")
+        val module = File(library, "_pynim.cpython-311.so")
+        assertTrue("PyNanoInstantMeshes module is missing", module.isFile)
+        assertTrue("the module is suspiciously small", module.length() > 500_000L)
+        val header = module.inputStream().use { it.readNBytes(20) }
+        assertEquals("not an ELF file", 0x7f, header[0].toInt() and 0xff)
+        assertEquals("not an ELF file", 'E'.code, header[1].toInt() and 0xff)
+        assertEquals("not an ELF file", 'L'.code, header[2].toInt() and 0xff)
+        assertEquals("not an ELF file", 'F'.code, header[3].toInt() and 0xff)
+        assertEquals("not a 64-bit ELF", 2, header[4].toInt() and 0xff)
+        assertEquals("not little-endian", 1, header[5].toInt() and 0xff)
+        fun u16(offset: Int) = (header[offset].toInt() and 0xff) or
+            ((header[offset + 1].toInt() and 0xff) shl 8)
+        assertEquals("not a shared object", 3, u16(16))
+        assertEquals("not an AArch64 module", 183, u16(18))
+        assertTrue(
+            "the package must expose remesh",
+            File(library, "__init__.py").readText().contains("from ._pynim import remesh"),
+        )
+        val licenses = File(library, "licenses")
+        assertTrue(
+            "the TBB Apache-2.0 licence is missing",
+            File(licenses, "TBB-APACHE-2.0.txt").readText().contains("Apache License"),
+        )
+        assertTrue(
+            "the Instant Meshes BSD-3 licence is missing",
+            File(licenses, "INSTANT-MESHES.txt").readText().contains("Wenzel Jakob"),
+        )
+        assertTrue(
+            "the committed manifest does not cover the accelerator",
+            File(assets, "SHA256SUMS").readText().contains(
+                "lib/pynanoinstantmeshes/_pynim.cpython-311.so",
+            ),
+        )
     }
 
     @Test

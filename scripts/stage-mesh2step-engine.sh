@@ -83,6 +83,10 @@ engine=1.6.0
 source=STL2CURVES-MMM/Mesh-Mix-S2C
 tag=$TAG
 commit=$COMMIT
+accelerator=pynanoinstantmeshes
+accelerator_version=0.0.3
+accelerator_source_sha256=d827eba612753a4bad6e8f644b8cc6c195e47f4afc6936823c0be5c47bb3c23f
+accelerator_build=android-24-arm64-cpython-311
 MARKER
 
 # Never stage host bytecode: it is the wrong CPython tag and would be packaged.

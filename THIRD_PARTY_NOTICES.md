@@ -39,13 +39,20 @@ two more gaps in that partial cross-compiled API - `STEPControl_Reader.TransferR
 so STEP read-back verification goes through the `STEPCAFControl_Reader` path the engine already
 uses for multi-part files) and the two-shape `BRepExtrema_DistShapeShape` constructor (absent, so
 the fidelity comparison is built with `LoadS1`/`LoadS2`/`PerformDist`). Both adapters are no-ops
-on an OCP that exposes the OCP 8 API. The OCP payload is never modified. No optional
-accelerator is shipped: `trimesh`, `manifold3d`, `rtree`, `pymeshfix`, `fast_simplification`
-and `pynanoinstantmeshes` are absent, so the engine's own fallbacks are
-used and features that require them (the Smooth preset's quad remeshing, MeshFix repair of
-damaged meshes, non-STL input formats) fail with the engine's named error instead of being
-silently substituted. The upstream `THIRD_PARTY_NOTICES.md` lists the licences of those
-optional components for completeness.
+on an OCP that exposes the OCP 8 API. The OCP payload is never modified.
+
+The one optional accelerator the app ships is the Smooth preset's quad remesher:
+PyNanoInstantMeshes 0.0.3 by Mark Boss (BSD-3-Clause), cross-built for the app's bionic
+CPython 3.11 / arm64 and staged under `assets/mesh2step/lib/pynanoinstantmeshes/` with the
+vendored Instant Meshes 2.0 sources (BSD-3-Clause, Wenzel Jakob, Daniele Panozzo, Marco Tarini,
+Olga Sorkine-Hornung), Eigen (MPL-2.0) and TBB 2020.2 (Apache-2.0); the licence texts are
+staged beside the module in `lib/pynanoinstantmeshes/licenses/`. The TBB is linked statically
+and the module links `libpython3.11.so.1.0` and the app's `libc++_shared.so`. The engine code
+is unmodified: the module is a drop-in import from the launcher's bundled `lib/` path. The
+remaining optional accelerators - `trimesh`, `manifold3d`, `rtree`, `pymeshfix`,
+`fast_simplification` - are absent, so MeshFix repair, non-STL input and their fallbacks still
+fail with the engine's named error instead of being silently substituted. The upstream
+`THIRD_PARTY_NOTICES.md` lists the licences of those components for completeness.
 
 ## BumpMesh / stlTexturizer
 
@@ -490,4 +497,3 @@ The two licence texts and upstream's NOTICE are tracked at
 `THIRD-PARTY-LICENSES.txt` upstream generates (`cargo xtask licences`), readable without a network or
 a source tree through `solidcraft-cli licences`. The truck kernel alone is Apache-2.0 (RICOS Co.
 Ltd.), and its text is part of that set.
-

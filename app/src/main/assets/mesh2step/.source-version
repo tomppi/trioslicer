@@ -3,3 +3,7 @@ engine=1.6.0
 source=STL2CURVES-MMM/Mesh-Mix-S2C
 tag=v1.6.0
 commit=4cf72ea5900f40d99116bda7877a8e7550ec604f
+accelerator=pynanoinstantmeshes
+accelerator_version=0.0.3
+accelerator_source_sha256=d827eba612753a4bad6e8f644b8cc6c195e47f4afc6936823c0be5c47bb3c23f
+accelerator_build=android-24-arm64-cpython-311
