@@ -17,8 +17,8 @@ import org.robolectric.annotation.Config
 
 /**
  * The Mesh -> STEP sheet: presets and meanings, the quality/unit controls, the honest cost line,
- * the live Cancel, the engine-unavailable note and the result/save/open section. Rendering only -
- * the conversion itself is the engine lane's and is tested on the engine side.
+ * the live Cancel and the result/save/open section. Rendering only - the conversion itself is the
+ * engine lane's and is tested on the engine side.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w480dp-h900dp")
@@ -105,13 +105,25 @@ class MeshToStepSheetTest {
     }
 
     @Test
-    fun theOrganicRemesherPresetIsDisabledWithItsReason() {
-        render(state())
+    fun smoothIsSelectableAndMapsToTheEnginePreset() {
+        val chosen = mutableListOf<MeshToStepPreset>()
+        render(state(), MeshToStepActions(onPreset = { chosen += it }))
+        compose.onNodeWithText("Smooth").assertIsEnabled()
+        compose.onNodeWithText("Smooth").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf(MeshToStepPreset.SMOOTH), chosen)
+    }
+
+    @Test
+    fun smoothSelectedShowsTheSlowOrganicMeaningAndCost() {
+        render(state().copy(preset = MeshToStepPreset.SMOOTH))
+        compose.onNodeWithText(MeshToStepPreset.SMOOTH.meaning).assertExists()
         compose.onNodeWithText(
-            "Smooth needs the organic remesher, which this build does not include; use " +
-                "Auto/CAD/Precise for mechanical parts.",
+            MeshToStepState(preset = MeshToStepPreset.SMOOTH).presetCaution.orEmpty(),
         ).assertExists()
-        compose.onNodeWithText("Smooth").assertIsNotEnabled()
+        compose.onNodeWithText("~seconds to minutes for this mesh", substring = true).assertExists()
+        compose.onNodeWithText("Smooth needs the organic remesher", substring = true)
+            .assertDoesNotExist()
     }
 
     @Test

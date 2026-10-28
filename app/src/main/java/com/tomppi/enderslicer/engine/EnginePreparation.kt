@@ -61,18 +61,19 @@ object EnginePreparation {
         KLIPPER("klipper", "Klipper host", "the CPython the host runs and the CAD engine borrows", 27L * MB),
         CAD("cad", "CAD engine", "OCCT and build123d; needs the Klipper host's Python", 533L * MB),
         /**
-         * The Mesh-Mix-S2C converter's launcher and scripts (676 KB, 30 files).
+         * The Mesh-Mix-S2C converter's launcher, scripts and PyNanoInstantMeshes accelerator
+         * (~1.8 MB, staged assets).
          *
          * Last on purpose: it borrows the Klipper CPython and the CAD tree, so preparing it
-         * before either would leave it useless. It is also tiny - a second or two - so the
+         * before either would leave it useless. It is still small - a second or two - so the
          * default selection includes it and a fresh install's first Mesh -> STEP conversion
-         * finds its scripts ready.
+         * finds its scripts and the Smooth remesher ready.
          */
         MESH2STEP(
             "mesh2step",
             "Mesh to STEP",
             "the mesh-to-STEP converter; needs the Klipper Python and CAD payload",
-            MB,
+            2L * MB,
         ),
     }
 

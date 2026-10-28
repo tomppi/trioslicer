@@ -109,6 +109,33 @@ class MeshToStepSourceTest {
     }
 
     @Test
+    fun smoothIsARealPresetOnTheSheetNow() {
+        val model = source("ui/MeshToStepModel.kt")
+        val sheet = source("ui/MeshToStepSheet.kt")
+        val seam = source("ui/MeshToStepEngine.kt")
+        assertTrue("Smooth is a real preset", model.contains("SMOOTH("))
+        assertTrue("its meaning names the quad path", model.contains("quad remeshing"))
+        assertTrue(
+            "the chip is enabled whenever nothing is converting",
+            sheet.contains("enabled = !state.converting"),
+        )
+        assertFalse(
+            "no disabled-preset state survives in the model",
+            model.contains("selectable"),
+        )
+        assertFalse(
+            "the old disabled reason is gone from model and sheet",
+            model.contains("Smooth needs the organic remesher") ||
+                sheet.contains("Smooth needs the organic remesher") ||
+                sheet.contains("unavailablePresetNote"),
+        )
+        assertTrue(
+            "the ui preset maps onto the engine's Preset.SMOOTH by name",
+            seam.contains("Preset.valueOf(request.preset.name)"),
+        )
+    }
+
+    @Test
     fun theTwoRefusalsAreByName() {
         val viewModel = source("ui/MainViewModel.kt")
         assertTrue(viewModel.contains("A Mesh -> STEP conversion is already running"))

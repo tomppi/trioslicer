@@ -52,36 +52,43 @@ class MeshToStepLogicTest {
             MeshToStepPreset.CAD.meaning.contains("Mechanical"),
         )
         assertTrue(
-            "organic meshes are named as slow at the preset",
-            MeshToStepPreset.SMOOTH.meaning.contains("slow"),
+            "organic meshes are named with both ends of their cost at the preset",
+            MeshToStepPreset.SMOOTH.meaning.contains("seconds") &&
+                MeshToStepPreset.SMOOTH.meaning.contains("minutes"),
         )
         assertTrue(
             "Exact is named as tens of minutes",
             MeshToStepPreset.EXACT.meaning.contains("tens of minutes"),
         )
-        assertFalse("Smooth cannot be offered until its remesher ships", MeshToStepPreset.SMOOTH.selectable)
         assertTrue(
-            "the disabled preset says why and what to use",
-            MeshToStepState().unavailablePresetNote
-                .orEmpty()
-                .contains("use Auto/CAD/Precise for mechanical parts"),
+            "Smooth is the organic quad-remeshing path now",
+            MeshToStepPreset.SMOOTH.meaning.contains("quad remeshing"),
         )
         assertNull(MeshToStepState(preset = MeshToStepPreset.AUTO).presetCaution)
+        assertTrue(
+            "Smooth carries its honest organic caution on the sheet",
+            MeshToStepState(preset = MeshToStepPreset.SMOOTH).presetCaution
+                .orEmpty()
+                .contains("not the fast path"),
+        )
+        assertTrue(
+            "a clean small organic mesh is allowed to be seconds",
+            MeshToStepPreset.SMOOTH.meaning.contains("seconds for a clean small mesh"),
+        )
         assertTrue(
             "Exact is a slow spelling of Precise",
             MeshToStepState(preset = MeshToStepPreset.EXACT).presetCaution
                 .orEmpty()
                 .contains("slowest mode"),
         )
-        // CAD is the cheapest; the rest climb from Auto through Exact.
+        // CAD is the cheapest, Smooth is the slowest, and Precise/Exact are the same path.
         assertTrue(MeshToStepPreset.CAD.costFactor < MeshToStepPreset.AUTO.costFactor)
-        val climbing = listOf(
-            MeshToStepPreset.AUTO,
-            MeshToStepPreset.SMOOTH,
-            MeshToStepPreset.PRECISE,
-            MeshToStepPreset.EXACT,
-        ).map { it.costFactor }
-        assertEquals(climbing.sorted(), climbing)
+        assertTrue(MeshToStepPreset.SMOOTH.costFactor > MeshToStepPreset.EXACT.costFactor)
+        assertEquals(
+            MeshToStepPreset.PRECISE.costFactor,
+            MeshToStepPreset.EXACT.costFactor,
+            0f,
+        )
     }
 
     @Test
@@ -137,7 +144,8 @@ class MeshToStepLogicTest {
             quality = 0.7f,
         )
         assertEquals("Tens of minutes", organic.costBand)
-        assertTrue("organic work is not recommended on a phone", organic.costLine.contains("not a path we recommend"))
+        assertTrue("organic work points at Smooth", organic.costLine.contains("need Smooth"))
+        assertTrue(organic.costLine.contains("Cancel stays live"))
         val exactOrganic = organic.withPreset(MeshToStepPreset.EXACT)
         assertEquals("Tens of minutes", exactOrganic.costBand)
         assertTrue(exactOrganic.costLine.contains("tens of minutes"))
@@ -150,6 +158,29 @@ class MeshToStepLogicTest {
         assertTrue(
             MeshToStepState(sourceTriangles = 0).costLine.contains("Select a mesh first"),
         )
+
+        // Smooth is honest in both directions: a clean small organic mesh can be seconds, a
+        // larger one is tens of minutes, and the copy never promises speed.
+        val smallOrganic = MeshToStepState(
+            sourceTriangles = 1_280,
+            preset = MeshToStepPreset.SMOOTH,
+            quality = 0.7f,
+        )
+        assertEquals("Seconds to minutes", smallOrganic.costBand)
+        assertTrue(smallOrganic.costLine.startsWith("On-device and CPU-heavy: ~seconds to minutes"))
+        assertTrue(smallOrganic.costLine.contains("not the fast path"))
+        assertTrue(smallOrganic.costLine.contains("Cancel stays live"))
+        assertTrue(
+            "a mushroom-sized mesh is still in the seconds-to-minutes band",
+            smallOrganic.copy(sourceTriangles = 512).costBand == "Seconds to minutes",
+        )
+        assertEquals(
+            "Minutes",
+            smallOrganic.copy(sourceTriangles = 20_000).costBand,
+        )
+        val largerOrganic = smallOrganic.copy(sourceTriangles = 60_000)
+        assertEquals("Tens of minutes", largerOrganic.costBand)
+        assertTrue(largerOrganic.costLine.contains("tens of minutes"))
     }
 
     @Test

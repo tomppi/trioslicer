@@ -93,18 +93,11 @@ internal fun MeshToStepSheet(
             MeshToStepPreset.entries.forEach { preset ->
                 FilterChip(
                     selected = state.preset == preset,
-                    enabled = !state.converting && preset.selectable,
+                    enabled = !state.converting,
                     onClick = { actions.onPreset(preset) },
                     label = { Text(preset.label) },
                 )
             }
-        }
-        state.unavailablePresetNote?.let { note ->
-            Text(
-                note,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         Text(
             state.presetMeaning,

@@ -21,16 +21,10 @@ enum class MeshToStepPreset(
     val meaning: String,
     /** Relative cost against Auto; used only for the estimate band. */
     val costFactor: Float,
-    /**
-     * False when this build cannot run the preset at all. Smooth's quad remesher is not
-     * cross-built (the Lead deferred it), so offering the chip enabled would be a preset that
-     * fails after minutes of CAD work. The sheet shows it disabled with the reason.
-     */
-    val selectable: Boolean = true,
 ) {
     AUTO(
         "Auto",
-        "The engine decides: mechanical parts fast (seconds to about a minute); organic tens of minutes",
+        "The engine decides: mechanical parts fast (seconds to about a minute); organic can take minutes",
         1.0f,
     ),
     CAD(
@@ -40,9 +34,11 @@ enum class MeshToStepPreset(
     ),
     SMOOTH(
         "Smooth",
-        "Organic and sculpted meshes only: the slow quad path, tens of minutes",
-        1.35f,
-        selectable = false,
+        "Organic and sculpted meshes: quad remeshing - seconds for a clean small mesh, " +
+            "minutes for messy or larger ones",
+        // A clean small organic mesh can remesh in seconds; messy, damaged, multi-shell or
+        // larger ones are minutes. The estimate must never call this path fast as a rule.
+        6.0f,
     ),
     PRECISE(
         "Precise",
@@ -127,18 +123,13 @@ data class MeshToStepState(
      */
     val presetCaution: String?
         get() = when (preset) {
+            MeshToStepPreset.SMOOTH ->
+                "Smooth is the organic path, not the fast path: a clean small mesh can remesh " +
+                    "in seconds; messy, damaged, multi-shell or larger meshes can take minutes. " +
+                    "Mechanical parts stay on Auto/CAD/Precise."
             MeshToStepPreset.EXACT ->
                 "The slowest mode: use it only if you accept many minutes of CPU on this device."
             else -> null
-        }
-
-    /** Why a preset is shown disabled, or null when every chip can run in this build. */
-    val unavailablePresetNote: String?
-        get() = if (MeshToStepPreset.entries.any { !it.selectable }) {
-            "Smooth needs the organic remesher, which this build does not include; use " +
-                "Auto/CAD/Precise for mechanical parts."
-        } else {
-            null
         }
 
     val qualityLabel: String
@@ -153,6 +144,15 @@ data class MeshToStepState(
         get() {
             if (sourceTriangles <= 0) return "Select a mesh first"
             val cost = sourceTriangles.toFloat() * preset.costFactor * (0.55f + 1.5f * quality)
+            // A clean small organic mesh can be seconds; the band never promises speed and
+            // larger organic meshes are tens of minutes.
+            if (preset == MeshToStepPreset.SMOOTH) {
+                return when {
+                    cost < 40_000f -> "Seconds to minutes"
+                    cost < 250_000f -> "Minutes"
+                    else -> "Tens of minutes"
+                }
+            }
             return when {
                 cost < 20_000f -> "Seconds"
                 cost < 80_000f -> "About a minute"
@@ -172,10 +172,17 @@ data class MeshToStepState(
     val costLine: String
         get() {
             if (sourceTriangles <= 0) return "Select a mesh first."
+            if (preset == MeshToStepPreset.SMOOTH) {
+                return "On-device and CPU-heavy: ~" + costBand.lowercase(Locale.US) +
+                    " for this mesh. Smooth quad-remeshes organic and sculpted meshes and is " +
+                    "not the fast path - a clean small mesh can take seconds, while messy, " +
+                    "damaged, multi-shell or larger meshes can take minutes. Keep mechanical " +
+                    "parts on Auto/CAD/Precise. Cancel stays live."
+            }
             return "On-device and CPU-heavy: ~" + costBand.lowercase(Locale.US) +
                 " for this mesh. Mechanical and mostly-flat meshes convert in seconds (a " +
-                "~25k-triangle part about a minute); organic or sculpted meshes can take tens of " +
-                "minutes and are not a path we recommend on a phone. Cancel stays live."
+                "~25k-triangle part about a minute); organic or sculpted meshes need Smooth and " +
+                "can take minutes to tens of minutes. Cancel stays live."
         }
 
     val startBlockedReason: String?
