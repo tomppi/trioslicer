@@ -339,7 +339,7 @@ class MeshToStepEngine(private val context: Context) : Closeable {
         val home = KlipperPayload.root(context)
         val cadSite = CadEngine.sitePackages(context)
         val payloadSite = File(home, "lib/python3.11/site-packages")
-        if (!KlipperPayload.pythonDirectory(context).isDirectory || !cadSite.isDirectory) {
+        if (!pythonPayloadPrepared(context)) {
             report(onProgress, Progress("Preparing the Python CAD payload", 0f))
             val error = CadEngine.ensureExtracted(context) { extraction ->
                 report(
@@ -351,6 +351,16 @@ class MeshToStepEngine(private val context: Context) : Closeable {
                 throw ConversionException(
                     "the app's Python CAD payload is not ready, so the mesh-to-STEP converter " +
                         "cannot start: " + error,
+                    ConversionException.Kind.PAYLOAD_MISSING,
+                )
+            }
+            // Both owners report null once their tree for this install is complete; if one
+            // of them still disagrees, fail by name rather than start an interpreter against
+            // a tree another engine is about to replace.
+            if (!pythonPayloadPrepared(context)) {
+                throw ConversionException(
+                    "the app's Python CAD payload is not ready for this install, so the " +
+                        "mesh-to-STEP converter cannot start",
                     ConversionException.Kind.PAYLOAD_MISSING,
                 )
             }
@@ -517,6 +527,18 @@ class MeshToStepEngine(private val context: Context) : Closeable {
             runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
             }.getOrNull() ?: "0"
+
+        /**
+         * True when both payloads the converter borrows are extracted *for this install*.
+         *
+         * Directory existence is not enough: KlipperPayload and CadEngine compare their
+         * stamps with the package's lastUpdateTime, so after an app update the previous
+         * install's trees still exist but are stale. The first-run preparation screen uses
+         * the same two checks; the converter must agree with it instead of silently running
+         * on trees the screen would replace (and that another engine may re-extract later).
+         */
+        internal fun pythonPayloadPrepared(context: Context): Boolean =
+            KlipperPayload.isExtracted(context) && CadEngine.isExtracted(context)
 
         /**
          * Ensures the interpreter's libpython3.11.so.1.0 alias exists after payload extraction.
