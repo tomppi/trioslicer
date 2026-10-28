@@ -4,6 +4,22 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.2] - 2026-10-28
+
+### Fixed
+
+- **Open as CAD works on a STEP whose name the OS changed.** If a file with the suggested name already exists in the
+  destination folder, Android's document provider appends a duplicate counter after the extension ("...-cad.step (1)").
+  Open as CAD read the destination display name, took its extension as "step (1)", and refused with *SolidCraft opens STEP,
+  IGES, 3MF, OBJ and glTF files; <name> is not one of them* - even though the STEP was valid, saved and on disk. Open as CAD
+  now opens the bytes the app itself produced through a canonical .step cache name (falling back to a copy of the saved
+  content if the cache was pruned), and the CAD document open route canonicalises displayed names: step/stp/iges/igs/3mf/
+  obj/gltf/glb/solidcraft are accepted case-insensitively and a duplicate counter on either side of the extension
+  ("part.step (1)", "part (1).step", even both) is stripped. Genuinely unsupported files still get the same named refusal
+  (naming the raw display name). CadDocumentOpenNameTest and the sheet/source tests pin the canonical names and that the SAF
+  display name never reaches the gate; the device walk saved twice and opened the " (1)" duplicate as a CAD document (1 body),
+  with the unique-name path unchanged.
+
 ## [1.12.1] - 2026-10-28
 
 ### Fixed
