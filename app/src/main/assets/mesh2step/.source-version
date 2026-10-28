@@ -1,0 +1,5 @@
+format=1
+engine=1.6.0
+source=STL2CURVES-MMM/Mesh-Mix-S2C
+tag=v1.6.0
+commit=4cf72ea5900f40d99116bda7877a8e7550ec604f

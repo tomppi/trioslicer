@@ -17,6 +17,31 @@ The filaSim web build includes its declared permissive or AGPL-compatible depend
 
 The native TrioSlicer wavefront generator is an independent CuraEngine adaptation of the propagation method documented by `dennisklappe/OrcaSlicer-WaveOverhangs`, itself based on `stmcculloch/PrusaSlicer-WaveOverhangs`. Those projects and CuraEngine are distributed under the GNU AGPL. The adapted source is retained under `native/curaengine/patches/` with attribution headers.
 
+
+## Mesh-Mix-S2C (mesh to STEP engine)
+
+- Project: `STL2CURVES-MMM/Mesh-Mix-S2C` (Manifold Mesh Mix)
+- Pinned version: `v1.6.0` (commit `4cf72ea5900f40d99116bda7877a8e7550ec604f`)
+- License: GNU Affero General Public License v3.0 only (`AGPL-3.0-only`)
+- Copyright: Mesh-Mix-S2C contributors
+
+The app ships the upstream conversion engine as unmodified Python source under
+`assets/mesh2step/` (`mmm/` and `mmm_engine.py`, byte-for-byte from the pinned commit, with the
+upstream `LICENSE` and `THIRD_PARTY_NOTICES.md` staged beside it and hashes pinned in
+`assets/mesh2step/SHA256SUMS`). It runs on the app's existing CPython (the Klipper payload
+interpreter) with the existing CAD payload's OCP 7.9.3.1, numpy 2.1.3 and scipy 1.14.1 on
+`PYTHONPATH`; the 533 MB payload is not rebuilt and no second interpreter is added.
+
+TrioSlicer adds two AGPL-3.0-only files, both with SPDX headers: `launcher.py` starts the
+engine, and `ocp_compat.py` maps the OCP 8.0.1 `OCP.collections` names the engine imports onto
+the collection classes that already exist in the OCP 7.9.3.1 payload. The OCP payload is never
+modified. No optional accelerator is shipped: `trimesh`, `manifold3d`, `rtree`, `pymeshfix`,
+`fast_simplification` and `pynanoinstantmeshes` are absent, so the engine's own fallbacks are
+used and features that require them (the Smooth preset's quad remeshing, MeshFix repair of
+damaged meshes, non-STL input formats) fail with the engine's named error instead of being
+silently substituted. The upstream `THIRD_PARTY_NOTICES.md` lists the licences of those
+optional components for completeness.
+
 ## BumpMesh / stlTexturizer
 
 - Project: `CNCKitchen/stlTexturizer`

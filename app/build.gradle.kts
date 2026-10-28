@@ -870,6 +870,31 @@ val verifyReleaseApkEngines by tasks.registering {
 
 // The workspace (HTML/JS/Three/fflate/meshstep and its own 24 legacy textures) stays on the
 // pin its vendored web UI was verified against.
+// Mesh-Mix-S2C ("mesh to STEP") is bundled as Python source under assets/mesh2step and runs
+// on the app's existing CPython and CAD payload (no new interpreter, no rebuilt payload). The
+// verifier pins the vendored upstream hashes and the OCP 7.9 compatibility shim before
+// packaging; CI runs the same check, and the app-side seam is MeshToStepEngine.
+val meshToStepAssets = layout.projectDirectory.dir("src/main/assets/mesh2step")
+val meshToStepVerifier = rootProject.file("scripts/verify-mesh2step-assets.py")
+val verifyMeshToStepAssets by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verifies the bundled Mesh-Mix-S2C engine assets before APK packaging"
+    inputs.file(meshToStepVerifier)
+    inputs.dir(meshToStepAssets)
+    outputs.upToDateWhen { false }
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3",
+        meshToStepVerifier.absolutePath,
+        "--root",
+        meshToStepAssets.asFile.absolutePath,
+        "--check-only",
+    )
+}
+tasks.matching { it.name == "mergeDebugAssets" || it.name == "mergeReleaseAssets" }.configureEach {
+    dependsOn(verifyMeshToStepAssets)
+}
+
 val bumpMeshCommit = "a6ac179149b8a17c71a9469dd4cb6f866c0c01d1"
 // The full 101-texture catalogue is a separate, explicitly pinned upstream commit of the same
 // repository: textures/library holds every texture image, every thumbnail, the generated

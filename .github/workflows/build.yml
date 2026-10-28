@@ -243,6 +243,27 @@ jobs:
           test -s app/src/main/assets/bumpmesh/SHA256SUMS
           (cd app/src/main/assets/bumpmesh && sha256sum --check SHA256SUMS)
 
+
+      - name: Verify the bundled Mesh-Mix-S2C engine assets
+        run: |
+          set -o pipefail
+          gradle :app:verifyMeshToStepAssets --stacktrace 2>&1 | tee mesh2step-build.log
+          test -s app/src/main/assets/mesh2step/mmm_engine.py
+          test -s app/src/main/assets/mesh2step/mmm/__init__.py
+          test -s app/src/main/assets/mesh2step/mmm/pipeline.py
+          test -s app/src/main/assets/mesh2step/launcher.py
+          test -s app/src/main/assets/mesh2step/ocp_compat.py
+          test -s app/src/main/assets/mesh2step/LICENSE
+          test -s app/src/main/assets/mesh2step/THIRD_PARTY_NOTICES.md
+          test -s app/src/main/assets/mesh2step/SHA256SUMS
+          grep -q 'format=1' app/src/main/assets/mesh2step/.source-version
+          grep -q 'engine=1.6.0' app/src/main/assets/mesh2step/.source-version
+          grep -q 'commit=4cf72ea5900f40d99116bda7877a8e7550ec604f' app/src/main/assets/mesh2step/.source-version
+          grep -q 'ocp_compat' app/src/main/assets/mesh2step/launcher.py
+          grep -q 'OCP.collections' app/src/main/assets/mesh2step/ocp_compat.py
+          ! grep -R 'https://cdn.jsdelivr.net' app/src/main/assets/mesh2step
+          (cd app/src/main/assets/mesh2step && sha256sum --check SHA256SUMS)
+
       - name: Prepare and validate pinned filaSim workspace
         run: |
           set -o pipefail
@@ -670,6 +691,12 @@ jobs:
           grep -q 'assets/bumpmesh/vendor/three/build/three.module.js' apk-contents.log
           grep -q 'assets/bumpmesh/vendor/meshstep/src/index.ts' apk-contents.log
           grep -q 'assets/bumpmesh/vendor/meshstep/LICENSE' apk-contents.log
+          grep -q 'assets/mesh2step/mmm_engine.py' apk-contents.log
+          grep -q 'assets/mesh2step/mmm/pipeline.py' apk-contents.log
+          grep -q 'assets/mesh2step/launcher.py' apk-contents.log
+          grep -q 'assets/mesh2step/ocp_compat.py' apk-contents.log
+          grep -q 'assets/mesh2step/LICENSE' apk-contents.log
+          grep -q 'assets/mesh2step/SHA256SUMS' apk-contents.log
           grep -q 'assets/bumpmesh/library/manifest.json' apk-contents.log
           grep -q 'assets/bumpmesh/library/CREDITS.md' apk-contents.log
           test "$(grep -c 'assets/bumpmesh/library/textures/[^/]*\.\(png\|jpg\)' apk-contents.log)" -eq 101
