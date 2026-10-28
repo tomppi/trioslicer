@@ -1793,6 +1793,13 @@ fun EnderSlicerApp(
     ) { uri: Uri? -> uri?.let { viewModel.exportCadDocument(it, "3mf") } }
     // The CAD route into the app: STEP/IGES/3MF/OBJ/glTF through the engine's own io crate,
     // not through OCCT's STEP-to-mesh converter. Import model keeps the mesh route.
+    // Mesh -> STEP's only file route: the human's own SAVE destination. The engine writes into
+    // the app cache; this copies the result where the user asked, and the ViewModel says where.
+    val meshToStepSavePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/step"),
+    ) { uri: Uri? -> uri?.let(viewModel::saveMeshToStep) }
+    // The CAD route into the app: STEP/IGES/3MF/OBJ/glTF through the engine's own io crate,
+    // not through OCCT's STEP-to-mesh converter. Import model keeps the mesh route.
     val cadDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { picked ->
             // The ViewModel resets the in-app conversation, the agent's memory and a pending
@@ -2045,6 +2052,15 @@ fun EnderSlicerApp(
                                             onClick = {
                                                 plateOverflowExpanded = false
                                                 viewModel.openBumpMeshStudio()
+                                            },
+                                            enabled = state.mesh != null && !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Convert to STEP (CAD)…") },
+                                            leadingIcon = { Icon(AppIcons.Mesh, contentDescription = null) },
+                                            onClick = {
+                                                plateOverflowExpanded = false
+                                                viewModel.openMeshToStep()
                                             },
                                             enabled = state.mesh != null && !state.isBusy,
                                         )
@@ -3249,6 +3265,7 @@ fun EnderSlicerApp(
                         onImportConfig = { configImportPicker.launch(arrayOf("application/json", "*/*")) },
                         onBumpMesh = ::launchBumpMesh,
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
+                        onMeshToStep = viewModel::openMeshToStep,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
@@ -3643,6 +3660,34 @@ fun EnderSlicerApp(
                     },
                 ),
                 engineUnavailableReason = viewModel.bumpMeshEngineUnavailableReason,
+            )
+        }
+    }
+
+    // Mesh -> STEP: the Mesh-Mix-S2C port's sheet. One on-device conversion at a time; the
+    // result is saved through the human's own CreateDocument picker, and a saved STEP can be
+    // reopened through the existing SolidCraft/Open-CAD route.
+    if (state.meshToStep.open) {
+        AppBottomSheet(
+            onDismissRequest = viewModel::closeMeshToStep,
+            sheetMaxWidth = adaptiveSheetMaxWidth(),
+        ) {
+            MeshToStepSheet(
+                state = state.meshToStep,
+                actions = MeshToStepActions(
+                    onClose = viewModel::closeMeshToStep,
+                    onPreset = viewModel::meshToStepPreset,
+                    onQuality = viewModel::meshToStepQuality,
+                    onUnit = viewModel::meshToStepUnit,
+                    onStart = viewModel::startMeshToStep,
+                    onCancel = viewModel::cancelMeshToStep,
+                    onSaveStep = {
+                        meshToStepSavePicker.launch(
+                            meshToStepFileName(state.meshToStep.sourceName),
+                        )
+                    },
+                    onOpenAsCad = viewModel::openSavedMeshToStepAsCad,
+                ),
             )
         }
     }
@@ -4090,6 +4135,7 @@ private fun MoreScreen(
     onExportLog: () -> Unit,
     onBumpMesh: () -> Unit,
     onBumpMeshStudio: () -> Unit,
+    onMeshToStep: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
@@ -4172,6 +4218,17 @@ private fun MoreScreen(
                 enabled = state.mesh != null && !state.isBusy,
                 badge = "EXP",
                 onClick = onBumpMeshStudio,
+            )
+            MoreDivider()
+            // Mesh-Mix-S2C: turn the plate's mesh into an editable CAD STEP with the on-device
+            // engine. A separate experimental route, beside the other engine doors.
+            MoreRow(
+                icon = AppIcons.Mesh,
+                title = "Mesh -> STEP",
+                subtitle = "Convert the plate mesh into an editable CAD STEP",
+                enabled = state.mesh != null && !state.isBusy,
+                badge = "EXP",
+                onClick = onMeshToStep,
             )
             MoreDivider()
             extraItems()

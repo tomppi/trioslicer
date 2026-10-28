@@ -386,6 +386,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val textureUndoHistory = TextureUndoStack()
     private var bumpMeshApplyJob: Job? = null
 
+    /**
+     * The engine lane's Mesh-Mix-S2C port, behind the ui seam. Created lazily on the sheet's
+     * first open; closed with this ViewModel. The one converter in the app is the engine lane's.
+     */
+    private val meshToStepEngine: MeshToStepEngine by lazy {
+        MeshToStepEngines.create(getApplication(), viewModelScope)
+    }
+    private var meshToStepJob: Job? = null
+
     /** Null while the native host is available; its refusal sentence when it is not. */
     internal val bumpMeshEngineUnavailableReason: String?
         get() = bumpMeshEngine.unavailableReason
@@ -540,6 +549,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (BlenderEngine.onStlExported != null) BlenderEngine.onStlExported = null
         if (CadEngine.onExport != null) CadEngine.onExport = null
         runCatching { bumpMeshEngine.close() }
+        runCatching { meshToStepEngine.close() }
         // Ends the turn, not the engine: a blocking agent loop only stops when its own
         // cancel() is called, and its finally is the only place the keeper, the wake lock and
         // the document's authorship are released. A finished Activity (Back/swipe away) must
@@ -8385,6 +8395,207 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(isBusy = false, bumpMeshStudio = it.bumpMeshStudio.cancelled())
         }
+    }
+
+    // ---- Mesh -> STEP: the Mesh-Mix-S2C port's UI half -----------------------------------
+    //
+    // One on-device conversion at a time, in a sheet that survives rotation: the engine seam is
+    // MeshToStepEngine and the only converter in the app is the engine lane's. The result is a
+    // cache file; the human saves it with the same SAVE route the CAD exports use, and the
+    // status line names where it went.
+
+    /** Opens the sheet on the selected plate object; a live CAD document's own body refuses. */
+    fun openMeshToStep() {
+        val state = _uiState.value
+        if (state.isBusy) return
+        val model = state.selectedModel
+        val document = state.cadDocument
+        val refusal = meshToStepRefusal(
+            modelId = model?.id,
+            documentLoaded = document != null,
+            documentConverted = document?.converted == true,
+        )
+        if (refusal != null) {
+            _uiState.update { it.copy(statusMessage = refusal) }
+            return
+        }
+        _uiState.update { it.copy(meshToStep = meshToStepOpened(model)) }
+    }
+
+    /**
+     * Closing the sheet cancels a running conversion: an invisible CPU-heavy job must not keep
+     * running behind the plate. A finished result is simply forgotten - the cache file stays.
+     */
+    fun closeMeshToStep() {
+        meshToStepEngine.cancel()
+        meshToStepJob?.cancel()
+        meshToStepJob = null
+        _uiState.update {
+            it.copy(isBusy = false, meshToStep = it.meshToStep.closed())
+        }
+    }
+
+    fun meshToStepPreset(value: MeshToStepPreset) =
+        updateMeshToStep { it.withPreset(value) }
+
+    fun meshToStepQuality(value: Float) =
+        updateMeshToStep { it.withQuality(value) }
+
+    fun meshToStepUnit(value: MeshToStepUnit) =
+        updateMeshToStep { it.withUnit(value) }
+
+    /**
+     * Starts the conversion.
+     *
+     * Two refusals are by name: a second Start while one runs, and a plate that is not a mesh
+     * (a live CAD document's own part, which must be Converted first). The converting state is
+     * set before the engine call, so the sheet's Cancel exists from the first second.
+     */
+    fun startMeshToStep() {
+        val snapshot = _uiState.value
+        if (snapshot.meshToStep.converting) {
+            updateMeshToStep {
+                it.copy(error = "A Mesh -> STEP conversion is already running - wait for it or Cancel it.")
+            }
+            return
+        }
+        if (snapshot.isBusy) {
+            updateMeshToStep {
+                it.copy(error = "Another operation is already running - wait for it to finish.")
+            }
+            return
+        }
+        val model = snapshot.selectedModel
+        val document = snapshot.cadDocument
+        val refusal = meshToStepRefusal(
+            modelId = model?.id,
+            documentLoaded = document != null,
+            documentConverted = document?.converted == true,
+        )
+        if (refusal != null) {
+            updateMeshToStep { it.failed(refusal) }
+            _uiState.update { it.copy(statusMessage = refusal) }
+            return
+        }
+        val target = model ?: return
+        if (!beginOperation("Converting " + target.name + " to STEP…")) return
+        val sheet = snapshot.meshToStep
+        updateMeshToStep { it.starting() }
+        meshToStepJob = viewModelScope.launch {
+            try {
+                val sourceStl = withContext(Dispatchers.IO) {
+                    val directory = File(app.cacheDir, "mesh-to-step")
+                    directory.mkdirs()
+                    val file = File(directory, "source-" + System.nanoTime() + ".stl")
+                    StlMeshWriter.writeBinary(target.sourceMesh, file)
+                    file
+                }
+                // convert() is blocking CPU/process work: it must never run on the main
+                // thread. The engine's progress callback is still delivered on the main thread
+                // (its contract), and the state flow is the one channel back to Compose.
+                val result = withContext(Dispatchers.IO) {
+                    meshToStepEngine.convert(meshToStepRequestFor(sourceStl, sheet)) { progress ->
+                        _uiState.update { state ->
+                            state.copy(
+                                meshToStep = state.meshToStep.progressed(
+                                    progress.stage,
+                                    progress.fraction,
+                                    progress.message,
+                                ),
+                            )
+                        }
+                    }
+                }
+                val info = meshToStepResultInfo(result)
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        meshToStep = it.meshToStep.succeeded(info),
+                        statusMessage = "Converted " + target.name + " to STEP (" + info.summaryLine +
+                            ") · choose Save STEP to keep the file",
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                _uiState.update {
+                    it.copy(isBusy = false, meshToStep = it.meshToStep.cancelled())
+                }
+            } catch (error: Throwable) {
+                val alreadyCancelled = !_uiState.value.meshToStep.converting
+                _uiState.update { state ->
+                    if (alreadyCancelled) {
+                        state.copy(isBusy = false)
+                    } else {
+                        val sentence = error.message ?: "The Mesh -> STEP conversion failed."
+                        state.copy(
+                            isBusy = false,
+                            meshToStep = state.meshToStep.failed(sentence),
+                            statusMessage = "Mesh -> STEP failed: " + sentence,
+                        )
+                    }
+                }
+            } finally {
+                meshToStepJob = null
+            }
+        }
+    }
+
+    /** Kills the engine process and puts the sheet back to a clean cancelled state at once. */
+    fun cancelMeshToStep() {
+        meshToStepEngine.cancel()
+        meshToStepJob?.cancel()
+        meshToStepJob = null
+        _uiState.update {
+            it.copy(isBusy = false, meshToStep = it.meshToStep.cancelled())
+        }
+    }
+
+    /**
+     * Copies the engine's cache STEP to the user's own SAVE destination and says where it went.
+     *
+     * The engine never touches SAF: the file is ours to copy, and the status sentence names the
+     * destination name it was given.
+     */
+    fun saveMeshToStep(uri: Uri) {
+        val result = _uiState.value.meshToStep.result ?: return
+        val path = result.stepPath ?: return
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    val source = File(path)
+                    check(source.isFile && source.length() > 0L) {
+                        "The engine's STEP file is gone from the cache; convert the mesh again."
+                    }
+                    app.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                        source.inputStream().use { input -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("Unable to open the STEP destination")
+                    displayName(uri) to source.length()
+                }
+                _uiState.update {
+                    it.copy(
+                        meshToStep = it.meshToStep.saved(saved.first, uri.toString()),
+                        statusMessage = "Saved STEP to " + saved.first + " (" +
+                            formatFileSize(saved.second) + ") · open it as a CAD document from the sheet",
+                    )
+                }
+            } catch (error: Throwable) {
+                showOperationFailure(error)
+            }
+        }
+    }
+
+    /** Opens the STEP the user just saved through the existing SolidCraft/Open-CAD route. */
+    fun openSavedMeshToStepAsCad() {
+        val savedUri = _uiState.value.meshToStep.savedUri ?: return
+        // The press is the answer to the sheet; the document route reports its own status on
+        // the plate, so the sheet must not stay on top of the result it just opened.
+        updateMeshToStep { it.closed() }
+        openCadDocument(Uri.parse(savedUri))
+    }
+
+    private fun updateMeshToStep(
+        transform: (MeshToStepState) -> MeshToStepState,
+    ) {
+        _uiState.update { it.copy(meshToStep = transform(it.meshToStep)) }
     }
 
     /**

@@ -217,6 +217,13 @@ data class MainUiState(
      * separate from the placement history, so the two "undo" rows never mean one another.
      */
     val bumpMeshStudio: BumpMeshStudioState = BumpMeshStudioState(),
+    /**
+     * The Mesh -> STEP sheet: one on-device mesh-to-CAD conversion at a time.
+     *
+     * Open only while the sheet is drawn; the conversion itself runs in the ViewModel and its
+     * result file lives in the app cache until the user saves it.
+     */
+    val meshToStep: MeshToStepState = MeshToStepState(),
     /** The side rail's texture-undo row: the top of the stack, or null while it is empty. */
     val textureUndoLabel: String? = null,
     /** How many texture applies the bounded undo stack still holds. */

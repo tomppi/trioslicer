@@ -6,6 +6,7 @@ import android.util.Log
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import com.tomppi.enderslicer.nativebridge.CadEngine
 import com.tomppi.enderslicer.nativebridge.KlipperPayload
+import com.tomppi.enderslicer.mesh2step.MeshToStepEngine
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +60,20 @@ object EnginePreparation {
         BLENDER("blender", "Blender", "the Python payload the modelling engine runs", 140L * MB),
         KLIPPER("klipper", "Klipper host", "the CPython the host runs and the CAD engine borrows", 27L * MB),
         CAD("cad", "CAD engine", "OCCT and build123d; needs the Klipper host's Python", 533L * MB),
+        /**
+         * The Mesh-Mix-S2C converter's launcher and scripts (676 KB, 30 files).
+         *
+         * Last on purpose: it borrows the Klipper CPython and the CAD tree, so preparing it
+         * before either would leave it useless. It is also tiny - a second or two - so the
+         * default selection includes it and a fresh install's first Mesh -> STEP conversion
+         * finds its scripts ready.
+         */
+        MESH2STEP(
+            "mesh2step",
+            "Mesh to STEP",
+            "the mesh-to-STEP converter; needs the Klipper Python and CAD payload",
+            MB,
+        ),
     }
 
     enum class Phase { PENDING, RUNNING, READY, FAILED }
@@ -99,12 +114,26 @@ object EnginePreparation {
         Engine.entries.firstOrNull { it.id == activeSlicerId }?.let { selected.add(it) }
         selected.add(Engine.KLIPPER)
         selected.add(Engine.CAD)
+        // Tiny, and it means a fresh install's first Mesh -> STEP conversion does not trigger
+        // a surprise 533 MB extraction behind the sheet.
+        selected.add(Engine.MESH2STEP)
         return selected
     }
 
-    /** CAD runs on Klipper's Python: choosing one chooses both. */
-    fun withDependencies(selected: Set<Engine>): Set<Engine> =
-        if (Engine.CAD in selected) selected + Engine.KLIPPER else selected
+    /**
+     * CAD runs on Klipper's Python, and the mesh-to-STEP converter runs on both: choosing one
+     * choosing one chooses what it borrows.
+     */
+    fun withDependencies(selected: Set<Engine>): Set<Engine> {
+        var effective = selected
+        if (Engine.CAD in effective || Engine.MESH2STEP in effective) {
+            effective = effective + Engine.KLIPPER
+        }
+        if (Engine.MESH2STEP in effective) {
+            effective = effective + Engine.CAD
+        }
+        return effective
+    }
 
     fun neededBytes(selected: Set<Engine>): Long =
         withDependencies(selected).sumOf { it.needsBytes }
@@ -201,6 +230,10 @@ object EnginePreparation {
         else BlenderEngine.extractPayload(context, progressFor(engine))
         Engine.KLIPPER -> KlipperPayload.ensureExtracted(context, progressFor(engine))
         Engine.CAD -> CadEngine.ensureExtracted(context, progressFor(engine))
+        // The engine lane's own extractor and stamp - the same one a lazy conversion uses.
+        Engine.MESH2STEP -> MeshToStepEngine.prepare(context) { files, bytes ->
+            mark(engine) { it.copy(files = files, bytes = bytes) }
+        }
     }
 
     private fun isPrepared(context: Context, engine: Engine): Boolean = when (engine) {
@@ -210,6 +243,7 @@ object EnginePreparation {
         Engine.BLENDER -> BlenderEngine.isPayloadExtracted(context)
         Engine.KLIPPER -> KlipperPayload.isExtracted(context)
         Engine.CAD -> CadEngine.isExtracted(context) && KlipperPayload.isExtracted(context)
+        Engine.MESH2STEP -> MeshToStepEngine.isPrepared(context)
     }
 
     /**

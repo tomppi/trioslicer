@@ -16,7 +16,8 @@ a sentence nothing on that path could ever change, because the tree it named was
   assume it has run. A screen that depends on it says what it is waiting for, with numbers that
   move, and ends in ready or a named failure.
 - The first-run **Prepare the engines** screen prepares each payload through these same paths, in
-  dependency order (the Python before the CAD tree), one engine at a time.
+  dependency order (the Python before the CAD tree, then the mesh-to-STEP scripts that borrow
+  both), one engine at a time.
 
 ## Every G-code reader that draws must draw everything it read
 
