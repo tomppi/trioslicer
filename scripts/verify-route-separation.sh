@@ -38,6 +38,10 @@ ALLOWED=(
   # name it. What it calls is the shared extractor (KlipperPayload), which is the point of that
   # class: the borrower extracts what it borrows rather than a second copy of the tree.
   "engine/EnginePreparation.kt"
+  # The Mesh -> STEP converter is the third borrower of that interpreter: it must start the
+  # app's CPython to run the bundled converter, so it names KlipperPayload and the Python
+  # directory. It chooses no G-code route and imports no klippy code.
+  "mesh2step/MeshToStepEngine.kt"
 )
 
 is_allowed() {
