@@ -39,6 +39,26 @@ class MeshToStepEngine(private val context: Context) : Closeable {
     }
 
     /**
+     * How much mesh repair the engine may do before converting.
+     *
+     * Off converts the mesh as it is; Auto uses the engine's built-in hole/pinch filling;
+     * Aggressive also runs the full MeshFix repair, which can take minutes on damaged meshes.
+     */
+    enum class RepairMode(
+        internal val engineArgument: String,
+        val label: String,
+        val meaning: String,
+    ) {
+        OFF("off", "Off", "Convert the mesh as it is."),
+        AUTO("auto", "Auto", "Fill small holes and split pinched corners, as the engine does by default."),
+        AGGRESSIVE(
+            "aggressive",
+            "Aggressive",
+            "Also run the full MeshFix repair; this can take minutes on damaged meshes.",
+        ),
+    }
+
+    /**
      * One conversion request. Only sourceStl is required; the defaults are the app's
      * recommendation for a mechanical part.
      *
@@ -47,6 +67,8 @@ class MeshToStepEngine(private val context: Context) : Closeable {
      * tolerance: optional absolute fit tolerance in the mesh's units.
      * timeoutMillis: wall-clock bound; the process is killed when it expires.
      * onLog: optional engine log lines (delivered on the main thread, like progress).
+     * mergeOverlaps: ask the engine to join overlapping pieces of a part into one solid.
+     * repair: Off / Auto (default) / Aggressive; see [RepairMode] for the user-facing meanings.
      */
     data class Request(
         val sourceStl: File,
@@ -56,6 +78,8 @@ class MeshToStepEngine(private val context: Context) : Closeable {
         val tolerance: Double? = null,
         val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
         val onLog: ((String) -> Unit)? = null,
+        val mergeOverlaps: Boolean = false,
+        val repair: RepairMode = RepairMode.AUTO,
     )
 
     /** One progress update: the engine's own phase string and a monotonic 0..1 fraction. */

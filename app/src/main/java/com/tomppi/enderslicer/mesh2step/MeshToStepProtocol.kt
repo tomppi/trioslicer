@@ -105,6 +105,15 @@ internal object MeshToStepProtocol {
             arguments += "--tolerance"
             arguments += java.math.BigDecimal.valueOf(tolerance).stripTrailingZeros().toPlainString()
         }
+        // The engine defaults are repair=auto and no overlap merging, so the flags are only
+        // added when the caller chose something different; the default argv is unchanged.
+        if (request.mergeOverlaps) {
+            arguments += "--merge-overlaps"
+        }
+        if (request.repair != MeshToStepEngine.RepairMode.AUTO) {
+            arguments += "--repair"
+            arguments += request.repair.engineArgument
+        }
         return arguments
     }
 

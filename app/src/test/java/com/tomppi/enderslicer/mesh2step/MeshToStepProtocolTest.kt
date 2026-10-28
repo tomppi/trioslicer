@@ -136,6 +136,62 @@ class MeshToStepProtocolTest {
     }
 
     @Test
+    fun mergeOverlapsAndRepairReachTheEngineOnlyWhenTheyDifferFromItsDefaults() {
+        val input = File("/tmp/in.stl")
+        val output = File("/tmp/out.step")
+        for (merge in listOf(false, true)) {
+            for (mode in MeshToStepEngine.RepairMode.values()) {
+                val arguments = MeshToStepProtocol.convertArguments(
+                    request.copy(mergeOverlaps = merge, repair = mode),
+                    input,
+                    output,
+                )
+                assertEquals(
+                    "mergeOverlaps=" + merge + " repair=" + mode + " argv=" + arguments,
+                    merge,
+                    arguments.contains("--merge-overlaps"),
+                )
+                if (mode == MeshToStepEngine.RepairMode.AUTO) {
+                    assertFalse("Auto is the engine default", arguments.contains("--repair"))
+                } else {
+                    val engineArgument = when (mode) {
+                        MeshToStepEngine.RepairMode.OFF -> "off"
+                        MeshToStepEngine.RepairMode.AGGRESSIVE -> "aggressive"
+                        MeshToStepEngine.RepairMode.AUTO -> error("handled above")
+                    }
+                    assertTrue(
+                        "repair=" + mode + " argv=" + arguments,
+                        arguments.windowed(2).contains(listOf("--repair", engineArgument)),
+                    )
+                }
+                // The rest of the contract is unchanged in every combination.
+                assertTrue(arguments.windowed(2).contains(listOf("--preset", "auto")))
+                assertTrue("the JSON protocol must stay on", arguments.contains("--json"))
+            }
+        }
+
+        val combined = MeshToStepProtocol.convertArguments(
+            request.copy(mergeOverlaps = true, repair = MeshToStepEngine.RepairMode.AGGRESSIVE),
+            input,
+            output,
+        )
+        assertTrue(combined.contains("--merge-overlaps"))
+        assertTrue(combined.windowed(2).contains(listOf("--repair", "aggressive")))
+        assertTrue(combined.contains("--json"))
+    }
+
+    @Test
+    fun repairModeLabelsAndMeaningsAreUserFacing() {
+        assertEquals("Off", MeshToStepEngine.RepairMode.OFF.label)
+        assertEquals("Auto", MeshToStepEngine.RepairMode.AUTO.label)
+        assertEquals("Aggressive", MeshToStepEngine.RepairMode.AGGRESSIVE.label)
+        assertTrue(MeshToStepEngine.RepairMode.OFF.meaning.contains("as it is"))
+        assertTrue(MeshToStepEngine.RepairMode.AUTO.meaning.contains("holes"))
+        assertTrue(MeshToStepEngine.RepairMode.AGGRESSIVE.meaning.contains("MeshFix"))
+        assertTrue(MeshToStepEngine.RepairMode.AGGRESSIVE.meaning.contains("minutes"))
+    }
+
+    @Test
     fun cacheNamesAreSafeAndAlwaysStepFiles() {
         assertEquals("cantilever01-bottom-cad.step", MeshToStepProtocol.outputName(File("cantilever01-bottom.stl")))
         assertEquals("my_part__v2-cad.step", MeshToStepProtocol.outputName(File("my part (v2).stl")))
