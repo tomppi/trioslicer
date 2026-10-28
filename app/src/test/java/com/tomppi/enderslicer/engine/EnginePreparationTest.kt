@@ -92,9 +92,9 @@ class EnginePreparationTest {
         assertEquals("Mesh to STEP", Engine.MESH2STEP.label)
         assertTrue(Engine.MESH2STEP.detail.contains("Klipper Python"))
         assertTrue(Engine.MESH2STEP.detail.contains("CAD payload"))
-        // The staged scripts plus the 1 MB accelerator are ~1.8 MB; the estimate rounds up to
-        // two MB like the other rows.
-        assertEquals(2L * 1024L * 1024L, Engine.MESH2STEP.needsBytes)
+        // The staged scripts plus six accelerators are 6,978,730 bytes at 1.12.0; the estimate
+        // rounds up to eight MB like the other rows.
+        assertEquals(8L * 1024L * 1024L, Engine.MESH2STEP.needsBytes)
     }
 
     @Test
