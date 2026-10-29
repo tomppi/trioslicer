@@ -4,6 +4,28 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-10-29
+
+### Changed
+
+- **Menus now each have one job.** No behaviour or engine change - the same actions, moved to the menu that owns them:
+  - **The CAD agent lives in the SolidCraft menu.** The left rail's CAD agent button is gone; the SolidCraft menu is the one
+    door ("CAD agent" when no document, "CAD agent · <name>" when live, connecting and opening the agent sheet from there).
+  - **Blender files moved to the Blender menu** (its FILES section), out of the plate overflow; the plate menu no longer has an
+    empty Storage section, and Clear plate remains.
+  - **The built-in CAD menu is renamed OCCT**, and its entries now say so where they mean that workspace: Model with OCCT, Stop
+    OCCT engine, OCCT files, OCCT MCP token, and the OCCT files screen title/note/load toast. The document vocabulary is
+    deliberately untouched: CAD agent, "CAD · <name>", "Convert to STEP (CAD)…", CAD document.
+  - **Convert to STL moved from SolidCraft to the Plate menu**, next to Convert to STEP (CAD)… - it is a plate conversion and
+    keeps its label variants ("Convert to STL"/"Convert again"), enabled state and behaviour. The SolidCraft menu is now
+    DESIGN, EXPORT and ENGINE only, with no duplicate door.
+  - **Texture surface removed from the plate overflow**; the rail's Texture surface row and More > Experimental still open the
+    studio.
+- New MenuReorganisationSourceTest pins the menu contents, the single CAD-agent door, the OCCT naming and that the
+  document/agent vocabulary is untouched; the existing menu source tests were updated. Device walk: platform menu screenshots for
+  each menu, Convert to STL from the Plate menu converting a live document (Slice unlocked), Blender files opening from the
+  Blender menu, the CAD agent opening from the SolidCraft menu, and the rail with no CAD agent button.
+
 ## [1.12.2] - 2026-10-28
 
 ### Fixed
