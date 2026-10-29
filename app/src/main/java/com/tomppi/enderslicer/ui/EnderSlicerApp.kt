@@ -1902,13 +1902,6 @@ fun EnderSlicerApp(
                 onTextureSurface = viewModel::openBumpMeshStudio,
                 textureUndoLabel = state.textureUndoLabel,
                 onUndoTexture = viewModel::undoTextureChange,
-                cadDocument = state.cadDocument != null,
-                // The one human edit surface a CAD document has: start the engine and open
-                // the sheet the chat and the exports live in.
-                onCadAgent = {
-                    viewModel.connectCadAgent()
-                    viewModel.openSolidCraftSheet()
-                },
                 // The chat's only door. It opens the overlay at the size last chosen and
                 // leaves the selected tab alone. The badge is the one time it is not silent:
                 // the in-app agent is waiting on an answer and that answer's card is not on
@@ -2047,15 +2040,6 @@ fun EnderSlicerApp(
                                             enabled = !state.isBusy,
                                         )
                                         DropdownMenuItem(
-                                            text = { Text("Texture surface") },
-                                            leadingIcon = { Icon(AppIcons.Camera, contentDescription = null) },
-                                            onClick = {
-                                                plateOverflowExpanded = false
-                                                viewModel.openBumpMeshStudio()
-                                            },
-                                            enabled = state.mesh != null && !state.isBusy,
-                                        )
-                                        DropdownMenuItem(
                                             text = { Text("Convert to STEP (CAD)…") },
                                             leadingIcon = { Icon(AppIcons.Mesh, contentDescription = null) },
                                             onClick = {
@@ -2064,15 +2048,18 @@ fun EnderSlicerApp(
                                             },
                                             enabled = state.mesh != null && !state.isBusy,
                                         )
-                                        HorizontalDivider()
-                                        MenuSectionLabel("Storage")
+                                        // The CAD document -> STL-models press is a plate-level
+                                        // conversion, so it lives here with the other plate
+                                        // model operations, not in SolidCraft's design menu.
                                         DropdownMenuItem(
-                                            text = { Text("Blender files") },
+                                            text = { Text(state.cadConvertLabel ?: "Convert to STL") },
                                             leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
                                             onClick = {
                                                 plateOverflowExpanded = false
-                                                blenderFilesOpen = true
+                                                viewModel.clearPendingQuestion()
+                                                viewModel.convertCadToStl()
                                             },
+                                            enabled = state.cadDocument != null && !state.isBusy,
                                         )
                                         HorizontalDivider()
                                         plateOverflowItems { plateOverflowExpanded = false }
@@ -2141,6 +2128,16 @@ fun EnderSlicerApp(
                                                 )
                                             },
                                             enabled = !state.isBusy,
+                                        )
+                                        HorizontalDivider()
+                                        MenuSectionLabel("Files")
+                                        DropdownMenuItem(
+                                            text = { Text("Blender files") },
+                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
+                                            onClick = {
+                                                blenderMenuExpanded = false
+                                                blenderFilesOpen = true
+                                            },
                                         )
                                         HorizontalDivider()
                                         MenuSectionLabel("Paint")
@@ -2245,18 +2242,6 @@ fun EnderSlicerApp(
                                             enabled = state.cadDocument != null && !state.isBusy,
                                         )
                                         HorizontalDivider()
-                                        MenuSectionLabel("Plate")
-                                        DropdownMenuItem(
-                                            text = { Text(state.cadConvertLabel ?: "Convert to STL") },
-                                            leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
-                                            onClick = {
-                                                solidCraftMenuExpanded = false
-                                                viewModel.clearPendingQuestion()
-                                                viewModel.convertCadToStl()
-                                            },
-                                            enabled = state.cadDocument != null && !state.isBusy,
-                                        )
-                                        HorizontalDivider()
                                         MenuSectionLabel("Engine")
                                         DropdownMenuItem(
                                             text = { Text(solidCraftEngineLine) },
@@ -2267,7 +2252,7 @@ fun EnderSlicerApp(
                                             text = {
                                                 Text(
                                                     state.cadDocument?.let { "CAD agent · " + it.name }
-                                                        ?: "Connect CAD agent",
+                                                        ?: "CAD agent",
                                                 )
                                             },
                                             leadingIcon = { Icon(AppIcons.Sparkle, contentDescription = null) },
@@ -2312,7 +2297,7 @@ fun EnderSlicerApp(
                                 // with. An entry inside the Blender menu could not say that.
                                 Box {
                                     TopBarTextAction(
-                                        label = "CAD",
+                                        label = "OCCT",
                                         onClick = { cadMenuExpanded = true },
                                     )
                                     DropdownMenu(
@@ -2322,7 +2307,7 @@ fun EnderSlicerApp(
                                     ) {
                                         MenuSectionLabel("Model")
                                         DropdownMenuItem(
-                                            text = { Text("Model with CAD") },
+                                            text = { Text("Model with OCCT") },
                                             leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
                                             onClick = {
                                                 cadMenuExpanded = false
@@ -2341,8 +2326,8 @@ fun EnderSlicerApp(
                                                 cadMenuExpanded = false
                                                 requestMcpTokenCopy(
                                                     context = context,
-                                                    clipLabel = "CAD MCP token",
-                                                    engineName = "CAD",
+                                                    clipLabel = "OCCT MCP token",
+                                                    engineName = "OCCT",
                                                     tokenFile = {
                                                         CadEngine.tokenFile(File(context.filesDir, "cad"))
                                                     },
@@ -2359,9 +2344,9 @@ fun EnderSlicerApp(
                                                 cadViewerOpen = true
                                             },
                                         )
-                                        MenuSectionLabel("Model")
+                                        MenuSectionLabel("Engine")
                                         DropdownMenuItem(
-                                            text = { Text("Stop CAD engine") },
+                                            text = { Text("Stop OCCT engine") },
                                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
                                             onClick = {
                                                 cadMenuExpanded = false
@@ -2372,7 +2357,7 @@ fun EnderSlicerApp(
                                         HorizontalDivider()
                                         MenuSectionLabel("Storage")
                                         DropdownMenuItem(
-                                            text = { Text("CAD files") },
+                                            text = { Text("OCCT files") },
                                             leadingIcon = { Icon(AppIcons.Cube, contentDescription = null) },
                                             onClick = {
                                                 cadMenuExpanded = false
@@ -2622,14 +2607,14 @@ fun EnderSlicerApp(
                     )
                 } else if (cadFilesOpen) {
                     EngineFilesScreen(
-                        title = "CAD files",
+                        title = "OCCT files",
                         engine = "cad",
                         // Everything the engine writes for the user: models, drawings and the
                         // renders the agent asks for. The viewport's own frame file is excluded
                         // - it is rewritten whenever the camera moves, and it is not an export.
                         extensions = setOf("stl", "step", "stp", "brep", "svg", "dxf", "png"),
                         exclude = setOf("viewport.png"),
-                        note = "Every render and every model the CAD engine writes lands here, " +
+                        note = "Every render and every model the OCCT engine writes lands here, " +
                             "and the app picks each one up once. Nothing removes them " +
                             "afterwards, so this is where they accumulate.",
                         onBack = { cadFilesOpen = false },
@@ -2663,7 +2648,7 @@ fun EnderSlicerApp(
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(
                                             context,
-                                            if (loaded) "Loaded " + file.name + " into CAD"
+                                            if (loaded) "Loaded " + file.name + " into OCCT"
                                             // The engine comes back with its own reason when it
                                             // refuses - an unsupported format, a missing file, a
                                             // bad token - and blaming a slow start for that is a
@@ -5294,10 +5279,6 @@ internal fun SessionRail(
     /** The rail's texture-undo row: the top of the stack, or null while it is empty. */
     textureUndoLabel: String? = null,
     onUndoTexture: () -> Unit = {},
-    /** True when the plate is drawing the engine's CAD document. */
-    cadDocument: Boolean = false,
-    /** Starts the CAD agent and opens its sheet, where a change can be asked for. */
-    onCadAgent: () -> Unit = {},
     /** Opens the AI chat overlay. An action, not a destination: the tab stays put. */
     onAskAi: () -> Unit = {},
     /**
@@ -5597,23 +5578,6 @@ internal fun SessionRail(
                     RailButtonLabel(label)
                 }
             }
-            // The agent is the CAD document's author: this is where a human asks for a
-            // change, and it is beside the model tools because those still work - they edit
-            // the plate's derived mesh, never the document.
-            OutlinedButton(
-                onClick = onCadAgent,
-                enabled = !state.isBusy,
-                contentPadding = PaddingValues(
-                    horizontal = EnderSlicerDimens.Space4,
-                    vertical = EnderSlicerDimens.Space4,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = EnderSlicerDimens.Space8),
-            ) {
-                RailButtonLabel(if (cadDocument) "CAD agent · live" else "CAD agent")
-            }
-
             // Stacked rather than laid out as a row: 80dp cannot hold "Layer
             // height 0,20 mm" on one line, and this is Material's rail width. The
             // rows are the user's own list now, in the order the picker set.

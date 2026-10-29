@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.ui
 
 import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,9 +49,13 @@ class PlateCardsContractTest {
      */
     @Test
     fun theTopBarMenusArePopupsOverTheCards() {
-        listOf("Import", "Plate", "Blender", "CAD").forEach { label ->
+        listOf("Import", "Plate", "Blender", "SolidCraft", "OCCT").forEach { label ->
             assertTrue("the $label action is in the top bar", app.contains("label = \"$label\""))
         }
+        assertFalse(
+            "the built-in workspace is called OCCT, not CAD",
+            app.contains("label = \"CAD\""),
+        )
         assertTrue("the menus are DropdownMenus", app.contains("DropdownMenu("))
         assertTrue(
             "and the Plate's cards are content, not a popup of their own",

@@ -43,11 +43,24 @@ class SolidCraftMenuSourceTest {
             "Export STEP",
             "Export 3MF",
             "Export STL",
-            "Convert to STL",
         )) {
             assertTrue("the SolidCraft menu must offer " + item, text.contains(item))
         }
-        assertTrue("Convert again is the same item after a conversion", text.contains("state.cadConvertLabel"))
+        // The CAD document -> STL press now lives in the Plate menu, next to Convert to STEP.
+        assertTrue(
+            "the plate menu offers Convert to STL instead",
+            text.contains("state.cadConvertLabel ?: \"Convert to STL\""),
+        )
+        val solidCraftMenu = text
+            .substringAfter("label = \"SolidCraft\"")
+            .substringBefore("label = \"OCCT\"")
+        assertTrue(solidCraftMenu.contains("MenuSectionLabel(\"Design\")"))
+        assertTrue(solidCraftMenu.contains("MenuSectionLabel(\"Export\")"))
+        assertTrue(solidCraftMenu.contains("MenuSectionLabel(\"Engine\")"))
+        assertFalse(
+            "SolidCraft does not need its own plate section",
+            solidCraftMenu.contains("MenuSectionLabel(\"Plate\")"),
+        )
         assertTrue(text.contains("SolidCraftEngine.isReady()"))
         assertTrue(text.contains("solidCraftEngineLine"))
         assertTrue(text.contains("viewModel.connectCadAgent()"))
