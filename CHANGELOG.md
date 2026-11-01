@@ -4,6 +4,45 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-11-01
+
+### Added
+
+- **The plate workspace can show ScanRuler, and the agent follows the view.** A floating **Plate | ScanRuler** switch
+  in the plate workspace (the choice persists and a cold start restores it) shows the embedded ScanRuler engine's
+  3D viewport full-size. ScanRuler's own chrome is hidden in this mode - top bar, workspace views, panels, settings,
+  standalone file UI - while the **notes UI stays**: the Note key, the pin text box, the note rows, and the pins with
+  their labels. The full ScanRuler web view from 1.14.0 is untouched.
+- **The page is served and driven by the app, not by a desktop tool.** A loopback asset server (127.0.0.1:9881) serves the
+  pinned bundle with the right MIME types and a bootstrap that pairs the page with the app's own **hand-written RFC 6455
+  WebSocket page link** (127.0.0.1:9880, no Node, no new dependency); the page treats itself as local, so the blocked
+  HTTP hello fetch is not needed. Its session, scan, measurements and undo history survive Plate <-> ScanRuler switches -
+  the view is hidden, never reloaded.
+- **Opening ScanRuler hands over the plate's mesh** through scan.open (STL bytes of the selected object), with a busy
+  retry while the page's OCCT kernel loads (*Wait for ScanRuler's CAD kernel...*) and named loading/error/retry states;
+  an empty plate says what it needs. Device-only layout facts are handled (the page's desktop 640 px floor and the
+  unattached WebView's zero-height `dvh` chain; the canvas was 658x1 before, 658x824 after).
+- **Agent context is the view.** MainUiState.activeView is the signal: with ScanRuler active the in-app agent is built
+  from the session's tool definitions / agent host / agent instructions (the page's catalogue, including
+  reverse.note.list/add/resolve), and the plate path is unchanged. External agents can drive the same page through the
+  new MCP facade (127.0.0.1:9879, bearer token in the app's private dir excluded from backups, page catalogue mapped
+  dots-to-underscores, status/wait, progress, file results into Download/ScanRuler via MediaStore, one external agent at
+  a time), and 9879 joins the existing "Reachable on the network" publish switch. Documented in
+  docs/MCP_TOKEN_SECURITY.md (section 10) and the new docs/SCANRULER_EMBEDDED.md.
+
+### Tested
+
+- Device walk on the final build: the page pairs (140 commands, 142 MCP tools), the 3D viewport fills the screen with no
+  page chrome/status strip/scrollbar, the notes overlay and Note key are present, a note ("Check 3mm wall at the boss") is
+  pinned in the UI and appears as pin + label + row, Plate <-> ScanRuler round trips keep the page, scan and note alive
+  with no reload, and the external MCP facade returned that note (reverse_note_list) - the same catalogue the in-app agent
+  receives. In-app context wiring is evidenced (Ask AI in ScanRuler view opened the in-app agent with the ScanRuler host
+  and prompt), but the dev phone's stored endpoint key returns HTTP 401 on the first model round, so no tool row could be
+  produced there; that is a key limitation, not the wiring. Full unit suite green; 38 new engine tests; existing tests
+  unchanged.
+- Known polish: the note text editor popup can sit behind the engine's notes overlay on first use (typing still works);
+  the engine owns that overlay and it is queued for a follow-up adapter pass.
+
 ## [1.14.0] - 2026-11-01
 
 ### Added
