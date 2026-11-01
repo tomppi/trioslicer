@@ -84,6 +84,9 @@
              quota by themselves (an over-quota backup is not a partial one). -->
         <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
         <exclude domain="file" path="solidcraft/workspace/converted/" />
+        <!-- ScanRuler's embedded agent token (9879), and nothing else: the page's own
+             project data lives in the WebView profile, not here. -->
+        <exclude domain="file" path="scanruler/" />
     </cloud-backup>
     <device-transfer>
         <!-- As in the cloud-backup rules above: the OctoPrint credential is

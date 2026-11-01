@@ -1,10 +1,10 @@
 # The MCP engine tokens
 
 The app's engines are driven over a socket by an agent that is not the app: the Blender engine on
-**9876**, the CAD engine on **9877**, and - since 1.9.5 - the SolidCraft engine on **9878**. All
-three bind loopback only; the CAD agent sheet's **Reachable on the network** switch can have the
-app republish all three on the device's own network address through a forwarding proxy (section
-4). Each engine refuses every request - `ping` included - without a shared secret, and each keeps
+**9876**, the CAD engine on **9877**, the SolidCraft engine on **9878** (since 1.9.5), and the
+embedded ScanRuler page's MCP facade on **9879** (since 1.15.0). All four bind loopback only; the
+CAD agent sheet's **Reachable on the network** switch can have the app republish all four on the
+device's own network address through a forwarding proxy (section 4). Each engine refuses every request - `ping` included - without a shared secret, and each keeps
 that secret in a plain file in the app's private storage. This document is that boundary: what the token is, what holding one grants, how to check
 one, how it rotates, and what was deliberately not built. It is a **bearer credential**. There is
 no second factor, no signature and no expiry; whoever holds the value can do everything it
@@ -17,6 +17,7 @@ authorizes.
 | Blender | `files/blender/scripts/startup/blender_mcp_token.txt` (`BlenderEngine.kt:66`, `:260`) | 9876 (`BlenderEngine.kt:41`) |
 | CAD | `files/cad/cad_mcp_token.txt` (`CadEngine.kt:48`, `:132`) | 9877 (`CadEngine.kt:43-44`) |
 | SolidCraft | `files/solidcraft/solidcraft_mcp_token.txt` (`SolidCraftEngine.kt:44`, `:92`, `:131`) | 9878 (`SolidCraftBridge.DEFAULT_PORT`, `SolidCraftBridge.kt:320`) |
+| ScanRuler | `files/scanruler/scanruler_mcp_token.txt` (`ScanRulerTokens.kt`) | 9879 (`ScanRulerMcpServer.DEFAULT_PORT`) |
 
 `files/` is the app's private directory, `/data/user/0/com.tomppi.enderslicercura/files` on the
 device. The app writes the file when it is missing and reuses the value otherwise
@@ -40,6 +41,12 @@ the file (`SolidCraftEngine.ensureToken`) and hands the value to `SolidCraftBrid
 engine process never reads it. The bridge is the gate, and it compares the token on every
 message. The network side is a plain forwarder (`agent/AgentBridgeProxy`): it copies bytes and
 checks, adds and logs nothing.
+
+ScanRuler is the same shape, for a WebView page rather than an engine process: the app mints
+`files/scanruler/scanruler_mcp_token.txt` (`ScanRulerTokens.ensureMcpToken`) and hands the value
+to `ScanRulerMcpServer`, which gates every line-delimited JSON-RPC message on it. The page has
+its own, separate pairing token for the loopback WebSocket link; the MCP token never crosses
+into the page.
 
 ## 2. What holding it grants
 
@@ -96,7 +103,7 @@ None of the following is "the secret is well protected"; together they are what 
   `:159`; `native/blender/blender_exec.cpp:48`; `start_blender_mcp.py:111`); CAD defaults to
   it and nothing sets `CAD_MCP_HOST` (`cad_mcp_slim.py:2199`). Off the device those two ports
   are reachable only through an `adb forward`.
-- **The app can deliberately republish all three sockets on the network.** The CAD agent
+- **The app can deliberately republish all four sockets on the network.** The CAD agent
   sheet's **Reachable on the network** switch, off by default, has `agent/AgentBridgeProxy`
   listen on the device's own network address at 9876, 9877 and 9878 - the same ports the
   engines hold on loopback - and forward each connection's bytes to 127.0.0.1 at that port
@@ -153,6 +160,10 @@ transfer, and each is excluded in a way that keeps its engine's authored work re
   `files/blender/` and `files/cad/` are excluded whole from both backup lists - the full-backup
   list in `app/src/main/res/xml/backup_rules.xml`, and both the cloud-backup and device-transfer
   sections of `app/src/main/res/xml/data_extraction_rules.xml`.
+- **ScanRuler (9879)** has almost nothing to restore: `files/scanruler/` holds only the MCP token,
+  so the whole directory is excluded from both backup lists. The page's own projects and
+  checkpoints live in the WebView profile, not in that directory, and the page itself is the
+  vendored bundle in the APK.
 - **SolidCraft (9878)** has a different split, because its tree also holds authored work: the
   designs in `files/solidcraft/workspace/designs/` are the user's, and are deliberately kept
   restorable, as are their `.meta` sidecars and the design display caches. Only two things are
@@ -168,7 +179,8 @@ transfer, and each is excluded in a way that keeps its engine's authored work re
 That is a backup-policy question rather than a read path an agent can use, and a restore leaves no
 engine tokenless: the Blender and CAD trees are extracted from the APK's assets again and their
 tokens written anew, and SolidCraft mints a new token in `SolidCraftEngine.ensureToken` when the
-restored device has none.
+restored device has none, and the ScanRuler facade mints a new value in
+`ScanRulerTokens.ensureMcpToken` the next time the embedded workspace starts.
 
 ## 6. The biometric gate on the in-app copy
 
@@ -300,3 +312,37 @@ deleting the file revokes nothing by itself.
 If this is revisited, the per-session token is the one to build first: it is the only option that
 reduces what a leaked copy is worth without changing what the engines do, and it needs the re-copy
 to stay one tap, which the app already has.
+
+
+## 10. The ScanRuler MCP facade (1.15.0)
+
+The embedded ScanRuler engine is not a process: it is the vendored page in a WebView, a
+loopback asset origin, a loopback WebSocket page link and an app-side MCP facade. The facade is
+the only piece an external agent talks to.
+
+- **Where.** `127.0.0.1:9879`, bound by `ScanRulerMcpServer` while the embedded workspace
+  session is running. `AgentBridges.TARGETS` includes it, so **Reachable on the network**
+  republishes it through the same forwarding proxy as the other engines.
+- **The token.** `files/scanruler/scanruler_mcp_token.txt`, minted on first use by
+  `ScanRulerTokens.ensureMcpToken` (32 hex characters, the same shape as the other engines).
+  Every line-delimited JSON-RPC 2.0 message must carry it as `token` at the top level or in
+  `params`; a wrong or missing token is answered with JSON-RPC error `-32001` and nothing runs.
+- **The page pairing token is separate.** The page link uses a fresh per-session token in
+  `#agent=<port>:<token>`; it authenticates the page to the app and is never the MCP token. An
+  external agent cannot pair by holding the MCP token.
+- **One connection at a time.** A second external agent is answered `-32010` by name rather
+  than queued. The in-app agent uses the same page link in process (no MCP socket); the two do
+  not share an authoring lock because the page itself runs one command at a time, but a human
+  driving the in-app agent and an external agent at once will take turns.
+- **Tools.** `tools/list` is the page's own `hello.commands` catalogue, mapped by the upstream
+  rule (dots -> underscores; e.g. `reverse.note.add` -> `reverse_note_add`) with its JSON
+  Schema passed through, plus `scanruler_status` and `scanruler_wait`. `tools/call` forwards to
+  the page link; page progress becomes `notifications/progress` when the caller sends a
+  `progressToken`; a page command error becomes a JSON-RPC error with the page's sentence.
+- **Files.** A result's binary values are written by the app into MediaStore's
+  `Download/ScanRuler/` collection and returned as a content URI - an external agent never
+  names an arbitrary phone path. Scans enter the page from the plate mesh or the app's file
+  picker (`loadScan` / `scan.open`); the facade does not accept a phone path and only offers
+  inline base64 bytes as a small synthetic escape hatch. No storage permission is involved.
+- **Not a new dependency.** The WebSocket server is the app's own RFC 6455 implementation
+  (`ScanRulerPageLink`); no Node, no Java-WebSocket, no new third-party licence.

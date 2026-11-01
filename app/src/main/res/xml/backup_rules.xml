@@ -83,4 +83,7 @@
          Keep designs, keep display; leave the token and the derived STLs behind. -->
     <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
     <exclude domain="file" path="solidcraft/workspace/converted/" />
+    <!-- The embedded ScanRuler page's agent tree is only its 9879 token: a second bearer
+         secret for the same app uid. There is nothing else worth restoring in it. -->
+    <exclude domain="file" path="scanruler/" />
 </full-backup-content>
