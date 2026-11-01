@@ -153,6 +153,7 @@ import com.tomppi.enderslicer.modelling.ModellingCamera
 import com.tomppi.enderslicer.modelling.ModellingCameraStore
 import com.tomppi.enderslicer.nonplanar.NonPlanarSettingsStore
 import com.tomppi.enderslicer.supportpaint.SupportPaintMode
+import com.tomppi.enderslicer.scanruler.ScanRulerActivity
 import com.tomppi.enderslicer.texturizer.BumpMeshActivity
 import com.tomppi.enderslicer.viewer.MeshPicker
 import com.tomppi.enderslicer.viewer.ModelCutPlane
@@ -1832,6 +1833,21 @@ fun EnderSlicerApp(
         }
     }
 
+    /**
+     * ScanRuler is a standalone offline workspace: no plate input and no handoff back in this
+     * release, so opening it is the whole action.
+     */
+    fun launchScanRuler() {
+        runCatching { context.startActivity(Intent(context, ScanRulerActivity::class.java)) }
+            .onFailure { error ->
+                Toast.makeText(
+                    context,
+                    "ScanRuler could not be opened: " + (error.message ?: "unknown error"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+    }
+
     fun launchBumpMesh() {
         val mesh = state.mesh
         if (mesh == null || state.isBusy) {
@@ -3251,6 +3267,7 @@ fun EnderSlicerApp(
                         onBumpMesh = ::launchBumpMesh,
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onMeshToStep = viewModel::openMeshToStep,
+                        onScanRuler = ::launchScanRuler,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
@@ -4123,6 +4140,7 @@ private fun MoreScreen(
     onBumpMesh: () -> Unit,
     onBumpMeshStudio: () -> Unit,
     onMeshToStep: () -> Unit,
+    onScanRuler: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
@@ -4216,6 +4234,19 @@ private fun MoreScreen(
                 enabled = state.mesh != null && !state.isBusy,
                 badge = "EXP",
                 onClick = onMeshToStep,
+            )
+            MoreDivider()
+            // ScanRuler (CNC Kitchen) is a whole offline workspace, not a plate action: it opens
+            // its own web app and nothing is handed to the plate or the slicer in this release.
+            MoreRow(
+                icon = AppIcons.Probe,
+                title = "ScanRuler (CNC Kitchen)",
+                subtitle = "Scan inspection and metrology: measure, deviation, wall thickness, " +
+                    "2D measure and reverse-engineering to STEP · on the phone, files never " +
+                    "leave it",
+                enabled = !state.isBusy,
+                badge = "EXP",
+                onClick = onScanRuler,
             )
             MoreDivider()
             extraItems()

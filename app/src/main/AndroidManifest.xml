@@ -45,6 +45,14 @@
             android:name=".texturizer.BumpMeshActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
             android:exported="false" />
+        <!-- ScanRuler: the vendored CNC Kitchen metrology web app, served from the APK's
+             assets at the app's own https origin. It needs WebGL/wasm workers, hence the
+             explicit hardware acceleration, and it is not a home-screen entry point. -->
+        <activity
+            android:name=".scanruler.ScanRulerActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
         <!-- Embedded Blender MCP engine keeper: foreground service so the
              process survives screen-off/lock (no service => cached process,
              culled by the OS once the screen locks). -->
