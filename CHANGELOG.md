@@ -4,6 +4,45 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-11-01
+
+### Changed
+
+- **The embedded ScanRuler view is now usable on a phone, not just visible.** Feedback from the first walk:
+  - **Notes are touch-sized**: the notes panel is min(480px, 82vw) wide with a live-viewport height cap, 46px keys,
+    14.5px note text with a 4-line clamp, 24px badges and 14px pin labels; note rows are light-on-dark (they inherited the
+    page's dark text before). The **note editor is a fixed centred modal** (width min(420px, 80vw), 80px textarea, 44px
+    keys) above the overlay, following a JS viewport-height custom property so it stays clear of the keyboard - it is no
+    longer clipped by the panel. Empty leftover panel strips in non-Reverse workspaces are hidden.
+  - **ScanRuler's workspace tab bar is exposed**: its own tabs (3D Measure, Surface Deviation, Wall Thickness, 2D Measure,
+    plus plugin tabs such as Reverse engineer) are kept and restyled as a floating, horizontally scrolling touch bar
+    (46px icon+label buttons, active accent) below the View card; the full web view is untouched.
+  - **No more forcing the Reverse workspace after commands/MCP calls.** The embedded session selects Reverse once on entry;
+    after that the tabs and workspace.set own the workspace, so the user/agent choice sticks and a Plate <-> ScanRuler round
+    trip keeps the selected tab with no reload. Notes UI is Reverse-only as upstream; note tools still work from any
+    workspace.
+  - **The bottom-left corner belongs to the notes**: the plate rail's Add button is hidden only while the ScanRuler view is
+    active (restored on Plate), and the floating View card moved to content-top 6dp at 40dp tall so the engine's tab bar
+    (56px down, 56px tall) never overlaps or blocks it.
+  - **The rail's Texture surface button is gone** (the transient texture Undo row stays); the studio remains reachable from
+    More > Experimental, both the BumpMesh web view and the native Texture surface rows.
+  - **Ask AI names the agent it is actually talking to**: in the ScanRuler view the overlay says *ScanRuler agent (in-app)*,
+    with ScanRuler empty-state/composer/endpoint copy and the matching clipboard label; on the plate it stays
+    *CAD agent (in-app)*. The tool catalogue and system prompt wiring are unchanged (already view-gated).
+
+### Tested
+
+- Device walk: the bigger notes panel and editor (opened with the keyboard, note typed and saved, pin label readable), the
+  tab bar switching 3D Measure <-> Reverse engineer with a Plate <-> ScanRuler round trip preserving the tab and session,
+  no page chrome/scrollbar/panel strip, no rail/View-card overlap, Add hidden in ScanRuler/restored on Plate, the rail
+  without Texture surface, More > Experimental still opening both texture doors, and Ask AI reading *ScanRuler agent
+  (in-app)* in the ScanRuler view and *CAD agent (in-app)* on the plate. Full unit suite green; engine tests green.
+
+### Known
+
+- The optional "agent is asking a question" notification still says *CAD agent is asking a question*: it would need the
+  asking turn's context carried into the notification; not renamed in this release.
+
 ## [1.15.0] - 2026-11-01
 
 ### Added
