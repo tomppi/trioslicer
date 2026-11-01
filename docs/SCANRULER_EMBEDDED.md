@@ -125,6 +125,14 @@ textarea min-height 80px / 15px text, 44-48px keys). The editor is centred with 
 WebView; its fixed positioning is not clipped by the notes panel and its z-index is above the
 panel/viewport.
 
+**Narrow / brick windows.** Below 600 CSS px of WebView width (the phone's cover width) the
+notes panel stops taking the page's mobile 42% height: it is content-sized (`height: auto`),
+compact with no notes (the Note key plus a short guidance line), and grows with the note rows up
+to `min(360px, 38% of the live WebView height)`, after which its own `overflow-y: auto` scrolls.
+It spans the width with 12px side margins and sits 72px above the bottom edge, clearing the app's
+agent chip. The normal-width panel (1.16 sizing: `min(480px, 82vw)`, up to 50% height, 12px
+bottom) is unchanged.
+
 **The workspace tabs are the user's.** The embedded session selects the reverse (notes)
 workspace once, the first time the workspace is shown; after that the page's tabs and any
 `workspace.set` command change the workspace and the engine does not force it back. Notes UI is

@@ -325,6 +325,32 @@ object ScanRulerChromeAdapter {
             max-width: 280px !important;
             border-left-width: 4px !important;
         }
+        /* ---- narrow / brick-mode notes panel ---- */
+        @media (max-width: 600px) {
+            /* The page's own mobile layout pins .panel to 42% height, so in
+               brick mode an empty notes panel is a mostly empty dark box. Let
+               the content size it: compact with no notes, growing with the note
+               rows up to 38% of the live WebView height, then the panel scrolls.
+               Near-full width with 12px margins; the bottom offset clears the
+               app's agent chip. */
+            html.scanruler-embedded aside.panel {
+                left: 12px !important;
+                right: 12px !important;
+                bottom: 72px !important;
+                width: auto !important;
+                max-width: calc(100vw - 24px) !important;
+                height: auto !important;
+                min-height: 0 !important;
+                max-height: min(360px, calc(var(--sr-vh, 824px) * 0.38)) !important;
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                padding: 12px 14px !important;
+            }
+            html.scanruler-embedded aside.panel > .group.notes .hint {
+                font-size: 12.5px !important;
+                line-height: 1.35 !important;
+            }
+        }
     """.trimIndent()
 
     fun installScript(): String = """

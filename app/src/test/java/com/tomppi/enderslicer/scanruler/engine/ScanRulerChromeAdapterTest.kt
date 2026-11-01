@@ -27,6 +27,31 @@ class ScanRulerChromeAdapterTest {
     }
 
     @Test
+    fun brickModeSizesTheNotesPanelByItsContent() {
+        assertTrue(css.contains("@media (max-width: 600px)"))
+        assertTrue(css.contains("height: auto !important"))
+        assertTrue(css.contains("max-height: min(360px, calc(var(--sr-vh, 824px) * 0.38))"))
+        assertTrue(css.contains("left: 12px !important"))
+        assertTrue(css.contains("right: 12px !important"))
+        assertTrue(css.contains("bottom: 72px !important"))
+        assertTrue(css.contains("overflow-y: auto !important"))
+        // This round is only the notes-panel sizing: no tab-bar compaction and
+        // no active-tab scrolling were added.
+        assertFalse(css.contains("button:not(.on) .wtxt"))
+        assertFalse(ScanRulerChromeAdapter.installScript().contains("__scanRulerActiveTab"))
+    }
+
+    @Test
+    fun normalWidthLayoutIsStillTheOneFrom116() {
+        assertTrue(css.contains("width: min(480px, 82vw)"))
+        assertTrue(css.contains("max-height: min(420px"))
+        // The base panel keeps its lower-left bottom offset; only the narrow
+        // query raises it above the agent chip.
+        val basePanel = css.substringBefore("@media (max-width: 600px)")
+        assertTrue(basePanel.contains("bottom: 12px !important"))
+    }
+
+    @Test
     fun theNoteEditorSitsAboveTheOverlayAndTheViewport() {
         assertTrue(css.contains(".chipbar.notecard"))
         assertTrue(css.contains("z-index: 120"))
