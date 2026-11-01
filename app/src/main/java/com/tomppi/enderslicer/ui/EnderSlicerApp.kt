@@ -1003,6 +1003,7 @@ fun EnderSlicerApp(
             )
             val ownership = SolidCraftEngine.authorship()
             var turnBegan = false
+            var scanRulerTurn = false
             try {
                 if (!stored.settings.isConfigured) {
                     throw AgentException(
@@ -1012,68 +1013,113 @@ fun EnderSlicerApp(
                         } ?: "The in-app agent has no model name yet; add one in this sheet.",
                     )
                 }
-                // The tools are the engine's, so the engine has to be up before a turn. Nothing
-                // is started here: Connect agent is the user's button, and an engine that was
-                // stopped mid-conversation must read as stopped, not as a dead phone.
-                if (!viewModel.attachCadLiveView()) {
+                // The active workspace decides the agent's tool host, its catalogue and its
+                // instructions: the plate's SolidCraft engine, or the embedded ScanRuler page.
+                val scanRulerActive = viewModel.uiState.value.activeView == PlateView.SCAN_RULER
+                scanRulerTurn = scanRulerActive
+                val scanRuler = if (scanRulerActive) viewModel.scanRulerSessionOrNull() else null
+                if (scanRulerActive && (scanRuler == null || !scanRuler.state.value.ready)) {
                     throw AgentException(
-                        "engine-not-running",
-                        "The CAD engine is not running - press Connect agent, then ask again.",
+                        "scanruler-not-ready",
+                        "The ScanRuler workspace is not ready yet - wait for the page to finish " +
+                            "loading, then ask again.",
                     )
                 }
-                val session = SolidCraftEngine.session()
-                    ?: throw AgentException(
-                        "engine-not-running",
-                        "The CAD engine is not running - press Connect agent, then ask again.",
-                    )
+                // The plate's engine has to be up before a plate-context turn. Nothing is
+                // started here: Connect agent is the user's button, and an engine that was
+                // stopped mid-conversation must read as stopped, not as a dead phone.
+                val solidCraftSession = if (scanRuler != null) {
+                    null
+                } else {
+                    if (!viewModel.attachCadLiveView()) {
+                        throw AgentException(
+                            "engine-not-running",
+                            "The CAD engine is not running - press Connect agent, then ask again.",
+                        )
+                    }
+                    SolidCraftEngine.session()
+                        ?: throw AgentException(
+                            "engine-not-running",
+                            "The CAD engine is not running - press Connect agent, then ask again.",
+                        )
+                }
                 val catalog = withContext(Dispatchers.IO) {
                     try {
-                        AgentToolCatalog.fromEngine(
-                            engineTools = session.toolDefinitions(),
-                            includeWebTools = stored.settings.webSearch,
-                        )
-                    } catch (error: com.tomppi.enderslicer.solidcraft.McpException) {
+                        if (scanRuler != null) {
+                            AgentToolCatalog.fromEngine(
+                                engineTools = scanRuler.toolDefinitions(),
+                                includeWebTools = stored.settings.webSearch,
+                                includePlateScreenshot = false,
+                            )
+                        } else {
+                            AgentToolCatalog.fromEngine(
+                                engineTools = requireNotNull(solidCraftSession).toolDefinitions(),
+                                includeWebTools = stored.settings.webSearch,
+                            )
+                        }
+                    } catch (error: Throwable) {
                         throw AgentException(
-                            "engine-unavailable",
-                            "The CAD engine did not answer its tool list: " +
+                            if (scanRuler != null) "scanruler-unavailable" else "engine-unavailable",
+                            (if (scanRuler != null) "The ScanRuler page" else "The CAD engine") +
+                                " did not answer its tool list: " +
                                 (error.message ?: "no reason given"),
                             error,
                         )
                     }
                 }
-                val runbook = withContext(Dispatchers.IO) {
-                    AgentRunbook.load(context.applicationContext)
-                }
-                val agent = viewModel.inAppCadAgent ?: CadAgent(
-                    toolHost = SolidCraftAgentHost(
-                        session = { SolidCraftEngine.session()?.takeIf { SolidCraftEngine.isReady() } },
-                        onDocumentChanged = { delta -> SolidCraftEngine.onDocumentChanged?.invoke(delta) },
+                val agent = viewModel.inAppCadAgent ?: (if (scanRuler != null) {
+                    CadAgent(
+                        toolHost = scanRuler.agentHost,
+                        runbook = "",
+                        systemPromptOverride = "You are the in-app agent inside TrioSlicer, an " +
+                            "Android 3D-printing app. The user is looking at the embedded " +
+                            "ScanRuler 3D workspace; your tools are the page's own commands. " +
+                            "Everything you do is visible on the page.\n\n" +
+                            scanRuler.agentInstructions,
                         log = { message -> Log.i("CadAgent", message) },
-                    ),
-                    runbook = runbook,
-                    log = { message -> Log.i("CadAgent", message) },
-                ).also { viewModel.inAppCadAgent = it }
-                // The boundary, claimed once for the whole turn. A false answer means an
-                // external agent attached after the sheet's last poll: the sheet's paused state
-                // is the way through (Take over), not a silent edit.
-                turnBegan = ownership.beginInAppTurn()
-                if (!turnBegan) {
-                    throw AgentException(
-                        "external-agent-attached",
-                        ownership.inAppBlockedReason()
-                            ?: "An external agent is editing this document; press Take over first.",
                     )
+                } else {
+                    val runbook = withContext(Dispatchers.IO) {
+                        AgentRunbook.load(context.applicationContext)
+                    }
+                    CadAgent(
+                        toolHost = SolidCraftAgentHost(
+                            session = { SolidCraftEngine.session()?.takeIf { SolidCraftEngine.isReady() } },
+                            onDocumentChanged = { delta -> SolidCraftEngine.onDocumentChanged?.invoke(delta) },
+                            log = { message -> Log.i("CadAgent", message) },
+                        ),
+                        runbook = runbook,
+                        log = { message -> Log.i("CadAgent", message) },
+                    )
+                }).also { viewModel.inAppCadAgent = it }
+                // The boundary, claimed once for the whole turn. ScanRuler is not the CAD
+                // document, so its turns do not claim or release SolidCraft's authorship. A
+                // false answer means an external agent attached after the sheet's last poll:
+                // the sheet's paused state is the way through (Take over), not a silent edit.
+                if (scanRuler == null) {
+                    turnBegan = ownership.beginInAppTurn()
+                    if (!turnBegan) {
+                        throw AgentException(
+                            "external-agent-attached",
+                            ownership.inAppBlockedReason()
+                                ?: "An external agent is editing this document; press Take over first.",
+                        )
+                    }
                 }
                 // What this message carries beyond the user's words: the SELECTED FACE block,
                 // and - with the sheet's switch on - a render of the plate with that face tinted.
                 // Both are read now, on the UI thread, so the turn carries the state the user
                 // sent from.
-                val faceForTurn = faceForNextMessage()
+                val faceForTurn = if (scanRuler == null) faceForNextMessage() else null
                 // The plate view is looked up per call, never captured: a rotation recreates
                 // the composition and its view while this turn keeps running in the ViewModel's
                 // scope, and the captured one would be detached - capturePlate() then answers
                 // "no frame" for the rest of the turn.
-                val plate = PlateImageSource { platePicture(viewModel.cadPlateView) }
+                val plate = if (scanRuler == null) {
+                    PlateImageSource { platePicture(viewModel.cadPlateView) }
+                } else {
+                    null
+                }
                 val reply = withContext(Dispatchers.IO) {
                     agent.run(
                         settings = stored,
@@ -1082,8 +1128,8 @@ fun EnderSlicerApp(
                         view = AgentView(
                             selectionBlock = faceForTurn?.promptBlock().orEmpty(),
                             plate = plate,
-                            attachPlateToSelection = stored.settings.lendView,
-                            faceTinted = faceForTurn != null,
+                            attachPlateToSelection = scanRuler == null && stored.settings.lendView,
+                            faceTinted = scanRuler == null && faceForTurn != null,
                         ),
                         // These callbacks arrive on the agent's background thread after the
                         // turn started; they post through the ViewModel's scope, not the
@@ -1178,8 +1224,8 @@ fun EnderSlicerApp(
                 viewModel.cadBusy = false
                 // The engine's scene has moved under the plate; ask for a frame and a scene
                 // read. A tick rather than a call: the composable that can refresh the viewport
-                // may be the one created by the next rotation.
-                viewModel.noteCadTurnFinished()
+                // may be the one created by the next rotation. ScanRuler has no plate scene.
+                if (!scanRulerTurn) viewModel.noteCadTurnFinished()
             }
         }
     }
@@ -2395,7 +2441,11 @@ fun EnderSlicerApp(
                     // Only while the bar is expanded: collapsed, the plate draws
                     // the small floating handle instead and this bar takes no
                     // height from it at all.
-                    if (selectedTab == AppTab.PLATE && !expandedLayout && platePanels.actionBarShowsRows) {
+                    if (
+                        selectedTab == AppTab.PLATE &&
+                        state.activeView == PlateView.PLATE &&
+                        !expandedLayout && platePanels.actionBarShowsRows
+                    ) {
                         ActionBar(
                             state = state,
                             nonPlanarEnabled = nonPlanarSettings.enabled,
@@ -3078,6 +3128,33 @@ fun EnderSlicerApp(
                                     .align(Alignment.BottomCenter)
                                     .padding(12.dp),
                             )
+                        }
+                        // The embedded ScanRuler workspace. The host is one AndroidView for the
+                        // session's whole life: a 1dp transparent box while Plate works (the
+                        // page stays alive, setVisible(false)) and the full plate content when
+                        // ScanRuler is selected. Drawn last so it covers the plate's own tools;
+                        // the switch is drawn after it so the way back is always reachable.
+                        ScanRulerEmbeddedHost(
+                            session = viewModel.scanRulerSessionOrNull(),
+                            active = state.activeView == PlateView.SCAN_RULER,
+                            loading = state.scanRulerLoading,
+                            error = state.scanRulerError,
+                            scanName = state.scanRulerScanName,
+                            hasMesh = state.mesh != null,
+                            onRetry = viewModel::retryScanRulerView,
+                            modifier = Modifier.align(Alignment.TopStart),
+                        )
+                        // The view switch is the agent-context signal: ScanRuler selected means
+                        // the in-app agent works with the page, Plate means the plate tools.
+                        PlateWorkspaceSwitch(
+                            activeView = state.activeView,
+                            onViewChange = viewModel::setPlateView,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 12.dp),
+                        )
+                        LaunchedEffect(state.activeView) {
+                            viewModel.ensureScanRulerViewEntered()
                         }
                     }
                     AppTab.SETTINGS -> if (allSettingsOpen) {

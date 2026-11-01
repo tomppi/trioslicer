@@ -57,6 +57,11 @@ fun interface AgentToolHost {
 class CadAgent(
     private val toolHost: AgentToolHost,
     private val runbook: String,
+    /**
+     * The whole system prompt when the tool surface is not SolidCraft (the embedded ScanRuler
+     * workspace). Null keeps the shipped SolidCraft runbook and its live rules.
+     */
+    private val systemPromptOverride: String? = null,
     /** How long to wait before the one safe retry of a model call. */
     private val retryDelayMillis: Long = RETRY_DELAY_MILLIS,
     private val log: (String) -> Unit = {},
@@ -276,7 +281,9 @@ class CadAgent(
     ): String {
         val messages = JSONArray()
         messages.put(
-            JSONObject().put("role", "system").put("content", AgentRunbook.systemPrompt(runbook)),
+            JSONObject()
+                .put("role", "system")
+                .put("content", systemPromptOverride ?: AgentRunbook.systemPrompt(runbook)),
         )
         synchronized(conversation) { conversation.forEach { messages.put(it) } }
         // A message that carries a face selection carries the block above the user's own words,

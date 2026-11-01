@@ -127,6 +127,14 @@ data class EngineSnapshot(
 
 data class MainUiState(
     val printer: PrinterDefinition,
+    /** Which workspace the plate is showing; also the in-app agent's active context. */
+    val activeView: PlateView = PlateView.PLATE,
+    /** True while the embedded ScanRuler page is starting or taking the plate mesh. */
+    val scanRulerLoading: Boolean = false,
+    /** A named sentence for a failed start/load, with the view's overlay offering Retry. */
+    val scanRulerError: String? = null,
+    /** The plate object currently handed to ScanRuler, so the view can name it. */
+    val scanRulerScanName: String? = null,
     val settings: SlicerSettings = SlicerSettings(),
     val prusaSettings: PrusaSliceSettings = PrusaSliceSettings(),
     val extraCuraSettings: Map<String, String> = emptyMap(),

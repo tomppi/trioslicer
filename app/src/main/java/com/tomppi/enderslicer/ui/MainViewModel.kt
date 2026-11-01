@@ -129,6 +129,9 @@ import com.tomppi.enderslicer.viewer.SnapSpread
 import com.tomppi.enderslicer.viewer.SnapTightness
 import com.tomppi.enderslicer.viewer.SolidSplitter
 import com.tomppi.enderslicer.viewer.Vec3
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerCommandException
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerEmbeddedSession
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerLinkException
 import com.tomppi.enderslicer.viewer.StlMeshWriter
 import com.tomppi.enderslicer.viewer.StlParser
 import com.tomppi.enderslicer.viewer.ThreeMfModelParser
@@ -341,6 +344,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val app = application
+    /** The one embedded ScanRuler session; created when the workspace is first selected. */
+    private var scanRulerSessionHolder: ScanRulerEmbeddedSession? = null
+    private var scanRulerJob: Job? = null
+    /** Which plate object/geometry was last handed to the page, so a switch does not reload it. */
+    private var scanRulerLoadedSignature: String? = null
     private val printer = PrinterDefinitionLoader.loadModifiedEnder3V2(app.assets)
     private val engine = CuraEngineRunner(app)
     private val prusaEngine = PrusaEngineRunner(app)
@@ -434,6 +442,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(
         MainUiState(
             printer = printer,
+            activeView = PlateViewPreference.initialize(app),
             startGcode = initialStartGcode,
             endGcode = initialEndGcode,
             engineStatus = activeEngineStatus(),
@@ -541,6 +550,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (CadEngine.onExport != null) CadEngine.onExport = null
         runCatching { bumpMeshEngine.close() }
         runCatching { meshToStepEngine.close() }
+        scanRulerJob?.cancel()
+        runCatching { scanRulerSessionHolder?.close() }
+        scanRulerSessionHolder = null
         // Ends the turn, not the engine: a blocking agent loop only stops when its own
         // cancel() is called, and its finally is the only place the keeper, the wake lock and
         // the document's authorship are released. A finished Activity (Back/swipe away) must
@@ -3520,6 +3532,170 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             arrangePlate()
         }
+    }
+
+    /**
+     * Switches the plate workspace between the slicer's plate and the embedded ScanRuler
+     * engine. The choice is persisted and is the in-app agent's context signal: the agent works
+     * with whichever workspace the human is looking at.
+     */
+    fun setPlateView(view: PlateView) {
+        val current = _uiState.value
+        if (current.activeView == view) return
+        PlateViewPreference.save(app, view)
+        // The agent's tool host and prompt belong to the workspace: a fresh turn after a switch
+        // must not keep the other engine's catalogue. Its transcript stays on screen.
+        inAppCadAgent = null
+        _uiState.update {
+            it.copy(
+                activeView = view,
+                scanRulerError = if (view == PlateView.SCAN_RULER) it.scanRulerError else null,
+            )
+        }
+        if (view == PlateView.SCAN_RULER) {
+            enterScanRulerView()
+        } else {
+            // Hiding is all a switch does: the page session, its servers and the WebView stay
+            // alive so switching back does not reload or lose notes.
+            scanRulerSessionHolder?.setVisible(false)
+            _uiState.update { it.copy(scanRulerLoading = false) }
+        }
+    }
+
+    /** The one embedded ScanRuler session, once the workspace has been selected at least once. */
+    internal fun scanRulerSessionOrNull(): ScanRulerEmbeddedSession? = scanRulerSessionHolder
+
+    /**
+     * Re-enters the ScanRuler workspace after a restore or a rotation without starting a second
+     * preparation: only a view that was chosen and has no work in flight enters.
+     */
+    fun ensureScanRulerViewEntered() {
+        if (_uiState.value.activeView != PlateView.SCAN_RULER) return
+        if (scanRulerJob?.isActive == true || _uiState.value.scanRulerLoading) return
+        enterScanRulerView()
+    }
+
+    /** Retry after any named failure: a failed session is replaced; a live one is reused. */
+    fun retryScanRulerView() {
+        if (_uiState.value.activeView != PlateView.SCAN_RULER) return
+        scanRulerJob?.cancel()
+        scanRulerSessionHolder?.let { session -> runCatching { session.close() } }
+        scanRulerSessionHolder = null
+        scanRulerLoadedSignature = null
+        _uiState.update { it.copy(scanRulerError = null, scanRulerLoading = false) }
+        enterScanRulerView()
+    }
+
+    /**
+     * Prepares the embedded engine, hands it the selected plate mesh and switches the page to
+     * its 3D workspace with the chrome removed and the notes UI kept.
+     *
+     * The session starts once and is never recreated by a Plate<->ScanRuler switch; only a Retry
+     * after a failure replaces it. The mesh is re-sent only when the selected object (or its
+     * displayed geometry) changed, so notes and measurements survive a switch.
+     */
+    private fun enterScanRulerView() {
+        scanRulerJob?.cancel()
+        scanRulerJob = viewModelScope.launch {
+            _uiState.update { it.copy(scanRulerLoading = true, scanRulerError = null) }
+            var session: ScanRulerEmbeddedSession? = null
+            try {
+                session = scanRulerSessionHolder ?: newScanRulerSession().also {
+                    scanRulerSessionHolder = it
+                }
+                if (session.state.value.phase == com.tomppi.enderslicer.scanruler.engine.ScanRulerPhase.FAILED) {
+                    runCatching { session.close() }
+                    scanRulerSessionHolder = null
+                    scanRulerLoadedSignature = null
+                    session = newScanRulerSession().also { scanRulerSessionHolder = it }
+                }
+                if (session.state.value.phase == com.tomppi.enderslicer.scanruler.engine.ScanRulerPhase.IDLE) {
+                    session.start()
+                }
+                if (!session.awaitReady(30_000)) {
+                    throw IllegalStateException(
+                        session.state.value.message
+                            ?: "ScanRuler did not become ready in time - Retry the workspace.",
+                    )
+                }
+                session.setVisible(true)
+                // Switching to the reverse workspace injects the engine's chrome-hiding
+                // adapter (the note UI stays). The page commands are network round trips over
+                // the loopback link: keep them off the main thread, or
+                // NetworkOnMainThreadException breaks the switch.
+                val embedded = withContext(Dispatchers.IO) { session.showEmbeddedWorkspace() }
+                if (!embedded) {
+                    throw IllegalStateException(
+                        session.state.value.message
+                            ?: "ScanRuler did not open its 3D workspace - Retry.",
+                    )
+                }
+                val model = _uiState.value.selectedModel ?: _uiState.value.models.firstOrNull()
+                if (model == null) {
+                    _uiState.update {
+                        it.copy(
+                            scanRulerError = "ScanRuler shows the plate's mesh, and the plate " +
+                                "is empty - import or select a model first.",
+                        )
+                    }
+                    if (_uiState.value.activeView == PlateView.SCAN_RULER) {
+                        session.setVisible(true)
+                    }
+                    return@launch
+                }
+                val signature = model.id + ":" + model.name + ":" +
+                    model.mesh.triangleCount + ":" + model.mesh.bounds
+                if (signature != scanRulerLoadedSignature) {
+                    val staged = withContext(Dispatchers.IO) {
+                        val directory = File(app.cacheDir, "scanruler").apply { mkdirs() }
+                        File(directory, "plate-embedded.stl").also { file ->
+                            StlMeshWriter.writeBinary(model.mesh, file)
+                        }
+                    }
+                    // The reverse workspace starts the page's CAD kernel on first entry; the
+                    // engine's loadScan retries scan.open while the page reports "busy" and
+                    // reports "Wait for ScanRuler's CAD kernel..." meanwhile.
+                    withContext(Dispatchers.IO) { session.loadScan(staged) }
+                    scanRulerLoadedSignature = signature
+                    _uiState.update {
+                        it.copy(scanRulerScanName = model.name, scanRulerError = null)
+                    }
+                }
+                // The human may have switched back to Plate while the page was starting; do not
+                // report the page visible when its host is hidden again.
+                if (_uiState.value.activeView == PlateView.SCAN_RULER) {
+                    session.setVisible(true)
+                }
+            } catch (error: ScanRulerCommandException) {
+                showScanRulerFailure(
+                    "ScanRuler could not load the plate mesh: " +
+                        (error.message ?: error.code) + " Retry to prepare it again.",
+                )
+            } catch (error: ScanRulerLinkException) {
+                showScanRulerFailure(
+                    "ScanRuler is not connected to its page: " +
+                        (error.message ?: "the link is unavailable") + " Retry the workspace.",
+                )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                showScanRulerFailure(
+                    "ScanRuler could not be prepared: " +
+                        (error.message ?: error.javaClass.simpleName) + " Retry the workspace.",
+                )
+            } finally {
+                _uiState.update { it.copy(scanRulerLoading = false) }
+            }
+        }
+    }
+
+    private fun newScanRulerSession(): ScanRulerEmbeddedSession =
+        ScanRulerEmbeddedSession(app, viewModelScope) { message ->
+            Log.i("ScanRulerEmbedded", message)
+        }
+
+    private fun showScanRulerFailure(message: String) {
+        _uiState.update { it.copy(scanRulerLoading = false, scanRulerError = message) }
     }
 
     /** The object the tools act on. Placement undo belongs to one object, so it is dropped. */
