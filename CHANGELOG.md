@@ -4,6 +4,20 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.1] - 2026-11-01
+
+### Fixed
+
+- **The embedded ScanRuler notes panel no longer eats half the screen in brick mode.** On the narrow cover window (and any
+  narrow width) the page's own mobile layout pins the panel to a fixed 42% height, so an empty notes panel was a large,
+  mostly empty dark box covering the model. In embedded mode at narrow widths the panel is now **content-sized**: compact
+  when there are no notes (the Note key and a one-line guidance fitting its box), growing with the note rows up to 38% of
+  the live WebView height (the rows scroll inside), near-full width with 12px margins, and offset so the agent chip does not
+  overlap it. The normal-width layout and everything else from 1.16.0 are untouched (assertions for the normal rules
+  unchanged); the centred note editor still opens above the keyboard with the panel behind it. Verified on the dev phone in
+  an emulated brick window (904x2316, density 440): empty panel compact, panel grown with a note, editor with keyboard;
+  override restored afterwards.
+
 ## [1.16.0] - 2026-11-01
 
 ### Changed
