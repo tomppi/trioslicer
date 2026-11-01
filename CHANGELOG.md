@@ -4,6 +4,41 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-11-01
+
+### Added
+
+- **ScanRuler by CNC Kitchen, offline in the app.** The scan-metrology web app (live at scanruler.com; fit spheres,
+  cylinders, cones and planes to a scan with GD&T-style checks, deviation against a CAD/STEP part, wall-thickness maps,
+  a 2D measuring sheet, reverse-engineering a scan into a solid STEP, mesh cleanup) is vendored at the pinned
+  **v0.9.4** (commit f183e9d074a2) as an unmodified Vite build (28.7 MB staged, ~9.5 MB compressed in the APK) and
+  served entirely offline in a WebView: **More > Experimental > ScanRuler (CNC Kitchen)**. Nothing is uploaded; the page
+  and its OpenCascade WASM workers run on the phone, and local storage/IndexedDB checkpoints work as on the web.
+- **Host integration without touching the page:** scans and project files open through the system document picker
+  (OpenDocument/OpenMultipleDocuments); the page's blob downloads are streamed through an injected adapter into a SAF
+  CreateDocument stream, so **Export STEP/3MF/STL/SVG/DXF/CSV and Save Project** land wherever the user chooses (256 MB
+  cap, progress, cancellation and partial-document cleanup). A small MIME map serves .wasm as application/wasm (plus
+  js/mjs/css/json/fonts/svg), which WebViewAssetLoader does not know by itself. Loading overlay with timeout and a named
+  error with Retry, WebView-history back, and a 403 for remote origins; external links open the browser.
+- **No samples are shipped** - the upstream demo scan is excluded deliberately (the page's sample control is hidden and
+  refused by the host adapter), and the asset verifier fails if a samples/ directory ever appears.
+- **Provenance and notices:** the vendored tree is pinned by tag/commit/node/npm/build in .source-version and gated by
+  scripts/fetch-scanruler-assets.sh + scripts/verify-scanruler-assets.py (every SHA-256, expected file set, wasm magic,
+  workers, fonts, no samples) with :app:verifyScanRulerAssets wired before asset merge and CI checking the same plus APK
+  entries. THIRD_PARTY_NOTICES names ScanRuler (AGPL-3.0-only, Stefan Hermann / CNC Kitchen, unmodified) and the bundled
+  deps/fonts (React/three/three-mesh-bvh/meshoptimizer/fflate/zustand MIT, manifold-3d Apache-2.0, occt-wasm MIT OR
+  Apache-2.0, meshstep AGPL-3.0-only, Barlow/B612 OFL).
+- This release is the **standalone workspace**: no plate handoff, no slicing-engine integration, and the page's own
+  "Local agent connection" is not yet wired to an app-side agent server (that is the following release's work).
+
+### Tested
+
+- Device walk (release APK on the dev phone): the page is ready in **2.8 s**, no WASM/MIME/worker/console errors; an STL
+  imported through the system picker renders, a Point is measured from it, and **Export STEP** streams through the bridge to
+  Download/dsh-agent/000-dome-elements.step (1,681 B, valid ISO-10303-21 with the measured-elements header). APK grows
+  by **9.46 MB** over 1.13.0. New ScanRulerTransferTest/ScanRulerSourceTest pin the transfer protocol, the MIME map,
+  entry row and host wiring; the full unit suite is green with the release build.
+
 ## [1.13.0] - 2026-10-29
 
 ### Changed
