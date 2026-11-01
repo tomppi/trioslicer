@@ -71,6 +71,11 @@ class AiChatOverlayTest {
         harnessLine: String = "Harness - session connected",
         setup: ChatSetup? = null,
         pausedReason: String? = null,
+        inAppLabel: String = ChatSource.IN_APP.label,
+        inAppComposerHint: String = "Ask for a CAD change",
+        inAppEmptyLine: String = "No in-app conversation yet - ask for a change. Every " +
+            "tool the in-app agent runs will show up here as a row.",
+        inAppEndpointHint: String = "Set the endpoint in the CAD agent sheet.",
         onCopyTranscript: (String) -> Unit = {},
     ) {
         compose.setContent {
@@ -82,6 +87,10 @@ class AiChatOverlayTest {
                 setup = setup,
                 busy = harnessBusy,
                 inApp = inApp,
+                inAppLabel = inAppLabel,
+                inAppComposerHint = inAppComposerHint,
+                inAppEmptyLine = inAppEmptyLine,
+                inAppEndpointHint = inAppEndpointHint,
                 authorLine = "Author: nobody",
                 authorPausedReason = pausedReason,
                 harnessLine = harnessLine,
@@ -221,6 +230,32 @@ class AiChatOverlayTest {
         assertTrue(harnessText!!.contains("Agent: harness only reply"))
         assertFalse("no tool rows in the harness copy", harnessText.contains("tool: solid.box"))
         assertFalse("no credential", harnessText.contains("sk-"))
+    }
+
+    /**
+     * The embedded ScanRuler view names its own in-app agent on every surface the plate's CAD
+     * agent names: source chip, empty state, composer hint and the unconfigured sentence.
+     */
+    @Test
+    fun theInAppSurfaceNamesTheScanRulerAgentInThatView() {
+        show(
+            inApp(configured = false),
+            inAppLabel = "ScanRuler agent (in-app)",
+            inAppComposerHint = "Ask the ScanRuler agent",
+            inAppEmptyLine = "No ScanRuler agent conversation yet - ask for a change. " +
+                "Every tool it runs will show up here as a row.",
+            inAppEndpointHint = "Set the endpoint in the ScanRuler agent settings.",
+        )
+
+        compose.onNodeWithText("ScanRuler agent (in-app)").assertIsDisplayed()
+        compose.onNodeWithText("CAD agent (in-app)").assertDoesNotExist()
+        compose.onNodeWithText(
+            "No ScanRuler agent conversation yet - ask for a change. Every tool it runs " +
+                "will show up here as a row.",
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Ask the ScanRuler agent").assertExists()
+        compose.onNodeWithText("Set the endpoint in the ScanRuler agent settings.").assertIsDisplayed()
+        compose.onNodeWithText("Set the endpoint in the CAD agent sheet.").assertDoesNotExist()
     }
 
     @Test

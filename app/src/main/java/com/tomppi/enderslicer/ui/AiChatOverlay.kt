@@ -222,8 +222,20 @@ fun AiChatOverlay(
     status: String? = null,
     /** True while the harness session travels over plain HTTP to another machine. */
     insecure: Boolean = false,
-    /** The app's own CAD agent. Non-null enables the source switch and the in-app view. */
+    /** The app's own in-app agent. Non-null enables the source switch and the in-app view. */
     inApp: InAppChat? = null,
+    /**
+     * The in-app source's name in this surface: "CAD agent (in-app)" on the plate,
+     * "ScanRuler agent (in-app)" while the embedded ScanRuler workspace is the active view.
+     */
+    inAppLabel: String = ChatSource.IN_APP.label,
+    /** The in-app composer's hint, in the same voice as [inAppLabel]. */
+    inAppComposerHint: String = "Ask for a CAD change",
+    /** The in-app empty state, in the same voice as [inAppLabel]. */
+    inAppEmptyLine: String = "No in-app conversation yet - ask for a change. Every " +
+        "tool the in-app agent runs will show up here as a row.",
+    /** The unconfigured-endpoint sentence, naming the sheet that holds the endpoint. */
+    inAppEndpointHint: String = "Set the endpoint in the CAD agent sheet.",
     /**
      * The selected source, owned by the caller so the CAD agent sheet's ask box and this chat
      * cannot disagree about which backend a message goes to. Null lets the overlay remember its
@@ -305,7 +317,12 @@ fun AiChatOverlay(
                     FilterChip(
                         selected = shownSource == candidate,
                         onClick = { selectSource(candidate) },
-                        label = { Text(candidate.label, style = MaterialTheme.typography.labelSmall) },
+                        label = {
+                            Text(
+                                if (candidate == ChatSource.IN_APP) inAppLabel else candidate.label,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        },
                     )
                 }
             }
@@ -388,8 +405,7 @@ fun AiChatOverlay(
                 app != null -> {
                     if (app.messages.isEmpty()) {
                         Text(
-                            text = "No in-app conversation yet - ask for a change. Every " +
-                                "tool the in-app agent runs will show up here as a row.",
+                            text = inAppEmptyLine,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -541,7 +557,7 @@ fun AiChatOverlay(
         !showInApp -> "Ask about the model"
         answering && canTypeAnswer -> "Type your answer"
         answering -> "Pick an option above"
-        else -> "Ask for a CAD change"
+        else -> inAppComposerHint
     }
 
     val composer: @Composable () -> Unit = {
@@ -595,7 +611,7 @@ fun AiChatOverlay(
             ) { Text("Copy transcript") }
             if (showInApp && app?.configured == false) {
                 Text(
-                    text = "Set the endpoint in the CAD agent sheet.",
+                    text = inAppEndpointHint,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

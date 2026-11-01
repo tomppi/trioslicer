@@ -96,6 +96,38 @@ class ScanRulerEmbeddedSourceTest {
     }
 
     @Test
+    fun theRailPlusStepsAsideOnlyInScanRulerView() {
+        assertTrue("the switch is wired to the persisted active view", app.contains("showAddSettings = state.activeView == PlateView.PLATE"))
+        assertTrue("the + is composed only while the plate owns the corner", app.contains("if (showAddSettings)"))
+        assertTrue("the rail's default keeps every other caller unchanged", app.contains("showAddSettings: Boolean = true"))
+        assertTrue(app.contains("SESSION_RAIL_ADD_TAG"))
+        // The View switch itself is never conditional on the agent view.
+        assertTrue(app.contains("PlateWorkspaceSwitch("))
+        assertTrue(app.contains("onViewChange = viewModel::setPlateView"))
+        // The engine's floating tab bar reserves content-top 0-48dp: the card is 40dp at 6dp.
+        assertTrue(app.contains(".padding(top = 6.dp)"))
+        // The notes panel owns the bottom-left, so no plate-only row is drawn there.
+        assertFalse(app.contains("RailButtonLabel(\"Texture surface\")"))
+        assertFalse(app.contains("onTextureSurface"))
+    }
+
+    @Test
+    fun theAskAiSurfaceNamesTheScanRulerAgentInThatView() {
+        val overlay = source("ui/AiChatOverlay.kt")
+        assertTrue(overlay.contains("inAppLabel: String = ChatSource.IN_APP.label"))
+        assertTrue(overlay.contains("inAppComposerHint: String = \"Ask for a CAD change\""))
+        assertTrue(overlay.contains("inAppEmptyLine: String"))
+        assertTrue(overlay.contains("inAppEndpointHint: String"))
+        assertTrue("the source chip uses the caller's label", overlay.contains("if (candidate == ChatSource.IN_APP) inAppLabel else candidate.label"))
+        assertTrue("the caller names the agent from the active view", app.contains("val inAppAgentName ="))
+        assertTrue(app.contains("if (state.activeView == PlateView.SCAN_RULER) \"ScanRuler agent\" else \"CAD agent\""))
+        assertTrue(app.contains("inAppLabel = inAppAgentName + \" (in-app)\"") || app.contains("inAppLabel = inAppAgentName + \" (in-app)\","))
+        assertTrue(app.contains("Ask the ScanRuler agent"))
+        assertTrue(app.contains("ScanRuler agent settings"))
+        assertTrue("the clipboard label follows the same name", app.contains("copyChatTranscript(text, inAppAgentName)"))
+    }
+
+    @Test
     fun theFullWebViewEntryFromOneFourteenIsUntouched() {
         val activity = source("scanruler/ScanRulerActivity.kt")
         assertTrue(activity.contains("WebViewAssetLoader.Builder()"))

@@ -115,6 +115,8 @@ class SessionRailTest {
         /** Non-null puts the wide rail's fold arrow in the test: the value is the menu state. */
         railMenu: MutableState<Boolean>? = null,
         askAiBadge: Boolean = false,
+        /** False is the embedded ScanRuler view: its notes panel owns the bottom-left. */
+        showAddSettings: Boolean = true,
         onToggleMenu: () -> Unit = {},
     ) {
         reason = sliceBlockedReason
@@ -157,6 +159,7 @@ class SessionRailTest {
                 onOrcaSettings = { key, _ -> keys += key },
                 onExtraSetting = { key, _ -> keys += key },
                 onAddSettings = { addSettings++ },
+                showAddSettings = showAddSettings,
             )
         }
     }
@@ -433,6 +436,21 @@ class SessionRailTest {
     }
 
     /**
+     * In the embedded ScanRuler view the rail's + is not drawn: the engine's notes panel
+     * owns that corner. The destinations and Ask AI stay - only the plate's + steps aside.
+     */
+    @Test
+    fun thePlusStepsAsideForTheScanRulerNotesPanel() {
+        show(showAddSettings = false)
+
+        compose.onNodeWithTag(SESSION_RAIL_ADD_TAG).assertDoesNotExist()
+        AppTab.entries.forEach { tab ->
+            compose.onNodeWithText(tab.shortLabel).assertIsDisplayed()
+        }
+        compose.onNodeWithText("Ask AI").assertIsDisplayed()
+    }
+
+    /**
      * However many rows the user adds, the values scroll and the + does not: it is
      * pinned below their scroll, so the way to add or remove settings is reachable
      * without hunting for it.
@@ -586,7 +604,6 @@ class SessionRailTest {
         // the other way with the semantics that say what a press does.
         compose.onNodeWithText("Slice").assertExists()
         compose.onNodeWithText("Model tools").assertExists()
-        compose.onNodeWithText("Texture surface").assertExists()
         compose.onNodeWithContentDescription("Expand the menu").assertIsDisplayed()
 
         compose.onNodeWithTag(SESSION_RAIL_MENU_TOGGLE_TAG).performClick()

@@ -1247,9 +1247,9 @@ fun EnderSlicerApp(
      * This is the thing to hand to a human or another agent when a turn looks wrong: what was
      * asked, what the agent said, and every tool call with its arguments, duration and outcome.
      */
-    fun copyChatTranscript(text: String) {
+    fun copyChatTranscript(text: String, agentName: String = "CAD agent") {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
-        clipboard?.setPrimaryClip(ClipData.newPlainText("CAD agent chat", text))
+        clipboard?.setPrimaryClip(ClipData.newPlainText(agentName + " chat", text))
         Toast.makeText(
             context,
             "Transcript copied · " + text.length + " characters",
@@ -1961,7 +1961,6 @@ fun EnderSlicerApp(
                 onSlice = viewModel::sliceModel,
                 onExportGcode = { gcodeExportPicker.launch(GcodeExportName.suggest()) },
                 onTools = { modelToolsOpen = true },
-                onTextureSurface = viewModel::openBumpMeshStudio,
                 textureUndoLabel = state.textureUndoLabel,
                 onUndoTexture = viewModel::undoTextureChange,
                 // The chat's only door. It opens the overlay at the size last chosen and
@@ -1978,8 +1977,11 @@ fun EnderSlicerApp(
                 onOrcaSettings = viewModel::updateOrcaSettings,
                 onExtraSetting = { key, value -> viewModel.setExtraSetting(engine, key, value) },
                 // One picker, two doors: this is the rail's, and the settings sheet's
-                // "Add settings to the sidebar" row raises the same state.
+                // "Add settings to the sidebar" row raises the same state. The embedded
+                // ScanRuler view owns the bottom-left corner (its notes card), so the rail's
+                // + steps aside there and comes back for Plate.
                 onAddSettings = { sidebarPickerOpen = true },
+                showAddSettings = state.activeView == PlateView.PLATE,
             )
         }
         // The app's chrome, once. A phone puts the destinations in the suite's
@@ -3151,7 +3153,10 @@ fun EnderSlicerApp(
                             onViewChange = viewModel::setPlateView,
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
-                                .padding(top = 12.dp),
+                                // The engine's floating tab bar starts 56 CSS px below the
+                                // page top; the View card must end above it. Card is 40dp,
+                                // so 6dp keeps the whole switch above the 48dp bound.
+                                .padding(top = 6.dp),
                         )
                         LaunchedEffect(state.activeView) {
                             viewModel.ensureScanRulerViewEntered()
@@ -3611,6 +3616,10 @@ fun EnderSlicerApp(
     // chat must never move the selected destination. The overlay floats over whatever the tab
     // is showing; the plate still gets the paint-and-describe workflow it always had.
     if (aiChatOpen) {
+        // The in-app surface names the agent the active workspace's turn will use: the plate's
+        // CAD agent, or the embedded ScanRuler agent while that view is selected.
+        val inAppAgentName =
+            if (state.activeView == PlateView.SCAN_RULER) "ScanRuler agent" else "CAD agent"
         AiChatOverlay(
             // The harness session's own messages - never the in-app agent's.
             messages = viewModel.cadConversations.harness,
@@ -3655,6 +3664,24 @@ fun EnderSlicerApp(
                 "Harness - not connected"
             },
             // The in-app agent's own conversation, tool rows included.
+            inAppLabel = inAppAgentName + " (in-app)",
+            inAppComposerHint = if (state.activeView == PlateView.SCAN_RULER) {
+                "Ask the ScanRuler agent"
+            } else {
+                "Ask for a CAD change"
+            },
+            inAppEmptyLine = if (state.activeView == PlateView.SCAN_RULER) {
+                "No ScanRuler agent conversation yet - ask for a change. Every tool it " +
+                    "runs will show up here as a row."
+            } else {
+                "No in-app conversation yet - ask for a change. Every tool the in-app " +
+                    "agent runs will show up here as a row."
+            },
+            inAppEndpointHint = if (state.activeView == PlateView.SCAN_RULER) {
+                "Set the endpoint in the ScanRuler agent settings."
+            } else {
+                "Set the endpoint in the CAD agent sheet."
+            },
             inApp = InAppChat(
                 messages = viewModel.cadConversations.inApp,
                 busy = viewModel.cadBusy,
@@ -3681,7 +3708,7 @@ fun EnderSlicerApp(
                     viewModel.clearPendingQuestion()
                 },
             ),
-            onCopyTranscript = ::copyChatTranscript,
+            onCopyTranscript = { text -> copyChatTranscript(text, inAppAgentName) },
             // The three sizes live here so they survive the chat being closed and reopened; a
             // resize is state only - the engine and a running turn are untouched by it.
             size = chatSize,
@@ -5382,8 +5409,6 @@ internal fun SessionRail(
     onSlice: () -> Unit,
     onExportGcode: () -> Unit,
     onTools: () -> Unit,
-    /** Opens the native BumpMesh studio for the selected plate object. */
-    onTextureSurface: () -> Unit = {},
     /** The rail's texture-undo row: the top of the stack, or null while it is empty. */
     textureUndoLabel: String? = null,
     onUndoTexture: () -> Unit = {},
@@ -5401,6 +5426,11 @@ internal fun SessionRail(
     onExtraSetting: (String, String) -> Unit,
     /** Opens the sidebar picker: the rail's + is the plate's own door into it. */
     onAddSettings: () -> Unit,
+    /**
+     * False while the embedded ScanRuler workspace owns the bottom-left corner: its notes
+     * panel lives there, so the plate's + gives it the room and comes back with Plate.
+     */
+    showAddSettings: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val summary = plateSessionSummary(engine, state)
@@ -5649,25 +5679,6 @@ internal fun SessionRail(
             ) {
                 RailButtonLabel("Model tools")
             }
-            // The native BumpMesh studio: the fast in-place texture path. Only composed when
-            // there is a plate object to texture, so the rail keeps its old height on an empty
-            // plate (the session rows below are a lazy list and rely on that room). The full
-            // WebView page stays where it always was - More > Experimental.
-            if (state.mesh != null) {
-                OutlinedButton(
-                    onClick = onTextureSurface,
-                    enabled = !state.isBusy,
-                    contentPadding = PaddingValues(
-                        horizontal = EnderSlicerDimens.Space4,
-                        vertical = EnderSlicerDimens.Space4,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = EnderSlicerDimens.Space8),
-                ) {
-                    RailButtonLabel("Texture surface")
-                }
-            }
             // The user's own ask: an Undo row in the side bar while a texture is active.
             // It replaces the mesh, so it is separate from the transform card's placement undo.
             textureUndoLabel?.let { label ->
@@ -5702,21 +5713,23 @@ internal fun SessionRail(
 
             // Under the values and outside their scroll: the rail's own door into the
             // sidebar picker, beside the buttons the rail already carries.
-            OutlinedButton(
-                onClick = onAddSettings,
-                contentPadding = PaddingValues(
-                    horizontal = EnderSlicerDimens.Space4,
-                    vertical = EnderSlicerDimens.Space4,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = EnderSlicerDimens.Space8)
-                    .padding(bottom = EnderSlicerDimens.Space8)
-                    .testTag(SESSION_RAIL_ADD_TAG),
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Add", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+            if (showAddSettings) {
+                OutlinedButton(
+                    onClick = onAddSettings,
+                    contentPadding = PaddingValues(
+                        horizontal = EnderSlicerDimens.Space4,
+                        vertical = EnderSlicerDimens.Space4,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = EnderSlicerDimens.Space8)
+                        .padding(bottom = EnderSlicerDimens.Space8)
+                        .testTag(SESSION_RAIL_ADD_TAG),
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }

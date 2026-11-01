@@ -44,9 +44,12 @@ class MenuReorganisationSourceTest {
         assertTrue(plate.contains("viewModel.clearPendingQuestion()"))
         assertTrue(plate.contains("viewModel.convertCadToStl()"))
         assertTrue(plate.contains("state.cadDocument != null && !state.isBusy"))
-        // The rail's own texture studio door survived; only the plate shortcut went.
+        // The plate shortcut went in 1.13; the rail row went in 1.16. The More row is
+        // the remaining door beside the full web workspace.
         val text = app()
-        assertTrue(text.contains("RailButtonLabel(\"Texture surface\")"))
+        assertFalse("the rail no longer carries a Texture surface row",
+            text.contains("RailButtonLabel(\"Texture surface\")"))
+        assertFalse("and its plumbing is gone with it", text.contains("onTextureSurface"))
         assertTrue(text.contains("title = \"Texture surface\""))
     }
 

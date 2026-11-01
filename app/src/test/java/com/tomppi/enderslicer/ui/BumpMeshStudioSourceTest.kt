@@ -46,10 +46,14 @@ class BumpMeshStudioSourceTest {
         )
         assertTrue(app.contains("onBumpMeshStudio = viewModel::openBumpMeshStudio"))
         assertTrue(app.contains("onClick = onBumpMeshStudio,"))
-        // The plate-side doors: the side rail row and the More > Experimental row. The plate
-        // overflow shortcut was removed in the menu reorganisation; the studio itself stays.
-        assertTrue(app.contains("RailButtonLabel(\"Texture surface\")"))
-        assertTrue(app.contains("onTextureSurface = viewModel::openBumpMeshStudio"))
+        // The plate overflow shortcut went in 1.13 and the side rail row in 1.16; the
+        // More > Experimental row is the one native door left, beside the full web view,
+        // and the studio sheet stays reachable from it.
+        assertFalse(
+            "the rail no longer carries a Texture surface row",
+            app.contains("RailButtonLabel(\"Texture surface\")"),
+        )
+        assertFalse("and its plumbing is gone with it", app.contains("onTextureSurface"))
         // The studio sheet, with the full-web view one press away from inside it.
         assertTrue(app.contains("BumpMeshStudioSheet("))
         assertTrue(app.contains("onOpenWebWorkspace = {"))
