@@ -37,7 +37,6 @@ internal class ScanRulerMcpServer(
     private val pageLink: ScanRulerPageLink,
     private val status: () -> ScanRulerEmbeddedState,
     private val binarySink: ((ByteArray, String, String) -> JSONObject)? = null,
-    private val afterCommand: (() -> Unit)? = null,
     private val port: Int = DEFAULT_PORT,
     private val log: (String) -> Unit = {},
 ) : Closeable {
@@ -235,7 +234,6 @@ internal class ScanRulerMcpServer(
         if (sink != null) files = rewriteBinaryValues(result, sink)
         val toolResult = toolResult(result.toString())
         if (files > 0) toolResult.put("structuredContent", result)
-        runCatching { afterCommand?.invoke() }
         return replyResult(id, toolResult)
     }
 

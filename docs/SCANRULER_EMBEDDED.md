@@ -66,7 +66,7 @@ class ScanRulerEmbeddedSession(context: Context, scope: CoroutineScope, log: (St
     suspend fun start()                        // servers + WebView + page load
     suspend fun awaitReady(timeoutMillis: Long = 25_000): Boolean
     fun setVisible(visible: Boolean)           // hide/show only; page stays alive
-    suspend fun showEmbeddedWorkspace(): Boolean   // reverse workspace + chrome adapter
+    suspend fun showEmbeddedWorkspace(): Boolean   // default reverse once + chrome adapter
     suspend fun setEmbeddedMode(enabled: Boolean)
     suspend fun loadScan(file: File): JSONObject
     suspend fun loadScan(bytes: ByteArray, name: String = "scan.stl"): JSONObject
@@ -94,6 +94,8 @@ failures are `ScanRulerCommandException(code, message)` or `ScanRulerLinkExcepti
 `start()` creates the WebView before publishing `PREPARING`, so the UI can host it with
 `AndroidView(factory = { session.webView })` when `phase != IDLE`.
 
+`showEmbeddedWorkspace()` selects the reverse workspace once per session and then only reapplies
+the adapter, so a Plate<->ScanRuler round trip keeps the workspace tab the user left selected.
 The session also binds the MCP facade on `127.0.0.1:9879` (`ScanRulerMcpServer`), joined to
 `AgentBridges.TARGETS`; see `docs/MCP_TOKEN_SECURITY.md` section 10 for the token and protocol.
 
@@ -104,16 +106,37 @@ The session also binds the MCP facade on `127.0.0.1:9879` (`ScanRulerMcpServer`)
 renames a selector, one rule stops matching and the page keeps working (the full UI may be
 visible), never a broken screen.
 
-Hidden: the top bar, mode/workspace switcher, view bar, status strip (`.strip`),
+Hidden: the top bar's brand/project/part-file/undo/agent/file UI (everything in
+`header.top` except the workspace tabs), the view bar, the status strip (`.strip`),
 connector/recovery bars, start pane and file UI, settings/modals, stage hints/warnings/toasts,
 split captions, and every side-panel group except the notes group.
 
-Kept: the 3D viewport (`.stage`, `.viewslot`, `.viewport`), the notes group
-(`aside.panel > .group.notes`: the Note key, the pin text box, the note rows and their resolve
-controls), the viewport note pins and their labels (`.note-label`), and the note card/dialog
-that a pin opens. The notes group is moved to a compact fixed overlay at the lower-left of the
-viewport so it does not cover the part. `showEmbeddedWorkspace()` first switches the page to
-its `reverse` workspace (the only one that renders the notes panel), then applies the adapter.
+Kept and touch-sized: the 3D viewport (`.stage`, `.viewslot`, `.viewport`); the page's own
+workspace tab bar (`header.top > .modeswitch`, the `workspace-*` buttons - 3D Measure, Surface
+Deviation, Wall Thickness, 2D Measure, plugin tabs such as Reverse engineer and mesh-tools),
+restyled as a floating, horizontally scrolling 46px-tall bar fixed at content-top 56px, full
+width minus 12px sides, z-index 55; the notes group (`aside.panel > .group.notes`: the Note key,
+the pin text box, the note rows and their resolve controls) in a lower-left panel of
+`min(480px, 82vw)` width and up to `min(420px, 50% viewport)` height; the viewport note pins and
+labels (`.note-label` at 14px); and the note editor (`.chipbar.notecard`), which is a
+fixed, centred modal above the panel and the canvas (z-index 120, width `min(420px, 80vw)`,
+textarea min-height 80px / 15px text, 44-48px keys). The editor is centred with a JS-updated
+`--sr-vh` custom property, so it recentres and stays reachable when the keyboard resizes the
+WebView; its fixed positioning is not clipped by the notes panel and its z-index is above the
+panel/viewport.
+
+**The workspace tabs are the user's.** The embedded session selects the reverse (notes)
+workspace once, the first time the workspace is shown; after that the page's tabs and any
+`workspace.set` command change the workspace and the engine does not force it back. Notes UI is
+present in the reverse workspace only, as upstream intends; the agent note commands still work
+from any workspace (upstream `reverse.note.add` switches to reverse for its own pin), and the
+3D viewport, pins and labels stay visible while measuring in another workspace.
+
+Trade-off, stated plainly: the embedded engine no longer forces the reverse workspace back
+after a command or MCP tool call. If the user or an external agent switches to 3D Measure while
+the person wanted the notes list, the notes panel is not on screen until they pick Reverse
+engineer (or a note command puts it back). That is the page's own workspace model; forcing
+reverse would fight the tabs and the agent's measurement view.
 
 **The page is loaded by an unattached WebView.** Until the plate composes its AndroidView, this
 Chromium resolves the page's own `100dvh` / percentage height chain to 0 (`innerHeight` is
@@ -123,30 +146,4 @@ the stage's canvas 1 px tall. The adapter therefore does not rely on viewport un
 it, and the notes overlay's `max-height` is fixed px, not `vh`. Width is forced to 100% because
 the desktop page has a 640 px floor. After this the canvas measures the full WebView size.
 
-**Commands can change the workspace.** `element.fit` shows the measure workspace, which does
-not render the notes panel. While embedded, the session re-asserts the reverse workspace after
-every command it runs and after every MCP tool call (asynchronously, as a follow-up), so the
-Note key/pin box/note rows return while the element or measurement the command made stays in the
-viewport and its labels.
-
-## Files
-
-- **Into the page.** Plate mesh bytes via `loadScan` (the app writes a binary STL to its cache and
-  calls `scan.open`); the user's own file picker in the standalone screen; an external agent's
-  synthetic bytes only as inline base64. No phone path is read by the facade.
-- **Out of the page.** Agent-facing exports from MCP tool calls are written by the app as its own
-  MediaStore entries under `Download/ScanRuler/` (no storage permission) and returned as a
-  content URI (`ScanRulerFileExports`). The in-app agent can ask the page to export; the MCP
-  result names the content URI.
-- The 9879 token lives in `files/scanruler/`, excluded from both backup lists like the other
-  engines' tokens.
-
-## In-app agent seam
-
-When the ScanRuler view is active, the app's in-app agent must use
-`session.toolDefinitions()` for its catalogue, `session.agentHost` as its `AgentToolHost`, and
-append `session.agentInstructions` to the runbook. The host maps the underscore tool names back
-to the page's dotted commands and returns one-way `AgentToolHost.Result` values. The catalogue is
-the page's own: the 72 core commands plus the reverse plugin's `reverse.*` commands when the page
-registers them. Notes are read with `reverse_note_list`, answered/closed with
-`reverse_note_resolve`, and the agent's own questions pinned with `reverse_note_add`.
+.

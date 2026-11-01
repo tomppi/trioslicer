@@ -15,7 +15,6 @@ import android.webkit.WebViewClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,6 +76,8 @@ class ScanRulerEmbeddedSession(
     private val pageToken = UUID.randomUUID().toString().replace("-", "")
     private val started = AtomicBoolean(false)
     private val stopped = AtomicBoolean(false)
+    /** The default reverse workspace is selected once per session; the tabs then own it. */
+    @Volatile private var embeddedWorkspaceInitialized = false
 
     @Volatile private var _webView: WebView? = null
     /** Created by [start] on the main thread; safe to read once [state] is not IDLE. */
@@ -126,11 +127,6 @@ class ScanRulerEmbeddedSession(
                         .put("mimeType", written.mimeType)
                         .put("size", written.size)
                         .put("uri", written.uri)
-                },
-                afterCommand = {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { restoreEmbeddedWorkspace() }
-                    }
                 },
                 log = log,
             )
@@ -182,8 +178,10 @@ class ScanRulerEmbeddedSession(
     }
 
     /**
-     * Switches to the notes (reverse) workspace and installs the chrome-hiding adapter: the 3D
-     * viewport and the note UI stay, the instrument's chrome goes. Idempotent and fail-soft.
+     * Puts the default notes (reverse) workspace on screen the first time this session is shown,
+     * then installs the chrome-hiding adapter: the 3D viewport, the workspace tabs and the note
+     * UI stay, the rest of the instrument's chrome goes. Later calls reapply the adapter only -
+     * the page's own tabs are then free to move between workspaces. Idempotent and fail-soft.
      */
     suspend fun showEmbeddedWorkspace(): Boolean {
         if (!awaitReady()) return false
@@ -196,7 +194,10 @@ class ScanRulerEmbeddedSession(
             log("ScanRuler workspace command " + name + " skipped: " + (error.message ?: "no page"))
             null
         }
-        tryCommand("workspace.set", JSONObject().put("workspace", ScanRulerChromeAdapter.EMBEDDED_WORKSPACE))
+        if (!embeddedWorkspaceInitialized) {
+            tryCommand("workspace.set", JSONObject().put("workspace", ScanRulerChromeAdapter.EMBEDDED_WORKSPACE))
+            embeddedWorkspaceInitialized = true
+        }
         evaluateJavascript(ScanRulerChromeAdapter.installScript())
         _state.value = _state.value.copy(embedded = true)
         return true
@@ -218,28 +219,6 @@ class ScanRulerEmbeddedSession(
      * arrive while it runs). A busy page says "Try again once it has finished" - this is that
      * retry, bounded, for the one command the UI cannot wait on itself.
      */
-    /**
-     * The page's own commands can put their workspace on screen (element.fit shows measure,
-     * deviation.measure shows deviation, ...). The embedded face hides the workspaces' chrome
-     * and keeps the notes panel, which only the reverse workspace renders, so after any command
-     * the embedded session puts the reverse workspace back. It changes only what is on screen;
-     * the element, dimension or note the command made stays.
-     */
-    private suspend fun restoreEmbeddedWorkspace() {
-        if (!_state.value.embedded) return
-        val link = pageLink ?: return
-        repeat(2) {
-            try {
-                link.run("workspace.set", JSONObject().put("workspace", ScanRulerChromeAdapter.EMBEDDED_WORKSPACE), timeoutMillis = 10_000)
-                return
-            } catch (_: ScanRulerCommandException) {
-                // Busy or gone; one quiet retry is enough - the next command restores it too.
-            } catch (_: ScanRulerLinkException) {
-                return
-            }
-        }
-    }
-
     private suspend fun runWhenPageIdle(
         name: String,
         input: JSONObject,
@@ -282,19 +261,14 @@ class ScanRulerEmbeddedSession(
             )
         } finally {
             _state.value = _state.value.copy(message = null)
-            runCatching { restoreEmbeddedWorkspace() }
         }
     }
 
     /** Runs one page command (catalog names as the page lists them: e.g. "scan.open"). */
     suspend fun command(name: String, input: JSONObject = JSONObject()): JSONObject {
         if (!awaitReady()) throw ScanRulerLinkException("The ScanRuler page is not ready yet.")
-        try {
-            return pageLink?.run(name = name, input = input, timeoutMillis = 5 * 60_000L)
-                ?: throw ScanRulerLinkException("The ScanRuler page link is not running.")
-        } finally {
-            if (name != "workspace.set") restoreEmbeddedWorkspace()
-        }
+        return pageLink?.run(name = name, input = input, timeoutMillis = 5 * 60_000L)
+            ?: throw ScanRulerLinkException("The ScanRuler page link is not running.")
     }
 
     /** The MCP tool catalogue for the current page; status/wait always present. */
