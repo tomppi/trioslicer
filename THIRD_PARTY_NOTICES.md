@@ -18,6 +18,32 @@ The filaSim web build includes its declared permissive or AGPL-compatible depend
 The native TrioSlicer wavefront generator is an independent CuraEngine adaptation of the propagation method documented by `dennisklappe/OrcaSlicer-WaveOverhangs`, itself based on `stmcculloch/PrusaSlicer-WaveOverhangs`. Those projects and CuraEngine are distributed under the GNU AGPL. The adapted source is retained under `native/curaengine/patches/` with attribution headers.
 
 
+## ScanRuler (offline 3D scan measurement) 
+
+- Project: `CNCKitchen/ScanRuler` - https://github.com/CNCKitchen/scanruler
+- Pinned version: tag `v0.9.4`, commit `f183e9d074a2ce95d1059174a173b8150b3b71eb`
+- License: GNU Affero General Public License v3.0 only (`AGPL-3.0-only`),
+  Copyright Stefan Hermann / CNC Kitchen
+- Vendored artifact: the unmodified static `dist/` output under `assets/scanruler/`
+  (about 28 MB: index, JS/CSS chunks, module workers, `occt-wasm` and `manifold` wasm
+  kernels and fonts; the upstream `dist/samples/` 3MF is excluded because the page does not
+  reference it), plus the upstream
+  `LICENSE` and a `SOURCE.md` serving contract. Every file is pinned in
+  `assets/scanruler/SHA256SUMS`; `scripts/verify-scanruler-assets.py` fails on any change and
+  runs in Gradle and CI. The corresponding-source pointer is
+  `scripts/fetch-scanruler-assets.sh`, which reproduces the bundle from the pinned commit
+  with node 22.23.4 / npm 10.9.9.
+- Runtime: served locally by the app's WebView (WebViewAssetLoader); no network is used.
+
+Third-party packages inside the JavaScript bundle (the upstream dist does not carry a
+third-party notices file; this list records what that build bundles): React and React DOM
+(MIT), three (MIT), three-mesh-bvh (MIT), meshoptimizer (MIT), fflate (MIT), zustand (MIT),
+manifold-3d (Apache-2.0), occt-wasm (MIT OR Apache-2.0) and meshstep (AGPL-3.0-only). The
+bundled fonts Barlow and B612 Mono are under the SIL Open Font License 1.1; their licence
+texts ship in the bundle as `assets/scanruler/fonts/OFL-barlow.txt`,
+`OFL-barlowsemicondensed.txt` and `OFL-b612mono.txt`. meshstep is the same AGPL-3.0-only
+family as this app; manifold-3d's Apache-2.0 and occt-wasm's permissive terms are compatible.
+
 ## Mesh-Mix-S2C (mesh to STEP engine)
 
 - Project: `STL2CURVES-MMM/Mesh-Mix-S2C` (Manifold Mesh Mix)

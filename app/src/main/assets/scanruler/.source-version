@@ -1,0 +1,9 @@
+format=1
+project=CNCKitchen/ScanRuler
+tag=v0.9.4
+commit=f183e9d074a2ce95d1059174a173b8150b3b71eb
+base=/assets/scanruler/
+node=22.23.4
+npm=10.9.9
+build=npm ci && npm run build -- --base=/assets/scanruler/
+sample=excluded

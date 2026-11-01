@@ -894,6 +894,31 @@ val verifyMeshToStepAssets by tasks.registering(Exec::class) {
 tasks.matching { it.name == "mergeDebugAssets" || it.name == "mergeReleaseAssets" }.configureEach {
     dependsOn(verifyMeshToStepAssets)
 }
+// ScanRuler (CNCKitchen/ScanRuler, AGPL-3.0-only) is a pinned offline Vite/React build under
+// assets/scanruler, served by the WebView host at https://appassets.androidplatform.net/
+// assets/scanruler/index.html. The verifier pins the upstream tag/commit, the build base,
+// the wasm/worker/font set and every hash before packaging; CI runs the same check.
+val scanRulerAssets = layout.projectDirectory.dir("src/main/assets/scanruler")
+val scanRulerVerifier = rootProject.file("scripts/verify-scanruler-assets.py")
+val verifyScanRulerAssets by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Verifies the vendored ScanRuler offline bundle before APK packaging"
+    inputs.file(scanRulerVerifier)
+    inputs.dir(scanRulerAssets)
+    outputs.upToDateWhen { false }
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3",
+        scanRulerVerifier.absolutePath,
+        "--root",
+        scanRulerAssets.asFile.absolutePath,
+        "--check-only",
+    )
+}
+tasks.matching { it.name == "mergeDebugAssets" || it.name == "mergeReleaseAssets" }.configureEach {
+    dependsOn(verifyScanRulerAssets)
+}
+
 
 val bumpMeshCommit = "a6ac179149b8a17c71a9469dd4cb6f866c0c01d1"
 // The full 101-texture catalogue is a separate, explicitly pinned upstream commit of the same

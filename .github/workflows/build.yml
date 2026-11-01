@@ -296,6 +296,31 @@ jobs:
           ! grep -R 'https://cdn.jsdelivr.net' app/src/main/assets/mesh2step
           (cd app/src/main/assets/mesh2step && sha256sum --check SHA256SUMS)
 
+      - name: Verify the bundled ScanRuler offline workspace
+        run: |
+          set -o pipefail
+          gradle :app:verifyScanRulerAssets --stacktrace 2>&1 | tee scanruler-build.log
+          test -s app/src/main/assets/scanruler/index.html
+          test -s app/src/main/assets/scanruler/LICENSE
+          test -s app/src/main/assets/scanruler/SOURCE.md
+          test -s app/src/main/assets/scanruler/SHA256SUMS
+          test -s app/src/main/assets/scanruler/fonts/OFL-barlow.txt
+          ! test -e app/src/main/assets/scanruler/samples
+          grep -q 'sample=excluded' app/src/main/assets/scanruler/.source-version
+          grep -q 'format=1' app/src/main/assets/scanruler/.source-version
+          grep -q 'project=CNCKitchen/ScanRuler' app/src/main/assets/scanruler/.source-version
+          grep -q 'tag=v0.9.4' app/src/main/assets/scanruler/.source-version
+          grep -q 'commit=f183e9d074a2ce95d1059174a173b8150b3b71eb' app/src/main/assets/scanruler/.source-version
+          grep -q 'base=/assets/scanruler/' app/src/main/assets/scanruler/.source-version
+          grep -q '/assets/scanruler/assets/' app/src/main/assets/scanruler/index.html
+          ls app/src/main/assets/scanruler/assets/occt-wasm-*.wasm >/dev/null
+          ls app/src/main/assets/scanruler/assets/manifold-*.wasm >/dev/null
+          ls app/src/main/assets/scanruler/assets/meshWorker-*.js >/dev/null
+          ls app/src/main/assets/scanruler/assets/reWorker-*.js >/dev/null
+          ls app/src/main/assets/scanruler/assets/reHelperWorker-*.js >/dev/null
+          ! grep -q 'file://' app/src/main/assets/scanruler/index.html
+          (cd app/src/main/assets/scanruler && sha256sum --check SHA256SUMS)
+
       - name: Prepare and validate pinned filaSim workspace
         run: |
           set -o pipefail
@@ -737,6 +762,12 @@ jobs:
           grep -q 'assets/mesh2step/lib/LICENSES/meshfix-GPL-3.0.txt' apk-contents.log
           grep -q 'assets/mesh2step/LICENSE' apk-contents.log
           grep -q 'assets/mesh2step/SHA256SUMS' apk-contents.log
+          grep -q 'assets/scanruler/index.html' apk-contents.log
+          grep -q 'assets/scanruler/assets/occt-wasm-' apk-contents.log
+          grep -q 'assets/scanruler/assets/manifold-' apk-contents.log
+          ! grep -q 'assets/scanruler/samples/' apk-contents.log
+          grep -q 'assets/scanruler/LICENSE' apk-contents.log
+          grep -q 'assets/scanruler/fonts/OFL-barlow.txt' apk-contents.log
           grep -q 'assets/bumpmesh/library/manifest.json' apk-contents.log
           grep -q 'assets/bumpmesh/library/CREDITS.md' apk-contents.log
           test "$(grep -c 'assets/bumpmesh/library/textures/[^/]*\.\(png\|jpg\)' apk-contents.log)" -eq 101
