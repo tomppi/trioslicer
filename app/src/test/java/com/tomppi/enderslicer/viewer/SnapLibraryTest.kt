@@ -8,6 +8,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The bundled library's own geometry, measured in the meshes.
@@ -349,6 +352,46 @@ class SnapLibraryTest {
                 (one.joint.registrationSolid.bounds.maxZ - one.joint.registrationSolid.bounds.minZ),
             0.02f,
         )
+    }
+
+    /**
+     * The shape cache is one check-and-act behind a lock. The preview rebuilds on every
+     * slider drag and the old job is cancelled, but load() is cancellation-blind and
+     * finishes anyway: two loads of one shape used to race the cache map and the caller's
+     * one scratch file.
+     */
+    @Test
+    fun overlappingLoadsOfOneShapeDoTheWorkOnceAndNeverOverlapTheRead() {
+        assumeTrue("the host Manifold build is not on java.library.path", MeshBoolean.ensureLoaded())
+        SnapLibrary.forget()
+        val reads = AtomicInteger()
+        val inside = AtomicInteger()
+        val deepest = AtomicInteger()
+        val pairs = CopyOnWriteArrayList<SnapLibraryPair>()
+        val start = CountDownLatch(1)
+        val loaders = (0 until 4).map {
+            Thread {
+                start.await()
+                pairs += SnapLibrary.load(SnapLibraryShape.CANTILEVER01) { file ->
+                    val now = inside.incrementAndGet()
+                    deepest.updateAndGet { known -> maxOf(known, now) }
+                    reads.incrementAndGet()
+                    // The real read is seconds of asset IO on a device; widen the window here.
+                    Thread.sleep(100)
+                    val mesh = read(file)
+                    inside.decrementAndGet()
+                    mesh
+                }
+            }
+        }
+        loaders.forEach { it.start() }
+        start.countDown()
+        loaders.forEach { it.join(60_000) }
+
+        assertEquals("every loader gets an answer", 4, pairs.size)
+        assertTrue("and the same cached pair", pairs.all { it === pairs.first() })
+        assertEquals("the shape is read once per process (its two pieces)", 2, reads.get())
+        assertEquals("the caller's one scratch write never overlaps", 1, deepest.get())
     }
 
     /** The joint placed on two 40 mm halves meeting at [SEAM_Z]. */

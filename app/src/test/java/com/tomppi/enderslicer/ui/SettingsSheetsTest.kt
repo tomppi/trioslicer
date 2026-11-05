@@ -10,11 +10,15 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.PrusaSliceSettings
 import com.tomppi.enderslicer.model.SlicerSettings
+import java.util.Locale
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -117,5 +121,51 @@ class SettingsSheetsTest {
         inColumn(SETTINGS_RIGHT_PANE_TAG, "Walls and shells").assertDoesNotExist()
         // The fifth of the eight sections opens the right column.
         inColumn(SETTINGS_RIGHT_PANE_TAG, "Skirt and brim").assertIsDisplayed()
+    }
+
+    /**
+     * Flow ratio and the two retraction settings clamp like the Prusa sheet's do: no negative
+     * retraction and no absurd flow reach the engine, whatever is typed.
+     */
+    @Test
+    fun theOrcaSheetClampsFlowRatioAndRetraction() {
+        val orca = mutableStateOf(OrcaSliceSettings())
+        compose.setContent {
+            OrcaSettingsSheet(
+                state = MainUiState(printer = printer, orcaSettings = orca.value),
+                onSettings = { _, change -> orca.value = change(orca.value) },
+                // The phone's one column: this case is about the field transforms, and the
+                // wide split has its own tests.
+                expandedLayout = false,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        compose.onNodeWithText("Flow ratio (%)").performScrollTo().performTextReplacement("500")
+        compose.onNodeWithText("Retraction length (mm)").performScrollTo().performTextReplacement("-1")
+        compose.onNodeWithText("Retraction speed (mm/s)").performScrollTo().performTextReplacement("-1")
+
+        // filament_flow_ratio is 0..2 as a ratio; the field is a percent.
+        assertEquals(200.0, orca.value.filamentFlowRatioPercent, 1e-9)
+        assertEquals(0.0, orca.value.retractionLengthMm, 1e-9)
+        assertEquals(5.0, orca.value.retractionSpeedMmPerSecond, 1e-9)
+    }
+
+    /**
+     * Calculated values are trimmed through the locale's own decimal separator: trimming on "."
+     * left a Finnish phone's "3," where "3" belongs - the pattern docs/ui-style-guide.md's
+     * Fields rule forbids.
+     */
+    @Test
+    fun calculatedFieldsTrimThroughTheLocaleSeparator() {
+        val previous = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale("fi", "FI"))
+            assertEquals("3", calculatedFieldText(3.0))
+            assertEquals("10", calculatedFieldText(10.0))
+            assertEquals("0,05", calculatedFieldText(0.05))
+        } finally {
+            Locale.setDefault(previous)
+        }
     }
 }

@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -73,7 +74,12 @@ class ScanRulerEmbeddedSession(
     private val _state = MutableStateFlow(ScanRulerEmbeddedState())
     val state: StateFlow<ScanRulerEmbeddedState> = _state.asStateFlow()
 
-    private val pageToken = UUID.randomUUID().toString().replace("-", "")
+    /** Internal so the engine tests can pair a stand-in page with the session's own token. */
+    internal val pageToken = UUID.randomUUID().toString().replace("-", "")
+    // The bootstrap page carries the pairing secret, so it is served only to a request
+    // that names this session's secret - a co-installed app can reach the loopback port
+    // but never learns the query it must make.
+    private val bootstrapSecret = UUID.randomUUID().toString().replace("-", "")
     private val started = AtomicBoolean(false)
     private val stopped = AtomicBoolean(false)
     /** The default reverse workspace is selected once per session; the tabs then own it. */
@@ -99,37 +105,38 @@ class ScanRulerEmbeddedSession(
         if (started.getAndSet(true)) return
         val view = withContext(Dispatchers.Main.immediate) { buildWebView() }
         _webView = view
+        val assets = ScanRulerAssetServer(
+            assetBytes = scanRulerAssetReader(context),
+            bootstrapHtml = { bootstrapHtml() },
+            preferredPort = DEFAULT_PAGE_PORT,
+            bootstrapSecret = bootstrapSecret,
+            log = log,
+        )
+        val link = ScanRulerPageLink(
+            token = pageToken,
+            expectedOrigins = { setOf(assets.pageOrigin) },
+            port = DEFAULT_WEBSOCKET_PORT,
+            log = log,
+        )
+        val mcp = ScanRulerMcpServer(
+            token = ScanRulerTokens.ensureMcpToken(context),
+            pageLink = link,
+            status = { _state.value },
+            binarySink = { bytes, name, mimeType ->
+                val written = ScanRulerFileExports.write(context, bytes, name, mimeType)
+                JSONObject()
+                    .put("name", written.name)
+                    .put("mimeType", written.mimeType)
+                    .put("size", written.size)
+                    .put("uri", written.uri)
+            },
+            log = log,
+        )
         try {
-            val assets = ScanRulerAssetServer(
-                assetBytes = scanRulerAssetReader(context),
-                bootstrapHtml = { bootstrapHtml() },
-                preferredPort = DEFAULT_PAGE_PORT,
-                log = log,
-            )
             assets.start()
-            val link = ScanRulerPageLink(
-                token = pageToken,
-                expectedOrigins = { setOf(assets.pageOrigin) },
-                port = DEFAULT_WEBSOCKET_PORT,
-                log = log,
-            )
             link.onCommands = { commands -> onCommands(commands) }
             link.onPageChanged = { paired -> onPageChanged(paired) }
             link.start()
-            val mcp = ScanRulerMcpServer(
-                token = ScanRulerTokens.ensureMcpToken(context),
-                pageLink = link,
-                status = { _state.value },
-                binarySink = { bytes, name, mimeType ->
-                    val written = ScanRulerFileExports.write(context, bytes, name, mimeType)
-                    JSONObject()
-                        .put("name", written.name)
-                        .put("mimeType", written.mimeType)
-                        .put("size", written.size)
-                        .put("uri", written.uri)
-                },
-                log = log,
-            )
             mcp.start()
             assetServer = assets
             pageLink = link
@@ -142,10 +149,31 @@ class ScanRulerEmbeddedSession(
                 message = "Preparing ScanRuler...",
             )
             withContext(Dispatchers.Main.immediate) {
-                view.loadUrl(assets.pageOrigin + ScanRulerAssetServer.BOOTSTRAP_PATH)
+                view.loadUrl(
+                    assets.pageOrigin + ScanRulerAssetServer.BOOTSTRAP_PATH +
+                        "?" + ScanRulerAssetServer.BOOTSTRAP_SECRET_PARAM + "=" + bootstrapSecret,
+                )
             }
             log("ScanRuler embedded engine started (page " + assets.boundPort + ", link " + link.boundPort + ")")
         } catch (error: Throwable) {
+            // The fields are assigned only once everything started, so the servers this
+            // failure must release are the locals. The view is destroyed here too but stays
+            // readable: the FAILED surface may still host what start() created.
+            runCatching { mcp.close() }
+            runCatching { link.close() }
+            runCatching { assets.close() }
+            mcpServer = null
+            pageLink = null
+            assetServer = null
+            destroyWebView(view)
+            if (error is CancellationException) {
+                // A cancelled start is not a failure: the session is left clean and idle.
+                _state.value = ScanRulerEmbeddedState(
+                    phase = ScanRulerPhase.IDLE,
+                    message = "ScanRuler start cancelled.",
+                )
+                throw error
+            }
             log("ScanRuler engine start failed: " + (error.message ?: error.javaClass.simpleName))
             _state.value = ScanRulerEmbeddedState(
                 phase = ScanRulerPhase.FAILED,
@@ -154,12 +182,6 @@ class ScanRulerEmbeddedSession(
                 websocketPort = _state.value.websocketPort,
                 message = "ScanRuler could not start: " + (error.message ?: error.javaClass.simpleName),
             )
-            runCatching { mcpServer?.close() }
-            runCatching { pageLink?.close() }
-            runCatching { assetServer?.close() }
-            mcpServer = null
-            pageLink = null
-            assetServer = null
         }
     }
 
@@ -195,8 +217,12 @@ class ScanRulerEmbeddedSession(
             null
         }
         if (!embeddedWorkspaceInitialized) {
-            tryCommand("workspace.set", JSONObject().put("workspace", ScanRulerChromeAdapter.EMBEDDED_WORKSPACE))
-            embeddedWorkspaceInitialized = true
+            // Once per session, and only once it applied: a workspace.set that failed is
+            // tried again on the next show, so the default notes workspace is never skipped.
+            embeddedWorkspaceInitialized = tryCommand(
+                "workspace.set",
+                JSONObject().put("workspace", ScanRulerChromeAdapter.EMBEDDED_WORKSPACE),
+            ) != null
         }
         evaluateJavascript(ScanRulerChromeAdapter.installScript())
         _state.value = _state.value.copy(embedded = true)
@@ -277,6 +303,10 @@ class ScanRulerEmbeddedSession(
 
     internal fun commandNames(): List<String> = pageLink?.catalog?.map { it.name }.orEmpty()
 
+    /** The page command a tool name names, resolved against the page's current catalogue. */
+    internal fun commandForTool(toolName: String): ScanRulerCommandCatalog.Command? =
+        ScanRulerCommandCatalog.commandForTool(pageLink?.catalog.orEmpty(), toolName)
+
     internal fun statusSummary(): String = JSONObject()
         .put("phase", _state.value.phase.name.lowercase())
         .put("paired", _state.value.paired)
@@ -286,8 +316,8 @@ class ScanRulerEmbeddedSession(
         .put("message", _state.value.message)
         .toString()
 
-    internal fun waitForPageText(): String {
-        val ready = runCatching { pageLink?.awaitPage(20_000) == true }.getOrDefault(false)
+    internal fun waitForPageText(timeoutMillis: Long = 20_000): String {
+        val ready = runCatching { pageLink?.awaitPage(timeoutMillis) == true }.getOrDefault(false)
         val current = _state.value
         return JSONObject()
             .put("ready", ready && current.ready)
@@ -308,17 +338,20 @@ class ScanRulerEmbeddedSession(
         _state.value = ScanRulerEmbeddedState(phase = ScanRulerPhase.IDLE, message = "ScanRuler stopped.")
         val view = _webView
         _webView = null
-        if (view != null) {
-            val action = {
-                runCatching {
-                    view.stopLoading()
-                    view.loadUrl("about:blank")
-                    view.destroy()
-                }
-                Unit
+        if (view != null) destroyWebView(view)
+    }
+
+    /** The WebView dies on the main thread, whichever thread is done with it. */
+    private fun destroyWebView(view: WebView) {
+        val action = {
+            runCatching {
+                view.stopLoading()
+                view.loadUrl("about:blank")
+                view.destroy()
             }
-            if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
+            Unit
         }
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
     }
 
     private fun buildWebView(): WebView {

@@ -5,10 +5,9 @@ import android.content.ClipDescription
 import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
-import com.tomppi.enderslicer.nativebridge.BlenderEngine
-import com.tomppi.enderslicer.nativebridge.CadEngine
-import com.tomppi.enderslicer.solidcraft.SolidCraftBridge
-import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import com.tomppi.enderslicer.agent.engine.EngineMcpServer
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerMcpServer
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerTokens
 import java.io.File
 
 /**
@@ -73,10 +72,11 @@ object AgentBridgeCopy {
 /**
  * Each engine's own token, read from the file that engine actually writes.
  *
- * The paths are the engines' own: [BlenderEngine.tokenFile], [CadEngine.tokenFile] and
- * [SolidCraftEngine.tokenFile], with the config directories the app itself hands them. Nothing
- * here generates a token - a row may only offer what the engine has already written, which is
- * why a never-started engine has no line to copy.
+ * The paths are the engines' own: [BlenderEngine.tokenFile], [CadEngine.tokenFile],
+ * [SolidCraftEngine.tokenFile] and [ScanRulerTokens.mcpTokenFile], with the config
+ * directories the app itself hands them. Nothing here generates a token - a row may only
+ * offer what the engine has already written, which is why a never-started engine has no
+ * line to copy.
  */
 object AgentBridgeTokens {
 
@@ -84,11 +84,12 @@ object AgentBridgeTokens {
     fun file(context: Context, port: Int): File? {
         val app = context.applicationContext
         return when (port) {
-            BlenderEngine.DEFAULT_MCP_PORT ->
-                BlenderEngine.tokenFile(File(app.filesDir, "blender"))
-            CadEngine.DEFAULT_PORT ->
-                CadEngine.tokenFile(File(app.filesDir, "cad"))
-            SolidCraftBridge.DEFAULT_PORT -> SolidCraftEngine.tokenFile(app)
+            // The one modelling door: SolidCraft, the CAD engine and Blender share it and
+            // share its token.
+            EngineMcpServer.DEFAULT_PORT -> EngineMcpServer.tokenFile(app.filesDir)
+            // The ScanRuler facade keeps its own row; its token lives in the file the embedded
+            // workspace mints, so the row can hand it over like the others.
+            ScanRulerMcpServer.DEFAULT_PORT -> ScanRulerTokens.mcpTokenFile(app)
             else -> null
         }
     }

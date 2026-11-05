@@ -50,4 +50,12 @@ class KlipperPrintTest {
     fun keepsSpacesAndDashesThePrinterHandlesFine() {
         assertEquals("my part-v2.gcode", KlipperPrint.fileName("my part-v2.gcode"))
     }
+
+    @Test
+    fun aSuffixKlippyCannotOpenGetsTheOneItCan() {
+        // klippy's virtual_sdcard only opens files whose extension is exactly "gcode" and
+        // answers "Unable to open file" to anything else, so ".GCODE" is not a suffix this
+        // name may be passed on with: it gets the real one.
+        assertEquals("MODEL.GCODE.gcode", KlipperPrint.fileName("MODEL.GCODE"))
+    }
 }

@@ -4,10 +4,9 @@ import android.content.ClipDescription
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.tomppi.enderslicer.nativebridge.BlenderEngine
-import com.tomppi.enderslicer.nativebridge.CadEngine
-import com.tomppi.enderslicer.solidcraft.SolidCraftBridge
-import com.tomppi.enderslicer.solidcraft.SolidCraftEngine
+import com.tomppi.enderslicer.agent.engine.EngineMcpServer
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerMcpServer
+import com.tomppi.enderslicer.scanruler.engine.ScanRulerTokens
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -36,9 +35,8 @@ class AgentBridgeHandoverTest {
 
     private val address = "100.64.13.7"
 
-    private fun blenderFile() = BlenderEngine.tokenFile(File(context.filesDir, "blender"))
-    private fun cadFile() = CadEngine.tokenFile(File(context.filesDir, "cad"))
-    private fun solidCraftFile() = SolidCraftEngine.tokenFile(context)
+    private fun enginesFile() = EngineMcpServer.tokenFile(context.filesDir)
+    private fun scanRulerFile() = ScanRulerTokens.mcpTokenFile(context)
 
     private fun writeToken(file: File, value: String) {
         file.parentFile?.mkdirs()
@@ -47,15 +45,14 @@ class AgentBridgeHandoverTest {
 
     @Before
     fun clearTokenFiles() {
-        listOf(blenderFile(), cadFile(), solidCraftFile()).forEach { runCatching { it.delete() } }
+        listOf(enginesFile(), scanRulerFile()).forEach { runCatching { it.delete() } }
     }
 
     @Test
     fun theCopiedLineIsTheAddressThePortAndThatEnginesOwnToken() {
         val cases = listOf(
-            Triple(BlenderEngine.DEFAULT_MCP_PORT, "blender-token-0123456789abcdef", blenderFile()),
-            Triple(CadEngine.DEFAULT_PORT, "cad-token-0123456789abcdef", cadFile()),
-            Triple(SolidCraftBridge.DEFAULT_PORT, "solidcraft-token-0123456789abcdef", solidCraftFile()),
+            Triple(EngineMcpServer.DEFAULT_PORT, "engines-token-0123456789abcdef", enginesFile()),
+            Triple(ScanRulerMcpServer.DEFAULT_PORT, "scanruler-token-0123456789abcdef", scanRulerFile()),
         )
         for ((port, token, file) in cases) {
             writeToken(file, token + "\n")
@@ -73,7 +70,7 @@ class AgentBridgeHandoverTest {
     @Test
     fun aRowWithoutATokenCopiesNothingAndNamesTheReason() {
         for (token in listOf(null, "", "   ", "\n\t")) {
-            val ready = AgentBridgeCopy.line(address, SolidCraftBridge.DEFAULT_PORT, token)
+            val ready = AgentBridgeCopy.line(address, EngineMcpServer.DEFAULT_PORT, token)
             assertTrue("token '$token' must not produce a line", ready is AgentBridgeCopy.Ready.MissingToken)
             assertEquals(
                 AgentBridgeCopy.MISSING_TOKEN_REASON,
@@ -85,27 +82,25 @@ class AgentBridgeHandoverTest {
 
     @Test
     fun theTokensAreReadFromEachEnginesOwnFileAndTrimmed() {
-        writeToken(blenderFile(), "  blender-token-1  \n")
-        writeToken(cadFile(), "cad-token-2\n")
-        writeToken(solidCraftFile(), "solidcraft-token-3\n")
+        writeToken(enginesFile(), "  engines-token-1  \n")
+        writeToken(scanRulerFile(), "scanruler-token-4\n")
 
-        assertEquals("blender-token-1", AgentBridgeTokens.read(context, BlenderEngine.DEFAULT_MCP_PORT))
-        assertEquals("cad-token-2", AgentBridgeTokens.read(context, CadEngine.DEFAULT_PORT))
-        assertEquals("solidcraft-token-3", AgentBridgeTokens.read(context, SolidCraftBridge.DEFAULT_PORT))
+        assertEquals("engines-token-1", AgentBridgeTokens.read(context, EngineMcpServer.DEFAULT_PORT))
+        assertEquals("scanruler-token-4", AgentBridgeTokens.read(context, ScanRulerMcpServer.DEFAULT_PORT))
         assertEquals(
-            setOf(BlenderEngine.DEFAULT_MCP_PORT, CadEngine.DEFAULT_PORT, SolidCraftBridge.DEFAULT_PORT),
+            setOf(EngineMcpServer.DEFAULT_PORT, ScanRulerMcpServer.DEFAULT_PORT),
             AgentBridgeTokens.available(context),
         )
     }
 
     @Test
     fun aNeverStartedEngineHasNoTokenAndItsRowCannotCopy() {
-        assertNull(AgentBridgeTokens.read(context, BlenderEngine.DEFAULT_MCP_PORT))
+        assertNull(AgentBridgeTokens.read(context, EngineMcpServer.DEFAULT_PORT))
         assertEquals(emptySet<Int>(), AgentBridgeTokens.available(context))
         val ready = AgentBridgeCopy.line(
             address,
-            BlenderEngine.DEFAULT_MCP_PORT,
-            AgentBridgeTokens.read(context, BlenderEngine.DEFAULT_MCP_PORT),
+            EngineMcpServer.DEFAULT_PORT,
+            AgentBridgeTokens.read(context, EngineMcpServer.DEFAULT_PORT),
         )
         assertEquals(
             AgentBridgeCopy.MISSING_TOKEN_REASON,
@@ -116,7 +111,7 @@ class AgentBridgeHandoverTest {
     @Test
     fun theClipIsMarkedSensitiveAndCarriesTheExactLine() {
         val token = "solidcraft-token-0123456789abcdef"
-        val ready = AgentBridgeCopy.line(address, SolidCraftBridge.DEFAULT_PORT, token)
+        val ready = AgentBridgeCopy.line(address, EngineMcpServer.DEFAULT_PORT, token)
             as AgentBridgeCopy.Ready.Line
         val clip = AgentBridgeCopy.sensitiveClip("SolidCraft connect line", ready.text)
 
@@ -136,13 +131,13 @@ class AgentBridgeHandoverTest {
     @Test
     fun theTokenIsOnlyEverInTheClipboardPayloadNotInTheUiModelOrLogs() {
         val token = "solidcraft-token-0123456789abcdef"
-        writeToken(solidCraftFile(), token)
+        writeToken(enginesFile(), token)
 
         // What the sheet renders is the model below: name, URL, state and sentence. It has no
         // token field, and none of its fields may carry the value.
         val row = AgentBridgeLine(
-            target = AgentBridgeTarget("SolidCraft", SolidCraftBridge.DEFAULT_PORT),
-            line = "tcp://" + address + ":" + SolidCraftBridge.DEFAULT_PORT,
+            target = AgentBridgeTarget("Modelling engines", EngineMcpServer.DEFAULT_PORT),
+            line = "tcp://" + address + ":" + EngineMcpServer.DEFAULT_PORT,
             address = address,
             state = BridgeLinkState.UP,
             status = "app bridge up",
@@ -153,8 +148,8 @@ class AgentBridgeHandoverTest {
 
         // The only product that carries it is the clipboard payload, exactly once.
         ShadowLog.clear()
-        val read = AgentBridgeTokens.read(context, SolidCraftBridge.DEFAULT_PORT)
-        val ready = AgentBridgeCopy.line(address, SolidCraftBridge.DEFAULT_PORT, read)
+        val read = AgentBridgeTokens.read(context, EngineMcpServer.DEFAULT_PORT)
+        val ready = AgentBridgeCopy.line(address, EngineMcpServer.DEFAULT_PORT, read)
             as AgentBridgeCopy.Ready.Line
         assertEquals("the token must appear exactly once in the payload", 1, ready.text.split(token).size - 1)
         assertTrue(

@@ -29,6 +29,7 @@ import com.tomppi.enderslicer.printer.KlipperPrint
 import com.tomppi.enderslicer.printer.PrinterUsb
 import com.tomppi.enderslicer.printer.isMaterialHeater
 import com.tomppi.enderslicer.printer.KlipperFileLimits
+import com.tomppi.enderslicer.printer.KlipperHostFiles
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.LaunchedEffect
@@ -616,12 +617,25 @@ private const val CAMERA_REFRESH_MS = 1_000L
  */
 @Composable
 private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, viewModel: KlipperViewModel) {
-    val file = localGcodePath?.let(::File)
-    val limits = remember(state.speeds, localGcodePath) { KlipperFileLimits.of(state, file) } ?: return
+    val context = LocalContext.current
+    //
+    // Whose limits these are: the file being printed while a print runs - the Job card above
+    // names it, and a print is diagnosed with its own numbers - and the last slice otherwise.
+    // A file this device cannot read is described as none at all rather than as another
+    // file's limit lines standing under "this file".
+    //
+    val file = limitsFile(
+        printing = state.isPrinting || state.isPaused,
+        printingFile = state.printFileName
+            ?.let { name -> File(KlipperHostFiles.gcodes(context.filesDir), name) },
+        slicedFile = localGcodePath?.let(::File),
+    )
+    val limits = remember(state.speeds, file) { KlipperFileLimits.of(state, file) } ?: return
     KlipperCard(title = "Limits", subtitle = "This file, and this printer") {
         KlipperValue(
             "Acceleration the file asks for",
-            limits.askedAccel?.let { "%.0f mm/s²".format(it) } ?: "none set in the file",
+            limits.askedAccel?.let { "%.0f mm/s²".format(it) }
+                ?: if (file == null) "no file is loaded" else "none set in the file",
         )
         KlipperValue(
             "Acceleration the printer allows",
@@ -703,11 +717,26 @@ private fun LimitsCard(state: KlipperPrinterState, localGcodePath: String?, view
 
         if (limits.ignoredMarlinLimits.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
-            KlipperNote(
-                "This file also carries " + limits.ignoredMarlinLimits.joinToString(", ") +
-                    ". Those are Marlin's commands and klippy has none of them: it answers " +
-                    "\"Unknown command\" and moves at the printer's own limits instead.",
-            )
+            //
+            // Split because M900 is not a limit: it is Marlin's pressure advance, and
+            // ignoring it leaves the printer's own pressure advance running - which "the
+            // printer's own limits instead" would misdescribe.
+            //
+            val ignoredLimits = limits.ignoredMarlinLimits.filterNot { it == "M900" }
+            if (ignoredLimits.isNotEmpty()) {
+                KlipperNote(
+                    "This file also carries " + ignoredLimits.joinToString(", ") +
+                        ". Those are Marlin's commands and klippy has none of them: it answers " +
+                        "\"Unknown command\" and moves at the printer's own limits instead.",
+                )
+            }
+            if ("M900" in limits.ignoredMarlinLimits) {
+                KlipperNote(
+                    "This file also carries M900, which is Marlin's pressure advance and not " +
+                        "a limit: klippy answers \"Unknown command\" to it, and the printer " +
+                        "keeps its own pressure advance.",
+                )
+            }
         }
     }
 }
@@ -895,6 +924,17 @@ private fun DangerCard(state: KlipperPrinterState, onEmergencyStop: () -> Unit) 
         }
     }
 }
+
+/**
+ * The file whose limits the Limits card shows: the one printing while a print runs - the Job
+ * card names it, and a print is diagnosed with its own numbers - and the last slice otherwise.
+ *
+ * A file this device cannot read is not replaced by the other one: the card's limit lines have
+ * to be the file's own, so nothing at all is answered as "no file is loaded" rather than as
+ * another file's lines, or as what a file that is not here sets.
+ */
+internal fun limitsFile(printing: Boolean, printingFile: File?, slicedFile: File?): File? =
+    (if (printing) printingFile else slicedFile)?.takeIf(File::isFile)
 
 /** A field that takes digits and a decimal mark and nothing else. */
 private fun limitDigits(typed: String): String =

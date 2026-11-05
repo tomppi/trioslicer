@@ -55,6 +55,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import com.tomppi.enderslicer.agent.engine.AgentDoorMenu
+import com.tomppi.enderslicer.agent.engine.AgentEngine
 import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
 import com.tomppi.enderslicer.harness.HarnessClient
@@ -229,6 +233,14 @@ fun AiChatOverlay(
      * "ScanRuler agent (in-app)" while the embedded ScanRuler workspace is the active view.
      */
     inAppLabel: String = ChatSource.IN_APP.label,
+    /** Which modelling engine the in-app agent drives; the engine menu owns this. */
+    agentEngine: AgentEngine = AgentEngine.SOLIDCRAFT,
+    /** Called when the engine menu picks another engine; the conversation survives the switch. */
+    onSelectEngine: (AgentEngine) -> Unit = {},
+    /** Starts a stopped engine from the engine menu; null hides the Start rows. */
+    onStartEngine: ((AgentEngine) -> Unit)? = null,
+    /** The universal MCP door's menu; null hides the door button. */
+    doorMenu: AgentDoorMenu? = null,
     /** The in-app composer's hint, in the same voice as [inAppLabel]. */
     inAppComposerHint: String = "Ask for a CAD change",
     /** The in-app empty state, in the same voice as [inAppLabel]. */
@@ -307,24 +319,126 @@ fun AiChatOverlay(
 
     val sourceChips: @Composable () -> Unit = {
         if (inApp != null) {
+            // Two lines, each scrolling rather than wrapping: the source chips own the first,
+            // the engine and door menus own the second, so nothing is squeezed or clipped off
+            // the small floating window's edge - the narrow-window rule the model tools bar
+            // follows, one line per kind of control.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = EnderSlicerDimens.CardPadding),
             ) {
-                ChatSource.entries.forEach { candidate ->
-                    FilterChip(
-                        selected = shownSource == candidate,
-                        onClick = { selectSource(candidate) },
-                        label = {
-                            Text(
-                                if (candidate == ChatSource.IN_APP) inAppLabel else candidate.label,
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        },
-                    )
-                }
+                    ChatSource.entries.forEach { candidate ->
+                        FilterChip(
+                            selected = shownSource == candidate,
+                            onClick = { selectSource(candidate) },
+                            label = {
+                                Text(
+                                    if (candidate == ChatSource.IN_APP) inAppLabel else candidate.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            },
+                        )
+                    }
+                    }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space6),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = EnderSlicerDimens.CardPadding),
+            ) {
+                // The engine menu: which modelling engine this conversation drives. It is
+                    // the in-app half of the universal selector - picking one loads that engine's
+                    // tools and tells the agent which engine it is operating in.
+                    if (shownSource == ChatSource.IN_APP) {
+                        var engineMenu by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { engineMenu = true }) {
+                                Text(
+                                    "Engine: " + agentEngine.label + " ▾",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                            DropdownMenu(expanded = engineMenu, onDismissRequest = { engineMenu = false }) {
+                                AgentEngine.entries.forEach { engine ->
+                                    val stopped = doorMenu?.running?.get(engine) == false
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                engine.label + (doorMenu?.readiness?.get(engine)
+                                                    ?.let { " · " + it } ?: ""),
+                                            )
+                                        },
+                                        onClick = {
+                                            engineMenu = false
+                                            onSelectEngine(engine)
+                                        },
+                                        trailingIcon = {
+                                            // A stopped engine can be started from here: the
+                                            // readiness line used to be a dead end, and the
+                                            // start lived in a menu the user had to find.
+                                            if (stopped && onStartEngine != null) {
+                                                TextButton(onClick = { onStartEngine(engine) }) {
+                                                    Text("Start", style = MaterialTheme.typography.labelSmall)
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // The universal MCP door's menu: where it is, the one line to paste, and
+                    // the network switch. The caller owns the clipboard and the prompts.
+                    if (doorMenu != null) {
+                        val door = doorMenu
+                        var doorOpen by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { doorOpen = true }) {
+                                Text(
+                                    "MCP ▾",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                )
+                            }
+                            DropdownMenu(expanded = doorOpen, onDismissRequest = { doorOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text(door.doorLine) },
+                                    onClick = {
+                                        doorOpen = false
+                                        door.onCopyConnectLine()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy token") },
+                                    onClick = {
+                                        doorOpen = false
+                                        door.onCopyToken()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (door.networkOn) "Reachable on the network: on"
+                                            else "Reachable on the network: off",
+                                        )
+                                    },
+                                    onClick = {
+                                        doorOpen = false
+                                        door.onToggleNetwork(!door.networkOn)
+                                    },
+                                )
+                            }
+                        }
+                    }
             }
         }
     }

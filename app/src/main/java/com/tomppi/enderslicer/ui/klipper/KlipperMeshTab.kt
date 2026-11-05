@@ -59,6 +59,12 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
     // was printed as a fact.
     val configKnown = state.configSections != null
     val configured = state.configSections?.has("bed_mesh") == true
+    //
+    // Homing and probing move the machine over whatever is on the plate, so they follow the
+    // Move tab's rule: motion is refused while printing rather than merely discouraged - a
+    // probe grid over the part destroys the print and can drive the nozzle into it.
+    //
+    val motionAllowed = state.isReady && !state.isPrinting
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -112,12 +118,19 @@ internal fun KlipperMeshTab(state: KlipperPrinterState, viewModel: KlipperViewMo
             )
             Spacer(Modifier.height(8.dp))
             KlipperButtons {
-                KlipperButton("Home first", enabled = state.isReady) { viewModel.home() }
+                KlipperButton("Home first", enabled = motionAllowed) { viewModel.home() }
                 // Probing raises "Must home before probe" while Z is unhomed, and the failure
                 // only reaches the console - so the button waits, as the Z probe screen's does.
-                KlipperButton("Probe the bed", enabled = state.isReady && state.isHomed) {
+                KlipperButton("Probe the bed", enabled = motionAllowed && state.isHomed) {
                     confirmCalibrate = true
                 }
+            }
+            if (state.isPrinting) {
+                Spacer(Modifier.height(4.dp))
+                KlipperNote(
+                    "A print is running. Homing or probing now would move the head across " +
+                        "the part - pause the print and the buttons come back.",
+                )
             }
         }
 

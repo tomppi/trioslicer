@@ -11,13 +11,20 @@ internal object KlipperPrint {
     /** The directory under filesDir that [virtual_sdcard] is pointed at. */
     const val GCODE_DIR = "gcodes"
 
-    /** What the printer calls a file this app hands it. */
+    /**
+     * What the printer calls a file this app hands it.
+     *
+     * The suffix check is case-sensitive because klippy's is: its virtual_sdcard only
+     * opens files whose extension is exactly "gcode", so a name ending in ".GCODE" is
+     * one it answers "Unable to open file" to. Such a name gets the real suffix rather
+     * than being passed through as if it already had one.
+     */
     fun fileName(raw: String): String {
         val base = raw.substringAfterLast('/').substringAfterLast('\\').trim()
         val cleaned = base.map { c ->
             if (c.isLetterOrDigit() || c in "-_. ") c else '_'
         }.joinToString("").trimStart('.')
         val named = cleaned.ifBlank { "print" }
-        return if (named.endsWith(".gcode", ignoreCase = true)) named else "$named.gcode"
+        return if (named.endsWith(".gcode")) named else "$named.gcode"
     }
 }

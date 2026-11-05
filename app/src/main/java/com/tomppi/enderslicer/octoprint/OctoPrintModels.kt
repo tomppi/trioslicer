@@ -257,7 +257,7 @@ internal object OctoPrintJson {
 
     fun parseFiles(root: JSONObject): Pair<List<OctoPrintFileEntry>, Long?> {
         val output = mutableListOf<OctoPrintFileEntry>()
-        flattenFiles(root.optJSONArray("files") ?: JSONArray(), output, depth = 0, defaultOrigin = "local")
+        flattenFiles(root.optJSONArray("files") ?: JSONArray(), output, mutableSetOf(), depth = 0, defaultOrigin = "local")
         return output to parseByteCount(root.opt("free"))
     }
 
@@ -285,6 +285,7 @@ internal object OctoPrintJson {
     private fun flattenFiles(
         array: JSONArray,
         output: MutableList<OctoPrintFileEntry>,
+        seen: MutableSet<String>,
         depth: Int,
         defaultOrigin: String,
     ) {
@@ -300,6 +301,11 @@ internal object OctoPrintJson {
             val path = runCatching {
                 OctoPrintClient.normalizeRemotePath(rawPath, allowBlank = false)
             }.getOrNull() ?: continue
+            // The Files list keys rows by origin and path, and Compose crashes the app on a
+            // duplicate LazyColumn key - so a server that lists one path twice must not
+            // produce two rows. The first occurrence wins, and a repeated entry's subtree
+            // goes with it.
+            if (!seen.add("$origin:$path")) continue
             val analysis = item.optJSONObject("gcodeAnalysis") ?: JSONObject()
             val filament = analysis.optJSONObject("filament") ?: JSONObject()
             val print = item.optJSONObject("print") ?: JSONObject()
@@ -317,7 +323,7 @@ internal object OctoPrintJson {
                 depth = depth,
             )
             if (isFolder) {
-                flattenFiles(item.optJSONArray("children") ?: JSONArray(), output, depth + 1, origin)
+                flattenFiles(item.optJSONArray("children") ?: JSONArray(), output, seen, depth + 1, origin)
             }
         }
     }

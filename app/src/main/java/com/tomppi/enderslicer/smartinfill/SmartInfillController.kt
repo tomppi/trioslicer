@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.Closeable
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 private val EMPTY_BINS = IntArray(0)
 private val EMPTY_DENSITIES = DoubleArray(0)
@@ -148,6 +150,15 @@ class SmartInfillController(
 
     private var nextConditionId = 1L
     private var work: Job? = null
+
+    /** Guards [exportsInFlight] and the closed gate of [trackedExport]. */
+    private val exportLock = ReentrantLock()
+
+    /** Signalled whenever an export returns; [close] waits for the queue to drain. */
+    private val exportDrained = exportLock.newCondition()
+
+    /** Apply exports running right now; [close] destroys the session only once none do. */
+    private var exportsInFlight = 0
 
     /** Grid, patch and body counts for the current resolution setting. */
     fun refreshInfo() {
@@ -568,10 +579,30 @@ class SmartInfillController(
     // ---- results ----
 
     /** The modifier archive for the slice pipeline (graded and binary modes). */
-    fun modifierArchive(): ByteArray = engine.modifierArchive()
+    fun modifierArchive(): ByteArray = trackedExport { engine.modifierArchive() }
 
     /** The Part Topo body (solid topology mode). */
-    fun optimizedShape(): ByteArray = engine.optimizedShape()
+    fun optimizedShape(): ByteArray = trackedExport { engine.optimizedShape() }
+
+    /**
+     * One Apply export under [close]'s contract, like the tracked work: a blocking JNI call
+     * cannot be interrupted, so the native session is destroyed only once the running call
+     * has returned. Gated on [closed] so no export can start once destroy was decided.
+     */
+    private fun <T> trackedExport(block: () -> T): T {
+        exportLock.withLock {
+            if (closed) error("The Smart Infill session is closed; run it again before applying")
+            exportsInFlight++
+        }
+        try {
+            return block()
+        } finally {
+            exportLock.withLock {
+                exportsInFlight--
+                exportDrained.signalAll()
+            }
+        }
+    }
 
     /** The metadata the Smart Infill store validates the archive against. */
     fun modifierMetadata(): String {
@@ -604,11 +635,18 @@ class SmartInfillController(
      * would free memory the worker is still reading.
      */
     override fun close() {
-        if (closed) return
-        closed = true
+        exportLock.withLock {
+            if (closed) return
+            closed = true
+        }
         val running = work
         running?.cancel()
         runCatching { engine.cancel() }
+        // An Apply export is a running call too: the session is destroyed only once
+        // it has returned, the same rule the tracked work gets below.
+        exportLock.withLock {
+            while (exportsInFlight > 0) exportDrained.await()
+        }
         if (running == null || running.isCompleted) {
             runCatching { engine.close() }
         } else {

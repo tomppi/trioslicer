@@ -1,3 +1,9 @@
+---
+name: solidcraft-engine
+description: Author the live CAD document on TrioSlicer's plate - either as the app's built-in agent (an OpenAI-compatible endpoint called from the phone, no bridge) or through the app's unified MCP server from a computer (one door for all three engines) - with sketch, extrude, fillet, boolean and parameter edits that appear on the user's plate as they happen, then save, export STEP/3MF/STL, and slice.
+whenToUse: When the user is in the app's SolidCraft / CAD menu and asks for a parametric part (bracket, enclosure, adapter, case) built to exact dimensions on the plate, or asks to change an existing live CAD document. The app's own in-app agent is the default author and needs no bridge; this skill's bridge section is for an external agent on a computer. Not for mesh editing (blender-mcp-engine) or photo-to-model (image-to-3d-model).
+---
+
 # SolidCraft engine (TrioSlicer / enderslicercura, on the plate)
 
 **This is the app's live CAD document.** The main plate can show a SolidCraft 0.24.0 design
@@ -28,8 +34,9 @@ Rule of thumb:
 | "make this scanned model thinner" / "fix this wall" | blender-mcp-engine (mesh editing) |
 | "turn this photo into a model" | image-to-3d-model, then CAD to correct dimensions |
 
-The older **cad-engine** skill drives a different engine (build123d on OCP, its own viewport and
-its own MCP token on 9877). Do not mix them up: this one holds the document the PLATE draws.
+The **cad-engine** skill drives a different engine (build123d on OCP, its own viewport),
+selected with engine_select cad through the same door. Do not mix them up: this one holds
+the document the PLATE draws.
 
 ## 1. The in-app agent (the app calls you)
 
@@ -129,79 +136,29 @@ whole answer set. The question itself is one sentence in the user's words.
 
 ## 2. Connect (external agents only)
 
-The engine is a child process of the app, speaking MCP over its own stdio; the app exposes that
-session on **port 9878** on the phone, behind a bearer token. How another device reaches it is
-the **Reachable on the network** switch in the CAD agent sheet:
+The app hands all three modelling engines to external agents through **one MCP server** -
+see [trioslicer-engines](trioslicer-engines.md) for the whole picture. For this
+document the two facts are: connect once, and the selector points you at SolidCraft.
 
-- **Off (the default)** - the bridge listens on 127.0.0.1 only, and nothing off the phone reaches
-  it. A development machine can still reach it through `adb forward tcp:9878 tcp:9878`.
-- **On** - the app republishes **all three agent engines** on this device's network address at
-  their own loopback ports: Blender MCP 9876, the Python CAD engine 9877, and SolidCraft 9878.
-  The sheet lists one row per engine. Each row's **Copy** puts ONE line on the clipboard, after
-  the fingerprint prompt - the connect line together with that engine's own token:
+    tcp://<phone-tailscale-ip>:9878 token=<the token the app printed>
 
-      tcp://<this device's address>:<port> token=<that engine's token>
+Newline-delimited JSON-RPC 2.0 (MCP), every message carrying the token at the top level or
+inside params. SolidCraft is the default engine - if you just connected, it is already
+selected - and engine_select {"engine": "solidcraft"} returns here after you have used
+another one. tools/list shows the document's own tool names.
 
-  For SolidCraft that is `tcp://<address>:9878 token=<token>`. So connecting is one copy and one
-  paste, not a separate address and token. The address is chosen from the phone's own
-  interfaces (a tailnet address first, then a private LAN one), so it is not a device name and
-  not a setting. **That line is the connection** - no adb, no serve rule, no forward, and no
-  device serial anywhere in the loop, which matters because a serial is exactly how an agent
-  ends up poking the wrong phone.
+**Reaching the port.** The CAD agent sheet's **Reachable on the network** switch publishes the
+loopback listener on the phone's tailnet address (TailSocks root mode, node phone-host) and its
+**Copy** row puts the whole tcp:// line on the clipboard in one paste. Without a tailnet, adb
+forward tcp:9878 tcp:9878 and use tcp://127.0.0.1:9878. The token is app-private storage
+(files/agent/engines_mcp_token.txt); **Copy MCP token** in the SolidCraft menu copies just the
+value - ask the user rather than reaching for su.
 
-Each row also says what is behind the line: **app bridge up** means the listener and the engine
-both answer; **engine not running** means the address is published but nothing is listening
-behind it - ask the user to open TrioSlicer and press Connect agent. A dead engine must never
-be read as a dead network: the line is good, the engine is not started.
+**What this door adds to the engine's rules.** One connection is one external author of the
+document while it is up (section 5). A tools/call timeout is uncertain, not failed: the call
+may still have run - inspect the document before sending it again. Turn **Reachable on the
+network** off when the session ends.
 
-If the sheet says there is no network address to show, the phone has neither a tailnet nor a
-private LAN IPv4 address: ask the user to join Wi-Fi or the tailnet. Do not ask them to run a
-publish rule first - the switch already did the publishing.
-
-A phone on an older build, or a set-up where the user keeps the switch off, can still be
-reached by publishing its loopback port from that phone (TailSocks in root mode works):
-
-    tailscale serve --bg --tcp 9878 127.0.0.1:9878
-    # -> tcp://<phone>.<tailnet>.ts.net:9878
-
-1. **Probe first.** Connect to the line the user gave you (or 127.0.0.1:9878 through a forward on
-   a development phone) and send an initialize frame with no token. Four answers, four meanings:
-   - `{"error":{"code":-32001,"message":"unauthorized: send the token ..."}}` - the bridge is up and
-     reachable. Good; add the token.
-   - `{"error":{"code":-32010,"message":"the in-app agent is driving this document right now; retry when its turn finishes"}}`
-     - the bridge is up, and the phone's own agent is mid-turn. Wait for that turn to finish and
-     reconnect; nothing is queued for you and no existing client was disconnected to make room.
-     Do not ask the user to press Take over for you - the in-app turn ends on its own.
-   - connection reset straight after accept - the app's forwarder is answering, but the SolidCraft
-     engine is not running: the CAD agent is not connected. Ask the user to open TrioSlicer, CAD
-     agent, Connect agent. The engine is a child of the app and dies with it; say that, do not
-     retry in a loop.
-   - timeout or connection refused - the network reach is not published: the switch is off, or
-     the phone is not reachable at that address (Wi-Fi or tailnet down).
-2. **The line.** The user taps **Copy** on the engine's row in the CAD agent sheet; it copies
-   the address AND that engine's token as the one line above (the prompt is biometric because
-   the line carries a credential; the app is the only place a token can be handed over on a
-   phone without root). If the row says **start the engine first - its token is created when it
-   starts**, ask the user to open the sheet and press Connect agent (SolidCraft) or start the
-   engine from its own menu (Blender, CAD), then Copy again. Treat the token as a bearer
-   credential: not in logs, not in chat history. The app's forwarder copies bytes and logs
-   nothing, so the token does not become an app log line.
-3. Speak newline-delimited JSON-RPC 2.0 on that socket. Every message carries the token as a
-   top-level "token" field (or inside params):
-
-    {"jsonrpc":"2.0","id":1,"method":"initialize","token":"<token>","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"0"}}}
-    {"jsonrpc":"2.0","method":"notifications/initialized","token":"<token>","params":{}}
-    {"jsonrpc":"2.0","id":2,"method":"tools/list","token":"<token>","params":{}}
-    {"jsonrpc":"2.0","id":3,"method":"tools/call","token":"<token>","params":{"name":"execute","arguments":{"command":"solid.box","params":{"length":40,"width":30,"height":20}}}}
-
-The tool surface is upstream SolidCraft's: **19 tools**, the same names in 0.22.1 and 0.24.0
-(list_commands, describe_command, execute, batch, inspect_design, measure, body_topology,
-set_parameter, screenshot, export, crash_reports, running, pending, undo, redo, new_design, open,
-save, skill_reference). Nothing in the app restates that list: a tool a later engine adds would
-reach both the in-app agent and the bridge by itself, and only the five desktop-only tools are
-hidden from the in-app agent (screenshot, crash_reports, running, pending, skill_reference).
-The app also refuses the engine's screenshot tool on the bridge: the plate is the viewport, and
-the engine's own GPU renderer is never used.
 
 ## 3. The live view
 

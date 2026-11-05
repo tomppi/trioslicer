@@ -463,7 +463,15 @@ class ScanRulerActivity : ComponentActivity() {
         fun beginDownload(filename: String, mime: String, expectedBytes: Double): Boolean {
             val begin = synchronized(transfer) { transfer.begin(filename, expectedBytes) }
             if (!begin.accepted) {
-                complete(false, begin.message ?: "The export could not be started.")
+                // A refused begin must not touch the export in flight: the shared complete
+                // and report path would delete its destination and broadcast the failure
+                // whose page half clears the pending stream the in-flight export is
+                // sending. The refusal goes to the page as the return value and to the
+                // user as a toast.
+                val message = begin.message ?: "The export could not be started."
+                mainHandler.post {
+                    Toast.makeText(this@ScanRulerActivity, message, Toast.LENGTH_LONG).show()
+                }
                 return false
             }
             mainHandler.post {

@@ -57,6 +57,9 @@ private fun SlicerSettings.toSummary() = PlateSessionSummary(
     adhesion = adhesionType,
 )
 
-/** "Brim 5.0 mm" when a brim is set, "Skirt 1x" otherwise. */
-internal fun adhesionLabel(brimWidthMm: Double, skirtLoops: Int): String =
-    if (brimWidthMm > 0.0) "Brim %.1f mm".format(brimWidthMm) else "Skirt " + skirtLoops + "x"
+/** "Brim 5.0 mm" when a brim is set, "Skirt 1x" for a skirt, "None" when neither sticks. */
+internal fun adhesionLabel(brimWidthMm: Double, skirtLoops: Int): String = when {
+    brimWidthMm > 0.0 -> "Brim %.1f mm".format(brimWidthMm)
+    skirtLoops > 0 -> "Skirt " + skirtLoops + "x"
+    else -> "None"
+}

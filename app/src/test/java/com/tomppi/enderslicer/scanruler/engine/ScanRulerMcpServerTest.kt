@@ -154,6 +154,82 @@ class ScanRulerMcpServerTest {
     }
 
     @Test
+    fun aFileResultWithoutAMimeTypeGetsTheOneFromItsExtension() {
+        val captured = Collections.synchronizedList(ArrayList<List<String>>())
+        val withSink = ScanRulerMcpServer(
+            token = token,
+            pageLink = link,
+            status = { ScanRulerEmbeddedState(phase = ScanRulerPhase.READY, paired = true, toolsReady = true) },
+            binarySink = { _, name, mimeType ->
+                captured += listOf(name, mimeType)
+                JSONObject().put("name", name).put("mimeType", mimeType).put("size", 3).put("uri", "content://x")
+            },
+            port = 0,
+        )
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val future = executor.submit<JSONObject> {
+                JSONObject(withSink.handleLine(
+                    request("tools/call", JSONObject().put("name", "scan_open")).toString(),
+                )!!)
+            }
+            val asked = JSONObject(page.awaitText())
+            assertEquals("scan.open", asked.getString("name"))
+            page.sendJson(JSONObject()
+                .put("id", asked.getInt("id"))
+                .put("binary", "result.file.bytes")
+                .put("result", JSONObject().put("file", JSONObject()
+                    .put("name", "measurement.step")
+                    .put("bytes", JSONObject().put("size", 3)))))
+            page.sendBinary(byteArrayOf(1, 2, 3))
+            val answer = future.get(5, TimeUnit.SECONDS)
+            assertEquals("application/step", answer.getJSONObject("result").getJSONObject("structuredContent")
+                .getJSONObject("file").getJSONObject("bytes").getString("mimeType"))
+            assertEquals(listOf("measurement.step", "application/step"), captured.first())
+        } finally {
+            executor.shutdownNow()
+            withSink.close()
+        }
+    }
+
+    @Test
+    fun aFileResultKeepsTheMimeTypeThePageNamed() {
+        val captured = Collections.synchronizedList(ArrayList<List<String>>())
+        val withSink = ScanRulerMcpServer(
+            token = token,
+            pageLink = link,
+            status = { ScanRulerEmbeddedState(phase = ScanRulerPhase.READY, paired = true, toolsReady = true) },
+            binarySink = { _, name, mimeType ->
+                captured += listOf(name, mimeType)
+                JSONObject().put("name", name).put("mimeType", mimeType).put("size", 3).put("uri", "content://x")
+            },
+            port = 0,
+        )
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val future = executor.submit<JSONObject> {
+                JSONObject(withSink.handleLine(
+                    request("tools/call", JSONObject().put("name", "scan_open")).toString(),
+                )!!)
+            }
+            val asked = JSONObject(page.awaitText())
+            page.sendJson(JSONObject()
+                .put("id", asked.getInt("id"))
+                .put("binary", "result.file.bytes")
+                .put("result", JSONObject().put("file", JSONObject()
+                    .put("name", "measurement.step")
+                    .put("mimeType", "model/step")
+                    .put("bytes", JSONObject().put("size", 3)))))
+            page.sendBinary(byteArrayOf(1, 2, 3))
+            future.get(5, TimeUnit.SECONDS)
+            assertEquals(listOf("measurement.step", "model/step"), captured.first())
+        } finally {
+            executor.shutdownNow()
+            withSink.close()
+        }
+    }
+
+    @Test
     fun aPageRefusalIsAnEngineUnavailableError() {
         val executor = Executors.newSingleThreadExecutor()
         try {

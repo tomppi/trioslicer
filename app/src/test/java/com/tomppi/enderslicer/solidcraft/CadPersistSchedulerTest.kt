@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -79,5 +80,47 @@ class CadPersistSchedulerTest {
         await { writes.get() >= 2 }
         Thread.sleep(400)
         assertEquals("one trailing save, no dropped edit and no write storm", 2, writes.get())
+    }
+
+    /**
+     * The race the single-threaded driver above cannot reach: the final edit of a burst
+     * arriving while the drain loop is deciding it has written everything. The write models
+     * the real one - it saves the LIVE state - so an edit is only ever lost when no write
+     * starts after it at all, and that is what every round waits for.
+     */
+    @Test
+    fun theTrailingSaveRunsWhenTheLastEditRacesTheDrainingLoop() {
+        val edits = AtomicInteger()
+        val saved = AtomicInteger()
+        val scheduler = CadPersistScheduler(
+            intervalMillis = 2L,
+            scope = CoroutineScope(Dispatchers.Default),
+            write = { saved.set(edits.get()) },
+            dispatcher = Dispatchers.Default,
+        )
+        repeat(200) { round ->
+            val start = CountDownLatch(1)
+            val racers = (0 until 2).map {
+                Thread {
+                    start.await()
+                    repeat(50) {
+                        edits.incrementAndGet()
+                        scheduler.schedule()
+                    }
+                }
+            }
+            racers.forEach { it.start() }
+            start.countDown()
+            racers.forEach { it.join() }
+            val deadline = System.currentTimeMillis() + 2_000
+            while (saved.get() != edits.get() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(1)
+            }
+            assertEquals(
+                "round " + round + ": the trailing save lands the burst's last edit",
+                edits.get(),
+                saved.get(),
+            )
+        }
     }
 }

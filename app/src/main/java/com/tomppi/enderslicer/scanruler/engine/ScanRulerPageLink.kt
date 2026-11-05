@@ -44,6 +44,8 @@ internal class ScanRulerPageLink(
     private val serverVersion: String = "1.15.0",
     private val helloTimeoutMillis: Long = 15_000,
     private val commandTimeoutMillis: Long = 10 * 60_000,
+    private val pingIntervalMillis: Long = 30_000,
+    private val maxMessageBytes: Int = MAX_PAYLOAD,
 ) : Closeable {
 
     companion object {
@@ -54,6 +56,22 @@ internal class ScanRulerPageLink(
         const val REFUSED_NO_HELLO = 4008
         const val REFUSED_TAKEN = 4009
         private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+        /**
+         * A close frame's reason is capped at 123 UTF-8 bytes (RFC 6455), and the cut never
+         * splits a character in half.
+         */
+        internal fun closeReasonBytes(reason: String): ByteArray {
+            val bytes = reason.toByteArray(StandardCharsets.UTF_8)
+            if (bytes.size <= 123) return bytes
+            var end = 123
+            var start = end - 1
+            while (start > 0 && (bytes[start].toInt() and 0xc0) == 0x80) start--
+            val lead = bytes[start].toInt() and 0xff
+            val length = if (lead >= 0xf0) 4 else if (lead >= 0xe0) 3 else if (lead >= 0xc0) 2 else 1
+            if (start + length > end) end = start
+            return bytes.copyOf(end)
+        }
     }
 
     @Volatile private var server: ServerSocket? = null
@@ -71,6 +89,8 @@ internal class ScanRulerPageLink(
     private val pending = ConcurrentHashMap<Long, Pending>()
     private val nextId = AtomicLong(1)
     private val runLock = ReentrantLock(true)
+    /** Pairing is one decision at a time: the single-page rule is not a check-then-act. */
+    private val pairLock = Any()
     @Volatile private var pageReady = CountDownLatch(1)
 
     val boundPort: Int get() = server?.localPort ?: 0
@@ -198,6 +218,7 @@ internal class ScanRulerPageLink(
         private val output = BufferedOutputStream(socket.getOutputStream())
         private val writeLock = Any()
         @Volatile private var closed = false
+        @Volatile private var lastFrameAt = System.currentTimeMillis()
 
         fun send(frame: ScanRulerFrames.Frame) {
             synchronized(writeLock) {
@@ -234,6 +255,14 @@ internal class ScanRulerPageLink(
             val decoder = ScanRulerFrames.Decoder()
             var fragmentOpcode = 0
             val fragment = ByteArrayOutputStream()
+            var fragmentBytes = 0
+            // Reassembly is bounded like a frame: a message no phone could hold fails the link
+            // instead of buffering without a cap.
+            fun appendFragment(part: ByteArray) {
+                fragmentBytes += part.size
+                if (fragmentBytes > maxMessageBytes) throw IllegalStateException("WebSocket message too large")
+                fragment.write(part)
+            }
             while (running && !closed) {
                 val first = input.read()
                 if (first < 0) break
@@ -263,6 +292,7 @@ internal class ScanRulerPageLink(
                         payload[index] = (payload[index].toInt() xor mask[index and 3].toInt()).toByte()
                     }
                 }
+                lastFrameAt = System.currentTimeMillis()
                 when (opcode) {
                     0x8 -> {
                         close(1000, "bye")
@@ -278,20 +308,44 @@ internal class ScanRulerPageLink(
                     0x1, 0x2 -> {
                         if (!fin) {
                             fragmentOpcode = opcode
-                            fragment.write(payload)
+                            appendFragment(payload)
                         } else {
                             handleFrame(opcode, payload, decoder)
                         }
                     }
                     0x0 -> {
-                        fragment.write(payload)
+                        appendFragment(payload)
                         if (fin) {
                             handleFrame(fragmentOpcode, fragment.toByteArray(), decoder)
                             fragment.reset()
+                            fragmentBytes = 0
                             fragmentOpcode = 0
                         }
                     }
                     else -> break
+                }
+            }
+        }
+
+        /**
+         * Server pings keep the link honest: the page's WebSocket stack answers pings on its own,
+         * so a connection that stays silent for a whole interval after one is a squatter, not a
+         * page, and dies. Any frame back - a pong included - keeps it alive.
+         */
+        fun livenessLoop() {
+            while (running && !closed) {
+                val sentAt = System.currentTimeMillis()
+                runCatching {
+                    synchronized(writeLock) {
+                        writeFrame(0x9, ByteArray(0))
+                        output.flush()
+                    }
+                }.onFailure { return }
+                Thread.sleep(pingIntervalMillis)
+                if (!closed && lastFrameAt < sentAt) {
+                    close(1000, "No traffic after ping.")
+                    log("ScanRuler page connection stayed silent after a ping; closed")
+                    return
                 }
             }
         }
@@ -307,33 +361,37 @@ internal class ScanRulerPageLink(
 
         private fun receive(message: JSONObject) {
             val hello = message.optJSONObject("hello")
-            if (hello != null && page !== null && page !== this) {
-                refuse(REFUSED_TAKEN, "Another ScanRuler page is already connected.")
-                return
-            }
-            if (page === null) {
-                if (hello == null) {
-                    refuse(REFUSED_NO_HELLO, "The page did not say hello.")
-                    return
+            if (page === null || hello != null) {
+                synchronized(pairLock) {
+                    if (hello != null && page !== null && page !== this) {
+                        refuse(REFUSED_TAKEN, "Another ScanRuler page is already connected.")
+                        return
+                    }
+                    if (page === null) {
+                        if (hello == null) {
+                            refuse(REFUSED_NO_HELLO, "The page did not say hello.")
+                            return
+                        }
+                        if (hello.optString("token") != token) {
+                            refuse(REFUSED_BAD_TOKEN, "Its pairing token is not this one's.")
+                            return
+                        }
+                        val parsed = ScanRulerCommandCatalog.parse(hello.optJSONArray("commands"))
+                        pageHello = hello
+                        commands = parsed
+                        page = this
+                        pageReady.countDown()
+                        runCatching {
+                            send(ScanRulerFrames.Frame.Text(
+                                JSONObject().put("welcome", JSONObject().put("server", "scanruler-mcp").put("version", serverVersion)).toString(),
+                            ))
+                        }
+                        onCommands?.invoke(parsed)
+                        onPageChanged?.invoke(true)
+                        log("ScanRuler page paired (" + parsed.size + " commands)")
+                        return
+                    }
                 }
-                if (hello.optString("token") != token) {
-                    refuse(REFUSED_BAD_TOKEN, "Its pairing token is not this one's.")
-                    return
-                }
-                val parsed = ScanRulerCommandCatalog.parse(hello.optJSONArray("commands"))
-                pageHello = hello
-                commands = parsed
-                page = this
-                pageReady.countDown()
-                runCatching {
-                    send(ScanRulerFrames.Frame.Text(
-                        JSONObject().put("welcome", JSONObject().put("server", "scanruler-mcp").put("version", serverVersion)).toString(),
-                    ))
-                }
-                onCommands?.invoke(parsed)
-                onPageChanged?.invoke(true)
-                log("ScanRuler page paired (" + parsed.size + " commands)")
-                return
             }
             if (page !== this) return
             val event = message.optString("event")
@@ -361,6 +419,7 @@ internal class ScanRulerPageLink(
         }
 
         fun refuse(code: Int, reason: String) {
+            if (closed) return
             runCatching {
                 synchronized(writeLock) {
                     writeFrame(0x1, JSONObject().put("refused", reason).toString().toByteArray(StandardCharsets.UTF_8))
@@ -380,7 +439,7 @@ internal class ScanRulerPageLink(
             closed = true
             runCatching {
                 synchronized(writeLock) {
-                    val body = (reason.take(123) + "").toByteArray(StandardCharsets.UTF_8)
+                    val body = closeReasonBytes(reason)
                     val payload = ByteArray(2 + body.size)
                     payload[0] = ((code ushr 8) and 0xff).toByte()
                     payload[1] = (code and 0xff).toByte()
@@ -424,7 +483,13 @@ internal class ScanRulerPageLink(
             connection = pageConnection
             thread(name = "scanruler-page-hello-timeout", isDaemon = true) {
                 Thread.sleep(helloTimeoutMillis)
-                if (page === null) pageConnection.refuse(REFUSED_NO_HELLO, "No hello.")
+                // This connection's own hello is what counts: an established workspace still
+                // refuses the connections that never say hello, and a just-paired page is left
+                // alone (the welcome must not be followed by a 4008).
+                if (page !== pageConnection) pageConnection.refuse(REFUSED_NO_HELLO, "No hello.")
+            }
+            thread(name = "scanruler-page-liveness", isDaemon = true) {
+                pageConnection.livenessLoop()
             }
             pageConnection.readLoop()
         } catch (error: Throwable) {

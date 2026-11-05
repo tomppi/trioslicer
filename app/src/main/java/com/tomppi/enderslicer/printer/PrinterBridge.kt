@@ -120,6 +120,13 @@ object PrinterBridge {
             true
         } catch (e: Exception) {
             Log.e(TAG, "could not start bridge", e)
+            // open() and setParameters() run before the fields below take over, and
+            // stop() closes only assigned fields: what this attempt opened is closed
+            // here, or the interface stays claimed and no later start can take it until
+            // the process restarts. The port owns the connection once it opened, so the
+            // second close is the pair's own idempotent one.
+            runCatching { serial.close() }
+            runCatching { connection.close() }
             stop()
             false
         }

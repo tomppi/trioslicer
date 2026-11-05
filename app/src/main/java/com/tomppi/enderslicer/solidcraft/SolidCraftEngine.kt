@@ -18,7 +18,8 @@ import kotlin.concurrent.thread
  * survives to say so.
  *
  * The app is the MCP client ([McpClient]); the engine is the server. The agent that models is
- * outside both: [SolidCraftBridge] exposes the same engine session on 127.0.0.1:9878 behind the
+ * outside both: the unified engine MCP server ([com.tomppi.enderslicer.agent.engine.EngineMcpServer])
+ * exposes the same engine session behind the
  * same kind of token the app's other two engines use, and every geometry-changing tool call it
  * forwards is reported back here as a [DocumentDelta] so the plate repaints.
  *
@@ -35,10 +36,9 @@ object SolidCraftEngine {
     const val VERSION = "0.24.0"
 
     /** The existing engines hold 9876 and 9877; this one is the third. */
-    const val DEFAULT_PORT = SolidCraftBridge.DEFAULT_PORT
+    const val DEFAULT_PORT = com.tomppi.enderslicer.agent.engine.EngineMcpServer.DEFAULT_PORT
 
     private const val ENGINE_LIBRARY = "libsolidcraft_exec.so"
-    private const val TOKEN_FILE = "solidcraft_mcp_token.txt"
     private const val START_TIMEOUT_MILLIS = 90_000L
     private const val MAX_LOG_LINES = 200
 
@@ -54,10 +54,8 @@ object SolidCraftEngine {
     private var session: SolidCraftSession? = null
 
     @Volatile
-    private var bridge: SolidCraftBridge? = null
-
-    @Volatile
-    private var bridgeToken: String? = null
+    /** The external MCP surface's route onto this session; set while the engine runs. */
+    private var forwarder: McpForwarder? = null
 
     /**
      * The one-author rule for the document: the in-app agent and the bridge's external clients
@@ -93,7 +91,6 @@ object SolidCraftEngine {
 
     fun workspace(context: Context): CadWorkspace = CadWorkspace(workspaceRoot(context))
 
-    fun tokenFile(context: Context): File = File(home(context), TOKEN_FILE)
 
     fun logFile(context: Context): File = File(home(context), "engine.log")
 
@@ -112,7 +109,7 @@ object SolidCraftEngine {
 
     fun isStopping(): Boolean = stopping
 
-    fun bridgePort(): Int = bridge?.boundPort ?: 0
+    fun bridgePort(): Int = DEFAULT_PORT
 
     /** The one-author rule, for the sheet and for the in-app agent's turn boundary. */
     fun authorship(): SolidCraftAuthorship = authorship
@@ -124,29 +121,14 @@ object SolidCraftEngine {
      */
     fun takeOverFromExternalAgents(): Int = authorship.takeOver()
 
+    /** The unified engine MCP server's route onto this session, or null when the engine is down. */
+    fun externalForwarder(): McpForwarder? = forwarder
+
     fun tools(): List<String> = toolNames
 
     /** The last entries of the engine's stderr, for the diagnostics log. */
     fun recentLog(): List<String> = synchronized(logLines) { logLines.toList() }
 
-    /**
-     * The token the agent must present on the bridge.
-     *
-     * Generated once per install, 32 hex characters with the dashes removed - the same shape
-     * and the same file-permission boundary as the Blender (9876) and CAD (9877) engines.
-     */
-    fun ensureToken(context: Context): String? = runCatching {
-        val file = tokenFile(context)
-        val existing = file.takeIf { it.isFile }?.readText()?.trim()
-        if (!existing.isNullOrEmpty()) {
-            existing
-        } else {
-            val created = UUID.randomUUID().toString().replace("-", "")
-            file.parentFile?.mkdirs()
-            file.writeText(created)
-            created
-        }
-    }.onFailure { Log.e(TAG, "could not write the engine token", it) }.getOrNull()
 
     /**
      * Starts the engine if it is not up, handshakes, and opens the agent bridge.
@@ -171,7 +153,7 @@ object SolidCraftEngine {
         return when {
             starting -> "CAD agent starting… " +
                 ((System.currentTimeMillis() - startingAt) / 1000) + "s"
-            isReady() -> "CAD agent ready on 127.0.0.1:" + (bridge?.boundPort ?: DEFAULT_PORT) +
+            isReady() -> "CAD agent ready on 127.0.0.1:" + bridgePort() +
                 " · " + toolNames.size + " MCP tools"
             !isAvailable(context) -> "the SolidCraft engine binary is not packaged in this APK"
             else -> "CAD agent stopped"
@@ -223,12 +205,6 @@ object SolidCraftEngine {
         val workspace = workspace(context).ensureDirectories()
         val scratch = File(context.cacheDir, "solidcraft-tmp").apply { mkdirs() }
         val recovery = File(home(context), "recovery").apply { mkdirs() }
-        val token = ensureToken(context)
-        if (token.isNullOrEmpty()) {
-            failure = "the SolidCraft engine's token could not be written, so its agent bridge " +
-                "would accept anyone; the engine was not started"
-            return false
-        }
         val nativeDirectory = context.applicationInfo.nativeLibraryDir
         val builder = ProcessBuilder(
             exe.absolutePath,
@@ -260,11 +236,16 @@ object SolidCraftEngine {
         drainToLog(started)
         thread(name = "solidcraft-engine-exit", isDaemon = true) {
             val code = runCatching { started.waitFor() }.getOrDefault(-1)
-            if (!stopping && process === started) {
-                Log.w(TAG, "the SolidCraft engine exited with " + code)
-                failure = "the SolidCraft engine exited (" + code + ")"
-                session = null
-                client = null
+            synchronized(lock) {
+                if (!stopping && process === started) {
+                    Log.w(TAG, "the SolidCraft engine exited with " + code)
+                    failure = "the SolidCraft engine exited (" + code + ")"
+                    session = null
+                    client = null
+                    // The external surface forwards to this dead engine only: drop its
+                    // route so calls answer "not running" instead of a dead stdio.
+                    forwarder = null
+                }
             }
         }
         val transport = StreamMcpTransport(started.inputStream, started.outputStream)
@@ -279,32 +260,14 @@ object SolidCraftEngine {
                 " · " + (live.serverName ?: "?") + " " + (live.serverVersion ?: "?") +
                 " · " + toolNames.size + " tools",
         )
-        // The bridge is the agent's door. A bridge that cannot bind must not take the engine
-        // with it: the app itself still uses the session for exports and slicing.
-        val liveBridge = SolidCraftBridge(
-            token = token,
-            authorship = authorship,
-            forwarder = object : McpForwarder {
-                override fun request(method: String, params: JSONObject, timeoutMillis: Long): JSONObject =
-                    raw.request(method, params, timeoutMillis)
+        // The unified engine MCP server is the agent's door (agent/engine/EngineMcpServer);
+        // this engine's stdio stays the app's own channel, and the forwarder is how the
+        // server's SolidCraft surface reaches it.
+        forwarder = object : McpForwarder {
+            override fun request(method: String, params: JSONObject, timeoutMillis: Long): JSONObject =
+                raw.request(method, params, timeoutMillis)
 
-                override fun notify(method: String, params: JSONObject) = raw.notify(method, params)
-            },
-            onDocumentChanged = { delta ->
-                onDocumentChanged?.invoke(delta)
-            },
-            log = { message -> log(message) },
-        )
-        try {
-            liveBridge.start()
-            bridge = liveBridge
-            bridgeToken = token
-        } catch (error: Throwable) {
-            log("the CAD agent bridge could not listen on " + DEFAULT_PORT + ": " + error.message)
-            failure = "the SolidCraft engine is running, but its agent bridge could not listen " +
-                "on 127.0.0.1:" + DEFAULT_PORT + ": " + (error.message ?: "unknown reason")
-            runCatching { liveBridge.close() }
-            // Keep the engine: it is usable by the app alone.
+            override fun notify(method: String, params: JSONObject) = raw.notify(method, params)
         }
         return true
     }
@@ -335,9 +298,7 @@ object SolidCraftEngine {
         synchronized(lock) {
             stopping = true
             try {
-                runCatching { bridge?.close() }
-                bridge = null
-                bridgeToken = null
+                forwarder = null
                 runCatching { client?.close() }
                 client = null
                 session = null
@@ -361,8 +322,7 @@ object SolidCraftEngine {
     }
 
     private fun stopQuietly() {
-        runCatching { bridge?.close() }
-        bridge = null
+        forwarder = null
         runCatching { client?.close() }
         client = null
         session = null

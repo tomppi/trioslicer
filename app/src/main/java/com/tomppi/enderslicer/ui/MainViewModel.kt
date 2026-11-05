@@ -20,6 +20,8 @@ import com.tomppi.enderslicer.annotation.WorkPlane
 import com.tomppi.enderslicer.agent.AgentBridges
 import com.tomppi.enderslicer.cadagent.AgentQuestion
 import com.tomppi.enderslicer.cadagent.AgentToolTrace
+import com.tomppi.enderslicer.agent.engine.AgentEngine
+import com.tomppi.enderslicer.agent.engine.EngineMcpHost
 import com.tomppi.enderslicer.cadagent.CadAgent
 import com.tomppi.enderslicer.cadagent.InAppTurnKeeper
 import com.tomppi.enderslicer.conical.ConicalRuntime
@@ -346,7 +348,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application
     /** The one embedded ScanRuler session; created when the workspace is first selected. */
     private var scanRulerSessionHolder: ScanRulerEmbeddedSession? = null
+
+    init {
+        // The unified engine MCP server reaches the ScanRuler workspace through the holder,
+        // so an external engine_select scanruler works as soon as the workspace exists.
+        EngineMcpHost.scanRulerSession = { scanRulerSessionHolder }
+    }
     private var scanRulerJob: Job? = null
+    /**
+     * Which [enterScanRulerView] run owns the loading flag and the failure text. A
+     * superseded run is still draining its cancellation when the fresh one has already
+     * set that state up, so only the run that is still current may write either.
+     */
+    private var scanRulerEnterGeneration = 0L
     /** Which plate object/geometry was last handed to the page, so a switch does not reload it. */
     private var scanRulerLoadedSignature: String? = null
     private val printer = PrinterDefinitionLoader.loadModifiedEnder3V2(app.assets)
@@ -570,6 +584,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * needs it asks here first. Both calls are idempotent.
      */
     fun startBlenderEngine() {
+        // A start the user asked for says so while it happens: a silent start reads as
+        // a dead button for as long as the engine takes to answer.
+        _uiState.update { it.copy(statusMessage = "Starting the Blender engine - it answers when its scene is up") }
         BlenderEngine.ensureStarted(app)
         BlenderEngineService.start(app)
     }
@@ -585,6 +602,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startCadEngine() {
         if (cadEngineStarting) return
         cadEngineStarting = true
+        // The boot extracts, writes a token and imports build123d: say so while it runs,
+        // the same honesty the stop path gives.
+        _uiState.update { it.copy(statusMessage = "Starting the CAD engine…") }
         viewModelScope.launch {
             val started = withContext(Dispatchers.IO) { CadEngine.start(app) }
             cadEngineStarting = false
@@ -739,10 +759,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The live in-app agent, kept here so a turn survives - and can be cancelled across - a rotation. */
     var inAppCadAgent: CadAgent? by mutableStateOf(null)
 
+    /**
+     * The modelling engine this conversation works with - the chat window's engine menu.
+     * The same selection the external agents make with engine_select; the transcript is
+     * untouched by a switch and only the tool binding changes on the next turn.
+     */
+    var agentEngine: AgentEngine by mutableStateOf(AgentEngine.SOLIDCRAFT)
+        private set
+
+    private var lastModellingEngine: AgentEngine = AgentEngine.SOLIDCRAFT
+
+    /** Picks the engine the in-app agent drives, and follows it into the right workspace. */
+    fun selectAgentEngine(engine: AgentEngine) {
+        if (agentEngine == engine) return
+        agentEngine = engine
+        if (engine != AgentEngine.SCANRULER) lastModellingEngine = engine
+        val view = _uiState.value.activeView
+        if (engine == AgentEngine.SCANRULER && view != PlateView.SCAN_RULER) {
+            setPlateView(PlateView.SCAN_RULER)
+        } else if (engine != AgentEngine.SCANRULER && view == PlateView.SCAN_RULER) {
+            setPlateView(PlateView.PLATE)
+        }
+        inAppCadAgent = null
+    }
+
     /** The modelling chat's conversation, the Blender screen's own. */
-    var modellingMessages by mutableStateOf(listOf<AiChatMessage>())
-    var modellingStatus: String? by mutableStateOf(null)
-    var modellingBusy by mutableStateOf(false)
 
     /**
      * The in-app agent's question the user has not answered yet, or null.
@@ -899,6 +940,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     editMillis = null,
                                     replaceDerived = false,
                                 )
+                                scheduleCadPersist(force = true)
                             }
                         }
                     }
@@ -1093,6 +1135,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 Diagnostics.info("cad", "plate rebuilt from " + document.name)
+                scheduleCadPersist(force = true)
                 dropFaceSelection("the plate was rebuilt from the document")
             } catch (error: Throwable) {
                 showOperationFailure(error)
@@ -2905,11 +2948,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return reason
         }
         _uiState.update { state ->
-            when (engine) {
+            val changed = when (engine) {
                 SlicerEngine.CURA -> state.copy(extraCuraSettings = state.extraCuraSettings + (normalized to value))
                 SlicerEngine.PRUSA -> state.copy(extraPrusaSettings = state.extraPrusaSettings + (normalized to value))
                 SlicerEngine.ORCA -> state.copy(extraOrcaSettings = state.extraOrcaSettings + (normalized to value))
             }
+            // The catalogue extras are slice inputs for every engine, so an edit
+            // drops the published G-code like every other settings mutator.
+            changed.withoutPublishedSlice("Settings changed; slice again to export G-code")
         }
         persistExtraSettings(engine)
         return null
@@ -2941,11 +2987,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeExtraSetting(engine: SlicerEngine, key: String) {
         _uiState.update { state ->
-            when (engine) {
+            val changed = when (engine) {
                 SlicerEngine.CURA -> state.copy(extraCuraSettings = state.extraCuraSettings - key)
                 SlicerEngine.PRUSA -> state.copy(extraPrusaSettings = state.extraPrusaSettings - key)
                 SlicerEngine.ORCA -> state.copy(extraOrcaSettings = state.extraOrcaSettings - key)
             }
+            changed.withoutPublishedSlice("Settings changed; slice again to export G-code")
         }
         persistExtraSettings(engine)
     }
@@ -3174,6 +3221,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectPrusaPrinter(printerId: String) = updatePrusaPreset {
         it.copy(printerId = printerId, printName = null, filamentName = null)
+    }
+
+    /** "Reset to engine defaults" also drops the preset selection, through the update path. */
+    fun resetPrusaPresetSelection() = updatePrusaPreset { PrusaPresetSelection.NONE }
+
+    /**
+     * "Reset to engine defaults" also discards the imported snapshot: the baseline it
+     * could be restored from, its start/end G-code, and the stored copy. Blank templates
+     * fall back to the engine's own at slice time.
+     */
+    fun discardPrusaSnapshot() {
+        importedPrusaBaseline = null
+        _uiState.update {
+            it.withoutPublishedSlice("Settings changed; slice again to export G-code").copy(
+                prusaSnapshot = null,
+                prusaStartGcode = "",
+                prusaEndGcode = "",
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            stateStore.clearPrusaSnapshotBaseline()
+            stateStore.savePrusaGcode("", "")
+        }
     }
 
     fun selectPrusaPrint(printName: String) = updatePrusaPreset { it.copy(printName = printName) }
@@ -3546,6 +3616,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // The agent's tool host and prompt belong to the workspace: a fresh turn after a switch
         // must not keep the other engine's catalogue. Its transcript stays on screen.
         inAppCadAgent = null
+        // The view card and the chat's engine menu agree: ScanRuler tools need the ScanRuler
+        // view, and leaving it returns the conversation to the last modelling engine.
+        agentEngine = if (view == PlateView.SCAN_RULER) AgentEngine.SCANRULER else lastModellingEngine
         _uiState.update {
             it.copy(
                 activeView = view,
@@ -3582,6 +3655,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         scanRulerSessionHolder?.let { session -> runCatching { session.close() } }
         scanRulerSessionHolder = null
         scanRulerLoadedSignature = null
+        // The cached in-app agent's tool host is bound to the session instance being closed,
+        // and a closed session answers every engine tool with "does not offer ... right now"
+        // while the next turn's catalogue is built from the replacement session. Drop it with
+        // the session, the way the workspace switch does.
+        inAppCadAgent = null
         _uiState.update { it.copy(scanRulerError = null, scanRulerLoading = false) }
         enterScanRulerView()
     }
@@ -3596,6 +3674,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun enterScanRulerView() {
         scanRulerJob?.cancel()
+        val enter = ++scanRulerEnterGeneration
         scanRulerJob = viewModelScope.launch {
             _uiState.update { it.copy(scanRulerLoading = true, scanRulerError = null) }
             var session: ScanRulerEmbeddedSession? = null
@@ -3607,6 +3686,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     runCatching { session.close() }
                     scanRulerSessionHolder = null
                     scanRulerLoadedSignature = null
+                    // The stale-host rule from retryScanRulerView: the cached agent is bound
+                    // to the session being replaced here too.
+                    inAppCadAgent = null
                     session = newScanRulerSession().also { scanRulerSessionHolder = it }
                 }
                 if (session.state.value.phase == com.tomppi.enderslicer.scanruler.engine.ScanRulerPhase.IDLE) {
@@ -3632,11 +3714,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val model = _uiState.value.selectedModel ?: _uiState.value.models.firstOrNull()
                 if (model == null) {
-                    _uiState.update {
-                        it.copy(
-                            scanRulerError = "ScanRuler shows the plate's mesh, and the plate " +
-                                "is empty - import or select a model first.",
-                        )
+                    if (enter == scanRulerEnterGeneration) {
+                        _uiState.update {
+                            it.copy(
+                                scanRulerError = "ScanRuler shows the plate's mesh, and the plate " +
+                                    "is empty - import or select a model first.",
+                            )
+                        }
                     }
                     if (_uiState.value.activeView == PlateView.SCAN_RULER) {
                         session.setVisible(true)
@@ -3668,11 +3752,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: ScanRulerCommandException) {
                 showScanRulerFailure(
+                    enter,
                     "ScanRuler could not load the plate mesh: " +
                         (error.message ?: error.code) + " Retry to prepare it again.",
                 )
             } catch (error: ScanRulerLinkException) {
                 showScanRulerFailure(
+                    enter,
                     "ScanRuler is not connected to its page: " +
                         (error.message ?: "the link is unavailable") + " Retry the workspace.",
                 )
@@ -3680,11 +3766,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 throw error
             } catch (error: Throwable) {
                 showScanRulerFailure(
+                    enter,
                     "ScanRuler could not be prepared: " +
                         (error.message ?: error.javaClass.simpleName) + " Retry the workspace.",
                 )
             } finally {
-                _uiState.update { it.copy(scanRulerLoading = false) }
+                if (enter == scanRulerEnterGeneration) {
+                    _uiState.update { it.copy(scanRulerLoading = false) }
+                }
             }
         }
     }
@@ -3694,7 +3783,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.i("ScanRulerEmbedded", message)
         }
 
-    private fun showScanRulerFailure(message: String) {
+    /**
+     * The enter run's failure text and loading flag, written only by the run that is
+     * still current: a cancelled job's late write would take the fresh run's state down.
+     */
+    private fun showScanRulerFailure(enter: Long, message: String) {
+        if (enter != scanRulerEnterGeneration) return
         _uiState.update { it.copy(scanRulerLoading = false, scanRulerError = message) }
     }
 
@@ -9334,8 +9428,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         barbs = joint.barbs,
                         facing = joint.facing,
                         style = joint.style,
+                        libraryShape = joint.libraryShape,
+                        // The mirror of the save side's "every one of the lip's own
+                        // choices": the wall, the recess, the cut width and depth, the
+                        // cuts and their directions are what rebuilds the ring, and a
+                        // restore that drops them silently re-tunes the joint.
                         lipEngagementMm = joint.lipEngagementMm,
                         lipToothHeightMm = joint.lipToothHeightMm,
+                        lipWallMm = joint.lipWallMm,
+                        lipRecessExtraMm = joint.lipRecessExtraMm,
+                        lipCutWidthMm = joint.lipCutWidthMm,
+                        lipCutDepthMm = joint.lipCutDepthMm,
+                        lipCuts = joint.lipCuts,
+                        lipCutDirections = joint.lipCutDirections,
                     )
                 },
             )
@@ -9449,29 +9554,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             supportPaint = selected.supportPaint,
             models = state.models.mapNotNull { it.toWorkspaceEntry() },
             snap = state.toSnapshotSnap(),
-            cad = state.cadDocument?.let { document ->
-                WorkspaceStateStore.CadState(
-                    name = document.name,
-                    designPath = document.designPath,
-                    sourcePath = document.sourcePath,
-                    displayMeshPath = document.displayMeshPath,
-                    displayRevision = document.displayRevision,
-                    triangleCount = document.triangleCount,
-                    bodyCount = document.bodyCount,
-                    displayObjectId = document.displayObjectId,
-                    parts = document.parts.map {
-                        WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
-                    },
-                    converted = document.converted,
-                    convertedRevision = document.convertedRevision,
-                    convertedParts = document.convertedParts.map {
-                        WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
-                    },
-                    derivedStale = document.derivedStale,
-                    staleReason = document.staleReason,
-                    derivedObjectIds = cadDerivedPlateIds.toList(),
-                )
-            },
+            cad = state.toSnapshotCad(),
         )
     }
 
@@ -9513,11 +9596,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     anchorYMm = joint.anchorLocalMm.y,
                     anchorZMm = joint.anchorLocalMm.z,
                     onLowHalf = joint.onLowHalf,
+                    depthMm = joint.depthMm,
                     beamHalf = joint.beamHalf,
                     tightness = joint.tightness,
                     barbs = joint.barbs,
                     facing = joint.facing,
                     style = joint.style,
+                    libraryShape = joint.libraryShape,
                     // Every one of the lip's own choices, not just the first two:
                     // the wall, the depth, the cut width and depth and the cuts
                     // themselves are what the next session rebuilds the ring from,
@@ -9534,6 +9619,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }.orEmpty(),
         )
     }
+
+    /**
+     * The CAD document as the descriptor saves it, or null when there is none. The
+     * design is the document - the display caches beside it only name what the last
+     * session drew - so every descriptor that writes the plate writes this too, and a
+     * crash between an import's pre-save and its state update cannot lose it.
+     */
+    private fun MainUiState.toSnapshotCad(): WorkspaceStateStore.CadState? =
+        cadDocument?.let { document ->
+            WorkspaceStateStore.CadState(
+                name = document.name,
+                designPath = document.designPath,
+                sourcePath = document.sourcePath,
+                displayMeshPath = document.displayMeshPath,
+                displayRevision = document.displayRevision,
+                triangleCount = document.triangleCount,
+                bodyCount = document.bodyCount,
+                displayObjectId = document.displayObjectId,
+                parts = document.parts.map {
+                    WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
+                },
+                converted = document.converted,
+                convertedRevision = document.convertedRevision,
+                convertedParts = document.convertedParts.map {
+                    WorkspaceStateStore.CadState.PartState(it.body, it.objectId)
+                },
+                derivedStale = document.derivedStale,
+                staleReason = document.staleReason,
+                derivedObjectIds = cadDerivedPlateIds.toList(),
+            )
+        }
 
     /**
      * The descriptor for an import that has not reached the state yet.
@@ -9559,6 +9675,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             placement = placement,
             supportPaint = paint,
         ),
+        // The plate as it already is travels with the new model: this pre-save is the
+        // only descriptor until the import's state update lands, so the pair record and
+        // the CAD document go in it exactly as the later write carries them.
+        snap = state.toSnapshotSnap(),
+        cad = state.toSnapshotCad(),
     )
 
     private fun PlateObject.toWorkspaceEntry(): WorkspaceStateStore.Entry? {

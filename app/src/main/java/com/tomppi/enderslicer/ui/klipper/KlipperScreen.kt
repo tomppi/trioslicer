@@ -91,7 +91,9 @@ internal fun KlipperScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                KlipperButton("Stop") { confirmEmergencyStop = true }
+                // The dashboard's Stop cancels the print; this one halts the
+                // micro-controller, so it is named for what it does.
+                KlipperButton("Emergency stop") { confirmEmergencyStop = true }
             }
             HorizontalDivider()
         }

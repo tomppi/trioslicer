@@ -193,7 +193,13 @@ internal object GcodeLayerEventProcessor {
             -> requireValue(event, 1.0, 999.0)
             LayerEventType.RETRACTION -> {
                 requireValue(event, 0.0, 100.0)
-                event.secondaryValue?.let { require(it in 0.1..1000.0) { "Retraction speed is outside 0.1..1000 mm/s" } }
+                // The ceiling is the SET_RETRACTION policy bound: a speed this API accepts
+                // must never fail the published-text check downstream.
+                event.secondaryValue?.let {
+                    require(it in 0.1..GcodeCommandPolicy.KLIPPER_RETRACT_SPEED_MAX) {
+                        "Retraction speed is outside 0.1..${GcodeCommandPolicy.KLIPPER_RETRACT_SPEED_MAX} mm/s"
+                    }
+                }
             }
             LayerEventType.PRESSURE_ADVANCE -> requireValue(event, 0.0, 10.0)
             LayerEventType.JUNCTION_DEVIATION -> requireValue(event, 0.0, 1.0)

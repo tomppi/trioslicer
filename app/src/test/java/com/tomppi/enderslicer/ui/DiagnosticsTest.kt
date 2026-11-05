@@ -1,5 +1,6 @@
 package com.tomppi.enderslicer.ui
 
+import java.util.concurrent.CountDownLatch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -86,6 +87,36 @@ class DiagnosticsTest {
         assertEquals(Diagnostics.MAX_ENTRIES, Diagnostics.entries.value.size)
         // The newest survives: a log that drops the end is useless.
         assertEquals("line " + (Diagnostics.MAX_ENTRIES + 49), Diagnostics.entries.value.last().message)
+    }
+
+    @Test
+    fun concurrentRecordingsDropNoLine() {
+        // The append is one atomic read-modify-write: two threads recording at
+        // once used to be able to overwrite each other's list.
+        val threads = 4
+        val perThread = 50
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(threads)
+        repeat(threads) { thread ->
+            Thread {
+                start.await()
+                repeat(perThread) { line ->
+                    Diagnostics.info("thread-" + thread, "line " + thread + "-" + line)
+                }
+                done.countDown()
+            }.start()
+        }
+        start.countDown()
+        done.await()
+
+        assertEquals(threads * perThread, Diagnostics.entries.value.size)
+        repeat(threads) { thread ->
+            assertEquals(
+                "thread-" + thread + " lost a line",
+                perThread,
+                Diagnostics.entries.value.count { it.source == "thread-" + thread },
+            )
+        }
     }
 
     @Test

@@ -949,9 +949,16 @@ class OctoPrintRepository(
         }
     }
 
-    private fun activeFileGuard(action: String, targetPath: String): (OctoPrintUiState) -> String? = { current ->
+    internal fun activeFileGuard(action: String, targetPath: String): (OctoPrintUiState) -> String? = { current ->
         val activePath = current.job.filePath
-        if (activePath != null && targetPath.isNotBlank() && normalizeForCompare(activePath) == normalizeForCompare(targetPath)) {
+        val target = normalizeForCompare(targetPath)
+        // Deleting or moving a target takes everything stored under it, so the
+        // guard covers the target's whole subtree - the same containment rule
+        // as filesWithoutDeleted - not only the exact path: the folder above
+        // the printing file must be refused like the file itself.
+        val coversActiveFile = activePath != null && target.isNotBlank() &&
+            normalizeForCompare(activePath).let { it == target || it.startsWith("$target/") }
+        if (coversActiveFile) {
             "The file currently being printed ($activePath) cannot be $action"
         } else {
             null
@@ -974,17 +981,24 @@ class OctoPrintRepository(
         }
     }
 
-    private fun filesWithMoved(files: List<OctoPrintFileEntry>, path: String, destination: String): List<OctoPrintFileEntry> {
+    internal fun filesWithMoved(files: List<OctoPrintFileEntry>, path: String, destination: String): List<OctoPrintFileEntry> {
         val leaf = path.substringAfterLast('/')
         val cleanDestination = OctoPrintClient.normalizeRemotePath(destination, allowBlank = true)
         val newRoot = if (cleanDestination.isBlank()) leaf else "$cleanDestination/$leaf"
-        return files.map { entry ->
+        val moved = files.map { entry ->
             when {
                 entry.path == path -> entry.copy(path = newRoot)
                 entry.path.startsWith("$path/") -> entry.copy(path = newRoot + entry.path.removePrefix(path))
                 else -> entry
             }
         }
+        // The Files list keys rows by path, so a move whose destination path is
+        // already taken must not be applied optimistically - a duplicate key
+        // crashes Compose. filesWithCopied refuses its update for the same
+        // reason; the follow-up refresh shows the server's truth.
+        val movedPaths = moved.map { it.path }
+        if (movedPaths.toSet().size != movedPaths.size) return files
+        return moved
     }
 
     private fun filesWithCopied(files: List<OctoPrintFileEntry>, path: String, destination: String): List<OctoPrintFileEntry> {
@@ -1021,7 +1035,7 @@ class OctoPrintRepository(
         }
     }
 
-    private fun handleSessionError(
+    internal fun handleSessionError(
         error: Throwable,
         requestGeneration: Long,
         forbiddenMeansInvalidKey: Boolean,
@@ -1033,21 +1047,32 @@ class OctoPrintRepository(
         // check searched the peer's message text, so a proxy or a captive portal
         // could word a 403 well enough to make the app delete a valid key.
         val forbiddenIsInvalidKey = forbiddenMeansInvalidKey && http?.apiKeyRejected == true
-        if (http?.statusCode == 401 || forbiddenIsInvalidKey) {
-            invalidateAuthorization(error.message ?: "OctoPrint authorization is no longer valid")
-        } else {
-            setError(error)
+        val message = error.message ?: "OctoPrint authorization is no longer valid"
+        when {
+            forbiddenIsInvalidKey -> invalidateAuthorization(message, clearStoredKey = true)
+            // A 401 is no stronger evidence than a worded 403: a reverse proxy
+            // with its own auth in front of OctoPrint, or a DHCP-reassigned
+            // address, answers 401 for a key OctoPrint never rejected. The same
+            // strict-evidence rule applies - surface re-authorization, keep the
+            // stored key.
+            http?.statusCode == 401 -> invalidateAuthorization(message, clearStoredKey = false)
+            else -> setError(error)
         }
     }
 
-    private fun invalidateAuthorization(message: String) {
+    private fun invalidateAuthorization(message: String, clearStoredKey: Boolean) {
         val current = _state.value
         val config = current.config
         val pending = current.authorizationPending
         val dialogUrl = current.authorizationDialogUrl
         val dialogNonce = current.authorizationDialogLaunchNonce
         resetSession()
-        store.clearApiKey()
+        // Only the documented rejection may erase the stored key; a weaker
+        // signal must never cost the user a re-approval in OctoPrint's own web
+        // UI for a key OctoPrint never rejected.
+        if (clearStoredKey) {
+            store.clearApiKey()
+        }
         cachedApiKey = null
         _state.value = OctoPrintUiState(
             config = config,

@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.model.CuraMachineCatalog
 import com.tomppi.enderslicer.model.SlicerSettings
+import java.text.DecimalFormatSymbols
 
 internal fun infillPatternLabel(pattern: String): String = when (pattern.lowercase()) {
     "grid" -> "Grid"
@@ -1124,6 +1125,16 @@ internal fun SettingsCategory(
     }
 }
 
+/**
+ * A calculated number in the device locale with its trailing zeros trimmed through that locale's
+ * own decimal separator. Trimming on "." instead leaves the dangling "3," on a comma locale -
+ * the exact pattern the Fields rule in docs/ui-style-guide.md forbids.
+ */
+internal fun calculatedFieldText(value: Double): String {
+    val separator = DecimalFormatSymbols.getInstance().decimalSeparator
+    return "%.3f".format(value).trimEnd('0').trimEnd(separator)
+}
+
 @Composable
 /** User-facing label for a Cura infill pattern value. */
 
@@ -1134,7 +1145,7 @@ private fun CalculatedField(
 ) {
     Column {
         OutlinedTextField(
-            value = "%.3f".format(value).trimEnd('0').trimEnd('.'),
+            value = calculatedFieldText(value),
             onValueChange = {},
             label = { Text(label) },
             singleLine = true,
@@ -1144,5 +1155,3 @@ private fun CalculatedField(
         Text(explanation, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-
-

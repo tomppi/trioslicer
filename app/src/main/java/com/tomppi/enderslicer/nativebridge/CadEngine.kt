@@ -715,8 +715,16 @@ object CadEngine {
                         // it is attached here and gets it, or it is queued and the setter takes it.
                         val listener = synchronized(pendingExports) {
                             val attached = onExport
-                            if (attached == null && pendingExports.none { it.absolutePath == file.absolutePath }) {
-                                pendingExports.add(file)
+                            if (attached == null) {
+                                // One queued entry per path, the NEWEST revision: a re-export
+                                // of a queued path replaces it, so the setter replays the fresh
+                                // file and never the stale one it superseded.
+                                val queued = pendingExports.firstOrNull { it.absolutePath == file.absolutePath }
+                                when {
+                                    queued == null -> pendingExports.add(file)
+                                    file.lastModified() >= queued.lastModified() ->
+                                        pendingExports[pendingExports.indexOf(queued)] = file
+                                }
                             }
                             attached
                         }

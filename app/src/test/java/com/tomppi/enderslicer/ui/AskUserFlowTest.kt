@@ -11,6 +11,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -31,7 +32,9 @@ import org.robolectric.annotation.Config
  * which is exactly what the app's answer callback does), and Dismiss clears it without a prompt.
  */
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [35])
+// A real phone window: the chat header owns two lines (sources, then the engine/door
+// menus), and the default test window is too short for the card to be tappable in.
+@Config(sdk = [35], qualifiers = "w411dp-h891dp")
 class AskUserFlowTest {
 
     @get:Rule
@@ -73,7 +76,9 @@ class AskUserFlowTest {
         viewModel.onInAppQuestion(AgentQuestion("Which material should the lid use?", listOf("PLA", "PETG")))
         compose.waitForIdle()
 
-        compose.onNodeWithText("PETG").performClick()
+        // The chat header owns two lines now (sources, then the engine/door menus), so a
+        // card can sit below the fold in a small window - scroll it in before the tap.
+        compose.onNodeWithText("PETG").performScrollTo().performClick()
         compose.waitForIdle()
 
         assertNull("the wait is cleared by the answer", viewModel.pendingQuestion)

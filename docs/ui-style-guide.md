@@ -27,9 +27,11 @@ read that document before starting a new screen.
   Never turn it back into a modal sheet.
 - First-run onboarding is one-shot and cannot be skipped (OnboardingStore):
   step 1 is the machine setup, step 2 is the interface scale set over the real
-  Plate. Back stays inside the flow, and only step 2 writes the `done` flag. It
-  only ever sets machine values that already live in SlicerSettings, plus the
-  UiScale preference.
+  Plate, and step 3 prepares the engine payloads - the one step that may be left
+  unfinished, because skipping is a choice its screen offers rather than an
+  accident. Back stays inside the flow, and only leaving step 3 - prepared or
+  skipped - writes the `done` flag. It only ever sets machine values that
+  already live in SlicerSettings, plus the UiScale preference.
 - Expanded layouts (maxWidth >= 600 dp, unfolded foldables) put the
   SessionRail - the four destinations, the session values and the
   Slice/Export/Model tools actions - beside the content, in place of the bottom

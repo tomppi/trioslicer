@@ -86,9 +86,17 @@ object PrusaConfigImporter {
             read += key
             return values[key]?.second
         }
-        fun double(key: String): Double? = value(key)?.replace(",", ".")?.trimEnd('%')?.toDoubleOrNull()
-        fun int(key: String): Int? = value(key)?.toIntOrNull()
-        fun bool(key: String): Boolean? = value(key)?.trim()?.lowercase()?.let { token ->
+
+        /**
+         * The first slot of the key's value: a multi-tool profile writes a per-extruder list
+         * ("210,215") and this app prints with one extruder, so a second slot has nowhere to
+         * go. The readers below take it the way OrcaProfileImporter's do; G-code templates and
+         * bed shapes keep their commas, which mean something else there.
+         */
+        fun firstSlot(key: String): String? = value(key)?.substringBefore(',')?.trim()
+        fun double(key: String): Double? = firstSlot(key)?.trimEnd('%')?.toDoubleOrNull()
+        fun int(key: String): Int? = firstSlot(key)?.toIntOrNull()
+        fun bool(key: String): Boolean? = firstSlot(key)?.lowercase()?.let { token ->
             // Only the tokens that mean something. Everything else used to become false, so a
             // profile saying `thin_walls = yes` silently turned the setting off.
             when (token) {

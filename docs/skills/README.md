@@ -5,6 +5,8 @@ Sanitized copies of the assistant's skill files - the runbooks it follows when a
 | file | what it covers |
 |---|---|
 | [`cad-engine.md`](cad-engine.md) | Building exact geometry with build123d on OCP: the socket engine, the render command, 2D drawings, and which phone it is actually on |
+| [`trioslicer-engines.md`](trioslicer-engines.md) | The one MCP server that fronts all three modelling engines: the connection line, the engine selector, and the rules each engine works under |
+| [`occt-engine-rules.md`](occt-engine-rules.md) | Operating rules for the CAD engine: measured command costs, cheap-first measurement recipes, the 300 s/no-cancel reality, and how to verify a part without hanging the engine |
 | [`solidcraft-engine.md`](solidcraft-engine.md) | Driving the app's live SolidCraft CAD document on the plate over its MCP bridge: the token, the protocol, the live repaint contract, and the placement rules |
 | [`blender-mcp-engine.md`](blender-mcp-engine.md) | Driving the Blender engine embedded in the app over its MCP socket, and the STL export handoff into the slicer UI |
 | [`image-to-3d-model.md`](image-to-3d-model.md) | Photograph to printable STL: the generator, its settings, post-processing, validation and the delivery handoff |

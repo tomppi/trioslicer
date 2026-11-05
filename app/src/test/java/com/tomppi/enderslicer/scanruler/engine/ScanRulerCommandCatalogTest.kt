@@ -3,6 +3,8 @@ package com.tomppi.enderslicer.scanruler.engine
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,8 +28,31 @@ class ScanRulerCommandCatalogTest {
             returnsFile = false,
         )
         assertEquals("reverse_note_add", command.toolName)
-        assertEquals("reverse.note.add", ScanRulerCommandCatalog.commandNameFor("reverse_note_add"))
-        assertEquals("scan.open", ScanRulerCommandCatalog.commandNameFor("scan_open"))
+    }
+
+    @Test
+    fun toolNamesResolveThroughTheCatalogueIncludingUnderscores() {
+        val commands = ScanRulerCommandCatalog.parse(JSONArray()
+            .put(command("body.compare_in_deviation"))
+            .put(command("scan.tube_trace")))
+        assertEquals(
+            "body.compare_in_deviation",
+            ScanRulerCommandCatalog.commandForTool(commands, "body_compare_in_deviation")?.name,
+        )
+        assertEquals(
+            "scan.tube_trace",
+            ScanRulerCommandCatalog.commandForTool(commands, "scan_tube_trace")?.name,
+        )
+        assertNull(ScanRulerCommandCatalog.commandForTool(commands, "body.compare.in.deviation"))
+    }
+
+    @Test
+    fun theWaitToolPromisesOnlyThePairingWait() {
+        val tools = ScanRulerCommandCatalog.mcpTools(emptyList())
+        val wait = tools.getJSONObject(1)
+        assertEquals("scanruler_wait", wait.getString("name"))
+        assertTrue(wait.getString("description").contains("pair"))
+        assertFalse(wait.getString("description").contains("running command"))
     }
 
     @Test

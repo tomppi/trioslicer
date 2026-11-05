@@ -12,7 +12,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -26,7 +25,9 @@ import kotlin.concurrent.thread
  * WebSocket server. So this serves the same vendored tree (assets/scanruler) from
  * http://127.0.0.1:<port>/assets/scanruler/... with the MIME types the page needs
  * (application/wasm for .wasm especially), plus a same-origin bootstrap page that writes the
- * agent-link/localStorage prefs and redirects to index.html with the pairing fragment.
+ * agent-link/localStorage prefs and redirects to index.html with the pairing fragment. That
+ * page carries the pairing secret, so a [bootstrapSecret] serves it only to requests that
+ * carry the same secret as a query parameter.
  *
  * Loopback only, GET only, no directory access beyond the pinned asset tree. The asset bytes are
  * still verified by scripts/verify-scanruler-assets.py; this server must never edit them.
@@ -36,12 +37,15 @@ class ScanRulerAssetServer(
     private val bootstrapHtml: () -> String,
     private val preferredPort: Int = DEFAULT_PORT,
     private val log: (String) -> Unit = {},
+    /** When set, the bootstrap page answers only requests carrying ?secret=<value>; null keeps it open. */
+    private val bootstrapSecret: String? = null,
 ) : Closeable {
 
     companion object {
         const val DEFAULT_PORT = 9881
         const val PAGE_PREFIX = "/assets/scanruler/"
         const val BOOTSTRAP_PATH = "/__scanruler_bootstrap"
+        const val BOOTSTRAP_SECRET_PARAM = "secret"
         const val HEALTH_PATH = "/__scanruler_health"
     }
 
@@ -112,11 +116,22 @@ class ScanRulerAssetServer(
                 writeResponse(output, 405, "Method Not Allowed", "text/plain", "GET only".toByteArray())
                 return
             }
-            val path = URLDecoder.decode(target.substringBefore('?'), StandardCharsets.UTF_8.name())
+            val path = try {
+                decodePath(requestPath(target))
+            } catch (error: IllegalArgumentException) {
+                writeResponse(output, 400, "Bad Request", "text/plain", "bad request".toByteArray())
+                return
+            }
             when {
-                path == BOOTSTRAP_PATH -> writeResponse(
-                    output, 200, "OK", "text/html; charset=utf-8", bootstrapHtml().toByteArray(StandardCharsets.UTF_8),
-                )
+                path == BOOTSTRAP_PATH -> {
+                    if (bootstrapAllowed(target.substringAfter('?', ""))) {
+                        writeResponse(
+                            output, 200, "OK", "text/html; charset=utf-8", bootstrapHtml().toByteArray(StandardCharsets.UTF_8),
+                        )
+                    } else {
+                        writeResponse(output, 404, "Not Found", "text/plain", "not found".toByteArray())
+                    }
+                }
                 path == HEALTH_PATH -> writeResponse(
                     output, 200, "OK", "application/json", ("{\"ok\":true}").toByteArray(StandardCharsets.UTF_8),
                 )
@@ -127,6 +142,43 @@ class ScanRulerAssetServer(
             // A closed WebView aborts requests; nothing useful to report for those.
         } finally {
             runCatching { socket.close() }
+        }
+    }
+
+    /** A request line may name its target in absolute-form; only its path is routed. */
+    private fun requestPath(target: String): String {
+        val scheme = target.indexOf("://")
+        if (scheme < 0) return target.substringBefore('?')
+        val slash = target.indexOf('/', scheme + 3)
+        return if (slash < 0) "/" else target.substring(slash).substringBefore('?')
+    }
+
+    /** Percent-decoding as a URI path sees it: '+' is a literal plus, a malformed escape is refused. */
+    private fun decodePath(rawPath: String): String {
+        val bytes = ByteArrayOutputStream()
+        var index = 0
+        while (index < rawPath.length) {
+            if (rawPath[index] == '%') {
+                if (index + 2 >= rawPath.length) throw IllegalArgumentException("incomplete percent escape")
+                val high = Character.digit(rawPath[index + 1], 16)
+                val low = Character.digit(rawPath[index + 2], 16)
+                if (high < 0 || low < 0) throw IllegalArgumentException("malformed percent escape")
+                bytes.write((high shl 4) or low)
+                index += 3
+            } else {
+                val next = rawPath.indexOf('%', index).let { if (it < 0) rawPath.length else it }
+                bytes.write(rawPath.substring(index, next).toByteArray(StandardCharsets.UTF_8))
+                index = next
+            }
+        }
+        return String(bytes.toByteArray(), StandardCharsets.UTF_8)
+    }
+
+    /** The bootstrap page carries the pairing secret, so it is served only to its holder. */
+    private fun bootstrapAllowed(query: String): Boolean {
+        val secret = bootstrapSecret ?: return true
+        return query.split('&').any {
+            it.substringBefore('=') == BOOTSTRAP_SECRET_PARAM && it.substringAfter('=', "") == secret
         }
     }
 

@@ -31,6 +31,10 @@ internal fun PrusaSettingsSheet(
     onPrusaFilament: (String) -> Unit = {},
     /** Puts every app override back to what an imported .ini set. */
     onResetToSnapshot: () -> Unit = {},
+    /** Clears the printer, print and filament preset selection. */
+    onResetPresets: () -> Unit = {},
+    /** Throws an imported .ini away for good: its snapshot, its G-code, its machine envelope. */
+    onDiscardSnapshot: () -> Unit = {},
     expandedLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -42,45 +46,13 @@ internal fun PrusaSettingsSheet(
     // the sheet's own level because the button is drawn in both of the wide
     // layout's columns, and one dialog is raised for either of them.
     val resetEverything = {
-        onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { current ->
-            current.copy(
-                layerHeightMm = PrusaSliceSettings().layerHeightMm,
-                firstLayerHeightMm = PrusaSliceSettings().firstLayerHeightMm,
-                perimeters = PrusaSliceSettings().perimeters,
-                topSolidLayers = PrusaSliceSettings().topSolidLayers,
-                bottomSolidLayers = PrusaSliceSettings().bottomSolidLayers,
-                thinWalls = PrusaSliceSettings().thinWalls,
-                externalPerimetersFirst = PrusaSliceSettings().externalPerimetersFirst,
-                fillDensityPercent = PrusaSliceSettings().fillDensityPercent,
-                fillPattern = PrusaSliceSettings().fillPattern,
-                skirtLoops = PrusaSliceSettings().skirtLoops,
-                skirtHeightLayers = PrusaSliceSettings().skirtHeightLayers,
-                skirtDistanceMm = PrusaSliceSettings().skirtDistanceMm,
-                brimWidthMm = PrusaSliceSettings().brimWidthMm,
-                overhangs = PrusaSliceSettings().overhangs,
-                supportMaterial = PrusaSliceSettings().supportMaterial,
-                supportThresholdAngleDegrees = PrusaSliceSettings().supportThresholdAngleDegrees,
-                supportPattern = PrusaSliceSettings().supportPattern,
-                supportInterface = PrusaSliceSettings().supportInterface,
-                supportInterfaceLayers = PrusaSliceSettings().supportInterfaceLayers,
-                printSpeedMmPerSecond = PrusaSliceSettings().printSpeedMmPerSecond,
-                externalPerimeterSpeedMmPerSecond = PrusaSliceSettings().externalPerimeterSpeedMmPerSecond,
-                infillSpeedMmPerSecond = PrusaSliceSettings().infillSpeedMmPerSecond,
-                firstLayerSpeedMmPerSecond = PrusaSliceSettings().firstLayerSpeedMmPerSecond,
-                travelSpeedMmPerSecond = PrusaSliceSettings().travelSpeedMmPerSecond,
-                nozzleTemperatureC = PrusaSliceSettings().nozzleTemperatureC,
-                firstLayerTemperatureC = PrusaSliceSettings().firstLayerTemperatureC,
-                bedTemperatureC = PrusaSliceSettings().bedTemperatureC,
-                firstLayerBedTemperatureC = PrusaSliceSettings().firstLayerBedTemperatureC,
-                fanSpeedPercent = PrusaSliceSettings().fanSpeedPercent,
-                retractionLengthMm = PrusaSliceSettings().retractionLengthMm,
-                retractionSpeedMmPerSecond = PrusaSliceSettings().retractionSpeedMmPerSecond,
-                retractionMinTravelMm = PrusaSliceSettings().retractionMinTravelMm,
-                retractLiftMm = PrusaSliceSettings().retractLiftMm,
-                useFirmwareRetraction = PrusaSliceSettings().useFirmwareRetraction,
-                extrusionMultiplierPercent = PrusaSliceSettings().extrusionMultiplierPercent,
-            )
-        }
+        // One replacement is the whole of the settings - all 42 fields, the six
+        // extrusion widths and the extra keys with them - back to the engine's own
+        // default. The presets and the imported snapshot are not fields of the
+        // settings, and the dialog promises both go too, so the reset calls for them.
+        onSettings(PrusaSliceSettings.Keys.LAYER_HEIGHT) { PrusaSliceSettings() }
+        onResetPresets()
+        onDiscardSnapshot()
     }
     // The profile block: the preset rows, the import, the reset - and nothing a
     // section carries. The wide layout shows it once, in its left column.

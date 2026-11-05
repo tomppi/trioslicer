@@ -4,7 +4,7 @@ package com.tomppi.enderslicer.solidcraft
  * Who may edit the CAD document: exactly one author at a time.
  *
  * The document has two doors - this app's own in-app agent, running in this process, and external
- * agents through [SolidCraftBridge] on 127.0.0.1:9878. Two designers interleaved into one design
+ * agents through the unified engine MCP server on 127.0.0.1:9878. Two designers interleaved into one design
  * produce a document neither can explain, so the app arbitrates with connection state:
  *
  *  - while an external agent is **attached** (a live bridge connection, not a past one), the

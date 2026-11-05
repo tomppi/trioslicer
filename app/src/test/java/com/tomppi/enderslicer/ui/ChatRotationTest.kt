@@ -126,20 +126,25 @@ class ChatRotationTest {
     }
 
     @Test
-    fun theModellingChatsMessagesAndBusyFlagSurviveARotation() {
+    fun theHarnessConversationAndBusyFlagSurviveARotation() {
         hostTheChat()
-        viewModel.modellingMessages = listOf(
-            AiChatMessage(fromUser = true, text = "model a 20 mm cube"),
-            AiChatMessage(fromUser = false, text = "the cube is in the Blender scene"),
+        // One harness conversation for every modelling engine now - the screens'
+        // embedded chats are gone, so this is the same contract on the shared lane.
+        viewModel.cadConversations = viewModel.cadConversations.replaceHarness(
+            listOf(
+                AiChatMessage(fromUser = true, text = "model a 20 mm cube"),
+                AiChatMessage(fromUser = false, text = "the cube is in the Blender scene"),
+            ),
         )
-        viewModel.modellingBusy = true
+        viewModel.harnessCadBusy = true
 
         recreate()
 
-        assertEquals(2, viewModel.modellingMessages.size)
-        assertEquals("model a 20 mm cube", viewModel.modellingMessages[0].text)
-        assertEquals("the cube is in the Blender scene", viewModel.modellingMessages[1].text)
-        assertTrue("the modelling turn is still running after the rotation", viewModel.modellingBusy)
+        val harness = viewModel.cadConversations.harness
+        assertEquals(2, harness.size)
+        assertEquals("model a 20 mm cube", harness[0].text)
+        assertEquals("the cube is in the Blender scene", harness[1].text)
+        assertTrue("the harness turn is still running after the rotation", viewModel.harnessCadBusy)
     }
 
     @Test

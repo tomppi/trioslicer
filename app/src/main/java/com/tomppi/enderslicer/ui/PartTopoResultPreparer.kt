@@ -11,6 +11,7 @@ import com.tomppi.enderslicer.model.SlicerSettings
 import com.tomppi.enderslicer.model.withSettings
 import com.tomppi.enderslicer.viewer.StlMesh
 import com.tomppi.enderslicer.viewer.StlParser
+import com.tomppi.enderslicer.viewer.StlSliceTransform
 import java.io.File
 
 internal data class PreparedPartTopoResult(
@@ -40,9 +41,7 @@ internal object PartTopoResultPreparer {
             val transformed = placement.transformed(source)
             PrinterEnvelope.from(printer.withSettings(settings)).requireBinaryStlFits(
                 file,
-                requireNotNull(transformed.slicingTransform) {
-                    "Part Topo placement transform is unavailable"
-                },
+                slicingTransformOf(transformed),
             )
             return PreparedPartTopoResult(source, transformed, file, placement)
         } catch (error: Throwable) {
@@ -50,6 +49,21 @@ internal object PartTopoResultPreparer {
             throw error
         }
     }
+
+    /**
+     * The map the result is placed through, for the envelope check.
+     *
+     * A body that already sits at the placement point comes back through
+     * [ModelPlacement.transformed]'s near-identity fast path with no slicingTransform - that
+     * placement IS the identity transform, not a missing one.
+     */
+    internal fun slicingTransformOf(transformed: StlMesh): StlSliceTransform =
+        transformed.slicingTransform ?: StlSliceTransform(
+            linear = ModelPlacement.IDENTITY,
+            translationXmm = 0.0,
+            translationYmm = 0.0,
+            translationZmm = 0.0,
+        )
 
     /**
      * filaSim imports the exact displayed mesh after translating its XY centre

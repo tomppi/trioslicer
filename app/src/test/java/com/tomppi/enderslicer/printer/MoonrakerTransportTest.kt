@@ -172,6 +172,63 @@ class MoonrakerTransportTest {
         assertTrue(reply.has("result"))
     }
 
+    @Test
+    fun repliesWrittenFromSeveralThreadsAllArriveWhole() {
+        // The reply deque is written by whichever thread sends a request the transport
+        // answers itself - and by the thread reading the socket, translating what the host
+        // pushes - while the client's reader takes from it. An ArrayDeque grown by one
+        // thread while another takes from it loses messages, repeats them, or tears them.
+        val transport = MoonrakerTransport("127.0.0.1", 1) // never connected: not needed here
+        val writers = 4
+        val each = 250
+        val total = writers * each
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(writers)
+        try {
+            val start = CountDownLatch(1)
+            repeat(writers) { writer ->
+                pool.execute {
+                    start.await()
+                    repeat(each) { index ->
+                        transport.write(
+                            KlipperProtocol.encode(
+                                writer * each + index,
+                                "gcode/subscribe_output",
+                                JSONObject(),
+                            ),
+                        )
+                    }
+                }
+            }
+            start.countDown()
+            // Read while they write. A read with nothing ready and no socket answers -1
+            // rather than waiting, so an empty moment is one to try again.
+            val ids = java.util.Collections.synchronizedList(mutableListOf<Int>())
+            val buffer = ByteArray(256)
+            val message = StringBuilder()
+            val deadline = System.currentTimeMillis() + 10_000
+            while (ids.size < total && System.currentTimeMillis() < deadline) {
+                val count = transport.read(buffer)
+                if (count < 0) {
+                    Thread.sleep(1)
+                    continue
+                }
+                for (index in 0 until count) {
+                    val byte = buffer[index]
+                    if (byte == KlipperProtocol.ETX) {
+                        ids.add(JSONObject(message.toString()).optInt("id"))
+                        message.setLength(0)
+                    } else {
+                        message.append(byte.toInt().toChar())
+                    }
+                }
+            }
+            assertEquals("and every reply is the one that was written", (0 until total).toSet(), ids.toSet())
+        } finally {
+            pool.shutdownNow()
+            transport.close()
+        }
+    }
+
     /** Read the server's request headers, up to the blank line. */
     private fun readHeaders(input: InputStream): String {
         val text = StringBuilder()

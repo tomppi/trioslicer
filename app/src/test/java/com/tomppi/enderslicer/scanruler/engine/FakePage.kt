@@ -139,6 +139,19 @@ internal class FakePage(private val token: String = "page-token") : WebSocket.Li
         }
     }
 
+    /** Waits until the server ended the connection, by close frame or by dropping the socket. */
+    fun awaitGone(timeoutMillis: Long = 5_000) {
+        val end = System.currentTimeMillis() + timeoutMillis
+        while (true) {
+            val remaining = end - System.currentTimeMillis()
+            if (remaining <= 0) throw AssertionError("timed out waiting for the connection to end")
+            when (events.poll(remaining, TimeUnit.MILLISECONDS) ?: throw AssertionError("timed out")) {
+                is Event.Closed, is Event.Failed -> return
+                else -> continue
+            }
+        }
+    }
+
     fun close() {
         runCatching { socket.sendClose(WebSocket.NORMAL_CLOSURE, "test over") }
         runCatching { webSocket.get().abort() }

@@ -10,9 +10,9 @@ import org.json.JSONObject
  *
  * The whole catalogue is the page's own commands, so the agent works the live page exactly as
  * an external MCP agent does: no second WebView, no MCP socket, no duplicated state. Tool names
- * are the page command names with dots -> underscores (the same mapping the MCP facade uses).
- * Every call is a normal one-way tool result; the model never gets an exception, it gets the
- * page's sentence and can try again.
+ * are the page command names with dots -> underscores (the same mapping the MCP facade uses),
+ * resolved against the page's own catalogue. Every call is a normal one-way tool result; the
+ * model never gets an exception, it gets the page's sentence and can try again.
  */
 class ScanRulerAgentHost(
     private val session: ScanRulerEmbeddedSession,
@@ -23,22 +23,17 @@ class ScanRulerAgentHost(
         return try {
             when (name) {
                 "scanruler_status" -> AgentToolHost.Result(session.statusSummary())
-                "scanruler_wait" -> AgentToolHost.Result(session.waitForPageText())
+                "scanruler_wait" -> AgentToolHost.Result(
+                    session.waitForPageText(arguments.optLong("timeoutMs", 20_000L).coerceIn(0L, 120_000L)),
+                )
                 else -> {
-                    val commandName = ScanRulerCommandCatalog.commandNameFor(name)
+                    val command = session.commandForTool(name)
                         ?: return AgentToolHost.Result(
-                            "ScanRuler has no tool called " + name + ".",
-                            failed = true,
-                            outcome = "unknown tool",
-                        )
-                    if (session.commandNames().none { it == commandName }) {
-                        return AgentToolHost.Result(
-                            "The ScanRuler page does not offer " + commandName + " right now.",
+                            "The ScanRuler page does not offer " + name + " right now.",
                             failed = true,
                             outcome = "not offered",
                         )
-                    }
-                    val result = runBlocking { session.command(commandName, arguments) }
+                    val result = runBlocking { session.command(command.name, arguments) }
                     AgentToolHost.Result(result.toString())
                 }
             }

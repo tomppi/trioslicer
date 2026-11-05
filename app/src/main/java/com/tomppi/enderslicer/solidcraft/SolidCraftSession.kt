@@ -18,7 +18,7 @@ data class ToolStep(
 /**
  * The SolidCraft engine's MCP tool surface, typed for the calls the app makes itself.
  *
- * The agent's calls arrive through [SolidCraftBridge] and are forwarded untouched; these
+ * The agent's calls arrive through the unified engine MCP server and are forwarded untouched; these
  * helpers exist for what the app does on its own behalf: exporting the tessellation the plate
  * draws, saving the design that is the document's source of truth, opening a CAD file, and
  * exporting the print artifact a slice consumes.
@@ -86,7 +86,7 @@ class SolidCraftSession(
      * The engine's complete tool catalogue - names, descriptions and JSON schemas.
      *
      * The engine is the one owner of this list, and two consumers read this one answer: the
-     * in-app agent, in this process, and an external agent through [SolidCraftBridge], which
+     * in-app agent, in this process, and an external agent through the unified engine MCP server, which
      * forwards the same `tools/list`. Nothing in the app restates the schemas, so a tool the
      * engine adds reaches both without an app change.
      */

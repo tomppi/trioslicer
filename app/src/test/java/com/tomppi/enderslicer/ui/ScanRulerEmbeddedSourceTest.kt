@@ -82,16 +82,25 @@ class ScanRulerEmbeddedSourceTest {
     }
 
     @Test
-    fun theInAppAgentFollowsTheSelectedWorkspace() {
-        assertTrue(app.contains("viewModel.uiState.value.activeView == PlateView.SCAN_RULER"))
+    fun theInAppAgentFollowsTheSelectedEngine() {
+        assertTrue(app.contains("val engine = viewModel.agentEngine"))
+        assertTrue(
+            "the ScanRuler engine needs its workspace",
+            app.contains("scanRulerTurn = engine == AgentEngine.SCANRULER"),
+        )
         assertTrue(app.contains("viewModel.scanRulerSessionOrNull()"))
-        assertTrue(app.contains("scanRuler.toolDefinitions()"))
-        assertTrue(app.contains("scanRuler.agentHost"))
-        assertTrue(app.contains("scanRuler.agentInstructions"))
-        assertTrue(app.contains("includePlateScreenshot = false"))
+        assertTrue(app.contains("live.toolDefinitions()"))
+        assertTrue(app.contains("live.agentHost"))
+        assertTrue(app.contains("live.agentInstructions"))
+        assertTrue(app.contains("includePlateScreenshot = scanRulerTurn"))
         assertTrue(app.contains("scanruler-not-ready"))
-        assertTrue("plate turns still claim the CAD document", app.contains("if (scanRuler == null) {") && app.contains("ownership.beginInAppTurn()"))
-        assertTrue("the switch resets the cached agent for the next context", vm.contains("inAppCadAgent = null"))
+        assertTrue("the wire engines bind their own hosts", app.contains("WireEngineAgentHost(surface)"))
+        assertTrue("the agent is told which engine it is driving", app.contains("AgentEngineContext.instructions"))
+        assertTrue(
+            "only SolidCraft turns claim the CAD document",
+            app.contains("if (engine == AgentEngine.SOLIDCRAFT) {") && app.contains("ownership.beginInAppTurn()"),
+        )
+        assertTrue("a switch resets the cached agent for the next context", vm.contains("inAppCadAgent = null"))
         assertTrue("the agent can run a non-SolidCraft prompt", source("cadagent/CadAgent.kt").contains("systemPromptOverride"))
     }
 
@@ -112,18 +121,30 @@ class ScanRulerEmbeddedSourceTest {
     }
 
     @Test
-    fun theAskAiSurfaceNamesTheScanRulerAgentInThatView() {
+    fun theAskAiSurfaceNamesTheSelectedEngine() {
         val overlay = source("ui/AiChatOverlay.kt")
         assertTrue(overlay.contains("inAppLabel: String = ChatSource.IN_APP.label"))
         assertTrue(overlay.contains("inAppComposerHint: String = \"Ask for a CAD change\""))
         assertTrue(overlay.contains("inAppEmptyLine: String"))
         assertTrue(overlay.contains("inAppEndpointHint: String"))
+        assertTrue("the engine menu owns the selection", overlay.contains("onSelectEngine: (AgentEngine) -> Unit"))
+        assertTrue(
+            "engine readiness is polled into live state - a boot finishes without a recomposition",
+            app.contains("engineReadinessSnapshot") && app.contains("ENGINE_READINESS_POLL_MILLIS"),
+        )
+        assertTrue("the door menu carries the universal MCP", overlay.contains("doorMenu: AgentDoorMenu?"))
         assertTrue("the source chip uses the caller's label", overlay.contains("if (candidate == ChatSource.IN_APP) inAppLabel else candidate.label"))
-        assertTrue("the caller names the agent from the active view", app.contains("val inAppAgentName ="))
-        assertTrue(app.contains("if (state.activeView == PlateView.SCAN_RULER) \"ScanRuler agent\" else \"CAD agent\""))
+        assertTrue("the caller names the agent from the selected engine", app.contains("val selectedEngine = viewModel.agentEngine"))
+        assertTrue(app.contains("val inAppAgentName = selectedEngine.label + \" agent\""))
+        assertTrue(app.contains("onSelectEngine = viewModel::selectAgentEngine"))
         assertTrue(app.contains("inAppLabel = inAppAgentName + \" (in-app)\"") || app.contains("inAppLabel = inAppAgentName + \" (in-app)\","))
         assertTrue(app.contains("Ask the ScanRuler agent"))
-        assertTrue(app.contains("ScanRuler agent settings"))
+        // The endpoint editor is inside the CAD agent sheet - there is no separate
+        // "ScanRuler agent settings" surface, and the hint may not name one.
+        assertTrue(
+            "the endpoint hint points at the sheet that holds the editor",
+            app.contains("Set the endpoint in the CAD agent sheet."),
+        )
         assertTrue("the clipboard label follows the same name", app.contains("copyChatTranscript(text, inAppAgentName)"))
     }
 

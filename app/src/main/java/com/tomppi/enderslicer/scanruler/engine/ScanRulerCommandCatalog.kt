@@ -23,8 +23,12 @@ internal object ScanRulerCommandCatalog {
 
     fun toolNameFor(commandName: String): String = commandName.replace('.', '_')
 
-    fun commandNameFor(toolName: String): String? =
-        if (toolName == toolNameFor(toolName)) toolName.replace('_', '.') else null
+    /**
+     * The page command a tool name names. Tool names are not invertible by string surgery
+     * (a.b_c and a_b.c both become a_b_c), so every resolution goes through the catalogue.
+     */
+    fun commandForTool(commands: List<Command>, toolName: String): Command? =
+        commands.firstOrNull { it.toolName == toolName }
 
     fun parse(commands: JSONArray?): List<Command> {
         if (commands == null) return emptyList()
@@ -72,7 +76,7 @@ internal object ScanRulerCommandCatalog {
         tools.put(
             JSONObject()
                 .put("name", "scanruler_wait")
-                .put("description", "Wait for the embedded ScanRuler page to pair, or for a running command to finish.")
+                .put("description", "Wait for the embedded ScanRuler page to pair.")
                 .put("inputSchema", JSONObject(
                     """{"type":"object","properties":{"timeoutMs":{"type":"integer","minimum":0,"maximum":120000}}}""",
                 ))

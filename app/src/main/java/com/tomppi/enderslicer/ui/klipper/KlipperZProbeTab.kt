@@ -189,17 +189,30 @@ private fun StartCalibrationCard(
             KlipperButton("Cool down", enabled = state.connected) { onHeat(0, 0) }
         }
         Spacer(Modifier.height(4.dp))
+        //
+        // Homing and PROBE_CALIBRATE move the machine over the plate, so both wait for the
+        // print the way the Move tab's motion does - the calibration over a part would work
+        // on a moving, occupied bed.
+        //
+        val motionAllowed = state.isReady && !state.isPrinting
         KlipperButtons {
-            KlipperButton("Home", enabled = state.isReady, onClick = onHome)
+            KlipperButton("Home", enabled = motionAllowed, onClick = onHome)
             KlipperButton(
                 text = "Start calibrating",
-                enabled = state.isReady && state.isHomed,
+                enabled = motionAllowed && state.isHomed,
                 onClick = onStart,
             )
         }
         if (!state.isHomed) {
             Spacer(Modifier.height(4.dp))
             KlipperNote("The printer is not homed, and the probe cannot start from nowhere.")
+        }
+        if (state.isPrinting) {
+            Spacer(Modifier.height(4.dp))
+            KlipperNote(
+                "A print is running. Homing or calibrating now would work over the part - " +
+                    "pause the print and the buttons come back.",
+            )
         }
     }
 }

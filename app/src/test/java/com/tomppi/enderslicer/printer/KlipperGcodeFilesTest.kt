@@ -108,6 +108,16 @@ class KlipperGcodeFilesTest {
     }
 
     @Test
+    fun aFileKlippyCannotOpenIsNotOfferedForPrinting() {
+        // klippy's virtual_sdcard extension check is case-sensitive: it lists and opens
+        // "gcode" files and answers "Unable to open file" to a *.GCODE one. A list that
+        // offered it would send the user into exactly that refusal.
+        gcode("UPPER.GCODE", "; layer_height = 0.2")
+        gcode("lower.gcode", "; layer_height = 0.2")
+        assertEquals(listOf("lower.gcode"), KlipperGcodeFiles.list(folder.root).map { it.name })
+    }
+
+    @Test
     fun theNewestFileComesFirst() {
         val older = gcode("older.gcode", "; layer_height = 0.2")
         val newer = gcode("newer.gcode", "; layer_height = 0.2")

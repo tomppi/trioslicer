@@ -159,6 +159,22 @@ internal fun KlipperKampTab(state: KlipperPrinterState, viewModel: KlipperViewMo
 internal const val KAMP_OBJECT = "gcode_macro _KAMP_Settings"
 private const val KAMP_MACRO = "_KAMP_Settings"
 
+/**
+ * A KAMP value as SET_GCODE_VARIABLE can take it: a plain number, dot for the decimal mark.
+ *
+ * klippy stores ast.literal_eval(VALUE), so whatever this screen sends is a Python literal -
+ * a comma decimal, which the app's other number fields accept, is a tuple to Python and
+ * silently becomes something else, and a quoted string or an infinity is stored as written.
+ * Only an ordinary decimal number is accepted, and it goes out with a dot.
+ */
+internal fun kampValue(text: String): String? {
+    val typed = text.trim()
+    if (!KAMP_NUMBER.matches(typed)) return null
+    return typed.replace(',', '.')
+}
+
+private val KAMP_NUMBER = Regex("-?\\d+([.,]\\d+)?")
+
 @Composable
 private fun KampCard(title: String, explanation: String, content: @Composable () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -210,12 +226,13 @@ private fun KampNumber(
             )
             Button(
                 onClick = {
+                    val value = kampValue(text) ?: return@Button
                     viewModel.sendCommand(
-                        "SET_GCODE_VARIABLE MACRO=$KAMP_MACRO VARIABLE=$variable VALUE=$text",
+                        "SET_GCODE_VARIABLE MACRO=$KAMP_MACRO VARIABLE=$variable VALUE=$value",
                     )
                     text = ""
                 },
-                enabled = text.isNotBlank(),
+                enabled = kampValue(text) != null,
             ) {
                 Text("Set")
             }

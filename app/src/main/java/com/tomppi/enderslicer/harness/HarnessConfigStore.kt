@@ -252,9 +252,14 @@ class HarnessConfigStore(context: Context) {
      * One encrypted value, or an empty string.
      *
      * A value whose recorded origin is not the configured address is removed
-     * rather than returned: it belongs to a different harness. A value that no
-     * longer decrypts - the Keystore key is gone after a restore to another
-     * device - is removed too, because nothing can ever read it again.
+     * rather than returned: it belongs to a different harness. A decrypt
+     * failure keeps the ciphertext and answers empty - the rule
+     * OctoPrintSecretStore.loadApiKey states. The causes are transient or
+     * recoverable (a Keystore that is momentarily unavailable, a restore
+     * without the device-bound key) and this ciphertext is the only copy of a
+     * launch token the harness prints once or of the 30-day session cookie.
+     * It is dropped only when the credential is explicitly cleared or its
+     * origin changes.
      */
     private fun loadSecret(valueKey: String, originKey: String, baseUrl: String): String {
         val encoded = preferences.getString(valueKey, null) ?: return ""
@@ -263,10 +268,7 @@ class HarnessConfigStore(context: Context) {
             preferences.edit().remove(valueKey).remove(originKey).commit()
             return ""
         }
-        return runCatching { decrypt(encoded) }.getOrElse {
-            preferences.edit().remove(valueKey).remove(originKey).commit()
-            ""
-        }
+        return runCatching { decrypt(encoded) }.getOrDefault("")
     }
 
     private fun encrypt(value: String): String {

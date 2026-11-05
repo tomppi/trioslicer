@@ -11,6 +11,11 @@
  * in `.dsh/publish-map.json`, which is gitignored for the obvious reason - so
  * this script is safe to commit and the secrets never enter the repository.
  *
+ * It also stages the three engine documents (cad-engine, occt-engine-rules,
+ * blender-mcp-engine) as committed APK assets in
+ * `app/src/main/assets/engine-runbooks/`: the phone's in-app agents cannot open a
+ * host-side skill file, so they read the same sanitized text from the APK.
+ *
  * The map can only remove what it already knows about, so every sanitized copy
  * is also scanned for address- and credential-shaped content with patterns that
  * do not consult the map. Anything found is reported as a kind and a line
@@ -90,9 +95,12 @@ const LEAK_PATTERNS = [
   {
     kind: "host and port",
     // adb prose writes the protocol in front of the port, and the loopback
-    // socket is part of the interface the skill documents.
-    regex: /(?<![<\w.-])[A-Za-z][A-Za-z0-9.-]*:\d{2,5}\b/g,
-    allow: (value) => /^(?:localhost|tcp|udp):/i.test(value),
+    // socket is part of the interface the skill documents. The left side must
+    // look like a host - carry a dot, or start with a letter and carry a digit -
+    // so JSON example parameters (width:50, diameter:10) and PCI device ids
+    // (0000:00:01.2) are not read as one.
+    regex: /(?<![<\w.-])(?:[A-Za-z0-9-]*[.][A-Za-z0-9.-]*|[A-Za-z][A-Za-z0-9-]*\d[A-Za-z0-9-]*):\d{2,5}\b/g,
+    allow: (value) => /^(?:localhost|tcp|udp|127(?:\.\d{1,3}){3}):/i.test(value),
   },
   {
     kind: "credential-shaped token",
@@ -168,4 +176,19 @@ if (leaking.length > 0) {
     );
   }
   console.log("wrote " + clean.length + " skill(s) to docs/skills/");
+
+  // The phone's in-app agents cannot open a host-side skill file, so the engine documents ship
+  // in the APK too: committed copies under app/src/main/assets/engine-runbooks/, kept
+  // byte-identical to the published skill by this script. EngineRunbookTest fails on drift.
+  const engineAssets = join(ROOT, "app", "src", "main", "assets", "engine-runbooks");
+  const engineDocuments = ["cad-engine", "occt-engine-rules", "blender-mcp-engine"];
+  mkdirSync(engineAssets, { recursive: true });
+  for (const name of engineDocuments) {
+    const skill = clean.find((candidate) => candidate.name === name);
+    if (!skill) throw new Error("no published skill named " + name + " to stage for the APK");
+    writeFileSync(join(engineAssets, name + ".md"), skill.sanitized);
+    console.log(
+      "  staged " + (name + ".md").padEnd(24) + "into app/src/main/assets/engine-runbooks/",
+    );
+  }
 }

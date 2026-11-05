@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.agent.engine.EngineMcpHost
 import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.model.SlicerEngine
@@ -132,6 +133,9 @@ class MainActivity : FragmentActivity() {
         // at app start, not when the CAD agent sheet is first opened. Binding and address
         // lookup are socket work, so they are not on the UI thread.
         Thread { runCatching { AgentBridges.ensureStarted(applicationContext) } }.start()
+        // The one agent door for the three modelling engines; it listens on loopback from
+        // app start, the way the engines' own doors used to.
+        Thread { runCatching { EngineMcpHost.ensureStarted(applicationContext) } }.start()
         enableEdgeToEdge()
         requestNotificationPermission()
         startKlipperHostIfPrinterAttached(intent)
@@ -155,10 +159,11 @@ class MainActivity : FragmentActivity() {
                     LocalDensity provides UiScale.scaled(deviceDensity, uiScalePercent),
                 ) {
                     // First-run setup: step 1 sets the machine, step 2 sets the
-                    // interface scale over the real plate, and only finishing step 2
-                    // writes the one-shot flag. An install that finished the old
-                    // skippable onboarding carries the same flag, so it starts at the
-                    // app and never sees the new step.
+                    // interface scale over the real plate, and step 3 prepares the
+                    // engine payloads - and leaving step 3 (prepared or skipped) writes
+                    // the one-shot flag. An install that finished the old skippable
+                    // onboarding carries the same flag, so it starts at the app and
+                    // never sees the new steps.
                     var step by rememberSaveable {
                         mutableStateOf(OnboardingFlow.initialStep(onboardingStore.isComplete()))
                     }

@@ -197,6 +197,9 @@ object SnapJoint {
             subtractSolid = SnapFit.shift(joint.subtractSolid, delta),
             registrationSolid = SnapFit.shift(joint.registrationSolid, delta),
             registrationRecess = SnapFit.shift(joint.registrationRecess, delta),
+            // Every solid, the cuts included: the joint is carried as one piece, solids
+            // and frames together (docs/snap-fit-notes.md).
+            cutSolid = joint.cutSolid?.let { SnapFit.shift(it, delta) },
             frame = joint.frame.shifted(delta),
             socketFrame = joint.socketFrame.shifted(delta),
         )

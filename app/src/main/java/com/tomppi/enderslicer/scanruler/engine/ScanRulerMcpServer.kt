@@ -262,7 +262,7 @@ internal class ScanRulerMcpServer(
                         val child = value.opt(key)
                         if (child is ByteArray) {
                             val name = value.optString("name").ifBlank { "scanruler-export" }
-                            val mime = value.optString("mimeType").ifBlank { "application/octet-stream" }
+                            val mime = value.optString("mimeType").ifBlank { ScanRulerFileExports.mimeTypeFor(name) }
                             value.put(key, sink(child, name, mime))
                             count++
                         } else {

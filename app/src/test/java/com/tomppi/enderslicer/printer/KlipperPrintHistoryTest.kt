@@ -65,4 +65,40 @@ class KlipperPrintHistoryTest {
         assertEquals("print-204.gcode", records.first().fileName)
         assertEquals("print-5.gcode", records.last().fileName)
     }
+
+    @Test
+    fun recordsAppendedFromSeveralThreadsLoseNothing() {
+        val file = File(folder.root, "history.json")
+        val store = KlipperPrintHistory(file)
+        val writers = 8
+        val each = 10
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(writers)
+        try {
+            val start = java.util.concurrent.CountDownLatch(1)
+            val done = java.util.concurrent.CountDownLatch(writers)
+            repeat(writers) { writer ->
+                pool.execute {
+                    start.await()
+                    repeat(each) { index ->
+                        store.append(record("print-$writer-$index.gcode"))
+                    }
+                    done.countDown()
+                }
+            }
+            start.countDown()
+            assertTrue("the writers finish", done.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        } finally {
+            pool.shutdownNow()
+        }
+        // An append is a read-modify-write of one file: two that interleave lose one of
+        // the records, or leave the file half-written - which loads as a whole lost
+        // history rather than as a complaint.
+        val records = KlipperPrintHistory(file).load()
+        assertEquals("every record survives", writers * each, records.size)
+        assertEquals(
+            "and no record stands for two",
+            writers * each,
+            records.map { it.fileName }.toSet().size,
+        )
+    }
 }

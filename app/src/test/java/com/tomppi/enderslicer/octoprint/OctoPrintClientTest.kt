@@ -462,6 +462,25 @@ class OctoPrintClientTest {
     }
 
     @Test
+    fun flatteningDedupesARepeatedPathSoTheListKeysStayUnique() {
+        // The Files list keys rows by origin and path, and Compose crashes the
+        // whole app on a duplicate LazyColumn key - so a server that lists one
+        // path twice must not produce two rows. The first occurrence wins, and a
+        // repeated entry's subtree goes with it.
+        val child = JSONObject().put("type", "machinecode").put("path", "folder/cube.gcode")
+        val folder = JSONObject()
+            .put("type", "folder")
+            .put("path", "folder")
+            .put("children", JSONArray().put(child))
+        val duplicate = JSONObject().put("type", "machinecode").put("path", "folder/cube.gcode")
+        val root = JSONObject().put("files", JSONArray().put(folder).put(duplicate).put(folder))
+
+        val (files, _) = OctoPrintJson.parseFiles(root)
+
+        assertEquals(listOf("folder", "folder/cube.gcode"), files.map { it.path })
+    }
+
+    @Test
     fun treatsOnlyTheDocumentedApiRejectionAsAnInvalidKey() {
         val client = OctoPrintClient("http://octopi.local", "stored-key")
         val rejection = JSONObject().put("error", "Invalid API key")

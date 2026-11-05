@@ -72,6 +72,19 @@ class ModelSurfaceView(
     private val paintPickLock = Any()
     private var paintPickScheduled = false
 
+    /**
+     * Runs one pick on the executor unless teardown has already shut it down: a probe scheduled
+     * during or after [onDetachedFromWindow] is dropped rather than thrown back at the gesture as
+     * a RejectedExecutionException.
+     */
+    private fun runPick(task: Runnable) {
+        try {
+            paintPickExecutor.execute(task)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // The gesture simply gets no answer.
+        }
+    }
+
     /** True once this gesture's face pick has been reported, so a drag reports only the first. */
     private var facePickReported = false
 
@@ -930,7 +943,10 @@ class ModelSurfaceView(
                     // the engine once, here, instead of on every sample.
                     onSurfacePickEnd?.invoke()
                 }
-                brushGate.end() 
+                brushGate.end()
+                // The stroke's deciding question ends with the gesture: the flag must not
+                // outlive it and swallow the next tap's pick as a stale probe.
+                brushProbePending.set(false)
                 // The preview is deliberately left standing: the commit lands a
                 // moment later, and dropping it here would snap the model back to
                 // where it started in between. It goes when the new geometry
@@ -980,6 +996,15 @@ class ModelSurfaceView(
                 }
                 if (strokeFirstHit == null) replayStrokeAsOrbit()
                 resetJointStroke()
+                if (brushGate.dragging && !painting) {
+                    // A cancelled gesture ends the stroke the way its release does,
+                    // so the engine is handed the selection once and the gate is
+                    // closed before an in-flight decide probe can start a stroke
+                    // after the gesture is gone.
+                    onSurfacePickEnd?.invoke()
+                }
+                brushGate.end()
+                brushProbePending.set(false)
                 if (draggingRotate) {
                     draggingRotate = false
                     rotateDegrees = 0f
@@ -1056,7 +1081,7 @@ class ModelSurfaceView(
      * anything.
      */
     private fun scheduleTransformProbe(screenX: Float, screenY: Float) {
-        paintPickExecutor.execute {
+        runPick {
             val hit = modelRenderer.pickTriangle(screenX, screenY)
             // The gizmo belongs to the object being worked on, so long-pressing a
             // neighbour asks for nothing rather than putting handles on a part the
@@ -1189,7 +1214,7 @@ class ModelSurfaceView(
             if (paintPickScheduled) return
             paintPickScheduled = true
         }
-        paintPickExecutor.execute {
+        runPick {
             try {
                 while (true) {
                     val coordinates = pendingPaintCoordinates.getAndSet(null) ?: break
@@ -1264,7 +1289,7 @@ class ModelSurfaceView(
             if (annotationScheduled) return
             annotationScheduled = true
         }
-        paintPickExecutor.execute {
+        runPick {
             try {
                 while (true) {
                     val coordinates = pendingAnnotationCoordinates.getAndSet(null) ?: break
@@ -1301,7 +1326,7 @@ class ModelSurfaceView(
             if (annotationProbeScheduled) return
             annotationProbeScheduled = true
         }
-        paintPickExecutor.execute {
+        runPick {
             try {
                 while (true) {
                     val coordinates = pendingAnnotationProbe.getAndSet(null) ?: break
@@ -1422,8 +1447,8 @@ class ModelSurfaceView(
             // the same reason; reading the event on the executor raced the recycle.
             val screenX = event.x
             val screenY = event.y
-            paintPickExecutor.execute {
-                val hit = modelRenderer.pickTriangle(screenX, screenY) ?: return@execute
+            runPick {
+                val hit = modelRenderer.pickTriangle(screenX, screenY) ?: return@runPick
                 if (hit.objectIndex != currentSelectedIndex) {
                     post { listener(hit.objectIndex) }
                 }
@@ -3066,6 +3091,7 @@ private class ModelRenderer(
         releaseMeshBuffer()
         releasePreviewBuffers()
         releaseFaceTintBuffer()
+        releaseTextureRegionTintBuffer()
         if (colorVbo != 0) {
             GLES20.glDeleteBuffers(1, intArrayOf(colorVbo), 0)
             colorVbo = 0

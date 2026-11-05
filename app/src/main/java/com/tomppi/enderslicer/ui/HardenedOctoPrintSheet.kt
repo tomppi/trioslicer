@@ -221,7 +221,7 @@ fun HardenedOctoPrintSheet(
         HardenedConfirmDialog(
             title = "Delete ${entry.name}?",
             text = if (entry.isFolder) {
-                "OctoPrint can delete the folder only when it is empty."
+                "This permanently removes the folder and everything stored inside it from OctoPrint storage."
             } else {
                 "This permanently removes the file from OctoPrint storage."
             },
@@ -1099,7 +1099,10 @@ private fun HardenedSetupPage(
             "Use Application Keys when possible. A replacement authorization does not remove the currently working key unless the new request succeeds.",
             style = MaterialTheme.typography.bodySmall,
         )
-        if (baseUrl.trim().startsWith("http://", true) || (baseUrl.isNotBlank() && "://" !in baseUrl)) {
+        // A bare hostname is sent over HTTPS - OctoPrintClient.normalizeBaseUrl
+        // upgrades it precisely to keep the key out of cleartext - so only a
+        // URL that explicitly says http:// earns the unencrypted warning.
+        if (baseUrl.trim().startsWith("http://", true)) {
             Text(
                 "HTTP is unencrypted. Use it only on a trusted local network, or configure HTTPS for remote access.",
                 color = MaterialTheme.colorScheme.error,

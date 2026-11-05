@@ -2,20 +2,19 @@ package com.tomppi.enderslicer.agent
 
 import android.content.Context
 import android.util.Log
-import com.tomppi.enderslicer.nativebridge.BlenderEngine
-import com.tomppi.enderslicer.nativebridge.CadEngine
+import com.tomppi.enderslicer.agent.engine.EngineMcpServer
 import com.tomppi.enderslicer.scanruler.engine.ScanRulerMcpServer
-import com.tomppi.enderslicer.solidcraft.SolidCraftBridge
 import kotlin.concurrent.thread
 
 /**
- * The app's four agent bridges, published together on the device's network address.
+ * The app's agent doors, published together on the device's network address.
  *
  * One setting owns all of them because they are one promise to the user: with **Reachable on
- * the network** on, the agent lines this app prints for Blender (9876), the Python CAD engine
- * (9877), the SolidCraft document engine (9878) and the embedded ScanRuler page (9879) work
- * from another device with just the token. Each engine keeps binding 127.0.0.1 - none of them
- * is ours to change - and [AgentBridgeProxy] forwards the network side to it at the same port.
+ * the network** on, the agent line this app prints for the modelling engines - SolidCraft, the
+ * CAD engine and Blender behind one MCP server (9878) - and for the embedded ScanRuler page
+ * (9879) works from another device with just the token. Each door keeps binding 127.0.0.1 and
+ * [AgentBridgeProxy] forwards the network side to it at the same port. The engines' own private
+ * channels (Blender 9876, the CAD engine 9877) are the app's alone and are never published.
  *
  * The setting is stored in [BridgeNetworkPreference], so it survives a relaunch:
  * [ensureStarted] runs at app start and puts the listeners back up without the sheet, and
@@ -27,11 +26,13 @@ object AgentBridges {
     private const val TAG = "AgentBridges"
     private const val WATCH_MILLIS = 3_000L
 
-    /** The engines and the loopback ports they listen on; the sheet lists one line each. */
+    /** The agent doors and the loopback ports they listen on; the sheet lists one line each. */
     val TARGETS = listOf(
-        AgentBridgeTarget("Blender MCP", BlenderEngine.DEFAULT_MCP_PORT),
-        AgentBridgeTarget("CAD engine", CadEngine.DEFAULT_PORT, engineName = "CAD"),
-        AgentBridgeTarget("SolidCraft", SolidCraftBridge.DEFAULT_PORT),
+        AgentBridgeTarget(
+            "Modelling engines",
+            EngineMcpServer.DEFAULT_PORT,
+            engineName = "SolidCraft, CAD and Blender",
+        ),
         AgentBridgeTarget("ScanRuler", ScanRulerMcpServer.DEFAULT_PORT),
     )
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -218,7 +220,14 @@ private fun ScanRulerAgentChip(
             "ScanRuler agent · " + (scanName ?: "no scan") + " · " + toolCount + " tools",
             style = MaterialTheme.typography.labelSmall,
             color = Color.White,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            // One line, ellipsized, at the width the page caps its own labels at: the
+            // notes panel's 72px bottom offset clears a one-line chip (1.16.1), and a
+            // long scan name must not grow the chip over the panel's corner.
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
         )
     }
 }

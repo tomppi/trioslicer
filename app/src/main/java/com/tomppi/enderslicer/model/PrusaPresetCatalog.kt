@@ -102,6 +102,14 @@ class PrusaPresetCatalog(private val repository: PrusaPresetRepository) {
         }.sortedBy { it.label.lowercase() }
     }
 
+    /**
+     * The one lock for every resolution cache below: their fill walks run on concurrent
+     * Dispatchers.IO coroutines - one per printer selection, overlapping on quick taps - and a
+     * plain HashMap's getOrPut tears under that. It is reentrant because a fill's own condition
+     * parsing comes back through [conditionCache] inside it.
+     */
+    private val cacheLock = Any()
+
     /** Print and filament lists are per printer, so they are computed once per selection. */
     private val printProfiles = HashMap<String, List<PrintProfile>>()
     private val filamentPresets = HashMap<String, List<FilamentPreset>>()
@@ -259,13 +267,15 @@ class PrusaPresetCatalog(private val repository: PrusaPresetRepository) {
 
     // --- resolution ------------------------------------------------------------------------
 
-    private fun valuesFor(printer: Printer): Map<String, Any?> = printerValues.getOrPut(printer.id) {
-        val document = printerPreset(printer)
-        if (document == null) {
-            // No preset covers this model: the printer document's own values are all we have.
-            printer.printerDocument?.values.orEmpty()
-        } else {
-            resolve(document, printer, emptyList())
+    private fun valuesFor(printer: Printer): Map<String, Any?> = synchronized(cacheLock) {
+        printerValues.getOrPut(printer.id) {
+            val document = printerPreset(printer)
+            if (document == null) {
+                // No preset covers this model: the printer document's own values are all we have.
+                printer.printerDocument?.values.orEmpty()
+            } else {
+                resolve(document, printer, emptyList())
+            }
         }
     }
 
@@ -283,31 +293,35 @@ class PrusaPresetCatalog(private val repository: PrusaPresetRepository) {
         }
     }
 
-    private fun profilesFor(printer: Printer): List<PrintProfile> = printProfiles.getOrPut(printer.id) {
-        val lookup = hardware(printer)
-        val result = mutableListOf<PrintProfile>()
-        for (document in repository.ofKind("print")) {
-            if (!document.file.startsWith("preset-print-")) continue
-            if (document.id.orEmpty().startsWith("*")) continue
-            val inherited = mutableListOf<Map<String, Any?>>()
-            for (parent in document.inherits) {
-                repository.byId(parent)?.let { inherited.add(resolveChains(it, lookup, HashMap(), HashSet())) }
+    private fun profilesFor(printer: Printer): List<PrintProfile> = synchronized(cacheLock) {
+        printProfiles.getOrPut(printer.id) {
+            val lookup = hardware(printer)
+            val result = mutableListOf<PrintProfile>()
+            for (document in repository.ofKind("print")) {
+                if (!document.file.startsWith("preset-print-")) continue
+                if (document.id.orEmpty().startsWith("*")) continue
+                val inherited = mutableListOf<Map<String, Any?>>()
+                for (parent in document.inherits) {
+                    repository.byId(parent)?.let { inherited.add(resolveChains(it, lookup, HashMap(), HashSet())) }
+                }
+                for ((name, chain) in namedVariants(document.variants, lookup, inherited, document.allMatches)) {
+                    result.add(PrintProfile(document, name, chain))
+                }
             }
-            for ((name, chain) in namedVariants(document.variants, lookup, inherited, document.allMatches)) {
-                result.add(PrintProfile(document, name, chain))
-            }
+            result
         }
-        result
     }
 
-    private fun filamentsFor(printer: Printer): List<FilamentPreset> = filamentPresets.getOrPut(printer.id) {
-        val lookup = hardware(printer)
-        repository.ofKind("filament").mapNotNull { document ->
-            if (document.index != 0) return@mapNotNull null
-            if (!matches(document.condition, lookup, emptyMap())) return@mapNotNull null
-            val name = document.name ?: return@mapNotNull null
-            FilamentPreset(document, name)
-        }.sortedBy { it.name.lowercase() }
+    private fun filamentsFor(printer: Printer): List<FilamentPreset> = synchronized(cacheLock) {
+        filamentPresets.getOrPut(printer.id) {
+            val lookup = hardware(printer)
+            repository.ofKind("filament").mapNotNull { document ->
+                if (document.index != 0) return@mapNotNull null
+                if (!matches(document.condition, lookup, emptyMap())) return@mapNotNull null
+                val name = document.name ?: return@mapNotNull null
+                FilamentPreset(document, name)
+            }.sortedBy { it.name.lowercase() }
+        }
     }
 
     private fun resolveChains(
@@ -354,18 +368,20 @@ class PrusaPresetCatalog(private val repository: PrusaPresetRepository) {
      */
     private val toolPrintPointers = HashMap<String, String?>()
 
-    private fun toolPrintPointer(printer: Printer): String? = toolPrintPointers.getOrPut(printer.id) {
-        val lookup = hardware(printer)
-        for (document in repository.ofKind("print")) {
-            if (!document.file.startsWith("preset-print-")) continue
-            if (document.id.orEmpty().startsWith("*")) continue
-            val inherited = LinkedHashMap<String, Any?>()
-            for (parent in document.inherits) {
-                repository.byId(parent)?.let { resolveChains(it, lookup, inherited, HashSet()) }
+    private fun toolPrintPointer(printer: Printer): String? = synchronized(cacheLock) {
+        toolPrintPointers.getOrPut(printer.id) {
+            val lookup = hardware(printer)
+            for (document in repository.ofKind("print")) {
+                if (!document.file.startsWith("preset-print-")) continue
+                if (document.id.orEmpty().startsWith("*")) continue
+                val inherited = LinkedHashMap<String, Any?>()
+                for (parent in document.inherits) {
+                    repository.byId(parent)?.let { resolveChains(it, lookup, inherited, HashSet()) }
+                }
+                (inherited["default_tool_print"] as? String)?.let { return@getOrPut it }
             }
-            (inherited["default_tool_print"] as? String)?.let { return@getOrPut it }
+            null
         }
-        null
     }
 
     /**
@@ -472,8 +488,10 @@ class PrusaPresetCatalog(private val repository: PrusaPresetRepository) {
         lookup: (String) -> Any?,
         values: Map<String, Any?>,
     ): Boolean {
-        val expression = conditionCache.getOrPut(condition.orEmpty()) {
-            PrusaPresetCondition.parse(condition)
+        val expression = synchronized(cacheLock) {
+            conditionCache.getOrPut(condition.orEmpty()) {
+                PrusaPresetCondition.parse(condition)
+            }
         } ?: return true
         return expression.matches { path ->
             if (path.startsWith("print.")) {

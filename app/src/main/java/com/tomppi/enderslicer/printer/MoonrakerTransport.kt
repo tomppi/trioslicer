@@ -41,8 +41,19 @@ internal class MoonrakerTransport(
     private var input: InputStream? = null
     private var output: OutputStream? = null
 
-    /** Messages ready to be read, each already terminated the way the client expects. */
+    /**
+     * Messages ready to be read, each already terminated the way the client expects.
+     *
+     * Reached from the caller's thread (its own locally answered replies and its reads),
+     * the thread reading the socket (what accept() translates into it) and whichever
+     * thread closes the transport - so every touch is on [readyLock], the way frames are
+     * on [frameLock]. An ArrayDeque is not safe to grow from one thread while another
+     * takes from it.
+     */
     private val ready = ArrayDeque<ByteArray>()
+
+    /** The lock [ready] is taken and returned under. */
+    private val readyLock = Any()
 
     /** What is left of a message being read into the client's buffer. */
     private var serving = ByteArray(0)
@@ -68,8 +79,11 @@ internal class MoonrakerTransport(
 
     override fun read(buffer: ByteArray): Int {
         while (serving.isEmpty()) {
-            if (ready.isNotEmpty()) {
-                serving = ready.removeFirst()
+            val next = synchronized(readyLock) {
+                if (ready.isEmpty()) null else ready.removeFirst()
+            }
+            if (next != null) {
+                serving = next
                 break
             }
             if (!pump()) return -1
@@ -89,13 +103,23 @@ internal class MoonrakerTransport(
             if (translated == null) {
                 // Answered here: klippy has this method, Moonraker does not, and the client is
                 // entitled to a reply to the request it made rather than a timeout.
-                ready += terminate(
-                    JSONObject()
-                        .put("id", local.optInt("id"))
-                        .put("result", JSONObject())
-                        .toString()
-                        .toByteArray(),
-                )
+                synchronized(readyLock) {
+                    ready += terminate(
+                        JSONObject()
+                            .put("id", local.optInt("id"))
+                            .put("result", JSONObject())
+                            .toString()
+                            .toByteArray(),
+                    )
+                }
+                // The reader may already be parked in the socket read inside pump(), where
+                // it cannot see the reply just queued: a locally answered call would then
+                // wait out the whole read timeout on an answer it has held the whole time.
+                // The ping asks the host for a pong, and the pong is the socket activity that
+                // brings the reader back to the queue. The reader is never interrupted for
+                // this instead: the interrupt lands in the socket read and ends the
+                // connection.
+                runCatching { sendFrame(KlipperWebSocket.OPCODE_PING, ByteArray(0)) }
             } else {
                 sendFrame(KlipperWebSocket.OPCODE_TEXT, translated.toString().toByteArray())
             }
@@ -112,7 +136,7 @@ internal class MoonrakerTransport(
         socket = null
         input = null
         output = null
-        ready.clear()
+        synchronized(readyLock) { ready.clear() }
         serving = ByteArray(0)
         partial = ByteArray(0)
         assembling = ByteArray(0)
@@ -203,11 +227,11 @@ internal class MoonrakerTransport(
         if (payload.isEmpty()) return
         val message = runCatching { JSONObject(String(payload)) }.getOrNull() ?: return
         if (!message.has("method")) {
-            ready += terminate(payload)
+            synchronized(readyLock) { ready += terminate(payload) }
             return
         }
         for (translated in MoonrakerDialect.notifications(message)) {
-            ready += terminate(translated.toString().toByteArray())
+            synchronized(readyLock) { ready += terminate(translated.toString().toByteArray()) }
         }
     }
 

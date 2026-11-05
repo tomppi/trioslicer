@@ -92,7 +92,20 @@ class OpenAiChatClient(
             // Buffered, not streaming: a 401 answered mid-stream makes HttpURLConnection drop
             // the response body ("cannot retry ... in streaming mode"), and this class needs
             // that body - it carries the provider's own sentence about the key.
-            connection.outputStream.use { output -> output.write(bytes) }
+            try {
+                connection.outputStream.use { output -> output.write(bytes) }
+            } catch (error: SocketTimeoutException) {
+                // The connect phase, not the read: this is the CONNECT budget, and naming
+                // the read budget here claimed 180 s for a failure at 20 s.
+                if (cancelled) throw cancelledException()
+                throw AgentException(
+                    "timeout",
+                    "The endpoint could not be reached within " + (connectTimeoutMillis / 1000) +
+                        " s (connect timeout). Check the base URL and that this phone has a " +
+                        "route to it.",
+                    error,
+                )
+            }
             val status = connection.responseCode
             val text = readBody(connection, success = status in 200..299)
             log(

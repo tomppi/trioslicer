@@ -203,9 +203,26 @@ object BedClipper {
             sources?.add(sourceTriangle)
         }
 
-        /** Where the edge from [below] to [above] meets the plane. */
-        fun cut(below: ClipVertex, above: ClipVertex): ClipVertex =
-            ClipVertex.between(below, above, -distanceOf(below) / (distanceOf(above) - distanceOf(below)), axis, offsetMm)
+        /**
+         * Where the edge between two corners meets the plane. The interpolation is
+         * always taken below-to-above, whichever order the caller holds the corners
+         * in: every producer of a shared crossing - the kept triangles and the
+         * cross-section record - then computes it from the same expression in the
+         * same direction, bit for bit, and the two weld to one key. Complementary
+         * lerps differ in the last bits, and one unmatched key leaves the seam open.
+         */
+        fun cut(one: ClipVertex, other: ClipVertex): ClipVertex {
+            val below: ClipVertex
+            val above: ClipVertex
+            if (distanceOf(one) <= distanceOf(other)) {
+                below = one
+                above = other
+            } else {
+                below = other
+                above = one
+            }
+            return ClipVertex.between(below, above, -distanceOf(below) / (distanceOf(above) - distanceOf(below)), axis, offsetMm)
+        }
 
         // Where the plane meets the mesh: one directed segment per crossing
         // triangle, in the order that triangle walks its own corners. On closed
@@ -233,13 +250,18 @@ object BedClipper {
                 for (edge in 0 until VERTICES_PER_TRIANGLE) {
                     val next = (edge + 1) % VERTICES_PER_TRIANGLE
                     if (strictlyBelow(distances[edge]) == strictlyBelow(distances[next])) continue
-                    val crossing = ClipVertex.between(
-                        corners[edge],
-                        corners[next],
-                        -distances[edge] / (distances[next] - distances[edge]),
-                        axis,
-                        offsetMm,
-                    )
+                    // Each crossing is computed below-to-above - the corner pair
+                    // sorted to [cut]'s own order - so the two triangles beside a
+                    // crossing edge compute their shared point from the same
+                    // expression and it lands on the same key. In the triangle's
+                    // own walk order the two expressions disagree in the last
+                    // bits on placed geometry, and one unmatched key drops the
+                    // whole cap.
+                    val crossing = if (strictlyBelow(distances[edge])) {
+                        cut(corners[edge], corners[next])
+                    } else {
+                        cut(corners[next], corners[edge])
+                    }
                     if (enters == null) enters = crossing else leaves = crossing
                 }
                 if (enters != null && leaves != null) {
@@ -686,10 +708,18 @@ object BedClipper {
                         val slope = (u1 - u0) / (v1 - v0)
                         val top = maxOf(v0, v1)
                         val bottom = minOf(v0, v1)
+                        // A band boundary that is the edge's own end takes that end's u
+                        // exactly: re-deriving it through the slope rounds in the last
+                        // bits, and the cap corner then misses the cut corner's key.
+                        fun uAt(height: Float): Float = when (height) {
+                            v0 -> u0
+                            v1 -> u1
+                            else -> (height - v0) * slope + u0
+                        }
                         edges.add(
                             floatArrayOf(
-                                (low.coerceIn(bottom, top) - v0) * slope + u0,
-                                (high.coerceIn(bottom, top) - v0) * slope + u0,
+                                uAt(low.coerceIn(bottom, top)),
+                                uAt(high.coerceIn(bottom, top)),
                                 (middle - v0) * slope + u0,
                             ),
                         )

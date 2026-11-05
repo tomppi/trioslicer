@@ -81,6 +81,7 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScope
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -183,6 +184,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PlayArrow
 import com.tomppi.enderslicer.modelling.EnginePreviewClient
 import com.tomppi.enderslicer.nativebridge.BlenderEngine
 import com.tomppi.enderslicer.modelling.CadPick
@@ -193,6 +195,15 @@ import com.tomppi.enderslicer.engine.EnginePreparation
 import com.tomppi.enderslicer.modelling.CadViewport
 import com.tomppi.enderslicer.nativebridge.CadEngine
 import com.tomppi.enderslicer.agent.AgentBridgeCopy
+import com.tomppi.enderslicer.agent.AgentBridges
+import com.tomppi.enderslicer.agent.BridgeNetworkPreference
+import com.tomppi.enderslicer.agent.engine.AgentDoorMenu
+import com.tomppi.enderslicer.agent.engine.AgentEngine
+import com.tomppi.enderslicer.agent.engine.AgentEngineContext
+import com.tomppi.enderslicer.agent.engine.EngineMcpHost
+import com.tomppi.enderslicer.agent.engine.EngineMcpServer
+import com.tomppi.enderslicer.agent.engine.EngineRunbook
+import com.tomppi.enderslicer.agent.engine.WireEngineAgentHost
 import com.tomppi.enderslicer.agent.AgentBridgeTarget
 import com.tomppi.enderslicer.agent.AgentBridgeTokens
 import com.tomppi.enderslicer.solidcraft.SelectedFace
@@ -206,6 +217,7 @@ import com.tomppi.enderslicer.viewer.TransformGizmoMode
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -383,8 +395,7 @@ fun EnderSlicerApp(
         plateActionBarExpanded = next.actionBarExpanded
     }
     // The harness connect attempt is session-scoped, and two taps must not race; the
-    // conversations themselves live in CadConversations (CAD), viewModel.modellingMessages (Blender
-    // modelling) and the harness's own session.
+    // conversation itself lives in CadConversations - one per backend, never mixed.
     var aiBusy by remember { mutableStateOf(false) }
     // The harness connection outlives a rotation: a composed remember was discarded by the
     // activity recreate, so the harness chat looked unconnected (and its turns were never
@@ -408,12 +419,10 @@ fun EnderSlicerApp(
     var modellingBootstrapped by rememberSaveable { mutableStateOf(false) }
     // The standing brief is owed from the first visit to the modelling screen,
     // but the connection that screen starts in the same frame is asynchronous:
-    // the brief waits here until a chat exists to carry it.
-    var modellingIntroPending by remember { mutableStateOf(false) }
-    // True once a modelling chat has been adopted. Read only to know when the
-    // deferred brief can be delivered.
-    var modellingChatReady by remember { mutableStateOf(false) }
-    val modellingChat = remember { java.util.concurrent.atomic.AtomicReference<HarnessChat?>(null) }
+    // the brief waits here until the harness chat exists to carry it. Saveable
+    // beside modellingBootstrapped: a rotation or process death between the
+    // visit and the delivery must not drop the brief for good.
+    var modellingIntroPending by rememberSaveable { mutableStateOf(false) }
 
     // The CAD conversations, one per backend and never mixed: the in-app agent's own messages
     // (tool rows included) and the harness session's messages. See [CadConversations].
@@ -696,20 +705,8 @@ fun EnderSlicerApp(
                 // the prompt's skill names resolve to nothing.
                 val chat = HarnessChat(client, workspace)
                 val adopted = withContext(Dispatchers.IO) { chat.connect(stored.sessionId) }
-                // A second conversation with its own session id, so modelling
-                // never inherits the image-to-model transcript.
-                val modelling = HarnessChat(client, workspace)
-                val adoptedModelling = withContext(Dispatchers.IO) {
-                    modelling.connect(harnessStore.loadModellingSession())
-                }
-                modellingChat.set(modelling)
-                // A modelling chat exists now, so the brief a first visit owed
-                // has somewhere to go.
-                modellingChatReady = true
-                harnessStore.saveModellingSession(adoptedModelling.sessionId)
-                viewModel.modellingMessages = withContext(Dispatchers.IO) { modelling.messages() }
-                    .map { AiChatMessage(fromUser = it.fromUser, text = it.text) }
-                // And a third for CAD, on its own session for the same reason.
+                // A second conversation for the modelling engines, on its own session id
+                // so it never inherits the image-to-model transcript.
                 val cad = HarnessChat(client, workspace)
                 val adoptedCad = withContext(Dispatchers.IO) {
                     cad.connect(harnessStore.loadCadSession())
@@ -731,16 +728,6 @@ fun EnderSlicerApp(
                 // stored encrypted now, and a bearer credential left in a text
                 // field is one paste away from somewhere it does not belong.
                 aiAddress = target.baseUrl
-                // A turn that outlived the activity is still running on the
-                // harness, and nothing else reads its reply back: pick the
-                // modelling and CAD conversations up again instead of losing the
-                // answers to a rotation and starting a second generation on the
-                // next send.
-                resumeReplyIfRunning(
-                    modelling,
-                    { viewModel.modellingMessages = it },
-                    { viewModel.modellingStatus = it },
-                ) { viewModel.modellingBusy = it }
                 // And the CAD conversation, for the same reason: a turn that outlived the
                 // activity is still running on the harness and nothing else reads its reply back.
                 resumeReplyIfRunning(
@@ -831,77 +818,6 @@ fun EnderSlicerApp(
         modellingCameraRev = next.rev
         modellingCamera = next
         writeModellingCamera(next)
-    }
-
-    fun askModellingAgent(text: String) {
-        aiScope.launch {
-            // Sending hands the camera back: the user has said what to look at,
-            // so the agent has to be free to move in order to look at it.
-            setModellingOwner(CameraOwner.AGENT)
-            viewModel.modellingBusy = true
-            viewModel.modellingStatus = null
-            try {
-                val chat = modellingChat.get() ?: error("Connect to the harness first")
-                // The modelling screen is Blender's. A CAD screen sends CAD.prompt instead.
-                withContext(Dispatchers.IO) { chat.send(EngineMode.BLENDER.prompt(text)) }
-                viewModel.modellingMessages = viewModel.modellingMessages + AiChatMessage(fromUser = true, text = text)
-                pollForReply(chat, { viewModel.modellingMessages = it }, { viewModel.modellingStatus = it })
-            } catch (error: Throwable) {
-                viewModel.modellingStatus = error.message?.take(160) ?: "Harness call failed"
-            } finally {
-                viewModel.modellingBusy = false
-            }
-        }
-    }
-
-    /**
-     * Sends to the CAD agent from the CAD menu.
-     *
-     * The prompt carries the engine, because the agent cannot see which menu the user is
-     * standing in and "make the wall 2 mm thicker" reads the same for a mesh and a solid.
-     * What the transcript shows is the user's own words.
-     */
-    fun askCadAgent(text: String) {
-        aiScope.launch {
-            viewModel.harnessCadBusy = true
-            viewModel.harnessCadStatus = null
-            try {
-                val chat = cadChat.get() ?: error("Connect to the harness first")
-                // The agent is told which surface the engine named, not a coordinate to
-                // resolve: the pick already came back as the exact B-rep face. The user
-                // sees their own words, not this preamble.
-                val pick = cadPick
-                val outgoing = if (pick == null) {
-                    text
-                } else {
-                    // The engine named the surface, so tell the agent what it named rather than
-                    // making it resolve a point. It is already the exact B-rep face.
-                    pick.asPrompt(pick.x, pick.y) + text
-                }
-                withContext(Dispatchers.IO) { chat.send(EngineMode.CAD.prompt(outgoing)) }
-                viewModel.cadConversations = viewModel.cadConversations.appendHarness(
-                    AiChatMessage(fromUser = true, text = text),
-                )
-                cadPick = null
-                pollForReply(
-                    chat,
-                    { viewModel.cadConversations = viewModel.cadConversations.replaceHarness(it) },
-                    { viewModel.harnessCadStatus = it },
-                )
-            } catch (error: Throwable) {
-                viewModel.harnessCadStatus = error.message?.take(160) ?: "Harness call failed"
-            } finally {
-                viewModel.harnessCadBusy = false
-                // The turn is over and the agent has most likely changed the scene, so ask for a
-                // frame. Nothing else did: a command that added or moved a part left the screen
-                // showing the model as it was before, and the only way to see the new one was to
-                // poke the view - which in an empty scene was not even composed to be poked.
-                cadViewport?.refresh()
-                // And ask what is in the scene now: an agent that cleared it must leave the
-                // screen offering the default part rather than a grid with nothing on it.
-                cadViewport?.refreshSceneState()
-            }
-        }
     }
 
     /**
@@ -1013,22 +929,28 @@ fun EnderSlicerApp(
                         } ?: "The in-app agent has no model name yet; add one in this sheet.",
                     )
                 }
-                // The active workspace decides the agent's tool host, its catalogue and its
-                // instructions: the plate's SolidCraft engine, or the embedded ScanRuler page.
-                val scanRulerActive = viewModel.uiState.value.activeView == PlateView.SCAN_RULER
-                scanRulerTurn = scanRulerActive
-                val scanRuler = if (scanRulerActive) viewModel.scanRulerSessionOrNull() else null
-                if (scanRulerActive && (scanRuler == null || !scanRuler.state.value.ready)) {
+                // The chat's engine menu decides the agent's tool host, its catalogue and
+                // its instructions - the same selection an external agent makes with
+                // engine_select on the universal MCP server.
+                val engine = viewModel.agentEngine
+                scanRulerTurn = engine == AgentEngine.SCANRULER
+                val scanRuler = if (scanRulerTurn) viewModel.scanRulerSessionOrNull() else null
+                if (scanRulerTurn && (scanRuler == null || !scanRuler.state.value.ready)) {
                     throw AgentException(
                         "scanruler-not-ready",
                         "The ScanRuler workspace is not ready yet - wait for the page to finish " +
                             "loading, then ask again.",
                     )
                 }
+                val wireSurface = when (engine) {
+                    AgentEngine.CAD -> EngineMcpHost.surface("cad")
+                    AgentEngine.BLENDER -> EngineMcpHost.surface("blender")
+                    else -> null
+                }
                 // The plate's engine has to be up before a plate-context turn. Nothing is
                 // started here: Connect agent is the user's button, and an engine that was
                 // stopped mid-conversation must read as stopped, not as a dead phone.
-                val solidCraftSession = if (scanRuler != null) {
+                val solidCraftSession = if (engine != AgentEngine.SOLIDCRAFT) {
                     null
                 } else {
                     if (!viewModel.attachCadLiveView()) {
@@ -1045,40 +967,82 @@ fun EnderSlicerApp(
                 }
                 val catalog = withContext(Dispatchers.IO) {
                     try {
-                        if (scanRuler != null) {
-                            AgentToolCatalog.fromEngine(
-                                engineTools = scanRuler.toolDefinitions(),
-                                includeWebTools = stored.settings.webSearch,
-                                includePlateScreenshot = false,
-                            )
-                        } else {
-                            AgentToolCatalog.fromEngine(
-                                engineTools = requireNotNull(solidCraftSession).toolDefinitions(),
-                                includeWebTools = stored.settings.webSearch,
-                            )
+                        val engineTools = when (engine) {
+                            AgentEngine.SCANRULER -> {
+                                val live = scanRuler
+                                    ?: throw AgentException(
+                                        "scanruler-not-ready",
+                                        "The ScanRuler workspace is not open yet.",
+                                    )
+                                live.toolDefinitions()
+                            }
+                            AgentEngine.SOLIDCRAFT -> requireNotNull(solidCraftSession).toolDefinitions()
+                            else -> {
+                                val surface = wireSurface
+                                    ?: throw AgentException(
+                                        "engine-not-running",
+                                        engine.label + " is not running - start it in the app's " +
+                                            "menu, then ask again.",
+                                    )
+                                surface.tools()
+                            }
                         }
+                        AgentToolCatalog.fromEngine(
+                            engineTools = engineTools,
+                            includeWebTools = stored.settings.webSearch,
+                            includePlateScreenshot = scanRulerTurn,
+                        )
+                    } catch (error: AgentException) {
+                        throw error
                     } catch (error: Throwable) {
                         throw AgentException(
-                            if (scanRuler != null) "scanruler-unavailable" else "engine-unavailable",
-                            (if (scanRuler != null) "The ScanRuler page" else "The CAD engine") +
-                                " did not answer its tool list: " +
+                            if (scanRulerTurn) "scanruler-unavailable" else "engine-unavailable",
+                            engine.label + " did not answer its tool list: " +
                                 (error.message ?: "no reason given"),
                             error,
                         )
                     }
                 }
-                val agent = viewModel.inAppCadAgent ?: (if (scanRuler != null) {
-                    CadAgent(
-                        toolHost = scanRuler.agentHost,
-                        runbook = "",
-                        systemPromptOverride = "You are the in-app agent inside TrioSlicer, an " +
-                            "Android 3D-printing app. The user is looking at the embedded " +
-                            "ScanRuler 3D workspace; your tools are the page's own commands. " +
-                            "Everything you do is visible on the page.\n\n" +
-                            scanRuler.agentInstructions,
-                        log = { message -> Log.i("CadAgent", message) },
-                    )
-                } else {
+                val agent = viewModel.inAppCadAgent ?: (when (engine) {
+                    AgentEngine.SCANRULER -> {
+                        val live = requireNotNull(scanRuler)
+                        CadAgent(
+                            toolHost = live.agentHost,
+                            runbook = "",
+                            systemPromptOverride = AgentEngineContext.instructions(
+                                engine,
+                                AgentEngineContext.readinessOf(true),
+                                extra = live.agentInstructions,
+                            ),
+                            log = { message -> Log.i("CadAgent", message) },
+                        )
+                    }
+                    AgentEngine.CAD, AgentEngine.BLENDER -> {
+                        val surface = requireNotNull(wireSurface)
+                        // The same documents host-side agents read as skills, staged into the
+                        // APK, plus the rules that only this phone's agent must obey. Without
+                        // them the in-app agent drives the engine blind: it cannot open a skill.
+                        val runbooks = withContext(Dispatchers.IO) {
+                            EngineRunbook.load(context.applicationContext, engine)
+                        }
+                        val prompt = buildString {
+                            append(EngineRunbook.systemPrompt(engine, runbooks))
+                            append("\n\n")
+                            append(
+                                AgentEngineContext.instructions(
+                                    engine,
+                                    AgentEngineContext.readinessOf(surface.isRunning()),
+                                ),
+                            )
+                        }
+                        CadAgent(
+                            toolHost = WireEngineAgentHost(surface),
+                            runbook = "",
+                            systemPromptOverride = prompt,
+                            log = { message -> Log.i("CadAgent", message) },
+                        )
+                    }
+                    else -> {
                     val runbook = withContext(Dispatchers.IO) {
                         AgentRunbook.load(context.applicationContext)
                     }
@@ -1091,12 +1055,12 @@ fun EnderSlicerApp(
                         runbook = runbook,
                         log = { message -> Log.i("CadAgent", message) },
                     )
-                }).also { viewModel.inAppCadAgent = it }
+                }}).also { viewModel.inAppCadAgent = it }
                 // The boundary, claimed once for the whole turn. ScanRuler is not the CAD
                 // document, so its turns do not claim or release SolidCraft's authorship. A
                 // false answer means an external agent attached after the sheet's last poll:
                 // the sheet's paused state is the way through (Take over), not a silent edit.
-                if (scanRuler == null) {
+                if (engine == AgentEngine.SOLIDCRAFT) {
                     turnBegan = ownership.beginInAppTurn()
                     if (!turnBegan) {
                         throw AgentException(
@@ -1272,18 +1236,35 @@ fun EnderSlicerApp(
             askInAppAgent(text, stored)
             return
         }
+        // Sending hands the modelling camera back: the user has said what to look at,
+        // so the agent has to be free to move in order to look at it.
+        if (modellingOpen) setModellingOwner(CameraOwner.AGENT)
         val faceForTurn = faceForNextMessage()
-        val outgoing = faceForTurn?.promptBlock().orEmpty() + text
+        // The OCCT viewer's pick names the exact B-rep face: the agent is told what the
+        // engine named rather than being made to resolve a point, and the user sees their
+        // own words, not this preamble.
+        val pick = cadPick
+        val picked = pick?.let { it.asPrompt(it.x, it.y) }.orEmpty()
+        val outgoing = faceForTurn?.promptBlock().orEmpty() + picked + text
         aiScope.launch {
             viewModel.harnessCadBusy = true
             viewModel.harnessCadStatus = null
             try {
                 val chat = cadChat.get()
                     ?: error("Connect the harness first - Ask AI is in the sidebar rail")
-                withContext(Dispatchers.IO) { chat.send(EngineMode.SOLIDCRAFT.prompt(outgoing)) }
+                // The prompt carries the selected engine: the harness cannot see which
+                // engine the chat window is driving, and "make the wall thicker" reads the
+                // same for a mesh and a solid.
+                val mode = when (viewModel.agentEngine) {
+                    AgentEngine.CAD -> EngineMode.CAD
+                    AgentEngine.BLENDER -> EngineMode.BLENDER
+                    else -> EngineMode.SOLIDCRAFT
+                }
+                withContext(Dispatchers.IO) { chat.send(mode.prompt(outgoing)) }
                 viewModel.cadConversations = viewModel.cadConversations.appendHarness(
                     AiChatMessage(fromUser = true, text = text),
                 )
+                cadPick = null
                 pollForReply(
                     chat,
                     { viewModel.cadConversations = viewModel.cadConversations.replaceHarness(it) },
@@ -1293,6 +1274,14 @@ fun EnderSlicerApp(
                 viewModel.harnessCadStatus = error.message?.take(160) ?: "Harness call failed"
             } finally {
                 viewModel.harnessCadBusy = false
+                // The turn is over and the agent has most likely changed the scene, so ask for a
+                // frame. Nothing else did: a command that added or moved a part left the screen
+                // showing the model as it was before, and the only way to see the new one was to
+                // poke the view - which in an empty scene was not even composed to be poked.
+                cadViewport?.refresh()
+                // And ask what is in the scene now: an agent that cleared it must leave the
+                // screen offering the default part rather than a grid with nothing on it.
+                cadViewport?.refreshSceneState()
             }
         }
     }
@@ -1518,16 +1507,19 @@ fun EnderSlicerApp(
 
     fun openModelling() {
         modellingOpen = true
+        // The screen you open is the engine you work with: the chat window's engine
+        // menu follows, so every prompt sent from here says Blender.
+        viewModel.selectAgentEngine(AgentEngine.BLENDER)
         // The modelling view shows the engine's own scene, so opening it is the
         // request that starts the engine - nothing boots it at app launch now.
         viewModel.startBlenderEngine()
-        if (modellingChat.get() == null) {
+        if (cadChat.get() == null) {
             if (aiConfigured) {
                 connectHarness()
             } else {
                 // There is no connect button on this screen, so the way to make
                 // it work has to be said here.
-                viewModel.modellingStatus = "The harness is not set up yet - connect it in the AI chat " +
+                viewModel.harnessCadStatus = "The harness is not set up yet - connect it in the AI chat " +
                     "(Ask AI in the sidebar rail) first"
             }
         }
@@ -1552,6 +1544,9 @@ fun EnderSlicerApp(
      */
     fun openCad() {
         cadOpen = true
+        // The mirror of the modelling screen's sync: the screen you open is the
+        // engine you work with, and every prompt from here says CAD.
+        viewModel.selectAgentEngine(AgentEngine.CAD)
         // Opening the screen is the request that starts the engine; nothing boots it at
         // launch. Off the main thread, because this one extracts, writes a token and waits
         // for a port, and the engine imports build123d on the way up.
@@ -1609,9 +1604,7 @@ fun EnderSlicerApp(
         // the test - so a rotation with the CAD screen open left every send failing
         // from a chat that had nothing to send on, until the screen was left and
         // re-entered.
-        val missingClient = (aiChatOpen && cadChat.get() == null) ||
-            (modellingOpen && modellingChat.get() == null) ||
-            (cadOpen && cadChat.get() == null)
+        val missingClient = (aiChatOpen || modellingOpen || cadOpen) && cadChat.get() == null
         if (aiConfigured && missingClient) connectHarness()
         // The engine needs the same treatment for the same reason, and it is the
         // one thing that does NOT come back on its own: modellingOpen is
@@ -1694,11 +1687,15 @@ fun EnderSlicerApp(
     }
 
     // The standing brief waits for the connection its screen opened in the same
-    // frame, and is cleared before it is sent so it can only go once.
-    LaunchedEffect(modellingOpen, modellingChatReady, modellingIntroPending) {
-        if (!modellingOpen || !modellingChatReady || !modellingIntroPending) return@LaunchedEffect
+    // frame, and is cleared before it is sent so it can only go once. It is the
+    // harness agent's standing context for this screen; the in-app agent carries
+    // its own instructions and must not get it as a user message.
+    LaunchedEffect(modellingOpen, cadChatReady, modellingIntroPending) {
+        if (!modellingOpen || !cadChatReady || !modellingIntroPending) return@LaunchedEffect
         modellingIntroPending = false
-        askModellingAgent(modellingIntroPrompt)
+        if (agentSettingsStore.load().settings.mode == AgentMode.HARNESS) {
+            askSolidCraftAgent(modellingIntroPrompt)
+        }
     }
 
     // Android-style back navigation: back closes any open layer instead of exiting.
@@ -1743,6 +1740,10 @@ fun EnderSlicerApp(
     BackHandler(enabled = state.cutActive) { viewModel.setCutActive(false) }
     // The snap fit owns the plate's taps while it is open, so back leaves it too.
     BackHandler(enabled = state.snapActive) { viewModel.setSnapActive(false) }
+    // The sidebar picker is a screen of its own over whichever tab raised it, so
+    // back closes it before anything underneath - "back closes any open layer
+    // instead of exiting" - and returns to that tab.
+    BackHandler(enabled = sidebarPickerOpen) { sidebarPickerOpen = false }
     var viewerMode by rememberSaveable { mutableStateOf(ViewerMode.MODEL) }
     var selectedLayerIndex by rememberSaveable { mutableStateOf(0) }
     var lastAutoSelectedResultId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1763,6 +1764,14 @@ fun EnderSlicerApp(
             gizmoMode = TransformGizmoMode.NONE
             gizmoScalePercent = 100
             gizmoReadout = null
+            // The tap-owning tools go with the tab that draws them. Their
+            // BackHandlers are composed at the top level and stay enabled on every
+            // tab, so a flag left set swallows the first back press on the other
+            // tab and resurrects the tool on return.
+            supportPaintUiOpen = false
+            viewModel.exitFaceSelectMode()
+            viewModel.setCutActive(false)
+            viewModel.setSnapActive(false)
         }
     }
 
@@ -2159,6 +2168,15 @@ fun EnderSlicerApp(
                                             enabled = state.mesh != null && !state.isBusy,
                                         )
                                         DropdownMenuItem(
+                                            text = { Text("Start Blender engine") },
+                                            leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                                            onClick = {
+                                                blenderMenuExpanded = false
+                                                viewModel.startBlenderEngine()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
+                                        DropdownMenuItem(
                                             text = { Text("Stop Blender engine") },
                                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
                                             onClick = {
@@ -2334,11 +2352,11 @@ fun EnderSlicerApp(
                                                 solidCraftMenuExpanded = false
                                                 requestMcpTokenCopy(
                                                     context = context,
-                                                    clipLabel = "SolidCraft MCP token",
-                                                    engineName = "SolidCraft CAD agent",
+                                                    clipLabel = "Engines MCP token",
+                                                    engineName = "the modelling engines",
                                                     tokenFile = {
-                                                        SolidCraftEngine.ensureToken(context)
-                                                        SolidCraftEngine.tokenFile(context)
+                                                        EngineMcpServer.ensureToken(context.filesDir)
+                                                        EngineMcpServer.tokenFile(context.filesDir)
                                                     },
                                                 )
                                             },
@@ -2409,6 +2427,15 @@ fun EnderSlicerApp(
                                             },
                                         )
                                         MenuSectionLabel("Engine")
+                                        DropdownMenuItem(
+                                            text = { Text("Start OCCT engine") },
+                                            leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                                            onClick = {
+                                                cadMenuExpanded = false
+                                                viewModel.startCadEngine()
+                                            },
+                                            enabled = !state.isBusy,
+                                        )
                                         DropdownMenuItem(
                                             text = { Text("Stop OCCT engine") },
                                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
@@ -2532,15 +2559,12 @@ fun EnderSlicerApp(
                 } else if (modellingOpen) {
                     ModellingScreen(
                         state = state,
-                        messages = viewModel.modellingMessages,
-                        busy = viewModel.modellingBusy,
-                        status = viewModel.modellingStatus,
                         owner = modellingOwner,
                         // Locked while the agent works: the camera is the agent's until
                         // it stops, which is the whole point of the lock.
-                        canTakeCamera = !viewModel.modellingBusy,
-                        agentConnected = modellingChatReady,
-                        onSend = ::askModellingAgent,
+                        canTakeCamera = !viewModel.cadBusy && !viewModel.harnessCadBusy,
+                        agentConnected = cadChatReady,
+                        onOpenChat = { openChatForAttention() },
                         onExit = { modellingOpen = false },
                         onTakeCamera = { setModellingOwner(CameraOwner.USER) },
                         onHandBackCamera = { setModellingOwner(CameraOwner.AGENT) },
@@ -2553,9 +2577,6 @@ fun EnderSlicerApp(
                     )
                 } else if (cadOpen && !cadFilesOpen && !blenderFilesOpen) {
                     CadScreen(
-                        messages = viewModel.cadConversations.harness,
-                        busy = viewModel.harnessCadBusy,
-                        status = viewModel.harnessCadStatus,
                         agentConnected = cadChatReady,
                         engineStatus = cadEngineStatus,
                         engineBusy = cadEngineBusy,
@@ -2573,7 +2594,7 @@ fun EnderSlicerApp(
                         onResetView = { cadViewport?.reset() },
                         onOrientation = { cadViewport?.setOrientation(it) },
                         onPickUsed = { cadViewport?.clearPick() },
-                        onSend = ::askCadAgent,
+                        onOpenChat = { openChatForAttention() },
                         onAddDefaultCube = {
                             cadViewport?.addDefaultCube { added ->
                                 if (!added) {
@@ -3024,6 +3045,11 @@ fun EnderSlicerApp(
                                 // over the bottom of the model view from there.
                                 modelName = state.selectedModel?.name,
                                 actionsEnabled = !state.isBusy,
+                                actionsDisabledReason = if (state.isBusy) {
+                                    "Wait for the running operation, then split or remove"
+                                } else {
+                                    null
+                                },
                                 onSplit = {
                                     closeGizmo()
                                     openCutUi()
@@ -3265,6 +3291,8 @@ fun EnderSlicerApp(
                                 onPrusaPrint = viewModel::selectPrusaPrint,
                                 onPrusaFilament = viewModel::selectPrusaFilament,
                                 onResetToSnapshot = viewModel::resetPrusaToSnapshot,
+                                onResetPresets = viewModel::resetPrusaPresetSelection,
+                                onDiscardSnapshot = viewModel::discardPrusaSnapshot,
                                 expandedLayout = expandedLayout,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3616,11 +3644,67 @@ fun EnderSlicerApp(
     // chat must never move the selected destination. The overlay floats over whatever the tab
     // is showing; the plate still gets the paint-and-describe workflow it always had.
     if (aiChatOpen) {
-        // The in-app surface names the agent the active workspace's turn will use: the plate's
-        // CAD agent, or the embedded ScanRuler agent while that view is selected.
-        val inAppAgentName =
-            if (state.activeView == PlateView.SCAN_RULER) "ScanRuler agent" else "CAD agent"
+        // The in-app surface names the agent the engine menu selected - the same engine an
+        // external agent selects on the universal MCP server, with its own tools and its own
+        // instructions. The window stays open across switches; only the tool binding changes.
+        val selectedEngine = viewModel.agentEngine
+        val inAppAgentName = selectedEngine.label + " agent"
+        // Engine readiness is live state, polled off the UI thread: a boot finishes without
+        // touching composition, so a value computed once froze the menu at "not started" while
+        // the engine was already up. The probe answers the wire engines by opening their own
+        // socket, and a socket opened on the main thread throws NetworkOnMainThreadException -
+        // which the probe's own runCatching would turn into a permanent "not started", the
+        // exact freeze this poll exists to remove. The first frame uses the checks that need
+        // no socket, so Start rows are there at once; the first probe runs immediately.
+        val engineRunning by produceState(
+            initialValue = cheapEngineReadiness(viewModel),
+        ) {
+            while (true) {
+                value = withContext(Dispatchers.IO) { engineReadinessSnapshot(viewModel) }
+                delay(ENGINE_READINESS_POLL_MILLIS)
+            }
+        }
         AiChatOverlay(
+            agentEngine = selectedEngine,
+            onSelectEngine = viewModel::selectAgentEngine,
+            doorMenu = AgentDoorMenu(
+                doorLine = "MCP server - 127.0.0.1:" + EngineMcpServer.DEFAULT_PORT,
+                networkOn = BridgeNetworkPreference.isEnabled(context),
+                onToggleNetwork = viewModel::setCadBridgeNetworkReachable,
+                onCopyConnectLine = {
+                    val target = AgentBridges.TARGETS.first { it.port == EngineMcpServer.DEFAULT_PORT }
+                    val address = AgentBridges.lines()
+                        .firstOrNull { it.target.port == EngineMcpServer.DEFAULT_PORT }?.address
+                    requestConnectLineCopy(context, target, address ?: "")
+                },
+                onCopyToken = {
+                    requestMcpTokenCopy(
+                        context = context,
+                        clipLabel = "Engines MCP token",
+                        engineName = "the modelling engines",
+                        tokenFile = {
+                            EngineMcpServer.ensureToken(context.filesDir)
+                            EngineMcpServer.tokenFile(context.filesDir)
+                        },
+                    )
+                },
+                running = engineRunning,
+                readiness = engineRunning.mapValues { (engine, running) ->
+                    when {
+                        running -> "running"
+                        engine == AgentEngine.SCANRULER -> "not open - switch the View to ScanRuler"
+                        else -> "not started - tap Start"
+                    }
+                },
+            ),
+            onStartEngine = { engine ->
+                when (engine) {
+                    AgentEngine.BLENDER -> viewModel.startBlenderEngine()
+                    AgentEngine.CAD -> viewModel.startCadEngine()
+                    AgentEngine.SOLIDCRAFT -> viewModel.connectCadAgent()
+                    AgentEngine.SCANRULER -> viewModel.selectAgentEngine(engine)
+                }
+            },
             // The harness session's own messages - never the in-app agent's.
             messages = viewModel.cadConversations.harness,
             // Sending goes to the backend the shared selection says is shown.
@@ -3658,30 +3742,33 @@ fun EnderSlicerApp(
             } else {
                 null
             },
-            harnessLine = if (aiConfigured) {
+            harnessLine = (if (aiConfigured) {
                 "Harness - session connected"
             } else {
                 "Harness - not connected"
-            },
+            }) + (if (modellingOpen && modellingOwner == CameraOwner.USER) {
+                " · you have the camera - send a message to hand it back"
+            } else {
+                ""
+            }),
             // The in-app agent's own conversation, tool rows included.
             inAppLabel = inAppAgentName + " (in-app)",
-            inAppComposerHint = if (state.activeView == PlateView.SCAN_RULER) {
-                "Ask the ScanRuler agent"
-            } else {
-                "Ask for a CAD change"
+            inAppComposerHint = when (selectedEngine) {
+                AgentEngine.SCANRULER -> "Ask the ScanRuler agent"
+                AgentEngine.SOLIDCRAFT -> "Ask for a CAD change"
+                else -> "Ask the " + selectedEngine.label + " agent"
             },
-            inAppEmptyLine = if (state.activeView == PlateView.SCAN_RULER) {
-                "No ScanRuler agent conversation yet - ask for a change. Every tool it " +
-                    "runs will show up here as a row."
-            } else {
-                "No in-app conversation yet - ask for a change. Every tool the in-app " +
-                    "agent runs will show up here as a row."
+            inAppEmptyLine = when (selectedEngine) {
+                AgentEngine.SCANRULER ->
+                    "No ScanRuler agent conversation yet - ask for a change. Every tool it " +
+                        "runs will show up here as a row."
+                else ->
+                    "No in-app conversation yet - ask for a change. Every tool the " +
+                        selectedEngine.label + " agent runs will show up here as a row."
             },
-            inAppEndpointHint = if (state.activeView == PlateView.SCAN_RULER) {
-                "Set the endpoint in the ScanRuler agent settings."
-            } else {
-                "Set the endpoint in the CAD agent sheet."
-            },
+            // The endpoint editor lives in the CAD agent sheet for both views:
+            // there is no separate ScanRuler-side settings surface to point at.
+            inAppEndpointHint = "Set the endpoint in the CAD agent sheet.",
             inApp = InAppChat(
                 messages = viewModel.cadConversations.inApp,
                 busy = viewModel.cadBusy,
@@ -3858,11 +3945,11 @@ fun EnderSlicerApp(
                 onCopyToken = {
                     requestMcpTokenCopy(
                         context = context,
-                        clipLabel = "SolidCraft MCP token",
-                        engineName = "SolidCraft CAD agent",
+                        clipLabel = "Engines MCP token",
+                        engineName = "the modelling engines",
                         tokenFile = {
-                            SolidCraftEngine.ensureToken(context)
-                            SolidCraftEngine.tokenFile(context)
+                            EngineMcpServer.ensureToken(context.filesDir)
+                            EngineMcpServer.tokenFile(context.filesDir)
                         },
                     )
                 },
@@ -4176,6 +4263,41 @@ private fun requestSensitiveClipCopy(
  * [tokenFile] is evaluated after authentication, never before it, because Blender's token is
  * generated on first use - asking the engine for it stays on the far side of the prompt.
  */
+/** How often the engine menus re-read readiness, in milliseconds. */
+private const val ENGINE_READINESS_POLL_MILLIS = 3_000L
+
+/**
+ * One readiness snapshot of every engine, for the menus and the door's status line.
+ *
+ * Call this off the main thread: the wire engines' readiness probe opens the engine's own
+ * socket, which Android refuses on the main thread (NetworkOnMainThreadException). The answer
+ * is caught into "not running" there, so a main-thread call reports every wire engine stopped
+ * however alive it is.
+ */
+private fun engineReadinessSnapshot(viewModel: MainViewModel): Map<AgentEngine, Boolean> =
+    AgentEngine.entries.associateWith { engine ->
+        when (engine) {
+            AgentEngine.SCANRULER -> viewModel.scanRulerSessionOrNull() != null
+            AgentEngine.SOLIDCRAFT -> SolidCraftEngine.isReady()
+            else -> EngineMcpHost.surface(engine.id)?.isRunning() == true
+        }
+    }
+
+/**
+ * The readiness a first frame can know without touching an engine socket.
+ *
+ * Only the pair whose answer is a state read; the wire engines wait for the IO-backed poll
+ * ([engineReadinessSnapshot]), so no frame ever pings an engine from the composition thread.
+ */
+private fun cheapEngineReadiness(viewModel: MainViewModel): Map<AgentEngine, Boolean> =
+    AgentEngine.entries.associateWith { engine ->
+        when (engine) {
+            AgentEngine.SCANRULER -> viewModel.scanRulerSessionOrNull() != null
+            AgentEngine.SOLIDCRAFT -> SolidCraftEngine.isReady()
+            else -> false
+        }
+    }
+
 private fun requestMcpTokenCopy(
     context: Context,
     clipLabel: String,
@@ -4187,7 +4309,9 @@ private fun requestMcpTokenCopy(
         clipLabel = clipLabel,
         promptTitle = "Copy MCP token",
         engineName = engineName,
-        copiedMessage = "MCP token copied",
+        // The successful toast names the engine and never the token
+        // (MCP_TOKEN_SECURITY.md section 6).
+        copiedMessage = "MCP token for " + engineName + " copied",
         cancelledMessage = "MCP token not copied",
         unavailableMessage = "The MCP token is not available yet",
     ) {
@@ -7847,7 +7971,13 @@ private fun SupportPaintOverlay(
     modifier: Modifier = Modifier,
 ) {
     DisposableEffect(Unit) {
-        onDispose { onPaintMode(SupportPaintMode.NONE) }
+        // Like the annotation toolbar, the overlay clears its own flag when it
+        // leaves: a viewer-mode switch hides the overlay, and the flag must not
+        // outlive it.
+        onDispose {
+            onPaintMode(SupportPaintMode.NONE)
+            onClose()
+        }
     }
     Card(modifier = modifier) {
         Column(

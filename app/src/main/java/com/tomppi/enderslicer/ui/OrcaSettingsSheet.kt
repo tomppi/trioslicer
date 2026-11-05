@@ -403,19 +403,31 @@ internal fun OrcaSettingsSheet(
             label = "Flow ratio (%)",
             value = settings.filamentFlowRatioPercent,
             source = source(state, OrcaSliceSettings.Keys.FILAMENT_FLOW_RATIO),
-            onValue = { value -> onSettings(OrcaSliceSettings.Keys.FILAMENT_FLOW_RATIO) { it.copy(filamentFlowRatioPercent = value) } },
+            onValue = { value ->
+                onSettings(OrcaSliceSettings.Keys.FILAMENT_FLOW_RATIO) {
+                    it.copy(filamentFlowRatioPercent = value.coerceIn(FLOW_RATIO_PERCENT))
+                }
+            },
         )
         NumberField(
             label = "Retraction length (mm)",
             value = settings.retractionLengthMm,
             source = source(state, OrcaSliceSettings.Keys.RETRACTION_LENGTH),
-            onValue = { value -> onSettings(OrcaSliceSettings.Keys.RETRACTION_LENGTH) { it.copy(retractionLengthMm = value) } },
+            onValue = { value ->
+                onSettings(OrcaSliceSettings.Keys.RETRACTION_LENGTH) {
+                    it.copy(retractionLengthMm = value.coerceIn(RETRACTION_LENGTH_MM))
+                }
+            },
         )
         NumberField(
             label = "Retraction speed (mm/s)",
             value = settings.retractionSpeedMmPerSecond,
             source = source(state, OrcaSliceSettings.Keys.RETRACTION_SPEED),
-            onValue = { value -> onSettings(OrcaSliceSettings.Keys.RETRACTION_SPEED) { it.copy(retractionSpeedMmPerSecond = value) } },
+            onValue = { value ->
+                onSettings(OrcaSliceSettings.Keys.RETRACTION_SPEED) {
+                    it.copy(retractionSpeedMmPerSecond = value.coerceIn(RETRACTION_SPEED_MM_PER_SECOND))
+                }
+            },
         )
         NumberField(
             label = "Z hop (mm)",
@@ -502,6 +514,16 @@ private val ORCA_FILAMENT_TYPES = listOf(
     "PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PLA-CF", "PETG-CF", "PA-CF", "PVA", "HIPS",
 )
 
+/**
+ * The three fields [clampToEngine] cannot take as they stand: the engine catalogue declares
+ * filament_flow_ratio as 0..2 while this sheet's field is a percent, and declares no range at
+ * all for retraction_length or retraction_speed - whose bounds are the ones the Prusa sheet
+ * already holds the same settings to (its Extrusion & retraction section).
+ */
+private val FLOW_RATIO_PERCENT = 0.0..200.0
+private val RETRACTION_LENGTH_MM = 0.0..10.0
+private val RETRACTION_SPEED_MM_PER_SECOND = 5.0..120.0
+
 /** Clamps [value] to the engine's declared range for [key]; unchanged when it declares none. */
 private fun clampToEngine(
     key: String,
@@ -509,7 +531,10 @@ private fun clampToEngine(
     ranges: Map<String, ClosedFloatingPointRange<Double>>,
 ): Double = ranges[key]?.let { range -> value.coerceIn(range) } ?: value
 
-/** [settings] with every numeric field the engine declares a range for inside it. */
+/**
+ * [settings] with every numeric field inside the range the engine declares for it, or - where it
+ * declares none - the range written beside the field itself.
+ */
 private fun clampAllToEngine(
     settings: OrcaSliceSettings,
     ranges: Map<String, ClosedFloatingPointRange<Double>>,
@@ -531,6 +556,9 @@ private fun clampAllToEngine(
     ),
     travelSpeedMmPerSecond = clampToEngine("travel_speed", settings.travelSpeedMmPerSecond, ranges),
     zHopMm = clampToEngine("z_hop", settings.zHopMm, ranges),
+    filamentFlowRatioPercent = settings.filamentFlowRatioPercent.coerceIn(FLOW_RATIO_PERCENT),
+    retractionLengthMm = settings.retractionLengthMm.coerceIn(RETRACTION_LENGTH_MM),
+    retractionSpeedMmPerSecond = settings.retractionSpeedMmPerSecond.coerceIn(RETRACTION_SPEED_MM_PER_SECOND),
 )
 
 /**

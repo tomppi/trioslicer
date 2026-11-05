@@ -108,6 +108,40 @@ class ScanRulerSourceTest {
     }
 
     @Test
+    fun aSecondExportIsRefusedWithoutDestroyingTheOneInFlight() {
+        val text = activity()
+        val script = bridge()
+
+        // The page refuses a second export at its own entry and at the claim, so no second
+        // beginDownload reaches the app and the in-flight export's pending stream is left
+        // alone - the app-side refusal used to route through the shared complete(), which
+        // deletes the active destination and broadcasts the failure that clears pending.
+        val startBody = script.substringAfter("function start(")
+            .substringBefore("window.__scanRulerBridgeReady")
+        assertTrue(
+            "the export entry refuses while one is pending",
+            startBody.contains("if (pending)"),
+        )
+        assertTrue(
+            "and the claim refuses too: the blob read is async",
+            startBody.split("if (pending)").size - 1 >= 2,
+        )
+        assertTrue("the refusal names the rule", startBody.contains("Another export is already being written."))
+
+        val beginBody = text.substringAfter("fun beginDownload(")
+            .substringBefore("fun onDestinationChosen(")
+        assertTrue("the refusal returns failure to the page", beginBody.contains("return false"))
+        assertFalse(
+            "the refusal must not go through the shared complete()",
+            beginBody.contains("complete("),
+        )
+        assertFalse(
+            "and must not delete the active destination",
+            beginBody.contains("deleteDestination"),
+        )
+    }
+
+    @Test
     fun loadingErrorsAndBackBehave() {
         val text = activity()
         assertTrue(text.contains("Loading ScanRuler"))

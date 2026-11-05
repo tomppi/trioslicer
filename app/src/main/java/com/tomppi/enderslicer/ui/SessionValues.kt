@@ -517,8 +517,14 @@ private fun ChoiceEditor(editor: SessionEditor.Choice) {
     }
 }
 
+/**
+ * The number an editor commits into a field the app reads back - the extra-settings
+ * parser reads a dot - so it is written with a dot whatever the phone is set to.
+ * The printer/DecimalText rule; its comma-decimal trap has shipped twice.
+ */
 internal fun numberText(value: Double, decimals: Int): String =
-    if (decimals == 0) value.roundToInt().toString() else "%.${decimals}f".format(value)
+    if (decimals == 0) value.roundToInt().toString()
+    else String.format(java.util.Locale.US, "%.${decimals}f", value)
 
 /** Test tag for the editor's body, so a JVM test can find it. */
 internal const val SESSION_EDITOR_TAG = "session-value-editor"

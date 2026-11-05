@@ -227,4 +227,19 @@ class SessionValuesTest {
         assertTrue("1.2 must be inside ${editor.range}", 1.2f <= editor.range.endInclusive)
         assertTrue("0.6 must be inside ${editor.range}", 0.6f <= editor.range.endInclusive)
     }
+
+    @Test
+    fun numberTextWritesADotWhateverThePhoneIsSetTo() {
+        // The text lands in a field the app reads back (the extra-settings parser
+        // reads a dot), so a comma locale must not write "0,05" into it.
+        val previous = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(java.util.Locale("fi"))
+        try {
+            assertEquals("3", numberText(3.0, 0))
+            assertEquals("0.05", numberText(0.05, 2))
+            assertEquals("1.20", numberText(1.2, 2))
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
 }

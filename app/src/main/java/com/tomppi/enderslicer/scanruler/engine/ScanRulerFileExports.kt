@@ -37,6 +37,13 @@ object ScanRulerFileExports {
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: throw IllegalStateException("The app could not create a Download/$COLLECTION entry.")
+        // MediaStore owns the stored name: a collision becomes "name (1).ext", and the result
+        // reports the name the user will actually find in Download/ScanRuler.
+        val displayName = runCatching {
+            resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: safeName
         try {
             resolver.openOutputStream(uri)?.use { it.write(bytes) }
                 ?: throw IllegalStateException("The app could not open its Download/$COLLECTION entry.")
@@ -47,7 +54,7 @@ object ScanRulerFileExports {
             runCatching { resolver.delete(uri, null, null) }
             throw error
         }
-        return Written(safeName, mimeType, bytes.size.toLong(), uri.toString())
+        return Written(displayName, mimeType, bytes.size.toLong(), uri.toString())
     }
 
     /**
@@ -86,7 +93,8 @@ object ScanRulerFileExports {
         return written
     }
 
-    private fun mimeTypeFor(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+    /** The MIME type the file's extension asks for; anything unknown is the octet stream. */
+    fun mimeTypeFor(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
         "step", "stp" -> "application/step"
         "stl" -> "model/stl"
         "3mf" -> "model/3mf"

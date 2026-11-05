@@ -129,4 +129,49 @@ class ResetConfirmationTest {
         compose.onNodeWithText("Reset").performClick()
         assertEquals(1, written)
     }
+
+    /**
+     * The Prusa reset does everything its dialog promises: every one of the settings' 42 fields
+     * goes back to the engine's own default - the extrusion widths and the extra keys with
+     * them - the preset selection is cleared, and the imported snapshot is discarded.
+     */
+    @Test
+    fun thePrusaResetClearsEveryFieldThePresetsAndTheImport() {
+        var presetsCleared = 0
+        var importDiscarded = 0
+        prusa.value = PrusaSliceSettings(
+            layerHeightMm = 0.35,
+            firstLayerExtrusionWidthMm = 0.5,
+            extraKeys = mapOf("foo_setting" to "3"),
+        )
+        compose.setContent {
+            PrusaSettingsSheet(
+                state = MainUiState(
+                    printer = printer,
+                    settings = settings.value,
+                    prusaSettings = prusa.value,
+                    prusaSnapshot = EngineSnapshot(
+                        "prusa-config.ini",
+                        "Configuration snapshot",
+                        7,
+                        listOf("foo_setting"),
+                    ),
+                ),
+                onSettings = { _, change -> written++; prusa.value = change(prusa.value) },
+                onResetPresets = { presetsCleared++ },
+                onDiscardSnapshot = { importDiscarded++ },
+                expandedLayout = false,
+            )
+        }
+        compose.onNodeWithText("Reset to engine defaults").performScrollTo().performClick()
+        compose.onNodeWithText("Reset").performClick()
+
+        assertEquals(
+            "every field is the engine's default again",
+            PrusaSliceSettings(),
+            prusa.value,
+        )
+        assertEquals("the preset selection goes with it", 1, presetsCleared)
+        assertEquals("and the imported snapshot is discarded", 1, importDiscarded)
+    }
 }

@@ -37,11 +37,15 @@ internal class CadPersistScheduler(
     private var lastWriteAt: Long? = null
 
     /** True when something changed since the last write started (or the first one). */
-    @Volatile
     private var dirty = false
 
-    @Volatile
+    /** The drain loop that owns the queue, by its own token; null when none does. */
+    private var draining: Any? = null
+
     private var job: Job? = null
+
+    /** Guards [dirty], [draining] and [job]: the schedule and exit decisions are atomic. */
+    private val stateLock = Any()
 
     private val writeLock = Mutex()
 
@@ -53,28 +57,50 @@ internal class CadPersistScheduler(
      * serialised, so a forced save cannot interleave with a trailing one.
      */
     fun schedule(force: Boolean = false) {
-        dirty = true
-        if (force) {
-            lastWriteAt = clock() - intervalMillis
-            job?.cancel()
+        synchronized(stateLock) {
+            dirty = true
+            if (force) {
+                lastWriteAt = clock() - intervalMillis
+                job?.cancel()
+                draining = null
+            }
+            // The loop's exit decision and this claim are one critical section: an edit
+            // arriving as the loop gives up either keeps it running or starts a fresh one,
+            // so the trailing save of a burst always runs.
+            if (draining != null) return
+            val token = Any()
+            draining = token
+            val started = scope.launch(dispatcher) { run(token) }
+            job = started
+            started.invokeOnCompletion {
+                synchronized(stateLock) { if (job === started) job = null }
+            }
         }
-        if (job?.isActive == true) return
-        val started = scope.launch(dispatcher) { run() }
-        job = started
-        started.invokeOnCompletion { if (job === started) job = null }
     }
 
-    private suspend fun run() {
-        while (true) {
-            val last = lastWriteAt
-            if (last != null) {
-                val wait = last + intervalMillis - clock()
-                if (wait > 0) delay(wait)
+    private suspend fun run(token: Any) {
+        try {
+            while (true) {
+                val last = lastWriteAt
+                if (last != null) {
+                    val wait = last + intervalMillis - clock()
+                    if (wait > 0) delay(wait)
+                }
+                synchronized(stateLock) {
+                    if (!dirty) {
+                        if (draining === token) draining = null
+                        return
+                    }
+                    dirty = false
+                    lastWriteAt = clock()
+                }
+                writeLock.withLock { write() }
             }
-            if (!dirty) return
-            dirty = false
-            lastWriteAt = clock()
-            writeLock.withLock { write() }
+        } finally {
+            // A failed write (or a forced cancel) must not leave the queue owned, or every
+            // later edit would be refused; the token keeps a replaced loop from taking the
+            // queue away from the one that took over.
+            synchronized(stateLock) { if (draining === token) draining = null }
         }
     }
 }

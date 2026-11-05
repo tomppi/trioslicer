@@ -282,4 +282,51 @@ class HostConfigSeamTest {
             server.stop(0)
         }
     }
+
+    @Test
+    fun aSaveWritesTheComputerWithoutRestartingAHostThatIsPrinting() = runBlocking {
+        val served = "# the computer configuration\n[extruder]\nrotation_distance: 4.643\n"
+        val uploads = CopyOnWriteArrayList<String>()
+        val restarts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/server/files/config/printer.cfg") { exchange ->
+            val body = served.toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/server/files/upload") { exchange ->
+            uploads.add(String(exchange.requestBody.readBytes(), Charsets.UTF_8))
+            val answer = """{"action":"create_file","item":{"path":"printer.cfg","root":"config"}}"""
+            val bytes = answer.toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.createContext("/printer/objects/query") { exchange ->
+            val body = """{"result":{"status":{"print_stats":{"state":"printing"}}}}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.createContext("/printer/restart") { exchange ->
+            restarts.incrementAndGet()
+            val bytes = "{}".toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            KlipperHostChoiceStore(context).save(
+                KlipperHostChoice(mode = KlipperHostMode.PC, host = "127.0.0.1", port = server.address.port),
+            )
+            val repository = KlipperPrinterRepository(context, scope)
+            // The save stands: a value tuned during a print is written for the next start.
+            assertTrue("the write goes through", repository.saveRotationDistance(4.700))
+            assertTrue("with the new value on the host", uploads.any { it.contains("rotation_distance: 4.700") })
+            assertEquals("but a host mid-print is not restarted", 0, restarts.get())
+            val error = repository.state.value.error.orEmpty()
+            assertTrue("and the held-back restart is said out loud: " + error, error.contains("the configuration was saved"))
+            assertTrue("with the state that held it back: " + error, error.contains("PC Klipper is printing"))
+        } finally {
+            server.stop(0)
+        }
+    }
 }

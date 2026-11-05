@@ -97,6 +97,22 @@ class BackupPolicyTest {
     }
 
     @Test
+    fun theScanRulerTokenTreeIsExcludedFromCloudBackupAndDeviceTransfer() {
+        // files/scanruler/ holds the 9879 bearer token: a second secret for the same app
+        // uid, so it may ride into neither an Auto Backup nor a device-to-device transfer.
+        val extraction = appFile("src/main/res/xml/data_extraction_rules.xml").readText()
+        val cloud = extraction.substringAfter("<cloud-backup>").substringBefore("</cloud-backup>")
+        val transfer = extraction.substringAfter("<device-transfer>").substringBefore("</device-transfer>")
+        for ((name, body) in listOf("cloud backup" to cloud, "device transfer" to transfer)) {
+            assertEquals(
+                "the scanruler/ tree must be excluded exactly once from the " + name,
+                1,
+                countOccurrences(body, "path=\"scanruler/\""),
+            )
+        }
+    }
+
+    @Test
     fun theTokenDocNamesAllThreeEnginesAndTheExactBackupSplit() {
         val doc = repoFile("docs/MCP_TOKEN_SECURITY.md").readText()
         assertTrue("the Blender token is named", doc.contains("blender_mcp_token.txt"))

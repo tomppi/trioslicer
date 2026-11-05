@@ -29,9 +29,8 @@ class ChatRotationSourceTest {
             "cadConversations",
             "cadStatus",
             "cadBusy",
-            "modellingMessages",
-            "modellingStatus",
-            "modellingBusy",
+            "harnessCadBusy",
+            "harnessCadStatus",
             "inAppWebNotice",
         )
         conversational.forEach { name ->
@@ -48,8 +47,8 @@ class ChatRotationSourceTest {
         // publishes the turn state the plate reads (audit cad #10).
         assertTrue(viewModel.contains("private var cadBusyState by mutableStateOf(false)"))
         assertTrue(viewModel.contains("var cadBusy: Boolean"))
-        assertTrue(viewModel.contains("var modellingMessages by mutableStateOf(listOf<AiChatMessage>())"))
-        assertTrue(viewModel.contains("var modellingBusy by mutableStateOf(false)"))
+        assertTrue(viewModel.contains("var harnessCadBusy"))
+        assertTrue(viewModel.contains("var harnessCadStatus"))
         assertTrue(
             "a conversation survives a rotation, not a process death - say it in the code",
             viewModel.contains("NOT persisted to disk"),

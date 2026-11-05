@@ -78,19 +78,18 @@ class CadPreviewClient(
     private val tokenFile: File? = null,
 ) : Closeable {
 
-    private var socket: Socket? = null
-
     /**
-     * Serialises commands.
-     *
-     * There is one socket and several callers - the frame loop, an import, the settings sheet -
-     * and two writes interleaved on one stream mix their replies. That failure is quiet and
-     * bizarre: a save came back as "the engine refused the viewer settings: null" while the
-     * engine had never received it.
+     * The one shared connection to this engine, and the lock that serialises commands.
+     * There is one engine connection and several callers - the frame loop, an import, the
+     * settings sheet, the agent's tool surface - and two writes interleaved on one stream
+     * mix their replies. That failure is quiet and bizarre: a save came back as "the engine
+     * refused the viewer settings: null" while the engine had never received it. The engine
+     * itself serves one connection at a time, so rival sockets starved each other the same
+     * way: one client, one lock, whole commands.
      */
-    private val lock = Any()
+    private val wire = com.tomppi.enderslicer.agent.engine.EngineWireClient.shared(host, port) { token() }
 
-    /** Set by [close]; no command may open a socket after that. */
+    /** Set by [close]; no command may run after that. */
     @Volatile
     private var closed = false
     private var cachedToken: String? = null
@@ -104,87 +103,28 @@ class CadPreviewClient(
         type: String,
         params: JSONObject,
         timeoutMs: Int = READ_TIMEOUT_MS,
-    ): JSONObject = synchronized(lock) {
-        // One command at a time. The frame loop and the settings sheet both talk over this
-        // socket, and interleaving them mixes two replies into one unparseable stream - which
-        // is how a saved setting came back as "the engine refused the viewer settings: null"
-        // while the engine had never heard of it.
+    ): JSONObject {
         check(!closed) { "The CAD preview client is closed" }
-        val body = JSONObject().put("type", type).put("params", params)
-        token()?.let { body.put("token", it) }
-        val payload = body.toString().toByteArray(Charsets.UTF_8)
-
-        repeat(2) { attempt ->
-            val active = ensureSocket(timeoutMs)
-            try {
-                active.getOutputStream().apply { write(payload); flush() }
-                // synchronized() is inline, so this returns from command() itself.
-                return JSONObject(readReply(active.getInputStream()))
-            } catch (error: SocketTimeoutException) {
-                // The engine has one thread and it is still running this command; the answer will
-                // not come back on this socket, and a second attempt would only be refused as
-                // "engine busy" while the first finishes - which is how a slow command came back
-                // as a busy engine. A timeout is reported as what it is, and as its own type: the
-                // command was accepted and the engine runs what it accepted whether or not this
-                // client is still here, so a caller must not apply the same motion twice.
-                discardSocket()
-                throw CadEngineTimeoutException(
-                    "the CAD engine did not answer within " + (timeoutMs / 1000) + "s", error)
-            } catch (error: Throwable) {
-                // A dead socket is expected whenever the engine restarts, so drop it and
-                // reconnect once before giving up.
-                discardSocket()
-                if (attempt == 1) throw error
-            }
-        }
-        error("unreachable")
-    }
-
-    private fun ensureSocket(timeoutMs: Int): Socket {
-        check(!closed) { "The CAD preview client is closed" }
-        socket?.let {
-            if (!it.isClosed && it.isConnected) {
-                // Per command rather than per socket: a render and a reset want different
-                // patience, and whichever connected first used to fix it for every later one.
-                it.soTimeout = timeoutMs
-                return it
-            }
-        }
-        val created = Socket()
-        created.tcpNoDelay = true
-        created.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-        // Generous: the first render of a process builds the GL window and compiles shaders.
-        created.soTimeout = timeoutMs
-        socket = created
-        return created
-    }
-
-    private fun discardSocket() {
-        runCatching { socket?.close() }
-        socket = null
-    }
-
-    /** One reply, bounded, decoded only once it can plausibly be complete. */
-    internal fun readReply(input: InputStream): String {
-        val buffer = java.io.ByteArrayOutputStream()
-        val chunk = ByteArray(16 * 1024)
-        var lastSignificant = 0.toByte()
-        while (true) {
-            val read = input.read(chunk)
-            if (read < 0) error("The CAD engine closed the connection")
-            buffer.write(chunk, 0, read)
-            for (index in 0 until read) {
-                val byte = chunk[index]
-                if (byte !in JSON_WHITESPACE) lastSignificant = byte
-            }
-            if (buffer.size() > MAX_REPLY_BYTES) {
-                error("The CAD engine reply exceeded $MAX_REPLY_BYTES bytes")
-            }
-            if (lastSignificant != CLOSING_BRACE) continue
-            val text = String(buffer.toByteArray(), Charsets.UTF_8)
-            if (runCatching { JSONObject(text) }.isSuccess) return text
+        return try {
+            wire.command(type, params, timeoutMs)
+        } catch (timeout: com.tomppi.enderslicer.agent.engine.EngineTimeoutException) {
+            // A timeout is reported as it always was: the command was accepted and the
+            // engine runs what it accepted whether or not this client is still here, so
+            // a caller must not apply the same motion twice.
+            throw CadEngineTimeoutException(
+                "the CAD engine did not answer within " + (timeoutMs / 1000) + "s",
+                timeout,
+            )
         }
     }
+
+    /**
+     * One reply, bounded, decoded whole and only once it can plausibly be complete.
+     * The shared wire parser, kept as this client's seam because a unit test drives it
+     * with a stream it can end.
+     */
+    internal fun readReply(input: InputStream): String =
+        com.tomppi.enderslicer.agent.engine.EngineWireProtocol.readReply(input)
 
     /**
      * Moves the engine's camera, optionally picks, and renders one frame into [into].
@@ -405,8 +345,10 @@ class CadPreviewClient(
     }.getOrNull()
 
     override fun close() {
+        // The socket is shared with every other caller on this engine: closing it here
+        // would kill an agent command mid-flight. The flag stops this client's own
+        // commands; the shared wire reconnects whenever the engine restarts.
         closed = true
-        discardSocket()
     }
 
     /**

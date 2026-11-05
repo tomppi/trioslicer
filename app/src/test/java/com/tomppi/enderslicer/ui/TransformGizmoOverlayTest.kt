@@ -33,7 +33,10 @@ class TransformGizmoOverlayTest {
         canUndo: Boolean = false,
         dropEnabled: Boolean = true,
         dropDisabledReason: String? = null,
+        actionsEnabled: Boolean = true,
+        actionsDisabledReason: String? = null,
         onDrop: () -> Unit = {},
+        onSplit: () -> Unit = {},
         onDone: () -> Unit = {},
         onUndo: () -> Unit = {},
         onMode: (TransformGizmoMode) -> Unit = {},
@@ -57,8 +60,9 @@ class TransformGizmoOverlayTest {
                 objectCount = 1,
                 onOpenMultiObject = {},
                 modelName = "Case",
-                actionsEnabled = true,
-                onSplit = {},
+                actionsEnabled = actionsEnabled,
+                actionsDisabledReason = actionsDisabledReason,
+                onSplit = onSplit,
                 onRemove = {},
             )
         }
@@ -98,6 +102,21 @@ class TransformGizmoOverlayTest {
         compose.onNodeWithText("Nothing to drop: no model is selected").assertIsDisplayed()
         compose.onNodeWithText("Drop").performClick()
         assertEquals(0, drops)
+    }
+
+    @Test
+    fun aDisabledSplitAndRemoveSayWhy() {
+        var splits = 0
+        overlay(
+            actionsEnabled = false,
+            actionsDisabledReason = "Wait for the running operation, then split or remove",
+            onSplit = { splits++ },
+        )
+
+        compose.onNodeWithText("Split at a plane").assertIsDisplayed()
+        compose.onNodeWithText("Wait for the running operation, then split or remove").assertIsDisplayed()
+        compose.onNodeWithText("Split at a plane").performClick()
+        assertEquals(0, splits)
     }
 
     @Test

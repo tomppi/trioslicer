@@ -81,6 +81,13 @@ internal const val SCANRULER_BRIDGE_SCRIPT = """
   }
 
   function start(blob, name) {
+    if (pending) {
+      // A second export while one is in flight: refused here in the page, without a
+      // bridge call and without the stream the first export is sending - the app never
+      // hears of it and the in-flight export is untouched.
+      notice('Another export is already being written.', false);
+      return;
+    }
     if (!blob || blob.size <= 0) {
       notice('The export was empty, so no file was written.', false);
       return;
@@ -91,6 +98,13 @@ internal const val SCANRULER_BRIDGE_SCRIPT = """
     }
     blob.arrayBuffer().then(function (buffer) {
       var bytes = new Uint8Array(buffer);
+      // The read above is async, so a second tap's export can arrive here after this one
+      // started: the stream is claimed only while none is pending, or the second claim
+      // would overwrite the first one's bytes and stop its chunks for good.
+      if (pending) {
+        notice('Another export is already being written.', false);
+        return;
+      }
       pending = { bytes: bytes, offset: 0 };
       var started = bridge.beginDownload(name, blob.type || 'application/octet-stream', bytes.length);
       if (!started) pending = null;

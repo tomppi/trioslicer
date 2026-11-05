@@ -18,118 +18,71 @@ Rule of thumb:
 | "make this scanned model thinner" / "fix this wall" | **Blender** — mesh editing |
 | "turn this photo into a model" | `image-to-3d-model` — then CAD to correct dimensions |
 
+## 0. Before you measure or verify — read the rules
+
+The engine is one OpenCASCADE process, one command at a time, one thread. It is fast for
+building and slow for brute force, and a command that overruns cannot be interrupted. Before
+any measurement, verification or loop over geometry, load
+[occt-engine-rules](occt-engine-rules.md) — it carries the measured costs and the
+cheap-first recipes. The rules that matter even if you read nothing else:
+
+- **One command at a time.** A long command blocks every other call, the app's own previews
+  included; a second tool call waits for it, sometimes for minutes. `engine_status` says
+  "running", not "free".
+- **Slow is fine; unestimated is not.** A ten-minute job is legitimate when it is doing needed
+  work. Estimate unit cost x count before any loop and print progress every few percent. The
+  app's call timeout is 300 s: a longer single call is answered as a timeout while the engine
+  keeps running it, and the result is discarded — chunk the work below ~4 minutes, or tell the
+  user what it will take.
+- **Never loop point-in-solid.** `is_inside` is 67 ms per point on a threaded part (30 ms with
+  a reused `BRepClass3d_SolidClassifier`); 60,000 points is ~67 minutes and a wedged engine.
+  The same facts come from a face census (0.05 s), B-spline surface sampling for
+  diameters/depth (0.07 s) and a local dz/dtheta for pitch (0.013 s) — recipes in
+  occt-engine-rules.
+- **Verify every boolean.** OCCT can silently return the input unchanged when a cut fails:
+  compare volume and face count before/after and treat "unchanged" as a failure, not a result.
+- **`describe_at` is a pick helper, not a point-in-solid test.** It names the nearest sub-shape
+  and distance; use `get_metrics` for volume/bbox and surface sampling for feature sizes.
+- **`execute_code` returns prints only** (fresh namespace each call; the scene persists).
+  Prints are lost when the code raises, and the error is the exception message without a
+  traceback — print progress and expected values as you go.
+- **There is no cancel.** Restarting the engine from the app's CAD menu is the only recovery;
+  never resend a timed-out command.
+
+Cost highlights on a 10 x 10 x 5 plate with four real M2x0.4 threads (82 faces):
+`get_metrics` 0.45 s, `section` 8.5 s, `analyze` 14.9 s, `export_stl` 1.18 s — versus
+0.024 s, 0.03 s, 0.31 s and 0.05 s on a simple bracket. `render` is the agent's eye
+(1.1 s first frame, 0.09 s warm); the plate is the user's.
+
 ## 1. Connect
 
-The engine is a plain TCP socket on **localhost:9877** inside the app process. It is **not**
-Blender's port (9876) — the two can run at once and each has its own.
+The app hands all three modelling engines to external agents through **one MCP server** -
+see [trioslicer-engines](trioslicer-engines.md) for the whole picture. For this
+engine the two facts are: connect once, and the selector points you at CAD.
 
-**New in 1.9.5 - no adb forward needed.** The CAD agent sheet's **Reachable on the network**
-switch publishes this bridge (and Blender's 9876 and SolidCraft's 9878) on the phone's own
-network address at the same port. With the switch on, the row's **Copy** puts the address AND
-the CAD engine's token on the clipboard as one line, after the app's fingerprint prompt:
-`tcp://<phone address>:9877 token=<token>`. Use that line directly - the token is already in it,
-so there is no separate token copy. A row whose engine has never started has no token file yet
-and says so; start the CAD engine, then Copy. The adb forward below is the fallback for a phone
-with the switch off, or for a development phone (there, *CAD → Copy MCP token* is the token-only
-path). The app's forwarder is transport only: it checks no token, adds no
-authentication and logs no message content.
+    tcp://<phone-tailscale-ip>:9878 token=<the token the app printed>
 
-### Getting the token without root
+Newline-delimited JSON-RPC 2.0 (MCP), every message carrying the token at the top level or
+inside params. Run engine_select {"engine": "cad"} first - its answer names the tools and
+their rules - then call the commands in this document as tools/call tools, by their own names
+(execute_code, get_scene_info, export_stl, analyze, section, ...). The arguments are this
+document's parameters.
 
-**The token is in app-private storage, and `adb shell` cannot read it** - even a shell on a
-phone where adbd runs as root is a different uid from the app:
+**Reaching the port.** The CAD agent sheet's **Reachable on the network** switch publishes the
+loopback listener on the phone's tailnet address (TailSocks root mode, node phone-host) and its
+**Copy** row puts the whole tcp:// line on the clipboard in one paste. Without a tailnet, adb
+forward tcp:9878 tcp:9878 and use tcp://127.0.0.1:9878. The token is app-private storage
+(files/agent/engines_mcp_token.txt); **Copy MCP token** in the CAD menu copies just the value -
+ask the user rather than reaching for su (no privilege level between shell and root reads
+another app's private directory; Shizuku does not change that).
 
-```
-drwx------  /data/user/0/com.tomppi.enderslicercura   0700, app-only
--rw-------  .../files/cad/cad_mcp_token.txt            0600, app-only
-```
+**The engine's own socket (9877) is the app's private channel now** - the type/token/params
+wire in section 2 is what the app speaks to the engine; you speak MCP to 9878. The wire
+section stays as the background that explains the answers' shape.
 
-**Shizuku does not change this.** It grants *shell* privilege, uid 2000, and shell is refused
-by those permissions exactly as a plain adb shell is. There is no privilege level between
-shell and root that reads another app's private directory.
+**Lifecycle.** The engine starts from the app's OCCT / CAD menu. An engine that answers "not
+started" in engine_status must be started there first.
 
-**The app has the answer: *Copy MCP token* in the CAD menu**, beside *Model with CAD*. It puts
-the token on the clipboard; paste it to the agent and nothing needs root at all. **Ask the user
-for it before reaching for `su`** - it is one tap, and it is the difference between a workflow
-that needs a rooted phone and one that works on any phone with wireless debugging.
-
-The boundary behind it - what holding a token grants, its limits, how to rotate it - is in [MCP_TOKEN_SECURITY.md](../MCP_TOKEN_SECURITY.md).
-
-The order that works:
-
-1. The user opens the CAD menu and taps **Copy MCP token**, then pastes it to you.
-2. `adb -s <phone> forward tcp:9877 tcp:9877` - **this never needed root**; it asks adbd to
-   open a listener and tunnel it, which is an ordinary adb feature.
-3. Send commands with the pasted token.
-
-Root is still the fallback if the user cannot reach the phone, and on the dev phone, where
-nobody is using it. It is not the first move.
-
-### Reach the engine on the phone the user is actually using
-
-**This is the mistake to avoid, and it has already cost one session an afternoon.** There are
-two devices:
-
-| device | serial | whose |
-|---|---|---|
-| **the user's phone** | `<phone-tailscale-ip>:5555` (tailnet) | **theirs — this is the target when they ask from the app** |
-| a dev phone | `<dev-phone-serial>` (USB) | scratch hardware for testing |
-
-**When the user asks for something from the app, the engine is on THEIR phone**, because that
-is where the app they typed into is running. Starting the engine on the dev phone and looking
-there produces "connection refused" on a socket that is listening perfectly well somewhere
-else, and nothing in the error says which device it meant.
-
-The dev phone is for trying things out without touching their device. It is not a mirror: the
-two have separate app installs, separate engines and separate tokens.
-
-```bash
-# Their phone - the one to use when they asked from the app.
-adb -s <phone-tailscale-ip>:5555 forward tcp:9877 tcp:9877
-```
-
-**A local port can only be forwarded to one device at a time.** If `adb forward --list` shows
-`<dev-phone-serial> tcp:9877`, the dev phone holds it and `127.0.0.1:9877` will reach the *dev* phone
-whatever engine you are thinking about. Remove it first:
-
-```bash
-adb forward --remove tcp:9877
-adb -s <phone-tailscale-ip>:5555 forward tcp:9877 tcp:9877
-adb forward --list                     # confirm which device holds it
-```
-
-**Every request needs the token**, and the two devices have **different tokens**. Read it from
-the device you are actually talking to:
-
-```bash
-adb -s <phone-tailscale-ip>:5555 shell cat \
-  /data/user/0/com.tomppi.enderslicercura/files/cad/cad_mcp_token.txt
-```
-
-Their phone needs no `su`: adbd already runs as root there, and `su` does not exist on that
-build — a command wrapped in `su -c` fails with `su: inaccessible or not found`.
-
-A tokenless server **refuses to serve** — it records `"no MCP token loaded; refusing to
-serve"` in its status file and never opens the port. There is no token-free command,
-`ping` included.
-
-Liveness without geometry:
-
-```bash
-# Their phone, unchanged - no su on that build.
-adb -s <phone-tailscale-ip>:5555 shell 'ss -tln | grep 9877'
-adb -s <phone-tailscale-ip>:5555 shell 'cat /data/user/0/com.tomppi.enderslicercura/files/cad/cad_mcp_status.json'
-```
-
-**No status file at all means the engine never got as far as serving** - the process died
-before it could write one. That is a different failure from a status file saying
-`"running": false`, which is the engine reporting its own refusal. Check the app's own log
-with `adb logcat -d | grep -i CadEngine` before assuming the socket is the problem.
-
-The status file is written atomically and reports:
-```json
-{"running": true, "port": 9877, "pid": 30099, "auth": true}
-```
 
 ## 2. Protocol
 
@@ -158,7 +111,7 @@ envelope as the Blender engine:
 | type | params | notes |
 |---|---|---|
 | `ping` | – | liveness; touches no geometry. Needs the token |
-| `shutdown` | – | replies, then stops: the process exits and the scene goes with it. Parking is the restart file's job, not this |
+| `shutdown` | – | replies, then releases the socket. The engine parks; it does not exit |
 | `execute_code` | `code` | the workhorse. namespace: `build123d`, `OCP`, `json`, `math`, `os`, and the scene helpers |
 | `get_scene_info` | – | every shape with volume, bounding box and solid count |
 | `get_object_info` | `name` | one shape, plus solid/face/edge/vertex counts |
@@ -166,9 +119,6 @@ envelope as the Blender engine:
 | `export_step` | `filepath`, `name` (optional) | atomic; no name = whole scene |
 | `export_stl` | `filepath`, `name` (optional), `tolerance` | atomic; no name = whole scene |
 | `import_file` | `filepath`, `name` (optional), `unit` (STL only) | STEP, STP, STPZ, BREP, STL, SVG |
-| `clearance` | `cloud`, `name` or `x`,`y`,`z` | distance from the part to a scanned environment |
-| `viewer_settings` | `tessellation`, `background`, `grid`, `grid_step_mm`, `axes`, `projection`, `edges`, `antialiasing` | the viewport's appearance, not the model |
-| `view` | `filepath` (required), `turn_yaw`, `turn_pitch` (degrees), `pan_dx`, `pan_dy`, `zoom`, `reset`, `orientation`, `select_x/y` | the screen's camera: turn it, or pick a face in it |
 | `render` | `filepath`, `name` (optional), `view`, `width`, `height`, `shaded` | writes a PNG; the user's view of the model |
 | `get_addon_info` | – | engine version and kernel state |
 
@@ -270,106 +220,6 @@ cut, filleted and re-exported.
 | BREP | exact solid, OCCT's native format |
 | SVG | 2D curves, for `import_svg_as_buildline_code` |
 | STL | **a surface, not a solid** — see below |
-
-## 4b. The camera is a turntable
-
-`view` turns the camera the way the rest of the app does: **two angles**, not a free rotation.
-
-```json
-{"type": "view", "params": {"filepath": "<files>/cad/exports/viewport.png",
-                         "turn_yaw": -35.0, "turn_pitch": 20.0}}
-```
-
-`turn_yaw` is an azimuth around the world's vertical axis and `turn_pitch` an elevation above
-the horizontal plane, both in **degrees**, both relative to where the camera already is. Pitch is
-clamped to ±89 degrees and the up vector is world Z, always - so a roll is *impossible* rather
-than corrected, which is the rule the plate's own viewer follows (`ModellingCamera.upVector`, and
-a pitch clamped the same way in `ModellingPreview`). The app's one-finger drag sends
-`dx * 0.35` and `dy * 0.35` degrees, the same rate that viewer uses, so a centimetre of finger
-means the same thing in both places.
-
-This replaced an arcball (`StartRotation`/`Rotation`), which rolls as it turns: a diagonal drag
-left a part lying on its side, which is what was reported. Four other mechanisms were tried
-against the same problem and each failed for its own reason, all measured on the device:
-
-| call | result |
-|---|---|
-| `Rotate(0, 0, a)` about the view axis | rolled correctly, but only from an iso view |
-| `Twist` / `SetTwist` | work from an iso view; build a screen basis from world Z/Y/X and mangle the camera from anywhere else |
-| camera up vector via `SetCamera` | accepted and ignored - the renderer honours eye and centre, not up |
-| rebuilt camera (eye + centre + up) | changed the projection's scale too; the part came back a sixth of its size |
-
-`SetProj` is the one call this driver has always honoured - it is what the view presets use - and
-the source is explicit that it sets the camera's *direction* and nothing else, so the distance and
-the centre survive and turning a part cannot move or resize it.
-
-**Verified** with a world-vertical bar, whose edges stay vertical in the picture for any turn:
-iso, front and a 40-degree turn all measured a lean of **0.0 to 0.5 px**; the arcball leaned it by
-tens of pixels. The app path was checked separately by swiping the dev phone's screen: a 200 px
-horizontal swipe turned the model (22% of the frame changed) and it stayed upright.
-
-## 4c. The viewport's appearance
-
-`viewer_settings` sets how the scene is drawn, and answers with what the viewer reports back.
-Every value is optional, and the answer carries the viewer's own state - which is the only way to
-trust any of it, because **this driver accepts calls it does not honour**:
-
-```json
-{"type": "viewer_settings", "params": {"background": "light", "projection": "orthographic"}}
-```
-
-Three things were measured on the device rather than assumed, and each changed the code:
-
-- **`V3d_View.SetGrid` / `SetGridActivity` segfault the engine.** Not ignored - the process died,
-  reproducibly. The grid is drawn as ordinary edges instead: a real thing of a real size in the
-  scene, displayed but never added to SCENE, so it cannot reach an export.
-- **MSAA is ignored** - the frame is byte-identical with `NbMsaaSamples` at 0 and at 4.
-  Anti-aliasing supersamples in `_write_view` instead, and the app asks for it only on the frame
-  that settles, never mid-drag.
-- **`Camera()` returns a copy**, so setting the projection type on it does nothing until it is
-  handed back with `SetCamera`. Tessellation is honoured by meshing the shape *before* AIS sees it:
-  the drawer's deviation coefficient, like `SetDrawEdges`, changes nothing on this GLES path.
-
-A frame with a 20 mm cube added to the scene, at 640x640:
-
-| setting | pixels changed |
-|---|---|
-| background | 292720 |
-| grid | 138122 |
-| axes | 199 |
-| projection | 106731 |
-| edges | 7895 |
-| anti-aliasing | 42449 (470 distinct colours off, ~2700 on) |
-| tessellation coarse / very fine | 54979 / 24873 |
-| view preset | 148141 |
-
-## 4b. Measuring against a scanned environment
-
-A capture of a real place arrives as a point cloud — `environment.npy`, an Nx3 float array in
-millimetres, written beside the mesh by the capture pipeline. `clearance` answers the question a
-jig turns on: how far is my part from the real thing?
-
-```json
-{"type": "clearance", "params": {"cloud": "/…/env/environment.npy", "name": "bracket"}}
-{"type": "clearance", "params": {"cloud": "/…/env/environment.npy", "x": 0, "y": 0, "z": 150}}
-```
-
-Give `name` and it measures a shape in the scene — vertices, edge midpoints, and a grid over every
-face, because a corner can be millimetres clear while the middle of a face is touching. Give
-`x`, `y`, `z` and it measures a single point. The answer carries both ends of the closest pair:
-
-```json
-{"shapes": "bracket", "distance_mm": 47.46, "from": [686.6, -765.3, 52.5],
- "to": [686.6, -765.3, 5.0], "probes": 140, "cloud_points": 295915}
-```
-
-**Measure against the cloud, not the mesh in the scene.** The imported mesh is decimated for
-display; the cloud is the reconstruction. The tree over it is built once per file and kept, so the
-first call costs about a second on 300k points and later ones about 20 ms.
-
-Verified against known offsets: from a point on the reconstructed floor, ±50 mm and ±100 mm read
-back as 47.2/47.5 and 97.2/97.3 mm — the shortfall is the point's own distance to the nearest
-sample, not an error in the query.
 
 ### STL imports as a surface, not a solid
 
@@ -506,6 +356,63 @@ mention the view you asked for.
 all, and the same goes for DXF. Render a PNG beside every drawing and send both — the SVG is
 the deliverable, the PNG is how it gets looked at. Use `render` (section 5a) on the same part.
 
+### Let the user turn the part, not just look at it
+
+The CAD screen opens on the **model**, not the render, whenever the engine has exported an
+STL. That view is the same one the plate uses: drag to rotate, pinch to zoom. The render is
+still there behind a **Turn it / Picture** button.
+
+**So export an STL when the shape matters and the user will want to inspect it:**
+
+```json
+{"type": "export_stl", "params": {"filepath": ".../exports/part.stl", "name": "part"}}
+```
+
+A render answers "what does it look like from here"; a mesh answers "what does the other side
+look like", and the user can only ask the second question if they have the mesh. Export both
+when the part is the point of the turn - a render to show what you mean, and an STL so they can
+check you meant it.
+
+This costs nothing when it is not wanted: no STL, no model view, and the screen falls back to
+whatever render exists.
+
+### When the user points at a surface
+
+The user can tap **Pick a surface** in the CAD screen and tap the model. You then receive a
+message whose preamble names a point:
+
+```text
+[The user picked a surface at x=12.50 y=-3.00 z=0.00 in the model. Call describe_at with those
+coordinates to find which face, edge or vertex that is before acting - do not guess from the
+picture.]
+
+fillet that edge
+```
+
+**Call `describe_at` before acting.** It answers against the exact geometry, not the mesh
+triangles the viewer picked:
+
+```json
+{"type": "describe_at", "params": {"x": 12.5, "y": -3.0, "z": 0.0, "name": "part"}}
+```
+
+```json
+{"kind": "face", "index": 5, "normal": [1.0, 0.0, -0.0], "area_mm2": 160.0,
+ "distance_mm": 0.0, "centre": [15.0, 0.0, 0.0]}
+```
+
+The **index** is what the other commands take - `highlight_faces` for a render, or the face
+list for a fillet. The **normal** says which way it faces, which decides whether it is a floor,
+a wall or an overhang. The **area** distinguishes the face they meant from one that looks the
+same from that angle.
+
+**If `distance_mm` is not near zero, stop and say so.** It means the click landed somewhere
+other than the model - a stale view, a mis-tap, or a model that has changed since it was drawn.
+Naming the nearest face of a part that no longer exists is worse than asking.
+
+Picking is a one-shot: the coordinates ride with that one message and are then cleared, so a
+later message without a preamble has no pick attached.
+
 ## 6. Look at your model — required, and cheap
 
 **Looking at the result is part of the job, not a nicety.** CAD fails quietly: a fillet that
@@ -610,4 +517,3 @@ Adding a binding is a patch to `/root/occt-port/OCP/OCP/<Toolkit>.cpp` plus a re
 `/root/occt-port/build/OCCT-7_9_3/src/<Toolkit>/` against the `.def` names already in the
 binding file. That is how two missing triangulation methods were found together, after three
 rebuilds spent finding text bindings one at a time.
-

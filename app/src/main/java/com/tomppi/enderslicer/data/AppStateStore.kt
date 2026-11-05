@@ -161,7 +161,16 @@ class AppStateStore(context: Context) {
     @Synchronized
     fun savedImport(): SavedImport? {
         recoverImportBundle()
-        if (importBundle.isFile) return materializeBundle()
+        if (importBundle.isFile) {
+            // A bundle that cannot be read back is treated as absent - the way every other
+            // store treats corrupt data - so one bad file cannot abort the whole restore on
+            // every launch. It is cleared, its staging leftovers with it, so the next launch
+            // starts clean instead of tripping over the same bytes.
+            val materialized = runCatching { materializeBundle() }.getOrNull()
+            if (materialized != null) return materialized
+            clearImport()
+            return null
+        }
 
         // One-time compatibility with the pre-bundle format.
         val kind = preferences.getString(KEY_IMPORT_KIND, null) ?: return null
@@ -450,6 +459,8 @@ class AppStateStore(context: Context) {
         legacyImportFile.delete()
         File(stateDirectory, "current-cura-import.bundle.next").delete()
         File(stateDirectory, "current-cura-import.bundle.previous").delete()
+        // What a materialization interrupted mid-write leaves behind.
+        File(stateDirectory, "current-cura-import.materialized.next").delete()
         preferences.edit().remove(KEY_IMPORT_KIND).remove(KEY_IMPORT_NAME).apply()
     }
 

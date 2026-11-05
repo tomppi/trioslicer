@@ -145,6 +145,7 @@ internal object GcodeCommandPolicy {
         val command = rawLine.substringBefore(';').trim()
         if (command.isEmpty()) return
         val flavor = gcodeFlavor.lowercase(Locale.US)
+        val pauseResume = KLIPPER_PAUSE_RESUME.matchEntire(command)
         val pressureAdvance = KLIPPER_PRESSURE_ADVANCE.matchEntire(command)
         val retraction = if (pressureAdvance == null) KLIPPER_RETRACTION.matchEntire(command) else null
         val mesh = if (pressureAdvance == null && retraction == null) {
@@ -159,6 +160,7 @@ internal object GcodeCommandPolicy {
             null
         }
         val safe = "klipper" in flavor && when {
+            pauseResume != null -> true
             pressureAdvance != null -> {
                 val advance = pressureAdvance.groupValues[1].toDoubleOrNull()
                 advance != null && advance.isFinite() && advance in KLIPPER_ADVANCE_MIN..KLIPPER_ADVANCE_MAX
@@ -506,6 +508,14 @@ internal object GcodeCommandPolicy {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * The pause pair this app writes into a Klipper file itself: the route's own PAUSE
+     * (a PAUSE or FILAMENT_CHANGE layer event, and the probe-pause safety step) and the
+     * bare RESUME that answers it. Both bare - anything with arguments is somebody's
+     * macro, not the route's command, and stays refused like all other unmodeled text.
+     */
+    private val KLIPPER_PAUSE_RESUME = Regex("^(PAUSE|RESUME)$", RegexOption.IGNORE_CASE)
+
     private val KLIPPER_PRESSURE_ADVANCE = Regex(
         "^SET_PRESSURE_ADVANCE\\s+ADVANCE=[+]?(\\d+(?:\\.\\d*)?|\\.\\d+)$",
         RegexOption.IGNORE_CASE,
@@ -520,5 +530,7 @@ internal object GcodeCommandPolicy {
     private const val KLIPPER_RETRACT_LENGTH_MIN = 0.0
     private const val KLIPPER_RETRACT_LENGTH_MAX = 200.0
     private const val KLIPPER_RETRACT_SPEED_MIN = 0.0
-    private const val KLIPPER_RETRACT_SPEED_MAX = 500.0
+    // Internal: the layer-event API caps retraction speed to this bound, so a value it
+    // accepts can never fail the published-text check above.
+    internal const val KLIPPER_RETRACT_SPEED_MAX = 500.0
 }

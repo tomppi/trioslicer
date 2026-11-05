@@ -4,6 +4,7 @@ import com.tomppi.enderslicer.mesh.MeshTriangleLimits
 import com.tomppi.enderslicer.supportpaint.SupportPaintState
 import java.io.File
 import java.util.zip.ZipFile
+import javax.xml.XMLConstants
 import javax.xml.parsers.SAXParserFactory
 import kotlin.math.sqrt
 import org.xml.sax.Attributes
@@ -37,6 +38,7 @@ object ThreeMfModelParser {
     private const val ORCA_SUPPORT_PAINT_ATTRIBUTE = "paint_supports"
     private const val MAX_COMPONENT_DEPTH = 32
     private const val POSITION_FLOATS = 3
+    private const val FEATURE_DISALLOW_DOCTYPE = "http://apache.org/xml/features/disallow-doctype-decl"
 
     fun parse(
         file: File,
@@ -50,9 +52,8 @@ object ThreeMfModelParser {
                 ?: zip.getEntry(DEFAULT_MODEL_PATH)
                 ?: throw IllegalArgumentException("This 3MF has no 3D model part")
             zip.getInputStream(entry).use { input ->
-                val handler = ModelHandler()
-                SAXParserFactory.newInstance().apply { isNamespaceAware = true }.newSAXParser()
-                    .parse(input, handler)
+                val handler = ModelHandler(limit)
+                hardenedSaxFactory().newSAXParser().parse(input, handler)
                 handler.finish()
             }
         }
@@ -160,8 +161,7 @@ object ThreeMfModelParser {
         val target = zip.getInputStream(relationships).use { input ->
             val handler = RelationshipHandler()
             runCatching {
-                SAXParserFactory.newInstance().apply { isNamespaceAware = true }.newSAXParser()
-                    .parse(input, handler)
+                hardenedSaxFactory().newSAXParser().parse(input, handler)
             }
             handler.modelTarget
         }
@@ -261,7 +261,46 @@ object ThreeMfModelParser {
         return normals
     }
 
-    private class ModelHandler : DefaultHandler() {
+    /**
+     * The 3MF's XML is as attacker-supplied as the profile's, so it carries the
+     * same hardening [SecureXml] applies there: no DOCTYPE, secure processing
+     * on. That is what keeps a recursive internal entity - the billion-laughs
+     * shape - from ever being declared. A parser that accepts a feature but
+     * fails to apply it is rejected loudly; one that rejects the feature name
+     * (Android's Expat, which is secure by default) is tolerated.
+     */
+    private fun hardenedSaxFactory(): SAXParserFactory =
+        SAXParserFactory.newInstance().apply {
+            isNamespaceAware = true
+            setAdaptiveFeature(FEATURE_DISALLOW_DOCTYPE, true, "DOCTYPE declarations")
+            setAdaptiveFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true, "secure processing")
+        }
+
+    private fun SAXParserFactory.setAdaptiveFeature(feature: String, value: Boolean, label: String) {
+        val applied = runCatching {
+            setFeature(feature, value)
+            getFeature(feature) == value
+        }
+        when {
+            applied.getOrNull() == true -> Unit
+            applied.isFailure -> Unit
+            else -> throw IllegalStateException(
+                "XML parser accepted but did not apply the $label hardening ($feature)",
+            )
+        }
+    }
+
+    /**
+     * Collects one model part. [triangleLimit] and the vertex limit derived from
+     * it bite as the handler collects, not at emit: a small zipped part expands
+     * hugely, and the boxed lists below are where that used to exhaust the heap.
+     */
+    private class ModelHandler(val triangleLimit: Int) : DefaultHandler() {
+        /** Three corners per triangle, so a mesh at the triangle limit never declares more. */
+        private val vertexLimit = triangleLimit * 3
+        private var declaredTriangles = 0
+        private var declaredVertices = 0
+
         class BuildItem(val objectId: String, val transform: DoubleArray?)
         class Component(val objectId: String, val matrix: DoubleArray)
         class Triangle(val v1: Int, val v2: Int, val v3: Int, val state: Int)
@@ -290,24 +329,38 @@ object ThreeMfModelParser {
                         objects[id] = current!!
                     }
                 }
-                "vertex" -> current?.vertices?.addAll(
-                    listOf(
-                        attributes.getValue("x").toFloat(),
-                        attributes.getValue("y").toFloat(),
-                        attributes.getValue("z").toFloat(),
-                    ),
-                )
-                "triangle" -> current?.triangles?.add(
-                    Triangle(
-                        v1 = attributes.getValue("v1").toInt(),
-                        v2 = attributes.getValue("v2").toInt(),
-                        v3 = attributes.getValue("v3").toInt(),
-                        state = paintState(
-                            attributes.getValue(SUPPORT_PAINT_ATTRIBUTE)
-                                ?: attributes.getValue(ORCA_SUPPORT_PAINT_ATTRIBUTE),
+                "vertex" -> current?.vertices?.let { vertices ->
+                    require(declaredVertices < vertexLimit) {
+                        "The 3MF has more than " + MeshTriangleLimits.formatCount(vertexLimit) +
+                            " vertices for the current mesh triangle limit"
+                    }
+                    declaredVertices++
+                    vertices.addAll(
+                        listOf(
+                            attributes.getValue("x").toFloat(),
+                            attributes.getValue("y").toFloat(),
+                            attributes.getValue("z").toFloat(),
                         ),
-                    ),
-                )
+                    )
+                }
+                "triangle" -> current?.triangles?.let { triangles ->
+                    require(declaredTriangles < triangleLimit) {
+                        "The 3MF has more than " + MeshTriangleLimits.formatCount(triangleLimit) +
+                            " triangles at the current mesh triangle limit"
+                    }
+                    declaredTriangles++
+                    triangles.add(
+                        Triangle(
+                            v1 = attributes.getValue("v1").toInt(),
+                            v2 = attributes.getValue("v2").toInt(),
+                            v3 = attributes.getValue("v3").toInt(),
+                            state = paintState(
+                                attributes.getValue(SUPPORT_PAINT_ATTRIBUTE)
+                                    ?: attributes.getValue(ORCA_SUPPORT_PAINT_ATTRIBUTE),
+                            ),
+                        ),
+                    )
+                }
                 "component" -> {
                     val id = attributes.getValue("objectid")
                     if (id != null) current?.components?.add(Component(id, matrix(attributes.transform())))

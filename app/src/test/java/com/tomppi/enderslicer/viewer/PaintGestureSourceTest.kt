@@ -80,6 +80,32 @@ class PaintGestureSourceTest {
     }
 
     @Test
+    fun probesAreDroppedRatherThanThrownWhenTeardownShutsTheExecutorDown() {
+        val viewer = source("viewer/ModelSurfaceView.kt")
+        // The picker runs off the UI thread and onDetachedFromWindow shuts that executor down, so
+        // a probe scheduled during or after teardown must be dropped - not thrown back at the
+        // gesture (or out of a pick still draining) as a RejectedExecutionException.
+        assertTrue(viewer.contains("private fun runPick(task: Runnable)"))
+        assertTrue(viewer.contains("catch (_: java.util.concurrent.RejectedExecutionException)"))
+        assertFalse(
+            "no probe calls the executor without the guard",
+            viewer.contains("paintPickExecutor.execute {"),
+        )
+    }
+
+    @Test
+    fun theDecidingProbeFlagDoesNotOutliveTheGesture() {
+        val viewer = source("viewer/ModelSurfaceView.kt")
+        val up = viewer.substringAfter("MotionEvent.ACTION_UP ->")
+            .substringBefore("MotionEvent.ACTION_CANCEL ->")
+        assertTrue("the brush question is settled when the gesture ends", up.contains("brushGate.end()"))
+        assertTrue(
+            "the pending-probe flag is cleared with it, so a stale flag cannot swallow the next tap's pick",
+            up.contains("brushProbePending.set(false)"),
+        )
+    }
+
+    @Test
     fun theBarsTellTheTruthAboutOrbitingBesideTheModel() {
         val app = source("ui/EnderSlicerApp.kt")
         assertTrue(

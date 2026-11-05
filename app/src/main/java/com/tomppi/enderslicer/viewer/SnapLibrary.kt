@@ -362,6 +362,14 @@ object SnapLibrary {
     private val cache = HashMap<SnapLibraryShape, SnapLibraryPair>()
 
     /**
+     * Guards [cache] for the whole load: two overlapping preview jobs must not race the
+     * check-and-act into two loads of one shape - the caller's [read] writes one scratch
+     * file and cannot run twice at once either. One lock, so the work also stays "once per
+     * shape per process".
+     */
+    private val cacheLock = Any()
+
+    /**
      * The shape, loaded: the two pieces read through [read], made watertight,
      * clipped where the catch is a housing, and measured.
      *
@@ -376,8 +384,13 @@ object SnapLibrary {
      * reach does not lie inside the catch's envelope - the shapes that cannot
      * work say so instead of placing a joint that is not there.
      */
-    fun load(shape: SnapLibraryShape, read: (String) -> StlMesh): SnapLibraryPair {
-        cache[shape]?.let { return it }
+    fun load(shape: SnapLibraryShape, read: (String) -> StlMesh): SnapLibraryPair =
+        synchronized(cacheLock) {
+            cache[shape] ?: loadUncached(shape, read).also { cache[shape] = it }
+        }
+
+    /** The load itself, under [cacheLock] by way of [load]; nothing here touches [cache]. */
+    private fun loadUncached(shape: SnapLibraryShape, read: (String) -> StlMesh): SnapLibraryPair {
         val engine = SnapFitGate.NativeEngine
         val hookRaw = read(shape.hookFile)
         val catchRaw = read(shape.catchFile)
@@ -451,12 +464,13 @@ object SnapLibrary {
             gapOneToOneMm = smallestGapMm(hook, catch),
             note = notes.takeIf { it.isNotEmpty() }?.joinToString("; "),
         )
-        cache[shape] = pair
         return pair
     }
 
     /** Forgets every loaded shape; the tests' own door, and nothing on the app's path. */
-    internal fun forget() = cache.clear()
+    internal fun forget() {
+        synchronized(cacheLock) { cache.clear() }
+    }
 
     /**
      * The pair placed on the seam: the hook unioned into [hookHalf], the catch's

@@ -177,9 +177,25 @@ class SmartInfillControllerTest {
             cancelCalls++
         }
 
-        override fun modifierArchive(): ByteArray = byteArrayOf(1, 2, 3)
+        var exportCalls = 0
 
-        override fun optimizedShape(): ByteArray = byteArrayOf(4, 5, 6)
+        /** Holds an Apply export inside the engine until the test releases it. */
+        var exportLatch: java.util.concurrent.CountDownLatch? = null
+
+        /** Opens the moment an Apply export is entered. */
+        val exportStarted = java.util.concurrent.CountDownLatch(1)
+
+        override fun modifierArchive(): ByteArray {
+            exportStarted.countDown()
+            exportLatch?.await()
+            exportCalls++
+            return byteArrayOf(1, 2, 3)
+        }
+
+        override fun optimizedShape(): ByteArray {
+            exportCalls++
+            return byteArrayOf(4, 5, 6)
+        }
 
         override fun close() {
             closed = true
@@ -515,6 +531,59 @@ class SmartInfillControllerTest {
             assertEquals(1, engine.closeCount)
             controller.close()
             assertEquals(1, engine.closeCount)
+        }
+    }
+
+    /**
+     * The Apply export is a blocking JNI call like any other run: the model changing in its
+     * window closes the controller on the main thread, and the session must outlive the
+     * export that is still reading it - "destroyed only once the running call has returned".
+     */
+    @Test
+    fun closingDuringAnApplyExportDestroysTheSessionOnlyAfterItReturns() {
+        val engine = FakeEngine()
+        val release = java.util.concurrent.CountDownLatch(1)
+        engine.exportLatch = release
+        val scope = CoroutineScope(Dispatchers.IO)
+        try {
+            val controller = SmartInfillController(engine, scope)
+            val exported = java.util.concurrent.atomic.AtomicReference<ByteArray>()
+            val exporter = Thread { exported.set(controller.modifierArchive()) }
+            exporter.start()
+            if (!engine.exportStarted.await(5, TimeUnit.SECONDS)) {
+                throw AssertionError("the export never reached the engine")
+            }
+
+            val closer = Thread { controller.close() }
+            closer.start()
+            Thread.sleep(100)
+            assertEquals("the session is not destroyed under the running export", 0, engine.closeCount)
+
+            release.countDown()
+            exporter.join(5_000)
+            closer.join(5_000)
+            assertEquals("the session goes once the export returns", 1, engine.closeCount)
+            assertEquals("and the export itself still landed", 3, exported.get().size)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** A closed session cannot be exported from: the call is refused with a sentence. */
+    @Test
+    fun aClosedControllerRefusesTheApplyExports() {
+        val engine = FakeEngine()
+        runBlocking {
+            val controller = SmartInfillController(engine, this)
+            controller.close()
+
+            val archiveError = runCatching { controller.modifierArchive() }.exceptionOrNull()
+            assertTrue("the archive export is refused: " + archiveError, archiveError is IllegalStateException)
+            assertTrue(archiveError!!.message.orEmpty().isNotBlank())
+            val shapeError = runCatching { controller.optimizedShape() }.exceptionOrNull()
+            assertTrue("the shape export is refused: " + shapeError, shapeError is IllegalStateException)
+            assertTrue(shapeError!!.message.orEmpty().isNotBlank())
+            assertEquals("no export reaches a destroyed session", 0, engine.exportCalls)
         }
     }
 

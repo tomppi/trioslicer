@@ -219,6 +219,9 @@ private class LayerPreviewRenderer : GLSurfaceView.Renderer {
         preview = value
         capacity = previewCapacity
         style = previewStyle
+        // What the camera fits and orbits about: the print's own height, read
+        // from the parsed layers rather than left at the bed.
+        maximumLayerZ = value.layers.maxOfOrNull { it.z } ?: 0f
         selectedLayerIndex = if (value.layers.indices.isEmpty()) 0 else selectedLayerIndex.coerceIn(value.layers.indices)
         val started = System.nanoTime()
         geometry = LayerPreviewGeometry(value, previewCapacity, previewStyle).also { it.select(selectedLayerIndex) }

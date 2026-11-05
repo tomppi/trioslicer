@@ -77,6 +77,9 @@ internal fun KlipperTemperaturesTab(state: KlipperPrinterState, viewModel: Klipp
             HeaterCard(
                 heater = heater,
                 enabled = state.connected,
+                // The PID card's own precondition - "not printing" - is a gate: tuning cycles
+                // the heater for minutes and its result is offered for SAVE_CONFIG.
+                pidAllowed = state.connected && !state.isPrinting,
                 onSet = { viewModel.setHeaterTemperature(heater.name, it) },
                 onCalibrate = { pidFor = heater },
             )
@@ -154,6 +157,7 @@ internal fun HeaterReadoutRow(heater: KlipperHeater) {
 private fun HeaterCard(
     heater: KlipperHeater,
     enabled: Boolean,
+    pidAllowed: Boolean,
     onSet: (Int) -> Unit,
     onCalibrate: () -> Unit,
 ) {
@@ -199,7 +203,7 @@ private fun HeaterCard(
                 KlipperButton("ABS", enabled = enabled) { onSet(if (hot) 250 else 100) }
             }
             if (heater.name == "extruder" || heater.name == "heater_bed") {
-                KlipperButton("Tune PID", enabled = enabled, onClick = onCalibrate)
+                KlipperButton("Tune PID", enabled = pidAllowed, onClick = onCalibrate)
             }
         }
     }

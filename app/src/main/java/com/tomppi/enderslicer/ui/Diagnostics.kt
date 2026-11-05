@@ -8,6 +8,7 @@ import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * The app's own log, off until someone turns it on.
@@ -135,6 +136,8 @@ object Diagnostics {
         // - the record, the list - stays opt-in.
         if (level != Level.INFO) _latestAlert.value = entry
         if (!_enabled.value) return
-        _entries.value = (_entries.value + entry).takeLast(MAX_ENTRIES)
+        // The append is one atomic read-modify-write: two threads recording at once
+        // must not drop each other's line.
+        _entries.update { (it + entry).takeLast(MAX_ENTRIES) }
     }
 }

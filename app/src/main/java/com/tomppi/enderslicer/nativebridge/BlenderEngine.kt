@@ -69,6 +69,9 @@ object BlenderEngine {
     @Volatile var onStlExported: ((File) -> Unit)? = null
         set(value) {
             field = value
+            // A detach must not drain the queue: claiming a queued export and then
+            // invoking nobody drops it for good (the poller has already claimed it).
+            if (value == null) return
             // An export written before the listener attached (typically the
             // AI finished a generation while the UI was still starting) still
             // shows up: replay the newest one.
@@ -450,8 +453,16 @@ object BlenderEngine {
             // already claimed, so the poller will not offer it again.
             val listener = synchronized(pendingExports) {
                 val attached = onStlExported
-                if (attached == null && pendingExports.none { it.absolutePath == file.absolutePath }) {
-                    pendingExports.add(file)
+                if (attached == null) {
+                    // One queued entry per path, the NEWEST revision: a re-export of a
+                    // queued path replaces it, so the setter replays the fresh file and
+                    // never the stale one it superseded.
+                    val queued = pendingExports.firstOrNull { it.absolutePath == file.absolutePath }
+                    when {
+                        queued == null -> pendingExports.add(file)
+                        file.lastModified() >= queued.lastModified() ->
+                            pendingExports[pendingExports.indexOf(queued)] = file
+                    }
                 }
                 attached
             }

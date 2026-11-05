@@ -92,4 +92,10 @@ class PlateSessionSummaryTest {
         assertEquals("Skirt 1x", adhesionLabel(0.0, 1))
         assertEquals("Brim 2.5 mm", adhesionLabel(2.5, 1))
     }
+
+    /** Adhesion None is "None", not the "Skirt 0x" a zero loop count used to spell. */
+    @Test
+    fun `adhesion says None when neither a brim nor a skirt is set`() {
+        assertEquals("None", adhesionLabel(0.0, 0))
+    }
 }

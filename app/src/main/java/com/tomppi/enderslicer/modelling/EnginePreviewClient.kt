@@ -9,6 +9,7 @@ import java.io.File
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 
 /** What the engine's scene holds, as opposed to what the app last sent it. */
 data class SceneSummary(
@@ -47,11 +48,17 @@ class EnginePreviewClient(
     private val tokenFile: File? = null,
 ) : Closeable {
 
-    private var socket: Socket? = null
-
-    /** Set by [close]; no command may open a socket after that. */
+    /** Set by [close]; no command may run after that. */
     @Volatile private var closed = false
     private var cachedToken: String? = null
+
+    /**
+     * The one shared connection to this engine. The engine serves one connection at a
+     * time, so every caller in the app - the previews, the importers, the agent's tool
+     * surface - interleaves whole commands on this client instead of starving the others
+     * on rival sockets.
+     */
+    private val wire = com.tomppi.enderslicer.agent.engine.EngineWireClient.shared(host, port) { token() }
 
     /**
      * [value] as a Python string literal.
@@ -80,9 +87,12 @@ class EnginePreviewClient(
      * The engine's reader accumulates bytes until they parse as JSON and
      * answers with a single object per command, so there is no framing to agree
      * on beyond "read until it parses".
+     *
+     * Kotlin-visible rather than private because a unit test drives it against a socket it
+     * owns; the engine's own socket is not something a test can hold.
      */
     @Synchronized
-    private fun command(
+    internal fun command(
         type: String,
         params: JSONObject,
         timeoutMs: Int = READ_TIMEOUT_MS,
@@ -94,96 +104,23 @@ class EnginePreviewClient(
         // Every command the app sends is engine activity: re-arm the keeper's lease
         // so a long import is not raced by a CPU that is suspending.
         com.tomppi.enderslicer.nativebridge.BlenderEngine.keepAwake()
-        val body = JSONObject()
-            .put("type", type)
-            .put("params", params)
-        // The engine refuses anything without it - ping included - so a
-        // co-installed app cannot reach this socket and run Python as us.
-        token()?.let { body.put("token", it) }
-        val payload = body.toString().toByteArray(Charsets.UTF_8)
-
-        repeat(2) { attempt ->
-            val active = ensureSocket(timeoutMs)
-            try {
-                active.getOutputStream().apply { write(payload); flush() }
-                return JSONObject(readJson(active))
-            } catch (error: Throwable) {
-                // A dead socket is expected whenever the engine restarts with
-                // the app, so drop it and reconnect once before giving up.
-                discardSocket()
-                if (attempt == 1) throw error
-            }
+        return try {
+            wire.command(type, params, timeoutMs)
+        } catch (timeout: com.tomppi.enderslicer.agent.engine.EngineTimeoutException) {
+            // A timeout is reported as this client has always reported it: the engine
+            // accepted the command and runs what it accepted, so a caller must not apply
+            // the same motion twice.
+            throw SocketTimeoutException(timeout.message)
         }
-        error("unreachable")
     }
-
-    private fun ensureSocket(timeoutMs: Int): Socket {
-        check(!closed) { "The preview client is closed" }
-        socket?.let {
-            if (!it.isClosed && it.isConnected) {
-                // Per command, not per socket: an import needs 180 s while a
-                // render needs 20, and whichever connected first used to fix the
-                // timeout for every later command on that connection.
-                it.soTimeout = timeoutMs
-                return it
-            }
-        }
-        val created = Socket()
-        created.tcpNoDelay = true
-        created.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-        // Generous: the first GPU render of a process compiles the Workbench
-        // shaders and can take a few hundred milliseconds.
-        created.soTimeout = timeoutMs
-        socket = created
-        return created
-    }
-
-    private fun discardSocket() {
-        runCatching { socket?.close() }
-        socket = null
-    }
-
-    private fun readJson(active: Socket): String = readReply(active.getInputStream())
 
     /**
-     * One reply, bounded, and decoded only once it can plausibly be complete.
-     *
-     * A reply is a JSON control message, not a payload - the pixels come back
-     * through a file - so a peer that holds the port open must not be able to
-     * grow this buffer without end. Re-decoding and re-parsing the whole buffer
-     * once per 16 KB chunk was also quadratic work for whoever streamed it, so
-     * the decode only runs when the last non-space byte can close the object.
-     *
-     * Kotlin-visible rather than private because a unit test drives this with a
-     * stream it can end; the engine's socket is not something a test can hold.
+     * One reply, bounded, decoded whole and only once it can plausibly be complete.
+     * The shared wire parser, kept as this client's seam because a unit test drives it
+     * with a stream it can end - the engine's own socket is not something a test holds.
      */
-    internal fun readReply(input: InputStream): String {
-        val buffer = java.io.ByteArrayOutputStream()
-        val chunk = ByteArray(16 * 1024)
-        var lastSignificant = 0.toByte()
-        while (true) {
-            val read = input.read(chunk)
-            if (read < 0) error("Engine closed the connection")
-            buffer.write(chunk, 0, read)
-            for (index in 0 until read) {
-                val byte = chunk[index]
-                if (byte !in JSON_WHITESPACE) lastSignificant = byte
-            }
-            if (buffer.size() > MAX_REPLY_BYTES) {
-                error(
-                    "Engine reply exceeded the $MAX_REPLY_BYTES byte limit; " +
-                        "the engine is not answering with a control message",
-                )
-            }
-            if (lastSignificant != CLOSING_BRACE) continue
-            // Decode the whole buffer each time. Decoding each chunk on its own
-            // split any character that straddled a 16 KB boundary into U+FFFD.
-            val text = String(buffer.toByteArray(), Charsets.UTF_8)
-            // The reply is a complete JSON object with no terminator, so the
-            // only way to know it has all arrived is that it parses.
-            if (runCatching { JSONObject(text) }.isSuccess) return text
-        }
-    }
+    internal fun readReply(input: InputStream): String =
+        com.tomppi.enderslicer.agent.engine.EngineWireProtocol.readReply(input)
 
     /**
      * Asks the engine to stop serving.
@@ -381,8 +318,10 @@ class EnginePreviewClient(
         .getOrNull()
 
     override fun close() {
+        // The socket is shared with every other caller on this engine: closing it here
+        // would kill an agent command mid-flight. The flag stops this client's own
+        // commands; the shared wire reconnects whenever the engine restarts.
         closed = true
-        discardSocket()
     }
 
     companion object {

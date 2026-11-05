@@ -62,9 +62,6 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun CadScreen(
-    messages: List<AiChatMessage>,
-    busy: Boolean,
-    status: String?,
     /** Whether an agent is actually connected, for the caption under the view. */
     agentConnected: Boolean,
     /** What the engine itself is doing - starting, ready, or why it is not. */
@@ -121,7 +118,8 @@ fun CadScreen(
     /** A named view: Iso, Front, Top, Right. Re-frames the part as well as turning the camera. */
     onOrientation: (String) -> Unit = {},
     onPickUsed: () -> Unit,
-    onSend: (String) -> Unit,
+    /** Opens the floating Ask AI chat - the one chat surface. */
+    onOpenChat: () -> Unit = {},
     /**
      * Writes every shape in the engine's scene to its own STL, so the plate receives the parts
      * as separate objects. Multi-object printing starts here: a CAD scene holding several
@@ -133,8 +131,6 @@ fun CadScreen(
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var chatExpanded by rememberSaveable { mutableStateOf(true) }
-
     Column(modifier = modifier.fillMaxSize()) {
         Surface(tonalElevation = 3.dp) {
             Row(
@@ -162,8 +158,8 @@ fun CadScreen(
                 TextButton(onClick = onExportAll) {
                     Text("All to plate")
                 }
-                TextButton(onClick = { chatExpanded = !chatExpanded }) {
-                    Text(if (chatExpanded) "Hide chat" else "Chat")
+                TextButton(onClick = onOpenChat) {
+                    Text("Ask AI")
                 }
             }
         }
@@ -326,24 +322,6 @@ fun CadScreen(
             }
         }
 
-        if (chatExpanded) {
-            Surface(tonalElevation = 6.dp) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(280.dp),
-                ) {
-                    HorizontalDivider()
-                    ChatTranscript(
-                        messages = messages,
-                        busy = busy,
-                        status = status,
-                        onSend = onSend,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        }
     }
 }
 

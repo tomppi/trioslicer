@@ -1,6 +1,6 @@
 ---
 name: blender-mcp-engine
-description: Drive the Blender MCP socket engine embedded in the enderslicercura Android app (JSON protocol on 127.0.0.1:9876 via adb forward), including the STL export + hot-load handoff into the slicer UI.
+description: Drive the Blender engine embedded in the enderslicercura Android app through the app's unified MCP server (engine_select blender; the engine's own 9876 socket is the app's private channel), including the STL export + hot-load handoff into the slicer UI.
 whenToUse: When asked to modify, reshape, deepen or otherwise edit an existing model on the device - this is the only modelling environment there is, and the GPU box is not a substitute. Also when generating 3D models through the phone's embedded Blender engine, writing STL handoff files, debugging MCP command responses, or checking that an exported model reached the app.
 ---
 
@@ -14,38 +14,38 @@ The app bundle (package `com.tomppi.enderslicercura`) runs Blender 3.6 **inside 
 
 ## 1. Connect
 
-**New in 1.9.5 - no adb forward needed.** The CAD agent sheet's **Reachable on the network**
-switch publishes this bridge (and the CAD engine's 9877 and SolidCraft's 9878) on the phone's
-own network address at the same port. With the switch on, the row's **Copy** puts the address
-AND Blender's token on the clipboard as one line, after the app's fingerprint prompt:
-`tcp://<phone address>:9876 token=<token>`. Use that line directly - the token is already in it,
-so there is no separate token copy. A row whose engine has never started has no token file yet
-and says so; start the Blender engine, then Copy. The adb forward below is the fallback for a
-phone with the switch off, or for a development phone (there, *Blender → Copy MCP token* is the
-token-only path). The app's forwarder is transport only: it checks no token, adds no
-authentication and logs no message content.
+The app hands all three modelling engines to external agents through **one MCP server** -
+see [trioslicer-engines](trioslicer-engines.md) for the whole picture. For this
+engine the two facts are: connect once, and the selector points you at Blender.
 
-- **Device: `<phone-tailscale-ip>:5555` - the tailnet address, and the one to use.** It works from
-  anywhere the tailnet is up, which the LAN address does not: that one needs the phone and the
-  host on the same WiFi, so it disappears the moment either moves. Connect once with
-  `adb connect <phone-tailscale-ip>:5555`, then address it as `adb -s <phone-tailscale-ip>:5555 ...`.
-  (`<phone-lan-ip>:5555` still works on the LAN and is a fine fallback when the tailnet is down.)
-  Root shell via `su -c`. Verified: phone-host, shell context `u:r:shell:s0`.
-- **Never drive the device's UI.** No `input swipe`, `input tap`, `input keyevent`, no `screencap`. The phone is the user's; it is not an observation port. Looking at your model is section 4, and it happens inside Blender.
-- **Do not invent directories inside the app's private storage.** Two directories exist for handoff - `files/blender/imports/` (model into the engine) and `files/blender/exports/` (engine out to the app) - and nothing else belongs there. An agent once made up `files/blender/incoming/` with `su`, copied a 67 MB mesh into it and left it behind: a root-owned directory, in a place the app cannot write, that no code had ever heard of. If you need somewhere to put a file first, that is what the drop box is for.
-- **Drop box: anything you push to the device goes in `/sdcard/Download/dsh-agent/`, never the Download root.** Models stay there - it is the copy the user can find; probe scripts and screenshots are scaffolding and come back out.
-- Forward (required): `adb -s <phone-tailscale-ip>:5555 forward tcp:9876 tcp:9876`. The MCP socket MUST bind `localhost` (the addon's default; app passes `BLENDER_MCP_HOST` via the C++ wrapper). **Do NOT bind the Tailscale/CGNAT IP** (100.64.0.0/10): Tailscale Android does not deliver inbound TCP to app sockets (SYN times out / ports RST from tailscaled's userspace stack; verified 2026-09-09), so a tailnet-bound socket breaks the adb-forward loopback path and is unreachable anyway.
-- The engine lives only while the app process runs. Relaunch: `adb shell am start -n com.tomppi.enderslicercura/com.tomppi.enderslicer.MainActivity`. First launch after an install can hit a transient wrapper/zygote race ("start timeout", signal 9) — just launch again.
-- Quick liveness: `adb shell su -c 'ss -tlnp | grep 9876'` (owner pid should be the app).
+    tcp://<phone-tailscale-ip>:9878 token=<the token the app printed>
 
-**Exposure - turn the listener off when you are done.** This section needs adbd on TCP 5555, and
-the phone binds that port on **every** interface (`*:5555`, verified on the device), so it is
-reachable from the LAN and the tailnet, not only from the host you connect from. adb authorizes a
-host by its adb key, not by a password the phone asks for per connection: any host the phone has
-trusted - or that gets trusted while 5555 is open - has a shell as `u:r:shell:s0`, and every
-`su -c` command below then reads the app's private storage, the MCP token included. The MCP
-socket is no more private than the adb forward that publishes it. Close it after a session with
-`adb usb`, or turn **Settings ▸ Developer options ▸ Wireless debugging** off.
+Newline-delimited JSON-RPC 2.0 (MCP), every message carrying the token at the top level or
+inside params. Run engine_select {"engine": "blender"} first - its answer names the tools
+and their rules - then call this document's commands as tools/call tools by their own names
+(execute_code, get_scene_info, get_object_info, get_world_state_snapshot, export_stl,
+get_addon_info).
+
+**Reaching the port.** The CAD agent sheet's **Reachable on the network** switch publishes the
+loopback listener on the phone's tailnet address (TailSocks root mode, node phone-host) and its
+**Copy** row puts the whole tcp:// line on the clipboard in one paste. Without a tailnet:
+adb -s <phone-tailscale-ip>:5555 forward tcp:9878 tcp:9878, then tcp://127.0.0.1:9878. The token is
+app-private storage (files/agent/engines_mcp_token.txt); the Blender menu's **Copy MCP token**
+copies just the value - ask the user rather than reaching for su.
+
+**The engine's own socket (9876) is the app's private channel now** - the JSON wire in
+section 2 is what the app speaks to the engine; you speak MCP to 9878. It stays as the
+background that explains the answers' shape, and the debugging notes.
+
+**Exposure.** An adb-based session needs adbd on TCP 5555, which binds every interface
+(adb's trust is per-host-key, not per-connection): close it with adb usb when the session
+ends. Reachable on the network is a promise to the user's tailnet - turn the switch off when
+you are done.
+
+**Lifecycle.** The engine starts when the app does (and the keeper notification says so);
+engine_status reports it.
+
+
 ## 2. Protocol
 
 Plain TCP, one JSON object per request. Either a single write with no terminator (what the app does) or newline-delimited requests are accepted; two requests in one write no longer hang the connection.
@@ -55,8 +55,6 @@ Plain TCP, one JSON object per request. Either a single write with no terminator
 ```bash
 adb -s <phone-tailscale-ip>:5555 shell cat /data/user/0/com.tomppi.enderslicercura/files/blender/scripts/startup/blender_mcp_token.txt
 ```
-
-What the token is worth - what holding it grants, its limits, how to rotate it - is in [MCP_TOKEN_SECURITY.md](../MCP_TOKEN_SECURITY.md).
 
 **On a phone without root** the token cannot be read from the device at all: tap **Blender → Copy MCP token** in the app, paste that value to the agent, and send it with every request. The app marks the clip sensitive so the system does not preview it.
 
@@ -127,7 +125,7 @@ Errors: `{"status": "error", "message": "<exc>"}`. A command run in `blender -b`
    It refuses anything that is not a **whole** STL, because a binary STL declares its own length: it reads the triangle count from the header and requires `84 + 50 x triangles == filesize`, with an ASCII export required to end in `endsolid`. So a half-written file can no longer be imported.
 
    That guard is a safety net, not a licence to write carelessly. Growing a file in place still costs a probe on every poll and, before the guard existed, dispatched **eleven revisions of one export - seven of them truncated mid-triangle - and left 486 MB of staged copies** in `files/models/`. Write atomically (step 1).
-3. On dispatch the app stages a private copy `files/models/blender-<nanoTime>.stl` and adds it to the plate as its own object, selected ("Imported … from the Blender engine"). It does not replace what was already there. **Always export a fresh unique/canonical filename per generation** — size+mtime signature means a rewrite of the same path only re-fires if mtime changes.
+3. On dispatch the app stages a private copy `files/models/blender-<nanoTime>.stl` and swaps it into the UI ("Imported … from the Blender engine"). **Always export a fresh unique/canonical filename per generation** — size+mtime signature means a rewrite of the same path only re-fires if mtime changes.
 4. Verify: `adb shell su -c 'ls -la /data/user/0/com.tomppi.enderslicercura/files/models/'` — a new `blender-*.stl` proves the full chain.
 
 ## 4. Look at your model - required, and do it freely

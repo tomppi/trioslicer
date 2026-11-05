@@ -327,10 +327,14 @@ class AnnotationState {
             endAdjust()
             return null
         }
+        // A REGION is "a closed loop - a region to act on": it is stored closed, so the
+        // exported length_mm counts the closing edge and the document does not declare a
+        // region unclosed.
         val chain = AnnotationChain(
             id = nextChainId++,
             kind = kind,
             points = seriesPoints.toList(),
+            closed = kind == AnnotationKind.REGION,
         )
         chainList += chain
         seriesPoints.clear()

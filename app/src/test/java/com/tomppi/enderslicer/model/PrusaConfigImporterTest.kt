@@ -138,6 +138,44 @@ class PrusaConfigImporterTest {
         assertEquals(5, result.settings.perimeters)
     }
 
+    /**
+     * A multi-tool profile writes per-extruder lists ("210,215") and this app prints with one
+     * extruder, so the first slot is the value. The import used to replace the commas with dots
+     * and hand the whole list to one parse - "1.75,1.75" became "1.75.1.75" - so every
+     * comma-listed value silently fell back to the app's defaults while the import reported
+     * success.
+     */
+    @Test
+    fun multiExtruderListsTakeTheirFirstSlot() {
+        val result = PrusaConfigImporter.parse(
+            """
+            [print]
+            layer_height = 0.2
+            print_speed = 70,80
+            [filament]
+            filament_diameter = 1.75,2.85
+            temperature = 210,215
+            first_layer_temperature = 215,220
+            extrusion_multiplier = 1.05,1.10
+            [printer]
+            nozzle_diameter = 0.4,0.6
+            extruder_count = 2
+            retraction_length = 0.8,1.2
+            retraction_speed = 45,50
+            """.trimIndent(),
+        )
+
+        assertEquals(70.0, result.settings.printSpeedMmPerSecond, 1e-9)
+        assertEquals(210, result.settings.nozzleTemperatureC)
+        assertEquals(215, result.settings.firstLayerTemperatureC)
+        assertEquals(105.0, result.settings.extrusionMultiplierPercent, 1e-9)
+        assertEquals(0.8, result.settings.retractionLengthMm, 1e-9)
+        assertEquals(45.0, result.settings.retractionSpeedMmPerSecond, 1e-9)
+        assertEquals(1.75, result.filamentDiameterMm ?: -1.0, 1e-9)
+        assertEquals(0.4, result.nozzleSizeMm ?: -1.0, 1e-9)
+        assertEquals(2, result.extruders)
+    }
+
     @Test
     fun missingKeysFallBackToAppDefaults() {
         val result = PrusaConfigImporter.parse("[print]\nlayer_height = 0.35")

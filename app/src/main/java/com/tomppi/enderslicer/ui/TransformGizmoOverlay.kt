@@ -90,6 +90,8 @@ internal fun TransformGizmoOverlay(
     modelName: String?,
     /** False while an operation runs: splitting and removing both wait for it. */
     actionsEnabled: Boolean,
+    /** Why Split and Remove are disabled, when they are: a dead button says nothing. */
+    actionsDisabledReason: String? = null,
     /** Opens the Split tool on the object the card belongs to. */
     onSplit: () -> Unit,
     /** Takes the object the card belongs to off the plate, once confirmed. */
@@ -243,6 +245,13 @@ internal fun TransformGizmoOverlay(
                             contentDescription = "Remove model",
                         )
                     }
+                }
+                if (!actionsEnabled && actionsDisabledReason != null) {
+                    Text(
+                        text = actionsDisabledReason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

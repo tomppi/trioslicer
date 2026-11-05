@@ -182,7 +182,16 @@ class KlipperPrinterRepository(
      */
     private val connection = KlipperConnectionGeneration()
 
-    /** The print that is running, so that its record knows when it started. */
+    /**
+     * The print that is running, so that its record knows when it started.
+     *
+     * Read and written from the connection's reader thread, the watch loop and a screen
+     * calling reconnect() - so every look and change of these three is on
+     * [printBookkeeping]: they are one piece of bookkeeping (a print starting is a
+     * read-modify-write of all three), and an unsynchronised one loses or duplicates
+     * the record of a print.
+     */
+    private val printBookkeeping = Any()
     private var startedAt = 0L
     private var startedFile = ""
     private var lastPrintState: String? = null
@@ -268,26 +277,28 @@ class KlipperPrinterRepository(
      * itself, is never touched from here.
      */
     private fun recordPrintLostWithTheHost(reason: String?, believedRunning: Boolean = false) {
-        val current = _state.value
-        val wasRunning = believedRunning || current.isPrinting || current.isPaused ||
-            lastPrintState == "printing" || lastPrintState == "paused"
-        if (!wasRunning) return
-        val name = startedFile.ifBlank { current.printFileName.orEmpty() }
-        _history.value = printHistory.append(
-            KlipperPrintRecord(
-                fileName = name,
-                startedAtMillis = startedAt.takeIf { it > 0 }
-                    ?: (System.currentTimeMillis() - ((current.printDurationSeconds ?: 0.0) * 1000).toLong()),
-                durationSeconds = current.printDurationSeconds ?: 0.0,
-                filamentMillimetres = current.printFilamentUsed ?: 0.0,
-                outcome = "interrupted",
-                layers = current.printLayers?.current,
-            ),
-        )
-        startedAt = 0L
-        startedFile = ""
-        lastPrintState = "standby"
-        KlipperNotifications.printInterrupted(application, name.takeIf { it.isNotBlank() }, reason)
+        synchronized(printBookkeeping) {
+            val current = _state.value
+            val wasRunning = believedRunning || current.isPrinting || current.isPaused ||
+                lastPrintState == "printing" || lastPrintState == "paused"
+            if (!wasRunning) return
+            val name = startedFile.ifBlank { current.printFileName.orEmpty() }
+            _history.value = printHistory.append(
+                KlipperPrintRecord(
+                    fileName = name,
+                    startedAtMillis = startedAt.takeIf { it > 0 }
+                        ?: (System.currentTimeMillis() - ((current.printDurationSeconds ?: 0.0) * 1000).toLong()),
+                    durationSeconds = current.printDurationSeconds ?: 0.0,
+                    filamentMillimetres = current.printFilamentUsed ?: 0.0,
+                    outcome = "interrupted",
+                    layers = current.printLayers?.current,
+                ),
+            )
+            startedAt = 0L
+            startedFile = ""
+            lastPrintState = "standby"
+            KlipperNotifications.printInterrupted(application, name.takeIf { it.isNotBlank() }, reason)
+        }
     }
 
     /** Connect, take a snapshot, subscribe, then hold the connection until it drops. */
@@ -353,7 +364,9 @@ class KlipperPrinterRepository(
         // What the app believed about the print before this connection was made. The drop
         // that ended the last one deliberately left that belief alone on the remote route,
         // and the first snapshot is what settles it - see [KlipperPrintLoss].
-        val printWasRunning = lastPrintState == "printing" || lastPrintState == "paused"
+        val printWasRunning = synchronized(printBookkeeping) {
+            lastPrintState == "printing" || lastPrintState == "paused"
+        }
         updateIfCurrent(mine) { previous ->
             val next = previous.copy(
                 connected = true,
@@ -524,33 +537,35 @@ class KlipperPrinterRepository(
      * it ended.
      */
     private fun recordPrintIfItEnded() {
-        val current = _state.value
-        val printState = current.printState
-        if (printState == lastPrintState) return
-        val previous = lastPrintState
-        lastPrintState = printState
-        when {
-            // Paused and back is the same print, and klippy reports "printing" again
-            // when it resumes - so only a state that is not a resume starts one.
-            printState == "printing" && previous != "paused" -> {
-                startedAt = System.currentTimeMillis()
-                startedFile = current.printFileName.orEmpty()
-            }
-            printState == "complete" || printState == "cancelled" || printState == "error" -> {
-                val finished = startedAt > 0
-                _history.value = printHistory.append(
-                    KlipperPrintRecord(
-                        fileName = startedFile.ifBlank { current.printFileName.orEmpty() },
-                        startedAtMillis = startedAt.takeIf { finished }
-                            ?: (System.currentTimeMillis() - ((current.printDurationSeconds ?: 0.0) * 1000).toLong()),
-                        durationSeconds = current.printDurationSeconds ?: 0.0,
-                        filamentMillimetres = current.printFilamentUsed ?: 0.0,
-                        outcome = printState,
-                        layers = current.printLayers?.current,
-                    ),
-                )
-                startedAt = 0L
-                startedFile = ""
+        synchronized(printBookkeeping) {
+            val current = _state.value
+            val printState = current.printState
+            if (printState == lastPrintState) return
+            val previous = lastPrintState
+            lastPrintState = printState
+            when {
+                // Paused and back is the same print, and klippy reports "printing" again
+                // when it resumes - so only a state that is not a resume starts one.
+                printState == "printing" && previous != "paused" -> {
+                    startedAt = System.currentTimeMillis()
+                    startedFile = current.printFileName.orEmpty()
+                }
+                printState == "complete" || printState == "cancelled" || printState == "error" -> {
+                    val finished = startedAt > 0
+                    _history.value = printHistory.append(
+                        KlipperPrintRecord(
+                            fileName = startedFile.ifBlank { current.printFileName.orEmpty() },
+                            startedAtMillis = startedAt.takeIf { finished }
+                                ?: (System.currentTimeMillis() - ((current.printDurationSeconds ?: 0.0) * 1000).toLong()),
+                            durationSeconds = current.printDurationSeconds ?: 0.0,
+                            filamentMillimetres = current.printFilamentUsed ?: 0.0,
+                            outcome = printState,
+                            layers = current.printLayers?.current,
+                        ),
+                    )
+                    startedAt = 0L
+                    startedFile = ""
+                }
             }
         }
     }
@@ -1247,9 +1262,11 @@ class KlipperPrinterRepository(
         // failure report the OLD host's print as interrupted - which is the same leak one
         // step further on: the app has to forget a print when it stops watching the machine
         // that was printing it.
-        startedAt = 0L
-        startedFile = ""
-        lastPrintState = null
+        synchronized(printBookkeeping) {
+            startedAt = 0L
+            startedFile = ""
+            lastPrintState = null
+        }
         // And the state itself starts again describing no printer, naming the host being
         // connected to. Clearing only "connected" and "error" left the previous host's
         // print, numbers and identity on screen - which is how the Device tab came to show
@@ -1324,6 +1341,7 @@ class KlipperPrinterRepository(
     suspend fun printFile(sourcePath: String, name: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
+                printStartRefusal()?.let { throw IllegalStateException(it) }
                 val fileName = KlipperPrint.fileName(name)
                 val source = File(sourcePath)
                 //
@@ -1340,26 +1358,49 @@ class KlipperPrinterRepository(
                 } else {
                     copyForPrinting(source, File(gcodeDirectory(), fileName))
                 }
-                // The machine's live state is cleared before the file is loaded, not by the
-                // file: klippy keeps the Z offset and the M220/M221 factors across prints, and
-                // the start G-code of a file the user already has will not have been told to.
-                sendScript(KlipperScripts.resetLiveOverrides())
-                val command = "SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName)
-                append(command, KlipperConsoleLine.Source.SENT)
                 if (client == null) {
                     // The upload got through and the connection went under it. The file is on
                     // the host, so this is worth one reconnect rather than an error that reads
-                    // like the host refused something it actually accepted.
+                    // like the host refused something it actually accepted. Before the first
+                    // send below, because a send to no connection throws its own "not
+                    // connected" and would take this recovery with it.
                     reconnect()
                 }
                 val connected = client ?: throw IllegalStateException(
                     "the file is on the printer's host, but the connection dropped - print " +
                         "it from Files, which does not upload it again",
                 )
+                // The machine's live state is cleared before the file is loaded, not by the
+                // file: klippy keeps the Z offset and the M220/M221 factors across prints, and
+                // the start G-code of a file the user already has will not have been told to.
+                sendScript(KlipperScripts.resetLiveOverrides())
+                val command = "SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName)
+                append(command, KlipperConsoleLine.Source.SENT)
                 connected.gcodeAsync(command)
                 fileName
             }.onFailure { e -> _state.update { it.copy(error = e.message) } }
         }
+
+    /**
+     * Why no print may be started right now, or null when one may be.
+     *
+     * The Files tab's rule, made the repository's: starting a print sends
+     * [KlipperScripts.resetLiveOverrides] first, which clears the babystep Z offset and
+     * the M220/M221 factors of the print that is already running - and klippy then
+     * refuses the start itself ("SD busy", or a reset of a paused print). The start is
+     * refused before anything is sent, so a double tap or a start that lost a race
+     * cannot rewrite the live state of a print in progress. Paused counts as busy the
+     * way the tab counts it: klippy's own pause_resume state included.
+     */
+    private fun printStartRefusal(): String? {
+        val current = _state.value
+        val printing = current.isPrinting
+        val paused = current.isPaused || current.isPausedByKlipper
+        if (!printing && !paused) return null
+        val state = if (printing) "printing" else "paused"
+        return "the printer is $state: starting another print would reset the running print's " +
+            "babystep Z offset and its M220/M221 factors"
+    }
 
     /**
      * The files on the printer's virtual SD card, newest first.
@@ -1423,6 +1464,12 @@ class KlipperPrinterRepository(
     /** Start one of those files printing, by the name the printer knows it by. */
     suspend fun printGcodeFile(name: String) {
         val fileName = KlipperPrint.fileName(name)
+        // The same refusal as printFile, reported the way the sends below report their
+        // failures: on the state, where the Files tab shows what the printer refused.
+        printStartRefusal()?.let { reason ->
+            _state.update { it.copy(error = reason) }
+            return
+        }
         sendScript(KlipperScripts.resetLiveOverrides())
         append("SDCARD_PRINT_FILE FILENAME=" + KlipperScripts.quoted(fileName), KlipperConsoleLine.Source.SENT)
         withContext(Dispatchers.IO) {
@@ -1573,7 +1620,25 @@ class KlipperPrinterRepository(
         // configuration can be written for a host this app is not driving - which is exactly
         // when a broken one needs replacing - and then there is no connection to send it down.
         // This is MoonrakerFiles.restart()'s own reasoning, and why it exists.
-        if (written) remote.restart()
+        if (written) {
+            // A restart ends a print on that computer, and the app may not be driving it:
+            // the same print-state guard the sync path carries. Only the restart is held
+            // back - the write stands either way, because the values saved here are the
+            // ones tuned during a print - and it is said out loud, because a saved file
+            // the host has not read back is not yet the configuration it is running.
+            // An unknown state is not a reason to refuse; a known print is.
+            val state = remote.printState()?.lowercase()
+            if (state == "printing" || state == "paused") {
+                _state.update {
+                    it.copy(
+                        error = "PC Klipper is " + state + ": the configuration was saved " +
+                            "but is not the running one - the restart would end the print",
+                    )
+                }
+            } else {
+                remote.restart()
+            }
+        }
         staged.delete()
         written
     }
@@ -2009,4 +2074,3 @@ internal fun resolveConfigText(
     deviceText: () -> String?,
     remoteText: () -> String?,
 ): String? = if (remoteConfigured) remoteText() else deviceText()
-

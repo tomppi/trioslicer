@@ -25,7 +25,7 @@ class AskAiDoorSourceTest {
     }
 
     @Test
-    fun theBlenderMenusAskAiDoorIsGoneAndTheRailIsTheOnlyDoor() {
+    fun theMenusAskAiDoorIsGoneAndEveryDoorGoesThroughOneHelper() {
         val app = source("EnderSlicerApp.kt")
 
         assertFalse(
@@ -92,7 +92,7 @@ class AskAiDoorSourceTest {
             "pollForReply\\(\\s*chat,\\s*\\{ viewModel\\.cadConversations = " +
                 "viewModel\\.cadConversations\\.replaceHarness\\(it\\) \\}",
         ).findAll(app).count()
-        assertEquals("both harness ask paths poll into the harness list", 2, polls)
+        assertEquals("the one harness ask path polls into the harness list", 1, polls)
         val resume = Regex(
             "resumeReplyIfRunning\\(\\s*cad,\\s*\\{ viewModel\\.cadConversations = " +
                 "viewModel\\.cadConversations\\.replaceHarness\\(it\\) \\}",

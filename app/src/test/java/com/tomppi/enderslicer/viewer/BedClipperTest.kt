@@ -363,6 +363,28 @@ class BedClipperTest {
     }
 
     @Test
+    fun cappingStillClosesTheCutFaceOnPlacedGeometry() {
+        // A box that has been rotated and placed: its corners are ordinary
+        // floats, so the two walk-ordered float expressions that meet at a
+        // shared crossing disagree in the last bits and the exact-key chain
+        // join used to drop the whole cap, silently leaving the half open. The
+        // corners are written out as literals so the test pins the float
+        // behaviour exactly.
+        val mesh = mesh(placedBoxTriangles())
+        val offset = 13.962442f
+
+        // Both halves: the crossings are ordered by which corner is below the
+        // plane, not by the triangle's winding.
+        listOf(Half.HIGH, Half.LOW).forEach { half ->
+            val open = clip(mesh, ModelPlacement.Axis.Z, offset, half)
+            val closed = clipClosed(mesh, ModelPlacement.Axis.Z, offset, half)
+
+            assertTrue("the cut face is capped, not dropped", open.triangleCount < closed.triangleCount)
+            assertTrue("the capped half is a closed solid", MeshFixtures.isClosed(closed))
+        }
+    }
+
+    @Test
     fun theCapFacesTheHalfThatWasRemoved() {
         val mesh = mesh(box(halfX = 1f, halfY = 1f, halfZ = 1.5f, centerZ = -0.5f))
 
@@ -518,6 +540,54 @@ class BedClipperTest {
             triangles.forEach { cornersOfTriangle ->
                 val ordered = if (reversed) cornersOfTriangle.reversedArray() else cornersOfTriangle
                 ordered.forEach { corner ->
+                    floats[out++] = corners[corner][0]
+                    floats[out++] = corners[corner][1]
+                    floats[out++] = corners[corner][2]
+                    floats[out++] = 0f
+                    floats[out++] = 0f
+                    floats[out++] = 1f
+                }
+            }
+        }
+        return floats
+    }
+
+    /**
+     * The twelve triangles of a box that has been rotated and placed, its
+     * corners written out as float literals.
+     *
+     * [boxTriangles] cannot stand in for this: its corners are axis-aligned and
+     * binary-exact, where the two expressions for a shared crossing point
+     * coincide bitwise and the cap cannot fail to chain.
+     */
+    private fun placedBoxTriangles(): FloatArray {
+        val corners = arrayOf(
+            floatArrayOf(156.92782f, 87.900588f, 33.56142f),
+            floatArrayOf(149.90757f, 76.645698f, 21.6696929f),
+            floatArrayOf(191.65092f, 91.036598f, -16.593563f),
+            floatArrayOf(198.671157f, 102.291488f, -4.7018346f),
+            floatArrayOf(174.80723f, 65.171287f, 44.518447f),
+            floatArrayOf(167.78698f, 53.9164f, 32.62672f),
+            floatArrayOf(209.53033f, 68.307296f, -5.6365365f),
+            floatArrayOf(216.55058f, 79.562187f, 6.2551922f),
+        )
+        val faces = arrayOf(
+            intArrayOf(0, 3, 2, 1),
+            intArrayOf(4, 5, 6, 7),
+            intArrayOf(0, 1, 5, 4),
+            intArrayOf(1, 2, 6, 5),
+            intArrayOf(2, 3, 7, 6),
+            intArrayOf(3, 0, 4, 7),
+        )
+        val floats = FloatArray(faces.size * 2 * 18)
+        var out = 0
+        faces.forEach { face ->
+            val triangles = listOf(
+                intArrayOf(face[0], face[1], face[2]),
+                intArrayOf(face[0], face[2], face[3]),
+            )
+            triangles.forEach { cornersOfTriangle ->
+                cornersOfTriangle.forEach { corner ->
                     floats[out++] = corners[corner][0]
                     floats[out++] = corners[corner][1]
                     floats[out++] = corners[corner][2]

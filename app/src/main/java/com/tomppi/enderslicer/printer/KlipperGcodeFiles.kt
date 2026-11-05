@@ -44,12 +44,15 @@ internal object KlipperGcodeFiles {
      *
      * Only [KlipperPrint.fileName]'s shape is listed, which is what klippy itself will
      * print: a stray file that is not g-code is not offered, because asking the printer
-     * to print it is an error a user should not be able to make from a list.
+     * to print it is an error a user should not be able to make from a list. The
+     * extension check is case-sensitive for the same reason klippy's is: its
+     * virtual_sdcard only opens "gcode" extensions, so a *.GCODE file listed here would
+     * be offered for printing and then refused with "Unable to open file".
      */
     fun list(directory: File): List<KlipperGcodeFile> {
         val entries = directory.listFiles() ?: return emptyList()
         return entries
-            .filter { it.isFile && it.name.endsWith(".gcode", ignoreCase = true) }
+            .filter { it.isFile && it.name.endsWith(".gcode") }
             .sortedByDescending { it.lastModified() }
             .map { file -> read(file) }
     }
@@ -243,26 +246,37 @@ internal object KlipperGcodeFiles {
  * gone.
  */
 internal class KlipperPrintHistory(private val file: File) {
-    /** Records, newest first. */
-    fun load(): List<KlipperPrintRecord> = runCatching {
-        val text = file.takeIf { it.isFile }?.readText().orEmpty()
-        if (text.isBlank()) return emptyList()
-        val array = JSONArray(text)
-        (0 until array.length()).mapNotNull { index ->
-            array.optJSONObject(index)?.let { KlipperPrintRecord.from(it) }
-        }
-    }.getOrDefault(emptyList())
+    /**
+     * One file, one record set, reached from several threads.
+     *
+     * append is a read-modify-write: the watcher records prints as they end while a
+     * screen can clear the list, and without the lock the two lose each other's writes
+     * or leave the file half-written - which load then reads as a whole lost history.
+     */
+    private val lock = Any()
 
-    /** Add a record, and answer with the whole list. */
-    fun append(record: KlipperPrintRecord): List<KlipperPrintRecord> {
-        val records = (listOf(record) + load()).take(CAPACITY)
-        write(records)
-        return records
+    /** Records, newest first. */
+    fun load(): List<KlipperPrintRecord> = synchronized(lock) {
+        runCatching {
+            val text = file.takeIf { it.isFile }?.readText().orEmpty()
+            if (text.isBlank()) return emptyList()
+            val array = JSONArray(text)
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.let { KlipperPrintRecord.from(it) }
+            }
+        }.getOrDefault(emptyList())
     }
 
-    fun clear(): List<KlipperPrintRecord> {
+    /** Add a record, and answer with the whole list. */
+    fun append(record: KlipperPrintRecord): List<KlipperPrintRecord> = synchronized(lock) {
+        val records = (listOf(record) + load()).take(CAPACITY)
+        write(records)
+        records
+    }
+
+    fun clear(): List<KlipperPrintRecord> = synchronized(lock) {
         write(emptyList())
-        return emptyList()
+        emptyList()
     }
 
     private fun write(records: List<KlipperPrintRecord>) {

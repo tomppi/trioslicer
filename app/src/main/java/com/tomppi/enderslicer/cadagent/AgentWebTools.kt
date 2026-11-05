@@ -359,7 +359,19 @@ class WebToolClient(
         try {
             val bytes = body.toString().toByteArray(Charsets.UTF_8)
             // Buffered for the same reason the chat client is: an error body must survive a 401.
-            connection.outputStream.use { output -> output.write(bytes) }
+            try {
+                connection.outputStream.use { output -> output.write(bytes) }
+            } catch (error: SocketTimeoutException) {
+                // The connect phase, not the read: this is the CONNECT budget, and naming
+                // the read budget here claimed 60 s for a failure at 20 s.
+                if (cancelled) throw AgentException("cancelled", "Stopped")
+                throw AgentException(
+                    "timeout",
+                    "The web tool at " + path + " could not be reached within " +
+                        (connectTimeoutMillis / 1000) + " s (connect timeout).",
+                    error,
+                )
+            }
             val status = connection.responseCode
             val text = readBody(connection, status in 200..299)
             log(

@@ -43,7 +43,12 @@ class BlenderEngineService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildNotification(this)
+        // A START_STICKY restart arrives with a null intent after the process died, and
+        // the engine died with it. The keeper must not advertise a running engine - or arm
+        // its wake lock - for one that no longer exists: it posts the honest sentence and
+        // stops instead.
+        val engineRunning = intent != null || BlenderEngine.isStarted()
+        val notification = buildNotification(this, engineRunning)
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
                 NOTIF_ID, notification,
@@ -51,6 +56,11 @@ class BlenderEngineService : Service() {
             )
         } else {
             startForeground(NOTIF_ID, notification)
+        }
+        if (!engineRunning) {
+            Log.i(TAG, "keeper restarted with no engine running; stopping instead of advertising one")
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         // A start request is the only engine-use signal this service gets - the
         // app's own, at launch, when a model is handed to Blender, and when the
@@ -143,7 +153,7 @@ class BlenderEngineService : Service() {
             }
         }
 
-        private fun buildNotification(context: Context): Notification {
+        private fun buildNotification(context: Context, engineRunning: Boolean): Notification {
             val contentIntent = PendingIntent.getActivity(
                 context, 0,
                 Intent(context, MainActivity::class.java),
@@ -152,8 +162,16 @@ class BlenderEngineService : Service() {
             // minSdk is 29, so the channel-aware builder is the only one.
             val builder = Notification.Builder(context, CHANNEL_ID)
             return builder
-                .setContentTitle("Blender engine running")
-                .setContentText("Generation socket active; use the MCP port to drive it")
+                .setContentTitle(
+                    if (engineRunning) "Blender engine running" else "Blender engine is not running",
+                )
+                .setContentText(
+                    if (engineRunning) {
+                        "Generation socket active; use the MCP port to drive it"
+                    } else {
+                        "Nothing serves the MCP port; the engine will start when the app asks for it"
+                    },
+                )
                 .setSmallIcon(android.R.drawable.ic_menu_gallery)
                 .setOngoing(true)
                 .setContentIntent(contentIntent)

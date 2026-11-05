@@ -1,6 +1,11 @@
 package com.tomppi.enderslicer.modelling
 
 import java.io.ByteArrayInputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
+import java.util.concurrent.CopyOnWriteArrayList
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -57,5 +62,69 @@ class EnginePreviewClientTest {
 
         assertTrue(error is IllegalStateException)
         assertTrue(error?.message.orEmpty().contains("closed the connection"))
+    }
+
+    /**
+     * A timeout means the engine already has the command - it runs what it accepted whether
+     * or not the answer comes back - so the client reports it once instead of reconnecting
+     * and sending it again. A second send is how one "All to plate" press imported every
+     * object twice.
+     */
+    @Test
+    fun aTimeoutIsReportedWithoutSendingTheCommandAgain() {
+        val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+        server.soTimeout = 700
+        val connections = CopyOnWriteArrayList<Socket>()
+        val holder = Thread {
+            try {
+                connections += server.accept()
+                // Hold the answer past the client's read timeout; a retry would land here.
+                Thread.sleep(400)
+                runCatching { server.accept() }.getOrNull()?.let { connections += it }
+            } catch (_: Throwable) {
+                // The accept timeout at the end of the window is the "no retry" answer.
+            }
+        }
+        holder.start()
+        val live = EnginePreviewClient(host = "127.0.0.1", port = server.localPort, tokenFile = null)
+        val error = runCatching { live.command("execute_code", JSONObject(), 150) }.exceptionOrNull()
+        assertTrue("the timeout is reported as itself: " + error, error is SocketTimeoutException)
+        holder.join(3_000)
+        assertEquals(
+            "the command goes out once; a retry would open a second connection",
+            1,
+            connections.size,
+        )
+        live.close()
+        server.close()
+    }
+
+    /** The retry that stays: a dead socket (the engine restarted under the command) is reconnected once. */
+    @Test
+    fun aDeadSocketIsReconnectedOnceRatherThanGivenUpOn() {
+        val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+        val connections = CopyOnWriteArrayList<Socket>()
+        val holder = Thread {
+            try {
+                val first = server.accept()
+                connections += first
+                first.close()
+                val second = server.accept()
+                connections += second
+                second.getOutputStream().apply {
+                    write("{\"status\":\"success\"}\n".toByteArray())
+                    flush()
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        holder.start()
+        val live = EnginePreviewClient(host = "127.0.0.1", port = server.localPort, tokenFile = null)
+        val reply = live.command("ping", JSONObject(), 2_000)
+        assertEquals("success", reply.optString("status"))
+        holder.join(2_000)
+        assertEquals("the dead socket is reconnected exactly once", 2, connections.size)
+        live.close()
+        server.close()
     }
 }

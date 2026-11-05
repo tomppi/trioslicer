@@ -92,6 +92,38 @@ class AnnotationStateTest {
     }
 
     @Test
+    fun aRegionIsStoredClosedSoItsLengthCountsTheClosingEdge() {
+        val state = AnnotationState()
+        state.kind = AnnotationKind.REGION
+        state.tapAt(0f, 0f, 0f)
+        state.tapAt(10f, 0f, 0f)
+        state.lockSegment()
+        state.tapAt(10f, 10f, 0f)
+        state.lockSegment()
+        state.tapAt(0f, 10f, 0f)
+
+        val chain = state.lockSeries()
+        assertNotNull(chain)
+        assertEquals(AnnotationKind.REGION, chain!!.kind)
+        assertTrue("a region is a closed loop", chain.closed)
+        // Three sides of a 10 mm square were walked; the perimeter is 40 mm with the
+        // closing edge and 30 mm without it.
+        assertEquals(40f, chain.lengthMm(), 1e-3f)
+    }
+
+    @Test
+    fun anOpenChainKindStaysOpen() {
+        val state = AnnotationState()
+        state.tapAt(0f, 0f, 0f)
+        state.tapAt(10f, 0f, 0f)
+
+        val chain = state.lockSeries()
+        assertNotNull(chain)
+        assertFalse("a path is not a loop", chain!!.closed)
+        assertEquals(10f, chain.lengthMm(), 1e-3f)
+    }
+
+    @Test
     fun aSeriesWithOnePointIsDiscardedRatherThanStored() {
         val state = AnnotationState()
         state.tapAt(0f, 0f, 0f)

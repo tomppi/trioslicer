@@ -112,18 +112,28 @@ internal fun LayerEventsSheet(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        val inputComplete = inputReady(type, value, secondary, text)
         Button(
             onClick = {
-                onAdd(
-                    type,
-                    value.replace(',', '.').toDoubleOrNull(),
-                    secondary.replace(',', '.').toDoubleOrNull(),
-                    text,
-                )
+                onAdd(type, value.toNumber(), secondary.toNumber(), text)
             },
-            enabled = !isBusy && inputReady(type, value, secondary, text),
+            enabled = !isBusy && inputComplete,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Add to this layer") }
+        // A disabled action says why in a sentence: the gate refuses a blank field
+        // and a number that cannot become an event, and both name what is missing.
+        val addDisabledReason = when {
+            isBusy -> "Wait for the running operation, then add the event."
+            !inputComplete -> inputMissingReason(type, value, secondary)
+            else -> null
+        }
+        if (addDisabledReason != null) {
+            Text(
+                addDisabledReason,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         if (layerEvents.isEmpty()) {
             Text("No events on this layer", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -181,14 +191,30 @@ private fun defaultValue(type: LayerEventType, settings: SlicerSettings): String
 private fun defaultSecondary(type: LayerEventType, settings: SlicerSettings): String =
     if (type == LayerEventType.RETRACTION) format(settings.retractionSpeedMmPerSecond) else ""
 
-private fun inputReady(type: LayerEventType, value: String, secondary: String, text: String): Boolean = when {
+internal fun inputReady(type: LayerEventType, value: String, secondary: String, text: String): Boolean = when {
     type == LayerEventType.MESSAGE || type == LayerEventType.CUSTOM_GCODE -> text.isNotBlank()
     type == LayerEventType.RETRACTION -> value.toNumber() != null && secondary.toNumber() != null
     type.requiresValue() -> value.toNumber() != null
     else -> true
 }
 
-private fun String.toNumber(): Double? = replace(',', '.').toDoubleOrNull()
+/** Names what the gate above refused, for the disabled button's reason sentence. */
+internal fun inputMissingReason(
+    type: LayerEventType,
+    value: String,
+    secondary: String,
+): String = when {
+    type == LayerEventType.MESSAGE -> "Type the printer display message first."
+    type == LayerEventType.CUSTOM_GCODE -> "Type the custom G-code first."
+    type == LayerEventType.RETRACTION && value.toNumber() == null ->
+        "Retraction distance must be a finite number."
+    type == LayerEventType.RETRACTION -> "Retraction speed must be a finite number."
+    else -> valueLabel(type) + " must be a finite number."
+}
+
+// NaN, infinity and 1e400 parse as doubles but can never become a LayerEvent - its
+// constructor requires finite values - so the input gate refuses them here first.
+internal fun String.toNumber(): Double? = replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
 private fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')
 
 private fun valueLabel(type: LayerEventType): String = when (type) {

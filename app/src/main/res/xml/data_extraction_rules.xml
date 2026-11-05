@@ -154,5 +154,8 @@
              and the derived converted STLs do not. -->
         <exclude domain="file" path="solidcraft/solidcraft_mcp_token.txt" />
         <exclude domain="file" path="solidcraft/workspace/converted/" />
+        <!-- ScanRuler's embedded agent token (9879), and nothing else: a second bearer
+             secret for the same app uid must not land in the transfer archive either. -->
+        <exclude domain="file" path="scanruler/" />
     </device-transfer>
 </data-extraction-rules>

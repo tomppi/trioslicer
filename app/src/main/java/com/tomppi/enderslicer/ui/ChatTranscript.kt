@@ -28,12 +28,15 @@ fun chatTranscriptText(messages: List<AiChatMessage>): String = buildString {
             tool != null -> {
                 append('\n')
                 append("tool: ").append(tool.name)
-                if (tool.arguments.isNotBlank()) append(' ').append(tool.arguments)
+                // The row is a text branch like every other: set_parameter's summary can
+                // quote a value that carries a data URL, and the "no image data" promise
+                // covers tool arguments and outcomes as well.
+                if (tool.arguments.isNotBlank()) append(' ').append(withoutImageData(tool.arguments))
                 if (tool.running) {
                     append(" · running")
                 } else {
                     append(" · ").append(tool.durationMillis).append(" ms")
-                    if (tool.outcome.isNotBlank()) append(" · ").append(tool.outcome)
+                    if (tool.outcome.isNotBlank()) append(" · ").append(withoutImageData(tool.outcome))
                 }
                 if (tool.failed) append(" · FAILED")
             }
@@ -61,8 +64,8 @@ fun chatTranscriptText(messages: List<AiChatMessage>): String = buildString {
     }
 }
 
-/** A data URL, as an OpenAI image content part carries it. */
-private val IMAGE_DATA_URL = Regex("data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+/** A data URL, as an OpenAI image content part carries it, mime parameters included. */
+private val IMAGE_DATA_URL = Regex("data:image/[A-Za-z0-9.+-]+(?:;[^;,]*)*;base64,[A-Za-z0-9+/=]+")
 
 /**
  * Replaces any inline image payload with a short marker.

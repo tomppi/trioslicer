@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -223,6 +224,53 @@ class SnapJointTest {
         assertEquals(Vec3(1f, 0f, 0f), SnapFit.axisDirection(ModelPlacement.Axis.X))
         assertEquals(Vec3(0f, 1f, 0f), SnapFit.axisDirection(ModelPlacement.Axis.Y))
         assertEquals(Vec3(0f, 0f, 1f), SnapFit.axisDirection(ModelPlacement.Axis.Z))
+    }
+
+    /**
+     * The depth shift carries the built joint along the seam's axis "as one piece, solids
+     * and frames together" (docs/snap-fit-notes.md). The wall lip's cuts are a solid of the
+     * joint like any other: left behind, they are subtracted from the shifted ring at the
+     * wrong height.
+     */
+    @Test
+    fun theDepthShiftCarriesTheCutSolidWithTheRestOfTheJoint() {
+        assumeTrue("the host Manifold build is not on java.library.path", MeshBoolean.ensureLoaded())
+        val seam = 30f
+        val lip = MeshFixtures.box(0f, 0f, 0f, 40f, 40f, seam)
+        val mate = MeshFixtures.box(0f, 0f, seam, 40f, 40f, 60f)
+
+        fun built(depthMm: Float): SnapFitJoint {
+            val result = SnapJoint.build(
+                axis = ModelPlacement.Axis.Z,
+                anchorMm = Vec3(20f, 20f, seam),
+                scale = 1f,
+                lowHalf = SnapFitHalf.inPlace(lip, seam),
+                highHalf = SnapFitHalf.inPlace(mate, seam),
+                beamHalf = SnapJoint.JointHalf.LOW,
+                parameters = SnapFitParameters(
+                    depthMm = depthMm,
+                    lipWallOverrideMm = 2f,
+                    lipCutWidthOverrideMm = 0.8f,
+                ),
+                style = SnapJointStyle.WALL_LIP,
+                cuts = listOf(Vec3(20f, 0f, seam)),
+            )
+            val placed = result as SnapJoint.Either.Placed
+            return placed.placement.joint
+        }
+
+        val onSeam = built(0f)
+        val sunkJoint = built(3f)
+        val cutOnSeam = requireNotNull(onSeam.cutSolid) { "the cut solid went missing" }
+        val cutSunk = requireNotNull(sunkJoint.cutSolid) { "the cut solid went missing at depth" }
+        val ringShift = sunkJoint.unionSolid.bounds.minZ - onSeam.unionSolid.bounds.minZ
+        assertTrue("the depth did not shift the joint at all", kotlin.math.abs(ringShift) > 1e-3f)
+        assertEquals(
+            "the cut did not travel with the ring",
+            ringShift,
+            cutSunk.bounds.minZ - cutOnSeam.bounds.minZ,
+            1e-3f,
+        )
     }
 
     /**

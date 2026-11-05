@@ -368,6 +368,14 @@ private fun ModelPlateTools(
             Text("Multi-object settings")
         }
     }
+    // A disabled action says why in a sentence: one model is already arranged.
+    if (state.models.size <= 1) {
+        Text(
+            "Arranging needs more than one model on the plate.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /**
@@ -400,12 +408,17 @@ private fun ModelTransformTools(
     var scaleText by rememberSaveable(placement) {
         mutableStateOf(placement?.scalePercent?.formatPosition().orEmpty())
     }
+    // True after an Apply scale press that found nothing applicable to apply: the
+    // button stays enabled and the refusal is named under it instead of silent.
+    var scaleRefused by rememberSaveable(placement) { mutableStateOf(false) }
     // The placement stores a matrix, not Euler angles, so the Rotate summary
     // tallies the rotations applied from this panel instead of pretending to
-    // decompose it.
-    var rotatedX by rememberSaveable { mutableStateOf(0.0) }
-    var rotatedY by rememberSaveable { mutableStateOf(0.0) }
-    var rotatedZ by rememberSaveable { mutableStateOf(0.0) }
+    // decompose it. The tally is keyed to the placement it is shown under, like
+    // the position and scale fields: a selection change or an Undo replaces that
+    // placement, and the summary must not keep the old placement's rotations.
+    var rotatedX by rememberSaveable(placement) { mutableStateOf(0.0) }
+    var rotatedY by rememberSaveable(placement) { mutableStateOf(0.0) }
+    var rotatedZ by rememberSaveable(placement) { mutableStateOf(0.0) }
     var openSection by rememberSaveable { mutableStateOf<TransformSection?>(null) }
     val computedSnapshot by produceState<CuraComputedSnapshot?>(
         initialValue = null,
@@ -552,7 +565,8 @@ private fun ModelTransformTools(
         ) {
             Text(
                 "Sets the model's size as a percentage of the size it was imported at, around its " +
-                    "position. 100% is the imported size; applying 145% twice leaves it at 145%.",
+                    "position. 100% is the imported size; applying 145% twice leaves it at 145%. " +
+                    "Apply takes a scale between 1% and 1000%.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -576,21 +590,40 @@ private fun ModelTransformTools(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                PositionField("Scale (%)", scaleText, { scaleText = it }, Modifier.weight(1f))
+                PositionField(
+                    "Scale (%)",
+                    scaleText,
+                    {
+                        scaleText = it
+                        scaleRefused = false
+                    },
+                    Modifier.weight(1f),
+                )
                 val applyModifier = Modifier.weight(1f)
                 CompactButtonSizing {
                     Button(
                         onClick = {
                             val percent = parsePosition(scaleText)
+                            // The 1-1000% range is the validator's; an entry outside it is
+                            // refused by name below rather than silently discarded.
                             if (percent == null || !percent.isFinite() || percent < 1.0 || percent > 1000.0) {
+                                scaleRefused = true
                                 return@Button
                             }
+                            scaleRefused = false
                             onScale(percent)
                         },
                         contentPadding = CompactButtonPadding,
                         modifier = applyModifier.height(CompactButtonHeight),
                     ) { Text("Apply scale") }
                 }
+            }
+            if (scaleRefused) {
+                Text(
+                    "Scale must be a number between 1% and 1000%; nothing was applied.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
 
@@ -763,12 +796,16 @@ private fun ModelActionTools(
             enabled = state.snapAvailable && !state.isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Snap fit joint") }
+        // A disabled action says why in a sentence; when the button is open this
+        // line stays the help it always was.
         Text(
-            if (state.snapAvailable) {
-                "Put a cantilever snap fit across the seam the split made: tap the model to place " +
-                    "it, scale it, then join the two halves."
-            } else {
-                "Split the model first: the joint joins the two halves a split made."
+            when {
+                !state.snapAvailable ->
+                    "Split the model first: the joint joins the two halves a split made."
+                state.isBusy -> "Wait for the running operation, then place the joint."
+                else ->
+                    "Put a cantilever snap fit across the seam the split made: tap the model to place " +
+                        "it, scale it, then join the two halves."
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

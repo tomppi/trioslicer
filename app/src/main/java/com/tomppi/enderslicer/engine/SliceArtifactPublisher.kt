@@ -163,6 +163,10 @@ internal class SliceArtifactPublisher(
 
         fun isCompleteGcode(file: File, expectedId: String? = null): Boolean {
             if (!file.isFile || file.name != GCODE_FILE_NAME || file.length() <= 0L) return false
+            val directory = file.parentFile ?: return false
+            // A directory release() has marked .released has lost its publication contract
+            // (docs/non-planar.md): its leftover G-code is never leased, exported or uploaded.
+            if (File(directory, RELEASE_MARKER_FILE_NAME).isFile) return false
             val id = completedArtifactId(file) ?: return false
             if (expectedId != null && id != expectedId) return false
             return runCatching {
@@ -262,9 +266,17 @@ internal suspend fun invalidatePublishedSliceArtifacts(root: File): String? = wi
     )
 }
 
-/** True for a directory the publisher has finished renaming into place. */
+/**
+ * True for a directory the publisher has finished renaming into place.
+ *
+ * Deliberately the publication layout, not [SliceArtifactPublisher.isCompleteGcode]: that
+ * predicate refuses a directory [SliceArtifactPublisher.release] has marked `.released`,
+ * while the invalidation pass must still find - and report as left on disk - the directory
+ * a reader's lease is holding.
+ */
 private fun isPublishedSlice(directory: File): Boolean = directory.isDirectory &&
-    SliceArtifactPublisher.isCompleteGcode(
-        File(directory, SliceArtifactPublisher.GCODE_FILE_NAME),
-        directory.name,
-    )
+    runCatching {
+        SliceArtifactPublisher.readPrinterEnvelope(
+            File(directory, SliceArtifactPublisher.GCODE_FILE_NAME),
+        )
+    }.isSuccess

@@ -45,6 +45,31 @@ class ScanRulerTransferTest {
     }
 
     @Test
+    fun aRefusedBeginLeavesTheInFlightExportUntouched() {
+        // The activity refuses a second begin at the door. The export in flight must be
+        // exactly as it was - same state, same name, same bytes - and able to finish:
+        // routing the refusal through the shared complete() used to delete its destination
+        // and clear the page's pending stream, wedging the bridge for the session.
+        val transfer = transfer()
+        assertTrue(transfer.begin("one.step", 6.0).accepted)
+        val output = ByteArrayOutputStream()
+        assertTrue(transfer.attach(output))
+        assertTrue(transfer.append(byteArrayOf(1, 2, 3, 4)))
+
+        val refused = transfer.begin("two.step", 10.0)
+        assertFalse(refused.accepted)
+        assertTrue(refused.message.orEmpty().contains("already being written"))
+        assertEquals(ScanRulerTransfer.State.WRITING, transfer.state)
+        assertEquals("one.step", transfer.fileName)
+        assertEquals(4L, transfer.writtenBytes)
+
+        assertTrue("the in-flight export keeps writing", transfer.append(byteArrayOf(5, 6)))
+        assertTrue(transfer.finish())
+        assertEquals(ScanRulerTransfer.State.DONE, transfer.state)
+        assertEquals(listOf<Byte>(1, 2, 3, 4, 5, 6), output.toByteArray().toList())
+    }
+
+    @Test
     fun zeroHugeAndNonFiniteSizesAreRefusedBeforeThePicker() {
         assertFalse(transfer().begin("a.step", 0.0).accepted)
         assertFalse(transfer().begin("a.step", -1.0).accepted)
