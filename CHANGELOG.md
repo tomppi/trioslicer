@@ -4,6 +4,60 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-11-05
+
+### Added
+
+- **One agent door for all the modelling engines.** A single token-gated MCP server (9878) fronts SolidCraft, the
+  CAD engine, Blender and the embedded ScanRuler workspace, with an engine_select / engine_status selector whose
+  answer names the engine, how to reach its tools and the rules it works under. tools/list shows only the selected
+  engine's tools (their own names) and a switch announces tools/list_changed; SolidCraft keeps its contracts - one
+  author at a time, the live plate after every edit, and no screenshot. The CAD agent sheet's rows collapse to one
+  modelling line beside ScanRuler, and one pasted tcp:// line plus one token replace the per-engine hand-overs.
+- **The chat window's engine menu.** The Ask AI floating window - always on top and open across switches - carries
+  an engine dropdown (SolidCraft, OCCT CAD, Blender, ScanRuler) and an MCP menu (connect line, token, Reachable on
+  the network, engine readiness). Picking an engine loads that engine's tools for the in-app agent and tells it
+  which engine it is operating in; the conversation survives the switch and only the tool binding changes. The
+  dropdown and the plate's View switch agree in both directions.
+
+### Changed
+
+- **Ask AI is the one chat.** The OCCT and Blender screens lose their embedded harness chats and their composers;
+  their Chat button opens the floating Ask AI window instead (always on top, open across engine switches). One
+  in-app conversation and one harness conversation for the whole app: the engine prompt follows the window's
+  engine menu, the OCCT viewer's picked-face preamble and the modelling camera hand-back move into the shared
+  send path, and opening a modelling screen selects its engine in the menu. The modelling screen's second
+  harness session is retired; its standing brief travels the shared lane.
+- The per-engine agent surfaces (Blender 9876, the CAD engine 9877) are private app-to-engine channels now;
+  agents reach every engine through the unified server. The in-app agent binds its tool host per turn from the
+  selected engine instead of from whichever workspace was open.
+- **The unified MCP door answers with one write per reply.** The server wrote the JSON object and its newline as
+  two writes; on an adb-forwarded connection every external agent call paid ~44 ms for the second TCP segment
+  (delayed-ACK/Nagle). A buffered writer now flushes each reply as one write: measured 44 ms -> ~1-2 ms per message
+  for tools/list, engine_status and every tool call.
+- **The CAD agent gets its operating rules before it starts.** A new `occt-engine-rules` skill carries what the
+  engine was measured doing - the one-command/one-thread contract, the 300 s call gate and the 300 s no-cancel
+  reality, why a 60,000-point solid probe costs ~67 minutes, the cheap-first measurement recipes (face census,
+  trimmed-surface sampling, local dz/dtheta for pitch), and the rule to verify every boolean changed the volume.
+  The `cad-engine` skill now opens with those rules, `trioslicer-engines` points at them, and the selector's own
+  answer tells an agent to read them before measuring or running anything longer than a few seconds.
+- **The phone's in-app agents get those documents too.** Host-side agents read skills from the computer; the in-app
+  agent cannot, so the same sanitized engine documents ship in the APK (`assets/engine-runbooks/` for CAD,
+  occt-engine-rules and Blender; `assets/agent/` for SolidCraft) and the system prompt carries the phone-only rules on
+  top: already connected, the plate is the user's viewport, the 300 s gate, and the measured-cost rules. A test fails
+  the build if an APK copy and the published skill drift.
+- **The engine menu's running status updates.** The readiness probe opened the engines' sockets on the composition
+  thread, where Android answers with NetworkOnMainThreadException - swallowed into "not started" forever. The probe now
+  runs on IO with a socket-free first frame, so Start rows appear instantly and the status follows the engine.
+
+### Fixed
+
+- **The 2026-11-04 full-app audit's defects.** A 21-area adversarial review confirmed 21 high, 42 medium and 61 low
+  findings across the app shell, engine core and G-code, Klipper/Moonraker, OctoPrint, settings and profiles, the
+  viewer, persistence, mesh IO, non-planar and conical transforms, the CAD agent and the engine bridges. The fix round
+  and its regression tests are in this release; [docs/bug-audits/2026-11-04-full-app-bug-hunt.md](docs/bug-audits/2026-11-04-full-app-bug-hunt.md)
+  records every finding with its trigger, fix and verification.
+
 ## [1.16.1] - 2026-11-01
 
 ### Fixed
