@@ -12,7 +12,7 @@ import java.net.NetworkInterface
  * all listen on 127.0.0.1. That is exactly right for an agent that shares the phone (the
  * harness inside the app) and useless for one that does not: a laptop, a desktop or a second
  * phone had to publish each loopback port itself - an adb forward, or a tailnet serve rule -
- * before it could connect. The CAD agent sheet now offers the other reach: **Reachable on the
+ * before it could connect. The SolidCraft settings now offers the other reach: **Reachable on the
  * network**, off by default, has the app listen on this device's own network address at the
  * same three ports and forward the bytes to the loopback engines ([AgentBridgeProxy]), so any
  * device that can route to this phone reaches the same engines with the same tokens.
@@ -36,7 +36,7 @@ object BridgeNetworkPreference {
 
     private const val KEY_NETWORK = "agent-bridges-network"
 
-    /** The CAD agent sheet's switch: false is loopback only, and is the default. */
+    /** The SolidCraft settings's switch: false is loopback only, and is the default. */
     fun isEnabled(context: Context): Boolean =
         preferences(context).getBoolean(KEY_NETWORK, false)
 

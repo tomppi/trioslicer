@@ -4,6 +4,32 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **AI settings live where app settings live.** The agent's own configuration moved out of the SolidCraft
+  document sheet into **More -> Configuration -> AI settings**: the In-app/Harness mode, the in-app endpoint
+  (Base URL, Model, API key, Save endpoint, Clear key), the web search & page fetch switch and "Lend the agent my
+  view". The sheet is reachable from every tab, not only from one engine's menu, because the endpoint and the
+  agent mode are app-wide - the same in-app agent drives SolidCraft, the CAD engine, Blender and ScanRuler.
+- **The harness connection is always editable.** The launch URL and workspace form used to appear only while no
+  harness had been reached, so a connected user had no way to paste a new URL; AI settings shows both fields
+  prefilled from the stored configuration with Connect/Reconnect replacing them.
+
+### Changed
+
+- **The SolidCraft menu is named "SolidCraft settings".** What remains there is the document and engine surface -
+  engine start/stop, the document controls, exports, face selection, Rebuild/Close, the network hand-over card and
+  the Take over card - plus the conversation. Every "CAD agent sheet" reference in user-facing strings now names
+  SolidCraft settings, and strings that pointed at the endpoint there point at AI settings.
+
+### Removed
+
+- **Per-engine "Copy MCP token" menu items.** The Blender menu, the SolidCraft menu, the OCCT menu and the
+  document sheet's token fallback are gone; the unified door owns the one token, copied from the Ask AI window's
+  MCP menu ("Copy token"). The door's own copy path is unchanged.
+
 ## [1.17.0] - 2026-11-05
 
 ### Added

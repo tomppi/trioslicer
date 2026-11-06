@@ -29,9 +29,9 @@ class MenuReorganisationSourceTest {
 
     private fun plateMenu(): String = menu("Plate", "Blender")
 
-    private fun blenderMenu(): String = menu("Blender", "SolidCraft")
+    private fun blenderMenu(): String = menu("Blender", "SolidCraft settings")
 
-    private fun solidCraftMenu(): String = menu("SolidCraft", "OCCT")
+    private fun solidCraftMenu(): String = menu("SolidCraft settings", "OCCT")
 
     @Test
     fun thePlateMenuDropsTheTextureAndBlenderFilesShortcutsAndOwnsConvertToStl() {
@@ -78,6 +78,9 @@ class MenuReorganisationSourceTest {
             solidCraft.contains("MenuSectionLabel(\"Plate\")"),
         )
         assertFalse(solidCraft.contains("state.cadConvertLabel"))
+        assertFalse("the SolidCraft menu no longer hands out a token", solidCraft.contains("Copy MCP token"))
+        assertTrue("the menu is named for the document surface it opens",
+            app().contains("label = \"SolidCraft settings\""))
         assertFalse("no second Convert press", solidCraft.contains("viewModel.convertCadToStl()"))
         assertFalse(solidCraft.contains("\"Connect CAD agent\""))
     }
@@ -102,7 +105,9 @@ class MenuReorganisationSourceTest {
         assertTrue(occt.contains("\"Model with OCCT\""))
         assertTrue(occt.contains("\"Stop OCCT engine\""))
         assertTrue(occt.contains("\"OCCT files\""))
-        assertTrue(occt.contains("\"OCCT MCP token\""))
+        // The per-engine Copy MCP token items are gone: the unified door owns the one token,
+        // copied from the Ask AI window MCP menu.
+        assertFalse("no engine menu copies an MCP token any more", text.contains("Copy MCP token"))
         assertFalse(occt.contains("\"Model with CAD\""))
         assertFalse(occt.contains("\"Stop CAD engine\""))
         assertFalse(occt.contains("\"CAD files\""))

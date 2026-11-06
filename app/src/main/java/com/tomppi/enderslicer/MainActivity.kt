@@ -53,7 +53,7 @@ import com.tomppi.enderslicer.ui.encodeEngineSelection
 
 /**
  * A FragmentActivity rather than a bare ComponentActivity: androidx.biometric hosts its
- * prompt in a fragment, and the two "Copy MCP token" items are gated behind that prompt.
+ * prompt in a fragment, and the MCP token copy is gated behind that prompt.
  * FragmentActivity is a ComponentActivity subclass, so setContent, enableEdgeToEdge and
  * the viewModels above are unchanged.
  */
@@ -130,7 +130,7 @@ class MainActivity : FragmentActivity() {
             CadQuestionNotification.cancel(this)
         }
         // The agent bridges' network reach is a saved choice: with it on, the listeners go up
-        // at app start, not when the CAD agent sheet is first opened. Binding and address
+        // at app start, not when the SolidCraft settings is first opened. Binding and address
         // lookup are socket work, so they are not on the UI thread.
         Thread { runCatching { AgentBridges.ensureStarted(applicationContext) } }.start()
         // The one agent door for the three modelling engines; it listens on loopback from

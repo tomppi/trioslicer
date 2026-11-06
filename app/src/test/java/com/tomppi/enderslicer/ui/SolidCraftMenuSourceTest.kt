@@ -34,7 +34,7 @@ class SolidCraftMenuSourceTest {
     @Test
     fun theSolidCraftMenuOffersTheDesignsTheExportsAndTheConvertPress() {
         val text = app()
-        assertTrue(text.contains("label = \"SolidCraft\""))
+        assertTrue(text.contains("label = \"SolidCraft settings\""))
         for (item in listOf(
             "New design",
             "Open STEP/IGES/3MF/OBJ/glTF…",
@@ -52,7 +52,7 @@ class SolidCraftMenuSourceTest {
             text.contains("state.cadConvertLabel ?: \"Convert to STL\""),
         )
         val solidCraftMenu = text
-            .substringAfter("label = \"SolidCraft\"")
+            .substringAfter("label = \"SolidCraft settings\"")
             .substringBefore("label = \"OCCT\"")
         assertTrue(solidCraftMenu.contains("MenuSectionLabel(\"Design\")"))
         assertTrue(solidCraftMenu.contains("MenuSectionLabel(\"Export\")"))

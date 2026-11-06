@@ -14,14 +14,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -43,8 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.tomppi.enderslicer.agent.AgentBridgeCopy
 import com.tomppi.enderslicer.agent.AgentBridgeLine
@@ -121,7 +117,7 @@ private fun SheetPane(
 }
 
 /**
- * The CAD agent sheet: what a SolidCraft CAD document is, and the whole human surface on it.
+ * The SolidCraft settings: what a SolidCraft CAD document is, and the whole human surface on it.
  *
  * A live CAD document is the agent's work and the human is a spectator. This sheet is therefore
  * the only place a human can *ask* for a change, and the only place that says what the document
@@ -142,8 +138,6 @@ internal fun SolidCraftSheet(
     onStartFaceSelect: () -> Unit,
     /** Drops the selected face, its tint and the engine's selection. */
     onClearFaceSelection: () -> Unit,
-    /** **Lend the agent my view**: attach a plate render to a message with a face selection. */
-    onAgentLendViewChange: (Boolean) -> Unit,
     messages: List<AiChatMessage>,
     /**
      * Which agent drives the document, and - for the in-app one - the endpoint it calls.
@@ -157,16 +151,6 @@ internal fun SolidCraftSheet(
     chatConfigured: Boolean,
     chatBusy: Boolean,
     chatStatus: String?,
-    /** Switches the author between this phone's own agent and the harness on a computer. */
-    onAgentModeChange: (AgentMode) -> Unit,
-    /**
-     * Saves the in-app endpoint. [apiKey] null keeps the stored key, which is what lets the
-     * field stay empty and the saved key stay unreadable.
-     */
-    onAgentSettingsSave: (baseUrl: String, model: String, apiKey: String?) -> Unit,
-    onAgentKeyClear: () -> Unit,
-    /** Switches the in-app agent's web search and page fetch on or off. */
-    onAgentWebSearchChange: (Boolean) -> Unit,
     /**
      * The one-author rule, polled here so the sheet always names who is driving and pauses the
      * in-app composer while an external agent is attached.
@@ -174,11 +158,6 @@ internal fun SolidCraftSheet(
     authorship: SolidCraftAuthorship,
     /** The **Take over** confirmation: closes the live external connections. */
     onTakeOver: () -> Unit,
-    /**
-     * One sentence about the endpoint's web routes once the agent has learned them, or null
-     * while they are untested/available. Shown so a missing search is named, never silent.
-     */
-    inAppWebNotice: String?,
     /** Cancels the in-app agent's current turn (the harness path has its own Stop). */
     onCancelAgent: () -> Unit,
     onConnect: () -> Unit,
@@ -186,7 +165,6 @@ internal fun SolidCraftSheet(
     onCloseDocument: () -> Unit,
     /** Re-derives the plate from the document's current shape (the way out of a stale plate). */
     onRebuild: () -> Unit,
-    onCopyToken: () -> Unit,
     /** Turns the network bind on or off; the setting is persisted by the engine's owner. */
     onNetworkReachableChange: (Boolean) -> Unit,
     /**
@@ -256,7 +234,7 @@ internal fun SolidCraftSheet(
 
     val header: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4)) {
-            Text("CAD agent", style = MaterialTheme.typography.titleMedium)
+            Text("SolidCraft settings", style = MaterialTheme.typography.titleMedium)
             Text(
                 "The engine's document - the agent authors it, the plate only shows it.",
                 style = MaterialTheme.typography.bodySmall,
@@ -402,13 +380,6 @@ internal fun SolidCraftSheet(
     val openFileSection: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
             Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-                if (!rowsCarryToken) {
-                    OutlinedButton(onClick = onCopyToken, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(EnderSlicerDimens.Space4))
-                        Text("Copy MCP token")
-                    }
-                }
                 OutlinedButton(
                     onClick = onOpenFile,
                     enabled = document == null,
@@ -534,39 +505,6 @@ internal fun SolidCraftSheet(
 
     val authorshipSection: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-                AgentMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = agentSettings.mode == mode,
-                        onClick = { onAgentModeChange(mode) },
-                        label = { Text(mode.label) },
-                    )
-                }
-            }
-            Text(
-                agentSettings.drivingSentence(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                authorState.authorLine,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (authorState.inAppPaused) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            if (agentSettings.mode == AgentMode.IN_APP) {
-                InAppAgentSettings(
-                    settings = agentSettings,
-                    webNotice = inAppWebNotice,
-                    onSave = onAgentSettingsSave,
-                    onClearKey = onAgentKeyClear,
-                    onWebSearchChange = onAgentWebSearchChange,
-                    onLendViewChange = onAgentLendViewChange,
-                )
-            }
             if (pausedByExternal) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -626,9 +564,9 @@ internal fun SolidCraftSheet(
             if (!chatBusy && !canSend && !pausedByExternal) {
                 Text(
                     if (agentSettings.mode == AgentMode.IN_APP) {
-                        "Set the endpoint above - the phone is the whole agent."
+                        "Set the endpoint in AI settings (More -> Configuration) - the phone is the whole agent."
                     } else {
-                        "Not connected - open it from Ask AI in the sidebar rail."
+                        "Not connected - connect the harness in AI settings or Ask AI."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -764,130 +702,6 @@ internal fun SolidCraftSheet(
     }
 }
 
-
-/**
- * The in-app agent's endpoint: base URL, model, the one secret and the web-tools switch.
- *
- * The key field is never bound to the stored key - it only ever holds what the user is typing
- * now - and the saved key is reported only as [AgentSettings.keyMask]. Saving with the field
- * empty keeps the stored key, which is what makes "replace" possible without ever reading the
- * old one back into a text field.
- *
- * The web switch is here because search and fetch are not the engine's tools: they call the same
- * endpoint with the same credential, and this is where the user decides whether the agent may
- * leave the phone for the web at all.
- */
-@Composable
-private fun InAppAgentSettings(
-    settings: AgentSettings,
-    webNotice: String?,
-    onSave: (baseUrl: String, model: String, apiKey: String?) -> Unit,
-    onClearKey: () -> Unit,
-    onWebSearchChange: (Boolean) -> Unit,
-    onLendViewChange: (Boolean) -> Unit,
-) {
-    // Unsaved endpoint edits survive a rotation, so typing a base URL and turning the phone
-    // does not throw the field away.
-    var baseUrl by rememberSaveable { mutableStateOf(settings.baseUrl) }
-    var model by rememberSaveable { mutableStateOf(settings.model) }
-    // Never the stored value: this holds only what the user is typing in this session, and it is
-    // deliberately NOT rememberSaveable - a typed credential must not be handed to the saved
-    // instance state (which Android may write to disk for a process death).
-    var key by remember { mutableStateOf("") }
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4),
-    ) {
-        OutlinedTextField(
-            value = baseUrl,
-            onValueChange = { baseUrl = it },
-            label = { Text("Base URL") },
-            placeholder = { Text("https://api.openai.com/v1") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = model,
-            onValueChange = { model = it },
-            label = { Text("Model") },
-            placeholder = { Text("gpt-4o-mini") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = key,
-            onValueChange = { key = it },
-            label = {
-                Text(
-                    if (settings.hasApiKey) "API key (saved - type a new one to replace)"
-                    else "API key (optional if the endpoint needs none)",
-                )
-            },
-            placeholder = { Text(if (settings.hasApiKey) settings.keyMask else "sk-…") },
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space8)) {
-            Button(
-                onClick = {
-                    onSave(baseUrl, model, key.trim().takeIf { it.isNotEmpty() })
-                    key = ""
-                },
-                enabled = baseUrl.isNotBlank() && model.isNotBlank(),
-            ) { Text("Save endpoint") }
-            if (settings.hasApiKey) {
-                TextButton(onClick = onClearKey) { Text("Clear key") }
-            }
-        }
-        Text(
-            "Sealed in the device keystore - never shown, never logged.",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Web search & page fetch", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    if (settings.webSearch) {
-                        "The agent can search and read pages. Their text is untrusted."
-                    } else {
-                        "Off - the agent stays on the phone."
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = settings.webSearch, onCheckedChange = onWebSearchChange)
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Lend the agent my view", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    if (settings.lendView) {
-                        "A picked face's message also sends a render with it tinted amber."
-                    } else {
-                        "Off - the face is described in words only."
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = settings.lendView, onCheckedChange = onLendViewChange)
-        }
-        webNotice?.let {
-            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-        }
-        if (settings.isCleartextRemote) {
-            Text(
-                "Plain http: the key and prompts travel unencrypted - use https.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-    }
-}
 
 /**
  * One published bridge in the sheet: its name and port, the line to paste, and the state of

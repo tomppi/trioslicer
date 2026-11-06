@@ -365,6 +365,8 @@ fun EnderSlicerApp(
     // The menu's engine line, polled so it tells the truth when the sheet is not open.
     var solidCraftEngineLine by remember { mutableStateOf("Engine: not running") }
     var aiChatOpen by rememberSaveable { mutableStateOf(false) }
+    // AI settings: the agent's own configuration, out of the SolidCraft document sheet.
+    var aiSettingsOpen by rememberSaveable { mutableStateOf(false) }
     // The floating chat's size, remembered for the session: a chat left full screen reopens full
     // screen, one left as a panel reopens as a panel, and the bubble is a size - not a close.
     var chatSize by rememberSaveable { mutableStateOf(ChatSize.PANEL) }
@@ -860,7 +862,7 @@ fun EnderSlicerApp(
     }
 
     /**
-     * Opens face picking from the CAD agent sheet.
+     * Opens face picking from the SolidCraft settings.
      *
      * The sheet closes because the plate's tap is the input from here on, and every other tool
      * that owns the plate's touches closes with it - one tool at a time is what keeps a selection
@@ -1197,7 +1199,7 @@ fun EnderSlicerApp(
     /**
      * Sends from the floating chat's in-app source.
      *
-     * The same conversation, turn and cancel as the CAD agent sheet's ask box: the chat is
+     * The same conversation, turn and cancel as the SolidCraft settings's ask box: the chat is
      * another view of that agent, not a second one. The endpoint settings are read at send time,
      * so a change made in the sheet applies to the next message here.
      */
@@ -2185,32 +2187,6 @@ fun EnderSlicerApp(
                                             },
                                             enabled = !state.isBusy,
                                         )
-                                        // The engine's shared secret lives in app-private storage,
-                                        // which nothing outside the app can read on a phone without
-                                        // root, so the app is the only place a modelling agent can
-                                        // be handed it.
-                                        DropdownMenuItem(
-                                            text = { Text("Copy MCP token") },
-                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-                                            onClick = {
-                                                blenderMenuExpanded = false
-                                                // Blender's token is generated on first use, so
-                                                // this call site asks the engine for it - only
-                                                // once the user has authenticated; the CAD
-                                                // engine writes its own when it starts, so the CAD
-                                                // item below only reads.
-                                                requestMcpTokenCopy(
-                                                    context = context,
-                                                    clipLabel = "Blender MCP token",
-                                                    engineName = "Blender",
-                                                    tokenFile = {
-                                                        BlenderEngine.ensureToken(File(context.filesDir, "blender"))
-                                                        BlenderEngine.tokenFile(File(context.filesDir, "blender"))
-                                                    },
-                                                )
-                                            },
-                                            enabled = !state.isBusy,
-                                        )
                                         HorizontalDivider()
                                         MenuSectionLabel("Files")
                                         DropdownMenuItem(
@@ -2242,7 +2218,7 @@ fun EnderSlicerApp(
                                 // export that would do nothing.
                                 Box {
                                     TopBarTextAction(
-                                        label = "SolidCraft",
+                                        label = "SolidCraft settings",
                                         onClick = { solidCraftMenuExpanded = true },
                                     )
                                     DropdownMenu(
@@ -2346,23 +2322,6 @@ fun EnderSlicerApp(
                                             enabled = !state.isBusy,
                                         )
                                         DropdownMenuItem(
-                                            text = { Text("Copy MCP token") },
-                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-                                            onClick = {
-                                                solidCraftMenuExpanded = false
-                                                requestMcpTokenCopy(
-                                                    context = context,
-                                                    clipLabel = "Engines MCP token",
-                                                    engineName = "the modelling engines",
-                                                    tokenFile = {
-                                                        EngineMcpServer.ensureToken(context.filesDir)
-                                                        EngineMcpServer.tokenFile(context.filesDir)
-                                                    },
-                                                )
-                                            },
-                                            enabled = !state.isBusy,
-                                        )
-                                        DropdownMenuItem(
                                             text = { Text("Stop CAD agent") },
                                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
                                             onClick = {
@@ -2394,26 +2353,6 @@ fun EnderSlicerApp(
                                             onClick = {
                                                 cadMenuExpanded = false
                                                 openCad()
-                                            },
-                                            enabled = !state.isBusy,
-                                        )
-                                        // The same handover as the Blender menu's item, for this
-                                        // engine's own token: the CAD engine can be driven from
-                                        // outside the app on a phone without root, and its token
-                                        // file is as unreadable from outside as Blender's is.
-                                        DropdownMenuItem(
-                                            text = { Text("Copy MCP token") },
-                                            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-                                            onClick = {
-                                                cadMenuExpanded = false
-                                                requestMcpTokenCopy(
-                                                    context = context,
-                                                    clipLabel = "OCCT MCP token",
-                                                    engineName = "OCCT",
-                                                    tokenFile = {
-                                                        CadEngine.tokenFile(File(context.filesDir, "cad"))
-                                                    },
-                                                )
                                             },
                                             enabled = !state.isBusy,
                                         )
@@ -3382,6 +3321,14 @@ fun EnderSlicerApp(
                         onConical = { conicalOpen = true },
                         onMeshLimit = { meshLimitOpen = true },
                         onCadViewer = { cadViewerOpen = true },
+                        onAiSettings = {
+                            // Prefill from the stored harness so the field shows what is
+                            // connected, and a new launch URL can be pasted over it.
+                            val stored = harnessStore.load()
+                            if (aiAddress.isBlank()) aiAddress = stored.baseUrl
+                            if (aiWorkspace.isBlank()) aiWorkspace = stored.workspace
+                            aiSettingsOpen = true
+                        },
                         uiScalePercent = uiScalePercent,
                         onUiScale = { uiScaleOpen = true },
                         diagnosticsOn = diagnosticsOn,
@@ -3709,7 +3656,7 @@ fun EnderSlicerApp(
             messages = viewModel.cadConversations.harness,
             // Sending goes to the backend the shared selection says is shown.
             onSend = ::askSolidCraftAgent,
-            // The same stop the CAD agent sheet's Cancel uses, for whichever backend is shown.
+            // The same stop the SolidCraft settings's Cancel uses, for whichever backend is shown.
             onStop = ::cancelAgentTurn,
             onClose = { aiChatOpen = false },
             setup = if (aiConfigured) {
@@ -3726,7 +3673,7 @@ fun EnderSlicerApp(
             busy = viewModel.harnessCadBusy,
             status = viewModel.harnessCadStatus,
             insecure = aiInsecure,
-            // One shared selection with the CAD agent sheet: the sheet's mode chips and these
+            // One shared selection with the SolidCraft settings: the sheet's mode chips and these
             // chips are the same state, so typing in either box always reaches the backend the
             // chat is showing.
             // The ViewModel holds the selection, so a rotation keeps the source; the persisted
@@ -3738,7 +3685,7 @@ fun EnderSlicerApp(
             },
             authorLine = chatAuthorship.authorLine,
             authorPausedReason = if (chatAuthorship.inAppPaused) {
-                chatAuthorship.pausedLine + " - take the document back in the CAD agent sheet."
+                chatAuthorship.pausedLine + " - take the document back in the SolidCraft settings."
             } else {
                 null
             },
@@ -3766,9 +3713,9 @@ fun EnderSlicerApp(
                     "No in-app conversation yet - ask for a change. Every tool the " +
                         selectedEngine.label + " agent runs will show up here as a row."
             },
-            // The endpoint editor lives in the CAD agent sheet for both views:
+            // The endpoint editor lives in the SolidCraft settings for both views:
             // there is no separate ScanRuler-side settings surface to point at.
-            inAppEndpointHint = "Set the endpoint in the CAD agent sheet.",
+            inAppEndpointHint = "Set the endpoint in AI settings (More -> Configuration).",
             inApp = InAppChat(
                 messages = viewModel.cadConversations.inApp,
                 busy = viewModel.cadBusy,
@@ -3887,7 +3834,7 @@ fun EnderSlicerApp(
         }
     }
 
-    // The CAD agent sheet: the whole human surface on a live CAD document besides looking at
+    // The SolidCraft settings: the whole human surface on a live CAD document besides looking at
     // it, slicing it and exporting it. Kept above the AI chat so the sheet is never behind it.
     if (solidCraftSheetOpen && selectedTab == AppTab.PLATE) {
         // The CAD sheet gets the width the plate has (adaptiveSheetMaxWidth: window minus the
@@ -3908,7 +3855,6 @@ fun EnderSlicerApp(
                 plateObjectName = state.selectedModel?.name,
                 onStartFaceSelect = ::beginFaceSelect,
                 onClearFaceSelection = viewModel::clearFaceSelection,
-                onAgentLendViewChange = ::setAgentLendView,
                 // The same shared selection the chat's source switch drives.
                 messages = viewModel.cadConversations.messagesFor(agentSettings.mode.chatSource()),
                 agentSettings = agentSettings,
@@ -3924,11 +3870,6 @@ fun EnderSlicerApp(
                 } else {
                     viewModel.harnessCadStatus
                 },
-                onAgentModeChange = ::setAgentMode,
-                onAgentSettingsSave = ::saveAgentSettings,
-                onAgentKeyClear = ::clearAgentApiKey,
-                onAgentWebSearchChange = ::setAgentWebSearch,
-                inAppWebNotice = viewModel.inAppWebNotice,
                 authorship = SolidCraftEngine.authorship(),
                 onTakeOver = ::takeOverFromExternalAgent,
                 onCancelAgent = ::cancelAgentTurn,
@@ -3942,17 +3883,6 @@ fun EnderSlicerApp(
                     viewModel.closeCadDocument()
                 },
                 onRebuild = viewModel::rebuildCadPlateFromDocument,
-                onCopyToken = {
-                    requestMcpTokenCopy(
-                        context = context,
-                        clipLabel = "Engines MCP token",
-                        engineName = "the modelling engines",
-                        tokenFile = {
-                            EngineMcpServer.ensureToken(context.filesDir)
-                            EngineMcpServer.tokenFile(context.filesDir)
-                        },
-                    )
-                },
                 onNetworkReachableChange = viewModel::setCadBridgeNetworkReachable,
                 onCopyConnectLine = { target, address ->
                     requestConnectLineCopy(context, target, address)
@@ -3989,6 +3919,32 @@ fun EnderSlicerApp(
     // Asked at the moment the address is used, not when it is typed: the answer
     // lets this one connection proceed, and the saved permission is what keeps
     // the question from coming back for the same harness.
+    // AI settings: the agent surface's own configuration, reached from More -> Configuration.
+    if (aiSettingsOpen) {
+        AppBottomSheet(onDismissRequest = { aiSettingsOpen = false }) {
+            AiSettingsSheet(
+                agentSettings = agentSettings,
+                onAgentModeChange = ::setAgentMode,
+                onAgentSettingsSave = ::saveAgentSettings,
+                onAgentKeyClear = ::clearAgentApiKey,
+                onAgentWebSearchChange = ::setAgentWebSearch,
+                onAgentLendViewChange = ::setAgentLendView,
+                inAppWebNotice = viewModel.inAppWebNotice,
+                authorLine = chatAuthorship.authorLine,
+                harnessAddress = aiAddress,
+                onHarnessAddressChange = { aiAddress = it },
+                harnessWorkspace = aiWorkspace,
+                onHarnessWorkspaceChange = { aiWorkspace = it },
+                harnessConnected = aiConfigured,
+                harnessBusy = aiBusy,
+                harnessInsecure = aiInsecure,
+                harnessStatus = viewModel.harnessCadStatus,
+                onConnectHarness = { connectHarness() },
+                onDismiss = { aiSettingsOpen = false },
+            )
+        }
+    }
+
     aiCleartextPrompt?.let { address ->
         AlertDialog(
             onDismissRequest = { aiCleartextPrompt = null },
@@ -4162,7 +4118,7 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
  * phone with no reader, their screen lock - and copy nothing unless that succeeds.
  *
  * Both hand-overs go through here: the token-only copy in the Blender and CAD menus, and the
- * CAD agent sheet row's one-line copy that carries the connect line AND that engine's token. The
+ * SolidCraft settings row's one-line copy that carries the connect line AND that engine's token. The
  * token is a credential for an engine that runs code inside this app, so a stray tap must not be
  * able to hand it to whoever is holding the phone. That is the same gesture a banking app puts
  * in front of a payment.
@@ -4258,7 +4214,7 @@ private fun requestSensitiveClipCopy(
 }
 
 /**
- * Copies an engine's token alone: the Blender and CAD menus' **Copy MCP token** items.
+ * Copies the unified door's token alone: the Ask AI window's MCP menu Copy token path.
  *
  * [tokenFile] is evaluated after authentication, never before it, because Blender's token is
  * generated on first use - asking the engine for it stays on the far side of the prompt.
@@ -4307,7 +4263,7 @@ private fun requestMcpTokenCopy(
     requestSensitiveClipCopy(
         context = context,
         clipLabel = clipLabel,
-        promptTitle = "Copy MCP token",
+        promptTitle = "Copy token",
         engineName = engineName,
         // The successful toast names the engine and never the token
         // (MCP_TOKEN_SECURITY.md section 6).
@@ -4320,7 +4276,7 @@ private fun requestMcpTokenCopy(
 }
 
 /**
- * Copies one CAD agent sheet row's hand-over: the connect line AND that engine's own token, one
+ * Copies one SolidCraft settings row's hand-over: the connect line AND that engine's own token, one
  * line, so the user authenticates once and pastes once.
  *
  * The token is read here - after the prompt, never before - and [AgentBridgeCopy] builds the
@@ -4373,6 +4329,7 @@ private fun MoreScreen(
     onConical: () -> Unit,
     onMeshLimit: () -> Unit,
     onCadViewer: () -> Unit,
+    onAiSettings: () -> Unit,
     uiScalePercent: Int,
     onUiScale: () -> Unit,
     diagnosticsOn: Boolean,
@@ -4386,6 +4343,16 @@ private fun MoreScreen(
     ) {
         MoreSectionLabel("Configuration")
         Card(modifier = Modifier.fillMaxWidth()) {
+            // The AI settings live here, where app configuration lives - not inside one
+            // engine's menu: the endpoint and agent mode are app-wide.
+            MoreRow(
+                icon = AppIcons.Sparkle,
+                title = "AI settings",
+                subtitle = "Agent mode, endpoint, model and the harness connection",
+                enabled = !state.isBusy,
+                onClick = onAiSettings,
+            )
+            MoreDivider()
             MoreRow(
                 icon = AppIcons.Star,
                 title = "Profiles & filament",
@@ -4696,7 +4663,7 @@ internal fun TopBarTextAction(
 /**
  * The width a wide plate sheet may use: the window minus the Smart Infill panel's 12 dp margins,
  * capped at 960 dp. Below 600 dp the Material default is kept - on a phone it is the whole
- * window anyway. Shared by the CAD agent sheet and the native BumpMesh studio (both wide sheets,
+ * window anyway. Shared by the SolidCraft settings and the native BumpMesh studio (both wide sheets,
  * neither may bring its own formula); every other AppBottomSheet caller keeps the default.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -4714,7 +4681,7 @@ private fun adaptiveSheetMaxWidth(): Dp {
 @Composable
 private fun AppBottomSheet(
     onDismissRequest: () -> Unit,
-    // Material3 caps a modal sheet at 640dp. The CAD agent sheet passes a wider cap when the
+    // Material3 caps a modal sheet at 640dp. The SolidCraft settings passes a wider cap when the
     // window has the width for it; every other caller keeps the Material default.
     sheetMaxWidth: Dp = BottomSheetDefaults.SheetMaxWidth,
     content: @Composable () -> Unit,

@@ -50,7 +50,7 @@ import kotlinx.coroutines.withContext
 /**
  * The native BumpMesh studio sheet.
  *
- * The same split rule as the CAD agent sheet: the sheet measures its own width and shows the
+ * The same split rule as the SolidCraft settings: the sheet measures its own width and shows the
  * texture gallery on the left and the settings/apply column on the right when there is room,
  * and one scrolling column below that. It renders [BumpMeshStudioState] and reports every
  * gesture through [BumpMeshStudioActions]; it owns no engine, no file and no undo stack.

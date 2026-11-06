@@ -864,7 +864,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cadConversations = cadConversations.withToolTrace(trace)
     }
 
-    /** Stops the in-app turn (the chat's Stop and the CAD agent sheet's Cancel, in-app mode). */
+    /** Stops the in-app turn (the chat's Stop and the SolidCraft settings's Cancel, in-app mode). */
     fun cancelInAppTurn() {
         inAppCadAgent?.cancel()
     }
@@ -955,7 +955,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         designPath = doc.designPath,
                         reason = "the plate holds a split or snap layout made from the previous " +
                             "shape of this document; the plate is not re-derived by connecting. " +
-                            "Press Rebuild plate in the CAD agent sheet to take the document's " +
+                            "Press Rebuild plate in the SolidCraft settings to take the document's " +
                             "current shape.",
                     )
                 }
@@ -1010,7 +1010,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Applies the CAD agent sheet's **Reachable on the network** switch.
+     * Applies the SolidCraft settings's **Reachable on the network** switch.
      *
      * The app publishes Blender's, the CAD engine's and SolidCraft's loopback MCP ports on the
      * device's network address (see [AgentBridges]); each engine's own token check is
@@ -1698,7 +1698,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 designPath = design.absolutePath,
                 reason = "the agent changed the document, but the plate holds a split or snap " +
                     "layout made from its previous shape. The plate shows the previous shape; " +
-                    "press Rebuild plate in the CAD agent sheet to take the new one.",
+                    "press Rebuild plate in the SolidCraft settings to take the new one.",
                 editMillis = System.currentTimeMillis() - receivedAt,
             )
             return
@@ -1892,7 +1892,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 designPath = designPath,
                 reason = "the agent changed the document, but the plate holds a split or snap " +
                     "layout made from its previous shape. The plate shows the previous shape; " +
-                    "press Rebuild plate in the CAD agent sheet to take the new one.",
+                    "press Rebuild plate in the SolidCraft settings to take the new one.",
                 editMillis = editMillis,
             )
             return false
@@ -6902,7 +6902,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     statusMessage = "Face selection needs the live document: the plate holds " +
-                        "converted STL parts. Press Rebuild plate in the CAD agent sheet to take " +
+                        "converted STL parts. Press Rebuild plate in the SolidCraft settings to take " +
                         "the document again, then select the face.",
                 )
             }
@@ -6912,7 +6912,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     statusMessage = "Face selection needs the current document shape: " +
-                        (document.staleReason ?: "press Rebuild plate in the CAD agent sheet first"),
+                        (document.staleReason ?: "press Rebuild plate in the SolidCraft settings first"),
                 )
             }
             return
@@ -6921,7 +6921,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     statusMessage = "Face selection needs the CAD engine: press Connect agent " +
-                        "in the CAD agent sheet, then select the face again.",
+                        "in the SolidCraft settings, then select the face again.",
                 )
             }
             return

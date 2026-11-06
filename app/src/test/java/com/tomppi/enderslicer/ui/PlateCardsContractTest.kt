@@ -49,7 +49,7 @@ class PlateCardsContractTest {
      */
     @Test
     fun theTopBarMenusArePopupsOverTheCards() {
-        listOf("Import", "Plate", "Blender", "SolidCraft", "OCCT").forEach { label ->
+        listOf("Import", "Plate", "Blender", "SolidCraft settings", "OCCT").forEach { label ->
             assertTrue("the $label action is in the top bar", app.contains("label = \"$label\""))
         }
         assertFalse(

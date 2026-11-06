@@ -120,7 +120,7 @@ fun List<AiChatMessage>.markQuestionResolved(
 
 /** Which backend the floating chat is showing. */
 enum class ChatSource(val label: String) {
-    /** The app's own CAD agent: the same conversation the CAD agent sheet's ask box drives. */
+    /** The app's own CAD agent: the same conversation the SolidCraft settings's ask box drives. */
     IN_APP("CAD agent (in-app)"),
 
     /** The DSH harness on a computer - the advanced path, unchanged. */
@@ -131,7 +131,7 @@ enum class ChatSource(val label: String) {
  * The in-app agent as the floating chat sees it.
  *
  * The messages are [com.tomppi.enderslicer.ui.AiChatMessage]s of the one CAD conversation the
- * CAD agent sheet's ask box also writes - there is no second transcript. The tool rows are in
+ * SolidCraft settings's ask box also writes - there is no second transcript. The tool rows are in
  * that same list, in the order they happened, so the chat shows the work as it runs.
  */
 data class InAppChat(
@@ -247,9 +247,9 @@ fun AiChatOverlay(
     inAppEmptyLine: String = "No in-app conversation yet - ask for a change. Every " +
         "tool the in-app agent runs will show up here as a row.",
     /** The unconfigured-endpoint sentence, naming the sheet that holds the endpoint. */
-    inAppEndpointHint: String = "Set the endpoint in the CAD agent sheet.",
+    inAppEndpointHint: String = "Set the endpoint in AI settings (More -> Configuration).",
     /**
-     * The selected source, owned by the caller so the CAD agent sheet's ask box and this chat
+     * The selected source, owned by the caller so the SolidCraft settings's ask box and this chat
      * cannot disagree about which backend a message goes to. Null lets the overlay remember its
      * own selection (tests, previews).
      */
@@ -286,7 +286,7 @@ fun AiChatOverlay(
     var draft by rememberSaveable { mutableStateOf("") }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var placed by remember { mutableStateOf(false) }
-    // The caller owns the selection (one shared selection with the CAD agent sheet); with no
+    // The caller owns the selection (one shared selection with the SolidCraft settings); with no
     // caller-owned source the overlay remembers its own, which is what previews and tests use.
     var localSource by rememberSaveable { mutableStateOf(initialSource) }
     val shownSource = source ?: localSource
@@ -731,7 +731,7 @@ fun AiChatOverlay(
                 )
             }
             // Only while something is running. Stops this backend's turn, not the engine: the
-            // caller passes the same cancel the CAD agent sheet's Cancel uses.
+            // caller passes the same cancel the SolidCraft settings's Cancel uses.
             if (activeBusy) {
                 Spacer(Modifier.weight(1f))
                 TextButton(

@@ -94,7 +94,7 @@ class AppShellSourceTest {
             "no string may point at a settings surface that does not exist",
             app.contains("ScanRuler agent settings"),
         )
-        assertTrue(app.contains("inAppEndpointHint = \"Set the endpoint in the CAD agent sheet.\""))
+        assertTrue(app.contains("inAppEndpointHint = \"Set the endpoint in AI settings (More -> Configuration).\""))
     }
 
     @Test

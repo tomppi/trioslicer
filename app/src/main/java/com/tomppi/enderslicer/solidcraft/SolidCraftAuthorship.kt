@@ -135,7 +135,7 @@ class SolidCraftAuthorship {
         when {
             externalClients > 0 ->
                 "an external agent is connected" + (if (bridgePort > 0) " on " + bridgePort else "") +
-                    " - press Take over in the CAD agent sheet first"
+                    " - press Take over in the SolidCraft settings first"
             else -> null
         }
     }

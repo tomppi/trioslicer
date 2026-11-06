@@ -75,7 +75,7 @@ class AiChatOverlayTest {
         inAppComposerHint: String = "Ask for a CAD change",
         inAppEmptyLine: String = "No in-app conversation yet - ask for a change. Every " +
             "tool the in-app agent runs will show up here as a row.",
-        inAppEndpointHint: String = "Set the endpoint in the CAD agent sheet.",
+        inAppEndpointHint: String = "Set the endpoint in AI settings (More -> Configuration).",
         onCopyTranscript: (String) -> Unit = {},
     ) {
         compose.setContent {
@@ -255,7 +255,7 @@ class AiChatOverlayTest {
         ).assertIsDisplayed()
         compose.onNodeWithText("Ask the ScanRuler agent").assertExists()
         compose.onNodeWithText("Set the endpoint in the ScanRuler agent settings.").assertIsDisplayed()
-        compose.onNodeWithText("Set the endpoint in the CAD agent sheet.").assertDoesNotExist()
+        compose.onNodeWithText("Set the endpoint in AI settings (More -> Configuration).").assertDoesNotExist()
     }
 
     @Test
@@ -263,13 +263,13 @@ class AiChatOverlayTest {
         show(
             inApp(),
             pausedReason = "external agent connected - in-app agent paused - take the " +
-                "document back in the CAD agent sheet.",
+                "document back in the SolidCraft settings.",
         )
 
         compose.onNodeWithText("Author: nobody · in-app agent paused").assertIsDisplayed()
         compose.onNodeWithText(
             "external agent connected - in-app agent paused - take the document back in the " +
-                "CAD agent sheet.",
+                "SolidCraft settings.",
         ).assertIsDisplayed()
         // The composer cannot send while another author has the document.
         compose.onNodeWithContentDescription("Send").assertIsNotEnabled()

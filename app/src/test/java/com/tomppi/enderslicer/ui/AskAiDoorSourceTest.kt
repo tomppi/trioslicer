@@ -151,11 +151,11 @@ class AskAiDoorSourceTest {
     }
 
     @Test
-    fun theCadAgentSheetsPointerNamesTheRail() {
+    fun theSolidCraftSheetPointsAtWhereTheAgentIsConfigured() {
         val sheet = source("SolidCraftSheet.kt")
         assertTrue(
-            "the sheet has to point at the one door",
-            sheet.contains("Ask AI in the sidebar rail"),
+            "the sheet has to point at the settings that own the agent configuration",
+            sheet.contains("AI settings"),
         )
         assertFalse("and not at the old button", sheet.contains("sparkle button"))
     }

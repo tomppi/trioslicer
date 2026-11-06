@@ -139,11 +139,11 @@ class ScanRulerEmbeddedSourceTest {
         assertTrue(app.contains("onSelectEngine = viewModel::selectAgentEngine"))
         assertTrue(app.contains("inAppLabel = inAppAgentName + \" (in-app)\"") || app.contains("inAppLabel = inAppAgentName + \" (in-app)\","))
         assertTrue(app.contains("Ask the ScanRuler agent"))
-        // The endpoint editor is inside the CAD agent sheet - there is no separate
+        // The endpoint editor is inside the SolidCraft settings - there is no separate
         // "ScanRuler agent settings" surface, and the hint may not name one.
         assertTrue(
             "the endpoint hint points at the sheet that holds the editor",
-            app.contains("Set the endpoint in the CAD agent sheet."),
+            app.contains("Set the endpoint in AI settings (More -> Configuration)."),
         )
         assertTrue("the clipboard label follows the same name", app.contains("copyChatTranscript(text, inAppAgentName)"))
     }
