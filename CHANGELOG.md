@@ -4,6 +4,14 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1] - 2026-11-06
+
+### Changed
+
+- **The SolidCraft menu is SolidCraft again.** Renaming it to "SolidCraft settings" in 1.18.0 went one step too far:
+  the menu opens the engine's own surface and keeps the engine's name, and so does the sheet's header. AI settings
+  keeps its own home in More -> Configuration and the per-engine token-copy removal stays.
+
 ## [1.18.0] - 2026-11-06
 
 ### Added

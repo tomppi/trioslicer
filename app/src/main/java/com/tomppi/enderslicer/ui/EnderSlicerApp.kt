@@ -862,7 +862,7 @@ fun EnderSlicerApp(
     }
 
     /**
-     * Opens face picking from the SolidCraft settings.
+     * Opens face picking from the SolidCraft sheet.
      *
      * The sheet closes because the plate's tap is the input from here on, and every other tool
      * that owns the plate's touches closes with it - one tool at a time is what keeps a selection
@@ -1199,7 +1199,7 @@ fun EnderSlicerApp(
     /**
      * Sends from the floating chat's in-app source.
      *
-     * The same conversation, turn and cancel as the SolidCraft settings's ask box: the chat is
+     * The same conversation, turn and cancel as the SolidCraft sheet's ask box: the chat is
      * another view of that agent, not a second one. The endpoint settings are read at send time,
      * so a change made in the sheet applies to the next message here.
      */
@@ -2218,7 +2218,7 @@ fun EnderSlicerApp(
                                 // export that would do nothing.
                                 Box {
                                     TopBarTextAction(
-                                        label = "SolidCraft settings",
+                                        label = "SolidCraft",
                                         onClick = { solidCraftMenuExpanded = true },
                                     )
                                     DropdownMenu(
@@ -3656,7 +3656,7 @@ fun EnderSlicerApp(
             messages = viewModel.cadConversations.harness,
             // Sending goes to the backend the shared selection says is shown.
             onSend = ::askSolidCraftAgent,
-            // The same stop the SolidCraft settings's Cancel uses, for whichever backend is shown.
+            // The same stop the SolidCraft sheet's Cancel uses, for whichever backend is shown.
             onStop = ::cancelAgentTurn,
             onClose = { aiChatOpen = false },
             setup = if (aiConfigured) {
@@ -3673,7 +3673,7 @@ fun EnderSlicerApp(
             busy = viewModel.harnessCadBusy,
             status = viewModel.harnessCadStatus,
             insecure = aiInsecure,
-            // One shared selection with the SolidCraft settings: the sheet's mode chips and these
+            // One shared selection with the SolidCraft sheet: the sheet's mode chips and these
             // chips are the same state, so typing in either box always reaches the backend the
             // chat is showing.
             // The ViewModel holds the selection, so a rotation keeps the source; the persisted
@@ -3685,7 +3685,7 @@ fun EnderSlicerApp(
             },
             authorLine = chatAuthorship.authorLine,
             authorPausedReason = if (chatAuthorship.inAppPaused) {
-                chatAuthorship.pausedLine + " - take the document back in the SolidCraft settings."
+                chatAuthorship.pausedLine + " - take the document back in the SolidCraft sheet."
             } else {
                 null
             },
@@ -3713,7 +3713,7 @@ fun EnderSlicerApp(
                     "No in-app conversation yet - ask for a change. Every tool the " +
                         selectedEngine.label + " agent runs will show up here as a row."
             },
-            // The endpoint editor lives in the SolidCraft settings for both views:
+            // The endpoint editor lives in the SolidCraft sheet for both views:
             // there is no separate ScanRuler-side settings surface to point at.
             inAppEndpointHint = "Set the endpoint in AI settings (More -> Configuration).",
             inApp = InAppChat(
@@ -3834,7 +3834,7 @@ fun EnderSlicerApp(
         }
     }
 
-    // The SolidCraft settings: the whole human surface on a live CAD document besides looking at
+    // The SolidCraft sheet: the whole human surface on a live CAD document besides looking at
     // it, slicing it and exporting it. Kept above the AI chat so the sheet is never behind it.
     if (solidCraftSheetOpen && selectedTab == AppTab.PLATE) {
         // The CAD sheet gets the width the plate has (adaptiveSheetMaxWidth: window minus the
@@ -4118,7 +4118,7 @@ internal fun NavigationSuiteScope.AppTabItems(selected: AppTab, onSelect: (AppTa
  * phone with no reader, their screen lock - and copy nothing unless that succeeds.
  *
  * Both hand-overs go through here: the token-only copy in the Blender and CAD menus, and the
- * SolidCraft settings row's one-line copy that carries the connect line AND that engine's token. The
+ * SolidCraft sheet row's one-line copy that carries the connect line AND that engine's token. The
  * token is a credential for an engine that runs code inside this app, so a stray tap must not be
  * able to hand it to whoever is holding the phone. That is the same gesture a banking app puts
  * in front of a payment.
@@ -4276,7 +4276,7 @@ private fun requestMcpTokenCopy(
 }
 
 /**
- * Copies one SolidCraft settings row's hand-over: the connect line AND that engine's own token, one
+ * Copies one SolidCraft sheet row's hand-over: the connect line AND that engine's own token, one
  * line, so the user authenticates once and pastes once.
  *
  * The token is read here - after the prompt, never before - and [AgentBridgeCopy] builds the
@@ -4663,7 +4663,7 @@ internal fun TopBarTextAction(
 /**
  * The width a wide plate sheet may use: the window minus the Smart Infill panel's 12 dp margins,
  * capped at 960 dp. Below 600 dp the Material default is kept - on a phone it is the whole
- * window anyway. Shared by the SolidCraft settings and the native BumpMesh studio (both wide sheets,
+ * window anyway. Shared by the SolidCraft sheet and the native BumpMesh studio (both wide sheets,
  * neither may bring its own formula); every other AppBottomSheet caller keeps the default.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -4681,7 +4681,7 @@ private fun adaptiveSheetMaxWidth(): Dp {
 @Composable
 private fun AppBottomSheet(
     onDismissRequest: () -> Unit,
-    // Material3 caps a modal sheet at 640dp. The SolidCraft settings passes a wider cap when the
+    // Material3 caps a modal sheet at 640dp. The SolidCraft sheet passes a wider cap when the
     // window has the width for it; every other caller keeps the Material default.
     sheetMaxWidth: Dp = BottomSheetDefaults.SheetMaxWidth,
     content: @Composable () -> Unit,

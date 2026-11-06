@@ -58,7 +58,7 @@ object AgentBridges {
     }
 
     /**
-     * Applies the SolidCraft settings's **Reachable on the network** switch.
+     * Applies the SolidCraft sheet's **Reachable on the network** switch.
      *
      * On binds every bridge on the device's current network address; off closes every listener
      * before this returns, so nothing is left published. Returns null on success, or the

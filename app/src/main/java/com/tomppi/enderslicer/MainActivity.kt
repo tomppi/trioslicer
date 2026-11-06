@@ -130,7 +130,7 @@ class MainActivity : FragmentActivity() {
             CadQuestionNotification.cancel(this)
         }
         // The agent bridges' network reach is a saved choice: with it on, the listeners go up
-        // at app start, not when the SolidCraft settings is first opened. Binding and address
+        // at app start, not when the SolidCraft sheet is first opened. Binding and address
         // lookup are socket work, so they are not on the UI thread.
         Thread { runCatching { AgentBridges.ensureStarted(applicationContext) } }.start()
         // The one agent door for the three modelling engines; it listens on loopback from

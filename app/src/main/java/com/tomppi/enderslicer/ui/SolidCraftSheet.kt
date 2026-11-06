@@ -117,7 +117,7 @@ private fun SheetPane(
 }
 
 /**
- * The SolidCraft settings: what a SolidCraft CAD document is, and the whole human surface on it.
+ * The SolidCraft sheet: what a SolidCraft CAD document is, and the whole human surface on it.
  *
  * A live CAD document is the agent's work and the human is a spectator. This sheet is therefore
  * the only place a human can *ask* for a change, and the only place that says what the document
@@ -234,7 +234,7 @@ internal fun SolidCraftSheet(
 
     val header: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(EnderSlicerDimens.Space4)) {
-            Text("SolidCraft settings", style = MaterialTheme.typography.titleMedium)
+            Text("SolidCraft", style = MaterialTheme.typography.titleMedium)
             Text(
                 "The engine's document - the agent authors it, the plate only shows it.",
                 style = MaterialTheme.typography.bodySmall,

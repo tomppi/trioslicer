@@ -29,9 +29,9 @@ class MenuReorganisationSourceTest {
 
     private fun plateMenu(): String = menu("Plate", "Blender")
 
-    private fun blenderMenu(): String = menu("Blender", "SolidCraft settings")
+    private fun blenderMenu(): String = menu("Blender", "SolidCraft")
 
-    private fun solidCraftMenu(): String = menu("SolidCraft settings", "OCCT")
+    private fun solidCraftMenu(): String = menu("SolidCraft", "OCCT")
 
     @Test
     fun thePlateMenuDropsTheTextureAndBlenderFilesShortcutsAndOwnsConvertToStl() {
@@ -80,7 +80,7 @@ class MenuReorganisationSourceTest {
         assertFalse(solidCraft.contains("state.cadConvertLabel"))
         assertFalse("the SolidCraft menu no longer hands out a token", solidCraft.contains("Copy MCP token"))
         assertTrue("the menu is named for the document surface it opens",
-            app().contains("label = \"SolidCraft settings\""))
+            app().contains("label = \"SolidCraft\""))
         assertFalse("no second Convert press", solidCraft.contains("viewModel.convertCadToStl()"))
         assertFalse(solidCraft.contains("\"Connect CAD agent\""))
     }

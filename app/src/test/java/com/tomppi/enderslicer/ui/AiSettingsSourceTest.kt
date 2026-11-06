@@ -67,7 +67,7 @@ class AiSettingsSourceTest {
     @Test
     fun theDocumentSheetKeepsTheDocumentAndLosesTheAgentSettings() {
         val sheet = source("com/tomppi/enderslicer/ui/SolidCraftSheet.kt")
-        assertTrue("the sheet is named for its surface", sheet.contains("\"SolidCraft settings\""))
+        assertTrue("the sheet is named for its surface", sheet.contains("\"SolidCraft\""))
         // The moved-out controls are not duplicated here.
         assertFalse(sheet.contains("onAgentModeChange"))
         assertFalse(sheet.contains("onAgentSettingsSave"))

@@ -37,7 +37,7 @@ class SolidCraftAgentHost(
             )
         }
         val live = session() ?: return AgentToolHost.Result(
-            "the CAD engine is not running: press Connect agent in the SolidCraft settings and ask again.",
+            "the CAD engine is not running: press Connect agent in the SolidCraft sheet and ask again.",
             failed = true,
             outcome = "the CAD engine is not running",
         )

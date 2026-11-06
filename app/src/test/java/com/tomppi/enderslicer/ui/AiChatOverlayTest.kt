@@ -263,13 +263,13 @@ class AiChatOverlayTest {
         show(
             inApp(),
             pausedReason = "external agent connected - in-app agent paused - take the " +
-                "document back in the SolidCraft settings.",
+                "document back in the SolidCraft sheet.",
         )
 
         compose.onNodeWithText("Author: nobody · in-app agent paused").assertIsDisplayed()
         compose.onNodeWithText(
             "external agent connected - in-app agent paused - take the document back in the " +
-                "SolidCraft settings.",
+                "SolidCraft sheet.",
         ).assertIsDisplayed()
         // The composer cannot send while another author has the document.
         compose.onNodeWithContentDescription("Send").assertIsNotEnabled()

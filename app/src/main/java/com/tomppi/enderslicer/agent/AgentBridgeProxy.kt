@@ -57,7 +57,7 @@ data class AgentBridgeLine(
  * The Blender MCP addon and the Python CAD engine are not ours to change: they bind 127.0.0.1
  * and stay that way. A phone with no adb cannot be reached from a laptop that way, which is why
  * reaching those two used to need an `adb forward` or a tailnet serve rule on the phone. This
- * proxy is the way out: when the SolidCraft settings's **Reachable on the network** switch is on,
+ * proxy is the way out: when the SolidCraft sheet's **Reachable on the network** switch is on,
  * the app listens on the device's own network address (the one [BridgeAccess] picks) at the
  * SAME port each engine uses - 9876, 9877, and the app's own SolidCraft bridge on 9878 - and
  * forwards every connection's bytes both ways to 127.0.0.1 at that port. Binding the network

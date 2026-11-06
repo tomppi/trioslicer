@@ -68,7 +68,7 @@ class CadFixWiringSourceTest {
         )
         assertTrue(
             "a derived layout is marked stale with the Rebuild sentence",
-            connect.contains("Press Rebuild plate in the SolidCraft settings"),
+            connect.contains("Press Rebuild plate in the SolidCraft sheet"),
         )
         assertTrue(
             "a deleted design is named instead of overwritten or silently skipped",
