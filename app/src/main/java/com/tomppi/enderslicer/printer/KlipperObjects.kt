@@ -173,13 +173,46 @@ internal fun KlipperPrinterState.obj(name: String): JSONObject? = objects[name]
 internal val KlipperPrinterState.probeSection: String?
     get() = listOf("bltouch", "probe").firstOrNull { configSections?.has(it) == true }
 
-/** The probe's own offset from the printer's configuration, in millimetres. */
-internal val KlipperPrinterState.configuredProbeOffset: Double?
+/** The probe's own offsets from the printer's configuration, and where they live. */
+data class ProbeOffsets(
+    val section: String,
+    val x: Double,
+    val y: Double,
+    val z: Double?,
+)
+
+/** The outcome of writing the probe's offsets: whether the host restarted to read them. */
+data class ProbeOffsetWrite(val x: Double, val y: Double, val restarted: Boolean)
+
+/**
+ * The probe's x and y offsets, and the section that carries them.
+ *
+ * Klipper reads the offsets from [bltouch] on a classic configuration, or from [probe] when
+ * the newer split is used and [bltouch] keeps only the pins. A configuration with both
+ * sections carries the offsets in exactly one of them - and that is the section an edit has
+ * to write back to, so the reading and the writing agree on which one it is.
+ */
+internal val KlipperPrinterState.probeOffsets: ProbeOffsets?
     get() {
-        val section = probeSection ?: return null
-        val raw = configSections?.optJSONObject(section)?.opt("z_offset")?.toString() ?: return null
-        return raw.toDoubleOrNull()
+        val sections = configSections ?: return null
+        for (name in listOf("bltouch", "probe")) {
+            val section = sections.optJSONObject(name) ?: continue
+            val x = section.offsetMillimetres("x_offset") ?: continue
+            val y = section.offsetMillimetres("y_offset") ?: continue
+            return ProbeOffsets(name, x, y, section.offsetMillimetres("z_offset"))
+        }
+        return null
     }
+
+/** The probe's own z offset from the printer's configuration, in millimetres. */
+internal val KlipperPrinterState.configuredProbeOffset: Double?
+    get() = probeOffsets?.z
+        ?: probeSection?.let { section ->
+            configSections?.optJSONObject(section)?.offsetMillimetres("z_offset")
+        }
+
+private fun JSONObject.offsetMillimetres(name: String): Double? =
+    opt(name)?.toString()?.toDoubleOrNull()
 
 /** What the probe calls itself: "bltouch", "probe", or nothing if there is none. */
 internal val KlipperPrinterState.probeName: String?

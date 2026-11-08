@@ -709,6 +709,53 @@ internal object KlipperConfigFile {
     }
 
     /**
+     * Set the probe's x and y offsets in the section that carries them.
+     *
+     * Klipper reads the offsets from [bltouch] on a classic configuration, or from [probe]
+     * when the newer split is used and [bltouch] keeps only the pins. Whichever section
+     * already holds an x_offset or y_offset is the one written; a file with neither section
+     * returns null, so the caller can say it has nowhere to put them instead of writing a
+     * file that changes nothing.
+     *
+     * z_offset is deliberately not written here: klippy keeps the calibrated value in its
+     * saved block, and the paper test - PROBE_CALIBRATE - is what changes it.
+     */
+    fun withProbeOffsets(text: String, x: Double, y: Double): String? {
+        val section = probeOffsetSection(text) ?: return null
+        val withX = withOption(text, section, "x_offset", offsetText(x))
+        return withOption(withX, section, "y_offset", offsetText(y))
+    }
+
+    /** The section that carries the probe's own x and y offsets, if the file has one. */
+    fun probeOffsetSection(text: String): String? {
+        val options = mutableMapOf<String, MutableSet<String>>()
+        var section: String? = null
+        for (line in withoutSavedBlock(text).lines()) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("[")) {
+                section = trimmed.removePrefix("[").substringBefore("]").trim().lowercase()
+                options.getOrPut(section) { mutableSetOf() }
+                continue
+            }
+            val current = section ?: continue
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+            val key = trimmed.substringBefore(':').substringBefore('=').trim().lowercase()
+            if (key.isNotEmpty()) options[current]?.add(key)
+        }
+        for (candidate in listOf("bltouch", "probe")) {
+            val keys = options[candidate] ?: continue
+            if ("x_offset" in keys || "y_offset" in keys) return candidate
+        }
+        // A file with a probe section but no offsets yet: the classic section is the one a
+        // missing pair is added to, exactly where SAVE_CONFIG writes z_offset.
+        return listOf("bltouch", "probe").firstOrNull { options.containsKey(it) }
+    }
+
+    private fun offsetText(value: Double): String =
+        if (value == value.toLong().toDouble()) "%.1f".format(java.util.Locale.US, value)
+        else value.toString()
+
+    /**
      * The printer-describing settings the two configurations disagree about.
      *
      * Two configurations of one printer have to differ in how each host reaches it, so most

@@ -429,6 +429,15 @@ class KlipperViewModel(application: Application) : AndroidViewModel(application)
     suspend fun readConfig(): String? = repository.readConfigFile()
 
     /**
+     * Write the probe's own x and y offsets to the configuration the host runs.
+     *
+     * The result says whether the host was restarted: a print in progress holds the restart
+     * back, and the offsets apply when it ends.
+     */
+    suspend fun saveProbeOffsets(x: Double, y: Double): Result<ProbeOffsetWrite> =
+        repository.saveProbeOffsets(x, y)
+
+    /**
      * Bring a printer.cfg of the user's own: their printer, as their printer is set up.
      *
      * More than one file may be chosen, because a configuration that includes others

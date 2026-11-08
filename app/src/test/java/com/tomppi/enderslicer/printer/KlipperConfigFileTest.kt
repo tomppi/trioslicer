@@ -818,6 +818,83 @@ class KlipperConfigFileTest {
         assertFalse(KlipperConfigFile.isPtySerial(""))
     }
 
+    @Test
+    fun theProbeOffsetsAreWrittenIntoTheClassicBltouchSection() {
+        val text = """
+            [bltouch]
+            sensor_pin: ^PB1
+            control_pin: PB0
+            x_offset: -47.0
+            y_offset: -5.0
+            #z_offset: 0
+            speed: 20
+
+            #*# <---------------------- SAVE_CONFIG ---------------------->
+            #*# [bltouch]
+            #*# z_offset = 1.630
+        """.trimIndent()
+
+        val edited = KlipperConfigFile.withProbeOffsets(text, -45.0, -18.0)!!
+
+        assertTrue(edited.contains("x_offset: -45.0"))
+        assertTrue(edited.contains("y_offset: -18.0"))
+        assertFalse("the old value is gone", edited.contains("x_offset: -47.0"))
+        assertTrue("the rest of the section is untouched", edited.contains("speed: 20"))
+        assertTrue("what the printer saved survives", edited.contains("#*# z_offset = 1.630"))
+    }
+
+    @Test
+    fun aHybridConfigurationKeepsItsPinsAndTakesTheOffsetsInProbe() {
+        val text = """
+            [bltouch]
+            sensor_pin: ^PB1
+            control_pin: PB0
+            stow_on_each_sample: false
+
+            [probe]
+            x_offset: -30.0
+            y_offset: 2.0
+            z_offset: 1.2
+        """.trimIndent()
+
+        val edited = KlipperConfigFile.withProbeOffsets(text, -45.0, -18.0)!!
+
+        val pins = edited.substringAfter("[bltouch]").substringBefore("[probe]")
+        assertFalse("the pins section is not where offsets are written", pins.contains("x_offset"))
+        val probe = edited.substringAfter("[probe]")
+        assertTrue(probe.contains("x_offset: -45.0"))
+        assertTrue(probe.contains("y_offset: -18.0"))
+        assertTrue("the calibrated z is not touched", probe.contains("z_offset: 1.2"))
+    }
+
+    @Test
+    fun aBltouchSectionWithNoOffsetsYetGetsThem() {
+        val text = """
+            [bltouch]
+            sensor_pin: ^PB1
+            control_pin: PB0
+        """.trimIndent()
+
+        val edited = KlipperConfigFile.withProbeOffsets(text, -45.0, -18.0)!!
+
+        val section = edited.substringAfter("[bltouch]")
+        val x = section.indexOf("x_offset: -45.0")
+        val y = section.indexOf("y_offset: -18.0")
+        assertTrue("x is written in the section", x > 0)
+        assertTrue("y follows it", y > x)
+    }
+
+    @Test
+    fun aConfigurationWithNoProbeHasNowhereToWriteOffsets() {
+        val text = "[mcu]\nserial: /dev/ttyUSB0\n\n[printer]\nkinematics: cartesian\n"
+        assertNull(KlipperConfigFile.withProbeOffsets(text, -45.0, -18.0))
+        assertNull(KlipperConfigFile.probeOffsetSection(text))
+        assertEquals(
+            "bltouch",
+            KlipperConfigFile.probeOffsetSection("[bltouch]\nsensor_pin: ^PB1\n"),
+        )
+    }
+
     private companion object {
         /** The link the app hands klippy, as the prepare and import paths build it. */
         const val PTY = "/data/data/com.tomppi.enderslicercura/files/printer-pty"

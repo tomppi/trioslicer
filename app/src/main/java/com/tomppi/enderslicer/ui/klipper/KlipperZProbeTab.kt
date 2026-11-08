@@ -28,6 +28,16 @@ import com.tomppi.enderslicer.printer.probeName
 import com.tomppi.enderslicer.printer.probeSection
 import com.tomppi.enderslicer.printer.saveConfigPending
 import com.tomppi.enderslicer.printer.zOffset
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.input.KeyboardType
+import com.tomppi.enderslicer.printer.ProbeOffsets
+import com.tomppi.enderslicer.printer.probeOffsets
+import kotlinx.coroutines.launch
 
 /**
  * The probe, and the two numbers it has.
@@ -99,6 +109,10 @@ internal fun KlipperZProbeTab(state: KlipperPrinterState, viewModel: KlipperView
                 KlipperValue("Last probe height", "%.3f mm".format(result))
             }
             state.lastProbeQuery?.let { query -> KlipperValue("Probe state", query) }
+        }
+
+        state.probeOffsets?.let { offsets ->
+            ProbeOffsetsCard(offsets, state, viewModel)
         }
 
         if (calibrating) {
@@ -253,3 +267,101 @@ private fun PaperCard(state: KlipperPrinterState, viewModel: KlipperViewModel) {
         )
     }
 }
+
+/**
+ * Writing the probe's x and y offsets where Klipper reads them.
+ *
+ * The values are the mount's, and they decide where the probe lands when the machine probes -
+ * not how high the first layer is (that is z, and the paper test). Klipper applies them only
+ * at start-up, so saving writes the host's configuration and restarts it; a print in progress
+ * is the one thing that holds the restart back, and the card says so.
+ */
+@Composable
+private fun ProbeOffsetsCard(
+    offsets: ProbeOffsets,
+    state: KlipperPrinterState,
+    viewModel: KlipperViewModel,
+) {
+    var x by rememberSaveable(offsets.x) { mutableStateOf(formatOffset(offsets.x)) }
+    var y by rememberSaveable(offsets.y) { mutableStateOf(formatOffset(offsets.y)) }
+    var saving by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val xValue = x.trim().toDoubleOrNull()
+    val yValue = y.trim().toDoubleOrNull()
+    val changed = xValue != null && yValue != null &&
+        (xValue != offsets.x || yValue != offsets.y)
+
+    KlipperCard(
+        title = "Probe offsets",
+        subtitle = "x and y in [" + offsets.section + "] - where the probe sits",
+    ) {
+        KlipperNote(
+            "These move where the probe lands, not how high the first layer is. Klipper " +
+                "reads them only when it starts: saving writes the configuration and " +
+                "restarts the host, unless a print is running.",
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = x,
+                onValueChange = { x = it; status = null },
+                label = { Text("X offset (mm)") },
+                singleLine = true,
+                enabled = !saving,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = y,
+                onValueChange = { y = it; status = null },
+                label = { Text("Y offset (mm)") },
+                singleLine = true,
+                enabled = !saving,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        KlipperButtons {
+            KlipperButton(
+                text = if (saving) "Saving..." else "Save offsets",
+                enabled = changed && !saving && state.connected,
+            ) {
+                val nextX = xValue ?: return@KlipperButton
+                val nextY = yValue ?: return@KlipperButton
+                scope.launch {
+                    saving = true
+                    status = viewModel.saveProbeOffsets(nextX, nextY).fold(
+                        onSuccess = { saved ->
+                            if (saved.restarted) {
+                                "Saved - Klipper is restarting with the new offsets."
+                            } else {
+                                "Saved - a print is running, so the restart was held " +
+                                    "back; it applies when the print ends."
+                            }
+                        },
+                        onFailure = { error ->
+                            error.message ?: "The offsets were not saved."
+                        },
+                    )
+                    saving = false
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        KlipperNote(
+            "The probe's Z offset is calibrated, not typed: use Start calibrating below. " +
+                "Macros that spell out probe positions - screws, a safe home - may need " +
+                "their coordinates revisited after a change here.",
+        )
+        status?.let {
+            Spacer(Modifier.height(4.dp))
+            KlipperNote(it, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+private fun formatOffset(value: Double): String =
+    if (value == value.toLong().toDouble()) "%.1f".format(java.util.Locale.US, value)
+    else value.toString()

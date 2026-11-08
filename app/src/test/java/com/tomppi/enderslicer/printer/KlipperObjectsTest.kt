@@ -204,4 +204,44 @@ class KlipperObjectsTest {
         assertEquals(4711, host.processId)
         assertEquals("/x/printer.cfg", host.configFile)
     }
+
+    @Test
+    fun theProbeOffsetsAreReadFromTheSectionThatCarriesThem() {
+        val classic = KlipperPrinterState(connected = true).withStatus(
+            status(
+                """{"configfile": {"settings": {"bltouch": {
+                    "x_offset": -45.0, "y_offset": -18.0, "z_offset": 1.63
+                }}}}""",
+            ),
+        )
+        val offsets = classic.probeOffsets!!
+        assertEquals("bltouch", offsets.section)
+        assertEquals(-45.0, offsets.x, 0.001)
+        assertEquals(-18.0, offsets.y, 0.001)
+        assertEquals(1.63, offsets.z!!, 0.001)
+    }
+
+    @Test
+    fun aHybridConfigurationReadsTheOffsetsFromProbeAndThePinsFromBltouch() {
+        val hybrid = KlipperPrinterState(connected = true).withStatus(
+            status(
+                """{"configfile": {"settings": {
+                    "bltouch": {"sensor_pin": "^PB1", "control_pin": "PB0"},
+                    "probe": {"x_offset": -45.0, "y_offset": -18.0, "z_offset": 1.63}
+                }}}""",
+            ),
+        )
+        assertEquals("probe", hybrid.probeOffsets!!.section)
+        assertEquals(-45.0, hybrid.probeOffsets!!.x, 0.001)
+        assertEquals(1.63, hybrid.configuredProbeOffset!!, 0.001)
+    }
+
+    @Test
+    fun aPrinterWithNoProbeHasNoOffsetsToRead() {
+        val plain = KlipperPrinterState(connected = true).withStatus(
+            status("""{"configfile": {"settings": {"printer": {"kinematics": "cartesian"}}}}"""),
+        )
+        assertNull(plain.probeOffsets)
+        assertNull(plain.configuredProbeOffset)
+    }
 }

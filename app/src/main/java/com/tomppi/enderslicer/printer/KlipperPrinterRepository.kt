@@ -1819,6 +1819,47 @@ class KlipperPrinterRepository(
     /** The configuration of the host being driven, which is the one the card is about. */
     suspend fun readConfigFile(): String? = readHostConfig()
 
+    /**
+     * Write the probe's own x and y offsets, and make the host read them.
+     *
+     * Klipper applies these only when it starts, so a saved file is not a running printer
+     * until the host has restarted; a print that is running is never restarted - the file is
+     * written and the caller says the change is waiting. A configuration with no probe
+     * section is a failure with a sentence, never a quiet no-op: the file would come back
+     * unchanged and the screen would claim a save.
+     *
+     * z_offset is not written here. klippy keeps the calibrated value in its saved block,
+     * and the paper test is what changes it.
+     */
+    suspend fun saveProbeOffsets(x: Double, y: Double): Result<ProbeOffsetWrite> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val current = readHostConfig()
+                    ?: throw IllegalStateException(
+                        "The printer's configuration could not be read, so the offsets were not changed.",
+                    )
+                val edited = KlipperConfigFile.withProbeOffsets(current, x, y)
+                    ?: throw IllegalStateException(
+                        "The configuration has no [bltouch] or [probe] section, so there is " +
+                            "nowhere to write the offsets.",
+                    )
+                if (!writeHostConfig(edited)) {
+                    throw IllegalStateException(
+                        "The configuration was not written, so the offsets are unchanged.",
+                    )
+                }
+                val remote = hostChoice.load().isRemote
+                if (_state.value.isPrinting) {
+                    ProbeOffsetWrite(x, y, restarted = false)
+                } else {
+                    // The computer's route is already restarted by writeHostConfig, with
+                    // Moonraker's own endpoint; this device's service is restarted here.
+                    if (!remote) restartHost()
+                    ProbeOffsetWrite(x, y, restarted = true)
+                }
+            }
+        }
+
     /** Where the running configuration came from, as the service left it. */
     private fun readConfigSource(): KlipperConfigSource = runCatching {
         KlipperHostFiles.source(application.filesDir).takeIf { it.isFile }?.readText()

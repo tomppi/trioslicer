@@ -4,6 +4,17 @@ All notable changes to TrioSlicer are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The probe's x and y offsets are editable in the app.** The Z probe tab now carries a **Probe offsets** card: it
+  shows the x and y the printer's configuration carries - `[bltouch]` on a classic file, `[probe]` when the newer
+  split is used and `[bltouch]` keeps only the pins - and writes a changed pair the way every other configuration
+  change does: through the host path in use (this phone's own printer.cfg, or the computer's over Moonraker), then a
+  restart, because Klipper only reads the offsets at start-up. A print in progress holds the restart back and the
+  card says the change is waiting; the calibrated Z offset stays the paper test's job.
+
 ## [1.18.1] - 2026-11-06
 
 ### Changed
