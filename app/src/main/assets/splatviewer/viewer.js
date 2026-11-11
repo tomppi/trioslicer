@@ -308,8 +308,10 @@ class OrbitRig {
 
     orbit(dx, dy) {
         const speed = 0.005 * controlSettings.orbitSensitivity;
-        this.wantedYaw -= dx * speed;
-        this.wantedPitch = clamp(this.wantedPitch + dy * speed, -1.45, 1.45);
+        // Inverted orbit: dragging right turns the scene right, dragging down moves the
+        // camera down over it - the direction the model follows the finger, not the camera.
+        this.wantedYaw += dx * speed;
+        this.wantedPitch = clamp(this.wantedPitch - dy * speed, -1.45, 1.45);
     }
 
     pan(dx, dy) {
