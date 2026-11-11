@@ -12,7 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (.sog/.ply/.spz) in an offline WebGL page (Aholo renderer, MIT), with an orbit/pan/pinch camera,
   double-tap reset and a settings sheet for the renderer (SH precalculation, texturing, sorting,
   tone curve and exposure) and for the controls (speeds, damping, auto-rotate). Models are
-  imported into app storage from Downloads; the file never leaves the phone.
+  imported into app storage from Downloads; the file never leaves the phone, and an
+  imported splat can be deleted from the library after confirmation.
 
 ### Added
 

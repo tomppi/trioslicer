@@ -15,11 +15,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -51,6 +56,7 @@ internal fun SplatLibrarySheet(
     val context = LocalContext.current
     var revision by remember { mutableIntStateOf(0) }
     var message by remember { mutableStateOf<String?>(null) }
+    var pendingDelete by remember { mutableStateOf<File?>(null) }
     val files = remember(revision) { SplatLibrary.list(context) }
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -96,7 +102,11 @@ internal fun SplatLibrarySheet(
             )
         } else {
             files.forEach { file ->
-                SplatRow(file = file, onOpen = { openSplat(context, file) })
+                SplatRow(
+                    file = file,
+                    onOpen = { openSplat(context, file) },
+                    onDelete = { pendingDelete = file },
+                )
                 HorizontalDivider()
             }
         }
@@ -121,12 +131,39 @@ internal fun SplatLibrarySheet(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        pendingDelete?.let { file ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                title = { Text("Delete this splat?") },
+                text = {
+                    Text(
+                        file.name + " will be removed from the app's splat storage. " +
+                            "The copy you imported from Downloads is not touched.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingDelete = null
+                        val removed = SplatLibrary.delete(context, file)
+                        revision++
+                        message = if (removed) {
+                            "Deleted " + file.name
+                        } else {
+                            "That splat could not be deleted."
+                        }
+                    }) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                },
+            )
+        }
         Spacer(Modifier.height(EnderSlicerDimens.Space8))
     }
 }
 
 @Composable
-private fun SplatRow(file: File, onOpen: () -> Unit) {
+private fun SplatRow(file: File, onOpen: () -> Unit, onDelete: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -145,6 +182,13 @@ private fun SplatRow(file: File, onOpen: () -> Unit) {
             )
         }
         TextButton(onClick = onOpen) { Text("View") }
+        IconButton(onClick = onDelete) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Delete " + file.name,
+                tint = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 

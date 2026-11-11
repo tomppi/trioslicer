@@ -79,5 +79,11 @@ class SplatViewerSourceTest {
         val library = file("src/main/java/com/tomppi/enderslicer/splat/SplatLibrary.kt").readText()
         assertTrue("imports land in app storage", library.contains("File(context.filesDir, \"splats\")"))
         assertTrue("the MIT renderer is named in the UI", file("src/main/java/com/tomppi/enderslicer/ui/SplatLibrarySheet.kt").readText().contains("Aholo"))
+        assertTrue(
+            "an imported splat can be deleted, and only after confirmation",
+            library.contains("fun delete(") &&
+                file("src/main/java/com/tomppi/enderslicer/ui/SplatLibrarySheet.kt").readText()
+                    .contains("Delete this splat?"),
+        )
     }
 }

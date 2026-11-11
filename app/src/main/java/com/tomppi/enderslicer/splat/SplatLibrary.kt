@@ -92,6 +92,17 @@ object SplatLibrary {
         return candidate
     }
 
+    /**
+     * Remove one imported splat. Only a file that really lives in the splat folder is
+     * touched: the user's original in Downloads is not ours to delete.
+     */
+    fun delete(context: Context, file: File): Boolean {
+        val folder = runCatching { directory(context).canonicalFile }.getOrNull() ?: return false
+        val target = runCatching { file.canonicalFile }.getOrNull() ?: return false
+        if (target.parentFile != folder) return false
+        return target.delete()
+    }
+
     /** A human title for the viewer's toolbar: the file name without its extension. */
     fun titleOf(file: File): String = file.name.substringBeforeLast('.', file.name)
 }
