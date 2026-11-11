@@ -1,10 +1,6 @@
-# Changelog
-
-All notable changes to TrioSlicer are documented here. The format is based
-on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
+
+## [1.19.0] - 2026-11-11
 
 ### Added
 
@@ -14,8 +10,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tone curve and exposure) and for the controls (speeds, damping, auto-rotate). Models are
   imported into app storage from Downloads; the file never leaves the phone, and an
   imported splat can be deleted from the library after confirmation.
-
-### Added
 
 - **The probe's x and y offsets are editable in the app.** The Z probe tab now carries a **Probe offsets** card: it
   shows the x and y the printer's configuration carries - `[bltouch]` on a classic file, `[probe]` when the newer

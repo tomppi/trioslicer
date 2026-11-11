@@ -44,6 +44,22 @@ texts ship in the bundle as `assets/scanruler/fonts/OFL-barlow.txt`,
 `OFL-barlowsemicondensed.txt` and `OFL-b612mono.txt`. meshstep is the same AGPL-3.0-only
 family as this app; manifold-3d's Apache-2.0 and occt-wasm's permissive terms are compatible.
 
+## Aholo Viewer (Gaussian splat renderer)
+
+- Project: `manycoretech/aholo-viewer` - https://github.com/manycoretech/aholo-viewer
+- Package: `@manycore/aholo-viewer` 1.13.0 (npm), vendored from the published tarball
+- License: MIT License, Copyright (c) 2026 MANYCORE, INC. - the licence text ships as
+  `app/src/main/assets/splatviewer/aholo/LICENSE`
+- Vendored artifact: the unmodified ESM build `dist/index.js` plus its worker scripts
+  (`splat-worker.js`, `splat-sort-worker.js`, `transcoder-worker.js`) under
+  `app/src/main/assets/splatviewer/aholo/`. The page that drives it
+  (`assets/splatviewer/index.html`, `viewer.js`) and the Android host
+  (`SplatViewerActivity`) are TrioSlicer code, AGPL-3.0-or-later, and are not part of
+  the upstream package.
+- Runtime: served offline by the app's WebView (WebViewAssetLoader) at the app's own
+  https origin; the renderer draws with WebGL2 and no network is used. Splat models the
+  user imports stay in app storage and are never uploaded by the app.
+
 ## Mesh-Mix-S2C (mesh to STEP engine)
 
 - Project: `STL2CURVES-MMM/Mesh-Mix-S2C` (Manifold Mesh Mix)
