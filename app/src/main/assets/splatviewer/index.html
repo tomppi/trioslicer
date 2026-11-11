@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Splat viewer</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden; background: #05070c; color: #e6edf3; font-family: sans-serif; -webkit-user-select: none; user-select: none; }
+  body { position: relative; }
+  #view { position: fixed; top: 0; left: 0; width: 100%; height: 100%; touch-action: none; }
+  #hud { z-index: 2; position: fixed; left: 12px; right: 12px; top: 10px; display: flex; align-items: center; gap: 8px; pointer-events: none; }
+  #title { font-size: 13px; opacity: .85; text-shadow: 0 1px 2px #000; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hud-button { pointer-events: auto; font-size: 13px; line-height: 1; padding: 8px 11px; border-radius: 999px; border: 1px solid #2b3a4a; background: #0c141d; color: #cfe3f7; }
+  #status { z-index: 2; position: fixed; left: 0; right: 0; bottom: 46px; text-align: center; font-size: 13px; opacity: .9; text-shadow: 0 1px 3px #000; }
+  #status.error { color: #ff8a80; }
+  #hint { z-index: 2; position: fixed; left: 0; right: 0; bottom: 16px; text-align: center; font-size: 11px; opacity: .55; }
+  #panel { position: fixed; top: 58px; right: 10px; bottom: 18px; width: min(340px, calc(100% - 20px)); overflow-y: auto; overscroll-behavior: contain; z-index: 3; background: rgba(10, 16, 24, .96); border: 1px solid #24313f; border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.55); padding: 10px 12px 14px; display: none; }
+  #panel.open { display: block; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 8px; }
+  .panel-head strong { font-size: 14px; }
+  .panel-close { border: 0; background: transparent; color: #8fa3b8; font-size: 20px; line-height: 1; padding: 2px 6px; }
+  .group { margin-top: 10px; border-top: 1px solid #1d2833; padding-top: 8px; }
+  .group > summary { cursor: pointer; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: #7fd0c8; list-style: none; padding: 2px 0; }
+  .group > summary::-webkit-details-marker { display: none; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 13px; }
+  .row input[type=range] { flex: 0 0 46%; accent-color: #58c4bb; }
+  .row select { background: #0e1720; color: #e6edf3; border: 1px solid #24313f; border-radius: 8px; padding: 4px 6px; font-size: 12px; }
+  .row input[type=checkbox] { width: 18px; height: 18px; accent-color: #58c4bb; }
+  .value { font-size: 11px; color: #8fa3b8; min-width: 34px; text-align: right; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="hud">
+  <div id="title"></div>
+  <button id="settings" class="hud-button" aria-label="Viewer settings">Settings</button>
+  <button id="fit" class="hud-button">Reset</button>
+</div>
+<div id="panel">
+  <div class="panel-head"><strong>Viewer settings</strong><button id="panel-close" class="panel-close" aria-label="Close settings">&times;</button></div>
+  <div class="panel-body"></div>
+</div>
+<div id="status">Starting…</div>
+<div id="hint">drag to orbit · pinch to zoom · two-finger drag to pan · double-tap to reset</div>
+<script type="module" src="./viewer.js"></script>
+</body>
+</html>

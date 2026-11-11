@@ -53,6 +53,12 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
             android:exported="false"
             android:hardwareAccelerated="true" />
+        <!-- The Gaussian-splat viewer: an offline WebGL page over app storage, no network. -->
+        <activity
+            android:name=".splat.SplatViewerActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
         <!-- Embedded Blender MCP engine keeper: foreground service so the
              process survives screen-off/lock (no service => cached process,
              culled by the OS once the screen locks). -->

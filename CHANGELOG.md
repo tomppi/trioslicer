@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Splat viewer: More -> Experimental -> Splat viewer opens a trained Gaussian-splat model
+  (.sog/.ply/.spz) in an offline WebGL page (Aholo renderer, MIT), with an orbit/pan/pinch camera,
+  double-tap reset and a settings sheet for the renderer (SH precalculation, texturing, sorting,
+  tone curve and exposure) and for the controls (speeds, damping, auto-rotate). Models are
+  imported into app storage from Downloads; the file never leaves the phone.
+
+### Added
+
 - **The probe's x and y offsets are editable in the app.** The Z probe tab now carries a **Probe offsets** card: it
   shows the x and y the printer's configuration carries - `[bltouch]` on a classic file, `[probe]` when the newer
   split is used and `[bltouch]` keeps only the pins - and writes a changed pair the way every other configuration

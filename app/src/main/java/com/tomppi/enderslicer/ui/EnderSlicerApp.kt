@@ -338,6 +338,7 @@ fun EnderSlicerApp(
     var modelHintsDismissed by rememberSaveable { mutableStateOf(false) }
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
+    var splatLibraryOpen by rememberSaveable { mutableStateOf(false) }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
@@ -3316,6 +3317,7 @@ fun EnderSlicerApp(
                         onBumpMesh = ::launchBumpMesh,
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onMeshToStep = viewModel::openMeshToStep,
+                        onSplatViewer = { splatLibraryOpen = true },
                         onScanRuler = ::launchScanRuler,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
@@ -3413,6 +3415,12 @@ fun EnderSlicerApp(
             onDismissRequest = { diagnosticsLogOpen = false },
         ) {
             DiagnosticsLogSheet(onDismiss = { diagnosticsLogOpen = false })
+        }
+    }
+
+    if (splatLibraryOpen) {
+        AppBottomSheet(onDismissRequest = { splatLibraryOpen = false }) {
+            SplatLibrarySheet(onDismiss = { splatLibraryOpen = false })
         }
     }
 
@@ -4324,6 +4332,7 @@ private fun MoreScreen(
     onBumpMesh: () -> Unit,
     onBumpMeshStudio: () -> Unit,
     onMeshToStep: () -> Unit,
+    onSplatViewer: () -> Unit,
     onScanRuler: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
@@ -4442,6 +4451,18 @@ private fun MoreScreen(
                 enabled = !state.isBusy,
                 badge = "EXP",
                 onClick = onScanRuler,
+            )
+            MoreDivider()
+            // The splat viewer is a workspace too: a trained Gaussian-splat scene rendered by
+            // the vendored Aholo renderer, never handed to the plate or the slicer.
+            MoreRow(
+                icon = AppIcons.Cube,
+                title = "Splat viewer",
+                subtitle = "Gaussian splat scenes (.sog/.ply) from the training pipeline, " +
+                    "rendered on the phone - the file never leaves it",
+                enabled = !state.isBusy,
+                badge = "EXP",
+                onClick = onSplatViewer,
             )
             MoreDivider()
             extraItems()
