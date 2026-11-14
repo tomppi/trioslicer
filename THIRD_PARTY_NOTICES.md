@@ -60,6 +60,67 @@ family as this app; manifold-3d's Apache-2.0 and occt-wasm's permissive terms ar
   https origin; the renderer draws with WebGL2 and no network is used. Splat models the
   user imports stay in app storage and are never uploaded by the app.
 
+## Gaussian splatting: Brush, Parallax, U2Net and the Qualcomm AI Runtime
+
+TrioSlicer's **More -> Experimental -> Gaussian splatting** workspace runs a capture -> SfM ->
+Brush-training pipeline on the phone. Its two built payloads are published as the
+`splatproto-payload-v1` release asset (staged by `scripts/fetch-splatproto-payload-android.sh`),
+not kept in this repository.
+
+### Brush (Gaussian splat trainer)
+
+- Project: `ArthurBrussee/brush` - https://github.com/ArthurBrussee/brush
+- Pinned source commit: `1388f74c6fe0236f68ee4915564bf00e9d2e3747`
+- License: Apache License 2.0, Copyright Arthur Brussee and contributors
+- Built artifact: `lib/arm64-v8a/libbrush_jni.so` in the payload package and in the APK.
+- TrioSlicer's JNI crate is `native/splatproto/brush-jni` and the Android changes are
+  `native/splatproto/brush-android.patch` (adds the crate to the workspace, pins one `jni`
+  version, and replaces WGSL subgroup scans with portable scans because the Adreno GPU has no
+  SUBGROUP capability). `scripts/build-splatproto-payload-android.sh --package` builds it;
+  `native/splatproto/README.md` records the toolchain and commands.
+
+### Parallax SfM core
+
+- Project: `Foadsf/parallax` - https://github.com/Foadsf/parallax
+- Pinned source commit: `a1bc267fd621ee18227343b103df279acff271ce`
+- License: GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
+- Vendored artifact: the C++ reconstruction core under
+  `splatproto/src/main/cpp/parallax/`, built into `libparallaxcore.so` by the `:splatproto`
+  module's CMake build (SPDX headers in every file). TrioSlicer is AGPL-3.0-or-later; the GPLv3
+  core and the AGPLv3 app are combined and distributed under AGPL-3.0-or-later, with the core's
+  own GPLv3 terms retained. The complete corresponding source for the core is in this repository.
+
+### U2Net-Segmentation model
+
+- Original project: `xuebinqin/U-2-Net` - https://github.com/xuebinqin/U-2-Net, Apache-2.0
+- Model asset: Qualcomm AI Hub Models v0.66.0, `u2net_segmentation` `qnn_dlc` `w8a8`
+  (https://aihub.qualcomm.com/models/u2net_segmentation); the AI Hub Models packaging code is
+  BSD-3-Clause, Copyright 2025 Qualcomm Technologies, Inc. and/or its subsidiaries.
+- Compiled to `assets/masker/models/u2net.bin` (HTP v73 context binary) with the Qualcomm AI
+  Runtime SDK 2.52.0.261104; `native/splatproto/masker/SOURCE.md` records the commands.
+
+### Qualcomm AI Runtime (QAIRT / QNN)
+
+- Runtime: Qualcomm AI Runtime SDK 2.52.0.261104, redistributed as object code inside the
+  application: `bin/qnn-net-run`, `libQnnHtp.so`, `libQnnHtpV73Stub.so`,
+  `libQnnHtpNetRunExtensions.so`, `libQnnSystem.so` and the unsigned HTP skeletons, plus the
+  licence and notice in `assets/masker/LICENSES/`.
+- License: Qualcomm AI Stack License (object-code distribution as part of an application only;
+  this is not a standalone SDK distribution). The licence and QTI's notice travel with the
+  payload package and in the APK. Copyright Qualcomm Technologies, Inc.
+
+### OpenCV
+
+- Project: OpenCV 4.14.0 - https://opencv.org, Apache-2.0
+- Artifact: the Maven Central package `org.opencv:opencv:4.14.0` (native
+  `libopencv_java4.so`), used by the Parallax core and by capture and masking. The AAR carries
+  OpenCV's own third-party licences in its `3rdparty` tree.
+
+### AndroidX CameraX
+
+- AndroidX CameraX 1.6.2 (Apache-2.0), used for Camera2 capture; covered by the general AndroidX
+  entry below.
+
 ## Mesh-Mix-S2C (mesh to STEP engine)
 
 - Project: `STL2CURVES-MMM/Mesh-Mix-S2C` (Manifold Mesh Mix)
@@ -397,6 +458,7 @@ it ships none. Permissive throughout; nothing here is copyleft beyond the LGPL a
 ## Android Open Source Project and AndroidX
 
 The application uses Android platform APIs and AndroidX libraries under their respective licenses.
+It is written in Kotlin (Apache-2.0) and uses kotlinx.coroutines (Apache-2.0).
 
 ## Blender engine (`libblender_exec.so`) and its bundled libraries
 

@@ -1,0 +1,204 @@
+#version 450
+// Training backward pass. One invocation per pixel. Recomputes the front-to-back
+// compositing chain (so it breaks at exactly the same splat the forward pass did),
+// then walks it backwards to obtain dL/dalpha for every contributor, chains that
+// through the Gaussian, the projection and the parameter activations, and adds
+// the resulting per-splat gradients into a fixed-point atomic buffer.
+//
+// Loss (per pixel): L = |C - gt|^2 + WA (A - 1)^2, where C is premultiplied colour
+// and A the coverage. The coverage term matters: without it a splat can lower the
+// loss by hiding (A -> 0) whenever the geometry is hard, which blurs the model away.
+//
+// Camera pose: every frame has a correction X' = X + dw x X + dt. Because the raw
+// ARCore poses drift, these are optimised jointly with the splats; the same reverse
+// chain yields dL/ddt = g and dL/ddw = X x g, accumulated per frame.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "shared_camera.glsl"
+
+layout(binding = 1, std430) buffer Splats { Splat splats[]; };
+layout(binding = 2, std430) buffer Counts { uint counts[]; };
+layout(binding = 3, std430) buffer Entries { uvec2 entries[]; };
+layout(binding = 6, std430) buffer Aux { uint loss; uint step; uint pad0; uint pad1; } aux;
+layout(binding = 9, std430) buffer ImageFloat { vec4 img[]; };
+layout(binding = 10, std430) buffer Grad { uint grad[]; };
+layout(binding = 11, std430) buffer Gt { uint gt[]; };
+layout(binding = 13, std430) buffer CamGrad { uint camGrad[]; };
+
+const float GRAD_SCALE = 65536.0;      // 2^16 fixed point
+const float GRAD_LIMIT = 2147483647.0; // +-32768 in float units
+const float WA = 0.5;                  // coverage-loss weight
+
+shared float sLoss[64];
+
+void addGrad(uint splat, uint slot, float v) {
+    float x = clamp(v * GRAD_SCALE, -GRAD_LIMIT, GRAD_LIMIT);
+    int iv = int(round(x));
+    atomicAdd(grad[splat * 8u + slot], uint(iv));
+}
+
+void addCamGrad(uint frame, uint slot, float v) {
+    float x = clamp(v * GRAD_SCALE, -GRAD_LIMIT, GRAD_LIMIT);
+    int iv = int(round(x));
+    atomicAdd(camGrad[frame * 8u + slot], uint(iv));
+}
+
+void main() {
+    uvec2 pix = gl_GlobalInvocationID.xy;
+    uint w = uint(cam.params.x);
+    uint h = uint(cam.params.y);
+    uint tid = gl_LocalInvocationIndex;
+    bool pixelActive = pix.x < w && pix.y < h;
+    float pixLoss = 0.0;
+
+    if (pixelActive) {
+        uint pidx = pix.y * w + pix.x;
+        vec4 fwd = img[pidx];
+        float A = fwd.w;
+        vec3 col = fwd.xyz;
+
+        uint packed = gt[pidx];
+        vec3 target = vec3(float((packed >> 16u) & 255u), float((packed >> 8u) & 255u),
+                           float(packed & 255u)) * (1.0 / 255.0);
+        // The target alpha is the object mask (255 for unmasked captures), so the
+        // coverage term pulls splats to the object instead of everywhere.
+        float targetA = float((packed >> 24u) & 255u) * (1.0 / 255.0);
+
+        vec3 diff = col - target;
+        float dA = A - targetA;
+        pixLoss = dot(diff, diff) + WA * dA * dA;
+
+        if (A > 1e-4) {
+            uint tilesX = (w + TILE - 1u) / TILE;
+            uint tile = (pix.y / TILE) * tilesX + (pix.x / TILE);
+            uint n = min(counts[tile], MAX_PER_TILE);
+            uint base = tile * MAX_PER_TILE;
+
+            vec2 pf = vec2(pix) + vec2(0.5);
+            float fx = cam.intr.x, fy = cam.intr.y, cx = cam.intr.z, cy = cam.intr.w;
+            float f = max(fx, fy);
+            uint frameIndex = uint(cam.params.z);
+            CamDelta fd = camDeltas[frameIndex];
+
+            vec3 gC = 2.0 * diff;
+            float dLdA = 2.0 * WA * (A - targetA);
+
+            // Pass 1: recompute transmittance exactly like the forward pass, and
+            // remember how many splats the forward pass actually consumed. Splats
+            // behind the early-out bound must not contribute gradients, otherwise
+            // they are differentiated as if they had been composited.
+            float T = 1.0;
+            uint processed = n;
+            for (uint k = 0u; k < n; ++k) {
+                uvec2 e = entries[base + k];
+                if (e.x == 0xFFFFFFFFu) break;
+                Splat s = splats[e.x];
+                vec4 wp = applyPose(s.posScale.xyz);
+                if (wp.z <= 0.05) continue;
+                vec2 c = vec2(fx * wp.x / wp.z + cx, fy * wp.y / wp.z + cy);
+                float sig = max(splatSigma(s.posScale) * f / wp.z, 0.35);
+                vec2 d = pf - c;
+                float g = exp(-0.5 * dot(d, d) / (sig * sig));
+                float a = min(0.99, splatOpacity(s.colorOpacity) * g);
+                if (a < 0.002) continue;
+                T *= (1.0 - a);
+                if (T < 0.003) {
+                    processed = k + 1u;
+                    break;
+                }
+            }
+            float Tfinal = T;
+
+            // Pass 2: reverse walk, scatter gradients.
+            float P = 1.0;
+            float hSuffix = -dLdA;
+            vec3 camGradSum = vec3(0.0);
+            vec3 camRotSum = vec3(0.0);
+            for (int k = int(processed) - 1; k >= 0; --k) {
+                uvec2 e = entries[base + uint(k)];
+                uint idx = e.x;
+                Splat s = splats[idx];
+                vec4 wporig = cam.view * vec4(s.posScale.xyz, 1.0);
+                vec3 xorig = wporig.xyz;
+                vec3 xcorr = xorig + cross(fd.dw.xyz, xorig) + fd.dt.xyz;
+                vec4 wp = vec4(xcorr, 1.0);
+                if (wp.z <= 0.05) continue;
+                vec2 c2 = vec2(fx * wp.x / wp.z + cx, fy * wp.y / wp.z + cy);
+                float sigRaw = splatSigma(s.posScale) * f / wp.z;
+                float sig = max(sigRaw, 0.35);
+                vec2 d = pf - c2;
+                float g = exp(-0.5 * dot(d, d) / (sig * sig));
+                vec3 cCol = splatColor(s.colorOpacity);
+                float op = splatOpacity(s.colorOpacity);
+                float aRaw = op * g;
+                float a = min(0.99, aRaw);
+                if (a < 0.002) continue;
+
+                P *= (1.0 - a);
+                float Ti = Tfinal / P;
+                float ciG = dot(cCol, gC);
+                float M = Ti * (ciG - hSuffix);
+
+                // colour logits
+                vec3 gcol = Ti * a * gC;
+                addGrad(idx, 4u, gcol.x * cCol.x * (1.0 - cCol.x));
+                addGrad(idx, 5u, gcol.y * cCol.y * (1.0 - cCol.y));
+                addGrad(idx, 6u, gcol.z * cCol.z * (1.0 - cCol.z));
+
+                bool clamped = aRaw >= 0.99;
+                float dG = clamped ? 0.0 : M * op;
+                float dop = clamped ? 0.0 : M * g;
+                addGrad(idx, 7u, dop * op * (1.0 - op));
+
+                // dL/dsigma of the projected Gaussian, and its contribution to the
+                // depth gradient (sigma_px = sigma_world * f / Z, so dSigma/dZ = -sigma/Z).
+                float r2 = dot(d, d);
+                float dSig = 0.0;
+                if (sigRaw >= 0.35) {
+                    dSig = dG * g * r2 / (sig * sig * sig);
+                    addGrad(idx, 3u, dSig * sigRaw);
+                }
+
+                vec2 dmean = dG * g * d / (sig * sig);
+                float invz = 1.0 / wp.z;
+                float dX = dmean.x * fx * invz;
+                float dY = dmean.y * fy * invz;
+                float dZ = -(dmean.x * fx * wp.x + dmean.y * fy * wp.y) * invz * invz;
+                if (sigRaw >= 0.35) dZ -= dSig * sigRaw * invz;
+
+                // camera pose gradients: dL/ddt = g, dL/ddw = X x g (X is the
+                // pre-correction camera-space position). Summed per pixel and added
+                // once after the loop, not once per contributing splat.
+                camGradSum += vec3(dX, dY, dZ);
+                camRotSum += cross(xorig, vec3(dX, dY, dZ));
+
+                // world position: undo the rotation correction before the view transpose
+                vec3 gCam = vec3(dX, dY, dZ);
+                gCam = gCam - cross(fd.dw.xyz, gCam);
+                vec3 gpos = transpose(mat3(cam.view)) * gCam;
+                addGrad(idx, 0u, gpos.x);
+                addGrad(idx, 1u, gpos.y);
+                addGrad(idx, 2u, gpos.z);
+
+                hSuffix = a * ciG + (1.0 - a) * hSuffix;
+            }
+            addCamGrad(frameIndex, 0u, camGradSum.x);
+            addCamGrad(frameIndex, 1u, camGradSum.y);
+            addCamGrad(frameIndex, 2u, camGradSum.z);
+            addCamGrad(frameIndex, 3u, camRotSum.x);
+            addCamGrad(frameIndex, 4u, camRotSum.y);
+            addCamGrad(frameIndex, 5u, camRotSum.z);
+        }
+    }
+
+    sLoss[tid] = pixLoss;
+    barrier();
+    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) sLoss[tid] += sLoss[tid + stride];
+        barrier();
+    }
+    if (tid == 0u) {
+        uint total = uint(clamp(sLoss[0] * 256.0, 0.0, 4.0e9));
+        atomicAdd(aux.loss, total);
+    }
+}

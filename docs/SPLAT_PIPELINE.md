@@ -7,6 +7,40 @@ post-processing.
 Reference run: the **reindeer test capture** - a 3D-printed deer on a dining
 table, filmed with a Galaxy Z Fold5.
 
+## The in-app pipeline (More -> Experimental -> Gaussian splatting)
+
+The reference run below is the desktop pipeline: COLMAP + LichtFeld Studio + SAM2 on a GPU box,
+used when the object has to be as clean as possible. The app also carries a phone-only workflow,
+embedded from the **Splat Proto** project as the `:splatproto` library module, and reached from
+**More -> Experimental -> Gaussian splatting**:
+
+| step | implementation |
+|---|---|
+| capture | Camera2 (CameraX), 20-40 keyframes, AE/AWB/AF locked, OIS forced off - `CaptureController` |
+| object masking | U2Net (Qualcomm AI Hub w8a8) as an HTP v73 context binary, 4 passes per frame (full frame + crop, each with a mirrored pass), guided-filter refinement - `NpuMasker` |
+| SfM | vendored Parallax core (OpenCV), writes a COLMAP project and `dense.ply` - `ReconstructionService`, `parallax/core` |
+| training | Brush's trainer through `libbrush_jni.so` (dense init, Mip-Splatting scale floor, SSIM, densification knobs) - `BrushTrainer` |
+| viewing | the same Aholo viewer as the rest of the app; a trained scene is written as `filesDir/splats/<scan>-splat.ply`, which is the viewer's own folder - `SplatViewer` in this module loads the app's `assets/splatviewer` page |
+
+**Masking needs root.** The prebuilt `qnn-net-run` loads an unsigned HTP skeleton, which the app
+sandbox cannot load: the payload is staged to `/data/local/tmp/splatproto-masker` and started
+through `su`. Without root the scan reconstructs and trains without a mask, and both the menu and
+the scan screen say so. Capture, SfM, training and viewing need no root.
+
+Payloads that are not repository content (like every other engine in this app) are published as
+one release asset and staged by `scripts/fetch-splatproto-payload-android.sh`:
+
+- `splatproto/src/main/assets/masker/` - the QNN HTP runtime, the U2Net context binary
+  (`models/u2net.bin`, 45.6 MB) and the HTP configs.
+- `splatproto/src/main/jniLibs/arm64-v8a/libbrush_jni.so` - Brush's trainer/renderer bridge.
+
+The asset is `splatproto-payload-arm64-v1.tar.gz` on the `splatproto-payload-v1` release; the
+fetch script pins its SHA-256, and CI runs it before the Gradle build. To rebuild it:
+`scripts/build-splatproto-payload-android.sh --package` (Brush from its pinned commit plus
+`native/splatproto/brush-android.patch` and `native/splatproto/brush-jni`; the masker as
+`native/splatproto/masker/SOURCE.md` describes). The module's Kotlin, the vendored Parallax C++
+core and the crate flags are source.
+
 ## Input used in the reference run
 
 | | |

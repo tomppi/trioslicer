@@ -78,3 +78,11 @@ app/src/main/assets/klipper/
 # (cad_mcp_slim.py) is source and is committed; only the built tree is not.
 app/src/main/assets/cad/lib/
 app/src/main/assets/cad/libexec/
+
+# Splat Proto's payload (the NPU masker assets and the prebuilt Brush JNI library) is not
+# repository content: 75 MB of Qualcomm AI Runtime object code plus a 158 MB libbrush_jni.so are
+# published as the splatproto-payload release asset and staged by
+# scripts/fetch-splatproto-payload-android.sh. Rebuild it with
+# scripts/build-splatproto-payload-android.sh --package.
+splatproto/src/main/jniLibs/
+splatproto/src/main/assets/masker/

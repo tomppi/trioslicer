@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The capture screen is a dark viewfinder, and a window that declares a dark theme is not
+      force-darkened by the system (which used to invert this window: white text went black and
+      the black outline went white). Named for the module so the host app's themes cannot
+      collide with it.
+    -->
+    <style name="SplatProtoTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

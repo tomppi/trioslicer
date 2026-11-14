@@ -59,8 +59,16 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 149
-        versionName = "1.19.0"
+        versionCode = 150
+        versionName = "1.20.0"
+
+        // Every engine in this app ships an arm64-v8a binary (the slicer engines, the CAD
+        // Python tree, Blender, and now the splat trainer). Pinning the ABI stops dependencies
+        // that publish several - OpenCV, pulled in by :splatproto - from packaging x86/x86_64
+        // copies this phone can never load, which were 121 MB of the APK.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -140,6 +148,9 @@ android {
             // trimBlenderEngine task removes those sections in place - the dynamic
             // and JNI symbols the app enters through are untouched - and AGP must
             // not strip anything else from it.
+            // libc++_shared.so arrives twice: the app's staged copy and OpenCV's prefab
+            // package (pulled in by :splatproto). Same NDK runtime, so the merge takes one.
+            pickFirsts += setOf("**/libc++_shared.so")
             keepDebugSymbols += setOf(
                 "**/libblender_exec.so",
                 // The C++ runtime must not be stripped. AGP strips prebuilt .so files, and
@@ -667,6 +678,37 @@ val verifyDebugApkFilaSimContents by tasks.registering {
     doLast { checkFilaSimPackaged(debugApkFile(), "Debug") }
 }
 
+
+fun checkSplatProtoPackaged(apk: File, label: String) {
+    check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
+    ZipFile(apk).use { zip ->
+        for (entry in listOf(
+            "lib/arm64-v8a/libbrush_jni.so",
+            "lib/arm64-v8a/libparallaxcore.so",
+            "lib/arm64-v8a/libopencv_java4.so",
+            "assets/masker/models/u2net.bin",
+            "assets/masker/bin/qnn-net-run",
+            "assets/masker/skel/libQnnHtpV73Skel.so",
+            "assets/masker/SOURCE.md",
+            "assets/masker/SHA256SUMS",
+            "assets/masker/LICENSES/LICENSE-Qualcomm-AI-Stack.pdf",
+        )) {
+            val packaged = zip.getEntry(entry)
+            check(packaged != null && packaged.size > 0L) {
+                "$label APK is missing $entry, which the Gaussian splatting payload needs; " +
+                    "run scripts/fetch-splatproto-payload-android.sh"
+            }
+        }
+    }
+}
+
+val verifyDebugApkSplatProtoContents by tasks.registering {
+    group = "verification"
+    description = "Builds the debug APK and verifies the Gaussian splatting payload is packaged"
+    dependsOn("verifyDebugApkContents")
+    doLast { checkSplatProtoPackaged(debugApkFile(), "Debug") }
+}
+
 val verifyDebugApkBlenderContents by tasks.registering {
     group = "verification"
     description = "Builds the debug APK and verifies the Blender MCP engine lib + assets are packaged"
@@ -834,6 +876,7 @@ val verifyDebugApkEngines by tasks.registering {
         verifyDebugApkOrcaContents,
         verifyDebugApkBlenderContents,
         verifyDebugApkFilaSimContents,
+        verifyDebugApkSplatProtoContents,
         verifyDebugApkSolidCraftContents,
     )
 }
@@ -858,6 +901,7 @@ val verifyReleaseApkEngines by tasks.registering {
         checkOrcaPackaged(apk, "Release")
         checkBlenderPackaged(apk, "Release")
         checkFilaSimPackaged(apk, "Release")
+        checkSplatProtoPackaged(apk, "Release")
         checkOcctEnginePackaged(apk, "Release")
         checkSolidCraftEnginePackaged(apk, "Release")
         checkCadPayloadPackaged(apk, "Release")
@@ -1422,6 +1466,10 @@ dependencies {
     // USB serial in userspace (MIT). Drives CH340/CH341A, which is what Creality
     // 4.2.x boards carry, without any kernel driver - the phone's kernel has
     // CONFIG_USB_SERIAL unset, so this is the only route to a printer.
+    // The phone's own capture -> splat workflow (camera, NPU mask, Parallax SfM, Brush
+    // training) and the Aholo viewer it feeds, behind More -> Gaussian splatting.
+    implementation(project(":splatproto"))
+
     implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")

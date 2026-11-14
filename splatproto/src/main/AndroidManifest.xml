@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Library manifest: the app's manifest owns the launcher, the label and the application
+  theme. This module contributes the capture activity, the reconstruction foreground service
+  and the permissions both need.
+
+  The camera feature is NOT required by the host app: TrioSlicer is a slicer first, and a
+  tablet without a camera must still install and slice. The Gaussian splatting menu says the
+  scan needs a camera at the point of use.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+
+    <application>
+        <activity
+            android:name=".PipelineActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/SplatProtoTheme" />
+        <service
+            android:name=".ReconstructionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="3D reconstruction (structure from motion) of captured photos" />
+        </service>
+    </application>
+</manifest>

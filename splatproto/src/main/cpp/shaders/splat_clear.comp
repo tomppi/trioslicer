@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x = 64) in;
+
+layout(binding = 2, std430) buffer Counts { uint counts[]; };
+layout(binding = 5, std430) buffer Overflow { uint overflow[]; };
+layout(binding = 6, std430) buffer Aux { uint loss; uint step; uint pad0; uint pad1; } aux;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < counts.length()) counts[i] = 0u;
+    if (i == 0u) {
+        overflow[0] = 0u;
+        aux.loss = 0u;
+    }
+}

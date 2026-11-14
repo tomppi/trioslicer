@@ -114,6 +114,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tomppi.enderslicer.BuildConfig
+import com.tomppi.splatproto.PipelineActivity
 import com.tomppi.enderslicer.annotation.AnnotationAnchor
 import com.tomppi.enderslicer.annotation.AnnotationGesture
 import com.tomppi.enderslicer.annotation.AnnotationKind
@@ -339,6 +340,8 @@ fun EnderSlicerApp(
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
     var splatLibraryOpen by rememberSaveable { mutableStateOf(false) }
+    // The Gaussian splatting menu: capture/train and the existing viewer live under it.
+    var gaussianSplattingOpen by rememberSaveable { mutableStateOf(false) }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
@@ -3317,7 +3320,7 @@ fun EnderSlicerApp(
                         onBumpMesh = ::launchBumpMesh,
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onMeshToStep = viewModel::openMeshToStep,
-                        onSplatViewer = { splatLibraryOpen = true },
+                        onGaussianSplatting = { gaussianSplattingOpen = true },
                         onScanRuler = ::launchScanRuler,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
@@ -3421,6 +3424,32 @@ fun EnderSlicerApp(
     if (splatLibraryOpen) {
         AppBottomSheet(onDismissRequest = { splatLibraryOpen = false }) {
             SplatLibrarySheet(onDismiss = { splatLibraryOpen = false })
+        }
+    }
+
+    if (gaussianSplattingOpen) {
+        AppBottomSheet(onDismissRequest = { gaussianSplattingOpen = false }) {
+            GaussianSplattingSheet(
+                onDismiss = { gaussianSplattingOpen = false },
+                onNewScan = {
+                    gaussianSplattingOpen = false
+                    // The capture screen is a full-screen workflow of its own (camera, masking,
+                    // reconstruction, training); it returns here when the user leaves it.
+                    runCatching { context.startActivity(Intent(context, PipelineActivity::class.java)) }
+                        .onFailure { error ->
+                            Toast.makeText(
+                                context,
+                                "The scan screen could not be opened: " +
+                                    (error.message ?: "unknown error"),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                },
+                onOpenViewer = {
+                    gaussianSplattingOpen = false
+                    splatLibraryOpen = true
+                },
+            )
         }
     }
 
@@ -4332,7 +4361,7 @@ private fun MoreScreen(
     onBumpMesh: () -> Unit,
     onBumpMeshStudio: () -> Unit,
     onMeshToStep: () -> Unit,
-    onSplatViewer: () -> Unit,
+    onGaussianSplatting: () -> Unit,
     onScanRuler: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
@@ -4453,16 +4482,17 @@ private fun MoreScreen(
                 onClick = onScanRuler,
             )
             MoreDivider()
-            // The splat viewer is a workspace too: a trained Gaussian-splat scene rendered by
-            // the vendored Aholo renderer, never handed to the plate or the slicer.
+            // Gaussian splatting is a workspace of its own: capture, on-device training and the
+            // existing Aholo viewer behind one menu. Nothing here touches the plate or the
+            // slicer: a splat is a visual reconstruction, not a sliceable mesh.
             MoreRow(
                 icon = AppIcons.Cube,
-                title = "Splat viewer",
-                subtitle = "Gaussian splat scenes (.sog/.ply) from the training pipeline, " +
-                    "rendered on the phone - the file never leaves it",
+                title = "Gaussian splatting",
+                subtitle = "Capture an object, train a splat on the phone and view it - " +
+                    "the capture and the model never leave it",
                 enabled = !state.isBusy,
                 badge = "EXP",
-                onClick = onSplatViewer,
+                onClick = onGaussianSplatting,
             )
             MoreDivider()
             extraItems()

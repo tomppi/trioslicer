@@ -244,14 +244,16 @@ class OrbitRig {
         this.container = container;
         this.initial = initial;
         this.target = initial.target.clone();
-        this.yaw = initial.yaw;
-        this.pitch = initial.pitch;
-        this.distance = initial.distance;
         this.wantedTarget = initial.target.clone();
-        this.wantedYaw = initial.yaw;
-        this.wantedPitch = initial.pitch;
+        this.distance = initial.distance;
         this.wantedDistance = initial.distance;
         this.radius = initial.radius;
+        this.dirty = true;
+        const cp = Math.cos(initial.pitch);
+        this.offset = new Vector3(
+            Math.sin(initial.yaw) * cp, Math.sin(initial.pitch), Math.cos(initial.yaw) * cp,
+        ).normalize();
+        this.up = new Vector3(0, -1, 0);
         this.pointers = new Map();
         this.gesture = null;
         this.lastTap = { time: 0, x: 0, y: 0 };
@@ -260,27 +262,29 @@ class OrbitRig {
 
     reset() {
         this.wantedTarget.copy(this.initial.target);
-        this.wantedYaw = this.initial.yaw;
-        this.wantedPitch = this.initial.pitch;
+        const cp = Math.cos(this.initial.pitch);
+        this.offset.set(
+            Math.sin(this.initial.yaw) * cp,
+            Math.sin(this.initial.pitch),
+            Math.cos(this.initial.yaw) * cp,
+        ).normalize();
+        this.up.set(0, -1, 0);
         this.wantedDistance = this.initial.distance;
+        this.dirty = true;
     }
 
     /** The camera basis for pan math: right and up in world space. */
     basis() {
-        const cp = Math.cos(this.pitch);
-        const direction = new Vector3(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp);
-        const forward = direction.multiplyScalar(-1);
-        const right = new Vector3().crossVectors(forward, this.camera.up).normalize();
+        const forward = this.offset.clone().multiplyScalar(-1);
+        const right = new Vector3().crossVectors(forward, this.up).normalize();
         const up = new Vector3().crossVectors(right, forward).normalize();
         return { right, up };
     }
 
-    /** True when the eased camera has reached the values it was asked for. */
+    /** True when the camera has nothing left to ease towards. */
     settled() {
         const targetDelta = this.wantedTarget.clone().sub(this.target);
         return !controlSettings.autoRotate &&
-            Math.abs(angleDelta(this.wantedYaw, this.yaw)) < 1e-4 &&
-            Math.abs(this.wantedPitch - this.pitch) < 1e-4 &&
             Math.abs(this.wantedDistance - this.distance) < 1e-4 &&
             targetDelta.x * targetDelta.x + targetDelta.y * targetDelta.y + targetDelta.z * targetDelta.z < 1e-8;
     }
@@ -289,29 +293,61 @@ class OrbitRig {
         const damping = Math.min(0.95, Math.max(0.02, controlSettings.damping));
         const alpha = 1 - Math.pow(1 - damping, dt * 60);
         if (controlSettings.autoRotate && this.pointers.size === 0) {
-            this.wantedYaw += controlSettings.autoRotateSpeed * dt;
+            // Spin around the camera's own up axis, like a turntable.
+            const spinAxis = this.up.clone().normalize();
+            rotateAround(this.offset, spinAxis, -controlSettings.autoRotateSpeed * dt);
+            rotateAround(this.up, spinAxis, -controlSettings.autoRotateSpeed * dt);
+            this.dirty = true;
         }
-        this.yaw += angleDelta(this.wantedYaw, this.yaw) * alpha;
-        this.pitch += (this.wantedPitch - this.pitch) * alpha;
         this.distance += (this.wantedDistance - this.distance) * alpha;
         this.target.addScaledVector(this.wantedTarget.clone().sub(this.target), alpha);
 
-        const cp = Math.cos(this.pitch);
-        const direction = new Vector3(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp);
         this.camera.position.set(
-            this.target.x + direction.x * this.distance,
-            this.target.y + direction.y * this.distance,
-            this.target.z + direction.z * this.distance,
+            this.target.x + this.offset.x * this.distance,
+            this.target.y + this.offset.y * this.distance,
+            this.target.z + this.offset.z * this.distance,
         );
+        this.camera.up.copy(this.up.normalize());
         this.camera.lookAt(this.target);
     }
 
+    /**
+     * Turntable orbit in the camera's own frame: horizontal drag rotates around the camera's up
+     * axis, vertical drag around its right axis. Both axes move with the camera, so "up" stays up
+     * and "left" stays left no matter how far the view has been turned.
+     */
     orbit(dx, dy) {
         const speed = 0.005 * controlSettings.orbitSensitivity;
-        // Inverted orbit: dragging right turns the scene right, dragging down moves the
-        // camera down over it - the direction the model follows the finger, not the camera.
-        this.wantedYaw += dx * speed;
-        this.wantedPitch = clamp(this.wantedPitch - dy * speed, -1.45, 1.45);
+        this.rotateView(this.currentUp(), -dx * speed);
+        // Vertical drag follows the finger: dragging up tilts the view up.
+        this.rotateView(this.currentRight(), -dy * speed);
+        this.dirty = true;
+    }
+
+    currentUp() {
+        return this.up.clone().normalize();
+    }
+
+    currentRight() {
+        const forward = this.offset.clone().multiplyScalar(-1);
+        return new Vector3().crossVectors(forward, this.up).normalize();
+    }
+
+    /** Roll the view: rotate the screen-up axis around the view direction. */
+    rollView(angle) {
+        if (!Number.isFinite(angle) || angle === 0) return;
+        const viewAxis = this.offset.clone().normalize();
+        rotateAround(this.up, viewAxis, angle);
+        orthonormalize(this.up, this.offset);
+        this.dirty = true;
+    }
+
+    rotateView(axis, angle) {
+        if (!Number.isFinite(angle) || angle === 0) return;
+        rotateAround(this.offset, axis, angle);
+        rotateAround(this.up, axis, angle);
+        this.offset.normalize();
+        orthonormalize(this.up, this.offset);
     }
 
     pan(dx, dy) {
@@ -321,6 +357,7 @@ class OrbitRig {
         const scale = perPixel * controlSettings.panSensitivity;
         this.wantedTarget.addScaledVector(right, -dx * scale);
         this.wantedTarget.addScaledVector(up, dy * scale);
+        this.dirty = true;
     }
 
     zoomBy(factor) {
@@ -329,8 +366,8 @@ class OrbitRig {
             this.radius * 0.15,
             this.radius * 40,
         );
+        this.dirty = true;
     }
-
     bind() {
         const el = this.container;
         el.addEventListener('pointerdown', (event) => {
@@ -342,6 +379,7 @@ class OrbitRig {
                     kind: 'pinch',
                     distance: Math.hypot(a.x - b.x, a.y - b.y),
                     midpoint: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+                    angle: Math.atan2(b.y - a.y, b.x - a.x),
                 };
             }
         });
@@ -362,6 +400,12 @@ class OrbitRig {
             if (this.gesture.distance > 0 && distance > 0) {
                 this.zoomBy(this.gesture.distance / distance);
             }
+            const angle = Math.atan2(b.y - a.y, b.x - a.x);
+            if (Number.isFinite(this.gesture.angle)) {
+                // Twist with two fingers to roll the view around the view axis.
+                this.rollView(angleDelta(angle, this.gesture.angle));
+            }
+            this.gesture.angle = angle;
             this.pan(midpoint.x - this.gesture.midpoint.x, midpoint.y - this.gesture.midpoint.y);
             this.gesture.distance = distance;
             this.gesture.midpoint = midpoint;
@@ -388,6 +432,38 @@ class OrbitRig {
             this.zoomBy(Math.exp(event.deltaY * 0.0012 * controlSettings.zoomSensitivity));
         }, { passive: false });
     }
+}
+
+const WORLD_UP = new Vector3(0, -1, 0);
+
+/** Rotate v in place around a unit axis by angle (Rodrigues, plain component math). */
+function rotateAround(v, axis, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const dot = v.x * axis.x + v.y * axis.y + v.z * axis.z;
+    const cx = axis.y * v.z - axis.z * v.y;
+    const cy = axis.z * v.x - axis.x * v.z;
+    const cz = axis.x * v.y - axis.y * v.x;
+    v.x = v.x * c + cx * s + axis.x * dot * (1 - c);
+    v.y = v.y * c + cy * s + axis.y * dot * (1 - c);
+    v.z = v.z * c + cz * s + axis.z * dot * (1 - c);
+    return v;
+}
+
+/** Make up perpendicular to offset (keeps the camera from rolling unintentionally). */
+function orthonormalize(up, offset) {
+    const dot = up.x * offset.x + up.y * offset.y + up.z * offset.z;
+    up.x -= offset.x * dot;
+    up.y -= offset.y * dot;
+    up.z -= offset.z * dot;
+    return up.normalize();
+}
+
+function squaredDistance(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
 }
 
 function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
@@ -501,6 +577,27 @@ function buildSettingsPanel(viewer, rig) {
 
     const controls = group(panelBody, 'Controls');
     slider(controls, 'Orbit speed', controlSettings, 'orbitSensitivity', 0.2, 2.5, 0.1, () => {});
+    {
+        const row = document.createElement('div');
+        row.className = 'row';
+        const label = document.createElement('span');
+        label.textContent = 'Roll view';
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = '-180';
+        input.max = '180';
+        input.step = '1';
+        input.value = '0';
+        let previous = 0;
+        input.addEventListener('input', () => {
+            const value = Number(input.value);
+            if (rig) rig.rollView((value - previous) * Math.PI / 180);
+            previous = value;
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+        controls.appendChild(row);
+    }
     slider(controls, 'Zoom speed', controlSettings, 'zoomSensitivity', 0.2, 2.5, 0.1, () => {});
     slider(controls, 'Pan speed', controlSettings, 'panSensitivity', 0.2, 2.5, 0.1, () => {});
     slider(controls, 'Damping', controlSettings, 'damping', 0.02, 0.6, 0.02, () => {});
@@ -598,7 +695,8 @@ async function main() {
             const dt = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 0.016;
             lastFrame = now;
             rig.update(dt);
-            const settled = rig.settled();
+            const settled = rig.settled() && !rig.dirty;
+            rig.dirty = false;
             // A few extra frames after a change let the async splat sort and the GPU
             // present the frame that was just prepared; without them a single render can
             // be the only frame drawn and the canvas stays empty.

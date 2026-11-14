@@ -1,0 +1,25 @@
+[package]
+name = "brush-jni"
+edition.workspace = true
+version.workspace = true
+readme.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "brush_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+brush-process.path = "../../crates/brush-process"
+brush-render.path = "../../crates/brush-render"
+brush-serde.path = "../../crates/brush-serde"
+brush-train.path = "../../crates/brush-train"
+burn.workspace = true
+glam.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+wgpu.workspace = true

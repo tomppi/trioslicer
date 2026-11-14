@@ -20,3 +20,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "EnderSlicer"
 include(":app")
+// Splat Proto's capture -> SfM -> Brush training engine, embedded as a library.
+include(":splatproto")

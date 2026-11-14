@@ -1,0 +1,49 @@
+#version 450
+layout(local_size_x = 64) in;
+
+#include "shared_camera.glsl"
+
+layout(binding = 1, std430) buffer Splats { Splat splats[]; };
+layout(binding = 2, std430) buffer Counts { uint counts[]; };
+layout(binding = 3, std430) buffer Entries { uvec2 entries[]; };
+layout(binding = 5, std430) buffer Overflow { uint overflow[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= splats.length()) return;
+
+    Splat s = splats[i];
+    vec4 wp = applyPose(s.posScale.xyz);
+    if (wp.z <= 0.05) return;
+    float sigma = splatSigma(s.posScale);
+
+    float fx = cam.intr.x, fy = cam.intr.y, cx = cam.intr.z, cy = cam.intr.w;
+    float w = cam.params.x, h = cam.params.y;
+
+    vec2 c = vec2(fx * wp.x / wp.z + cx, fy * wp.y / wp.z + cy);
+    float f = max(fx, fy);
+    float r = max(3.0 * sigma * f / wp.z, 0.75);
+
+    int x0 = max(0, int(floor(c.x - r)));
+    int x1 = min(int(w) - 1, int(ceil(c.x + r)));
+    int y0 = max(0, int(floor(c.y - r)));
+    int y1 = min(int(h) - 1, int(ceil(c.y + r)));
+    if (x0 > x1 || y0 > y1) return;
+
+    int tilesX = (int(w) + int(TILE) - 1) / int(TILE);
+    int tx0 = x0 / int(TILE), tx1 = x1 / int(TILE);
+    int ty0 = y0 / int(TILE), ty1 = y1 / int(TILE);
+    uint depthBits = floatBitsToUint(wp.z);
+
+    for (int ty = ty0; ty <= ty1; ++ty) {
+        for (int tx = tx0; tx <= tx1; ++tx) {
+            uint tile = uint(ty * tilesX + tx);
+            uint slot = atomicAdd(counts[tile], 1u);
+            if (slot < MAX_PER_TILE) {
+                entries[tile * MAX_PER_TILE + slot] = uvec2(i, depthBits);
+            } else {
+                atomicAdd(overflow[0], 1u);
+            }
+        }
+    }
+}

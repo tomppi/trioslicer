@@ -1,0 +1,76 @@
+#version 450
+// Adam update for every splat. Reads the fixed-point gradient buffer, updates the
+// moment estimates, applies the per-parameter learning rates and clears gradients.
+layout(local_size_x = 64) in;
+
+struct Splat {
+    vec4 posScale;
+    vec4 colorOpacity;
+};
+layout(binding = 1, std430) buffer Splats { Splat splats[]; };
+layout(binding = 7, std430) buffer AdamM { vec4 adamM[]; };
+layout(binding = 8, std430) buffer AdamV { vec4 adamV[]; };
+layout(binding = 10, std430) buffer Grad { uint grad[]; };
+
+layout(push_constant) uniform PC {
+    vec4 lrPosSigma;   // lr position, lr log-sigma, lr color, lr opacity
+    uint step;
+    uint count;
+    float invPixels;   // 1 / pixel count: the loss is a mean, gradients are sums
+} pc;
+
+const float GRAD_SCALE = 65536.0;
+const float B1 = 0.9;
+const float B2 = 0.999;
+const float EPS = 1e-8;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+
+    float m0[8];
+    float v0[8];
+    float g[8];
+    vec4 m0a = adamM[i * 2u + 0u];
+    vec4 m0b = adamM[i * 2u + 1u];
+    vec4 v0a = adamV[i * 2u + 0u];
+    vec4 v0b = adamV[i * 2u + 1u];
+    float ma[8] = {m0a.x, m0a.y, m0a.z, m0a.w, m0b.x, m0b.y, m0b.z, m0b.w};
+    float va[8] = {v0a.x, v0a.y, v0a.z, v0a.w, v0b.x, v0b.y, v0b.z, v0b.w};
+    float lr[8] = {pc.lrPosSigma.x, pc.lrPosSigma.x, pc.lrPosSigma.x, pc.lrPosSigma.y,
+                   pc.lrPosSigma.z, pc.lrPosSigma.z, pc.lrPosSigma.z, pc.lrPosSigma.w};
+
+    uint b = i * 8u;
+    for (uint k = 0u; k < 8u; ++k) {
+        g[k] = float(int(grad[b + k])) / GRAD_SCALE * pc.invPixels;
+        grad[b + k] = 0u;
+    }
+
+    float corr1 = 1.0 - pow(B1, float(pc.step));
+    float corr2 = 1.0 - pow(B2, float(pc.step));
+
+    float p[8];
+    Splat s = splats[i];
+    p[0] = s.posScale.x; p[1] = s.posScale.y; p[2] = s.posScale.z; p[3] = s.posScale.w;
+    p[4] = s.colorOpacity.x; p[5] = s.colorOpacity.y; p[6] = s.colorOpacity.z; p[7] = s.colorOpacity.w;
+
+    for (uint k = 0u; k < 8u; ++k) {
+        ma[k] = B1 * ma[k] + (1.0 - B1) * g[k];
+        va[k] = B2 * va[k] + (1.0 - B2) * g[k] * g[k];
+        float mhat = ma[k] / corr1;
+        float vhat = va[k] / corr2;
+        p[k] -= lr[k] * mhat / (sqrt(vhat) + EPS);
+    }
+
+    // Keep the constrained parameters in a sane range: without this, gradient
+    // pressure to cover holes inflates sigma without bound and the model blurs.
+    p[3] = clamp(p[3], -6.5, -4.4);   // sigma between ~1.5 mm and ~12 mm
+    for (uint c = 4u; c < 8u; ++c) p[c] = clamp(p[c], -6.0, 6.0);
+
+    splats[i].posScale = vec4(p[0], p[1], p[2], p[3]);
+    splats[i].colorOpacity = vec4(p[4], p[5], p[6], p[7]);
+    adamM[i * 2u + 0u] = vec4(ma[0], ma[1], ma[2], ma[3]);
+    adamM[i * 2u + 1u] = vec4(ma[4], ma[5], ma[6], ma[7]);
+    adamV[i * 2u + 0u] = vec4(va[0], va[1], va[2], va[3]);
+    adamV[i * 2u + 1u] = vec4(va[4], va[5], va[6], va[7]);
+}

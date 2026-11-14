@@ -1,0 +1,77 @@
+#version 450
+// Adam for the per-frame camera pose corrections (translation + small rotation).
+layout(local_size_x = 64) in;
+
+struct CamDelta {
+    vec4 dt;
+    vec4 dw;
+};
+layout(binding = 12, std430) buffer CamParams { CamDelta camDeltas[]; };
+layout(binding = 13, std430) buffer CamGrad { uint camGrad[]; };
+layout(binding = 14, std430) buffer CamM { vec4 camM[]; };
+layout(binding = 15, std430) buffer CamV { vec4 camV[]; };
+
+layout(push_constant) uniform PC {
+    vec4 lr;
+    uint step;
+    uint count;
+    float invPixels;
+} pc;
+
+const float GRAD_SCALE = 65536.0;
+const float B1 = 0.9;
+const float B2 = 0.999;
+const float EPS = 1e-8;
+const float MAX_DT = 0.15;
+const float MAX_DW = 0.15;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+
+    uint b = i * 8u;
+    float g[8];
+    for (uint k = 0u; k < 8u; ++k) {
+        g[k] = float(int(camGrad[b + k])) / GRAD_SCALE * pc.invPixels;
+        camGrad[b + k] = 0u;
+    }
+
+    vec4 m0 = camM[i * 2u + 0u];
+    vec4 m1 = camM[i * 2u + 1u];
+    vec4 v0 = camV[i * 2u + 0u];
+    vec4 v1 = camV[i * 2u + 1u];
+    float ma[8] = {m0.x, m0.y, m0.z, m0.w, m1.x, m1.y, m1.z, m1.w};
+    float va[8] = {v0.x, v0.y, v0.z, v0.w, v1.x, v1.y, v1.z, v1.w};
+    // Keep the poses fixed while the splats settle, then refine gently: aggressive
+    // pose updates during warm-up drag the whole reconstruction away.
+    float lr = pc.lr.x;
+    if (pc.step < 600u) lr = 0.0;
+
+    float corr1 = 1.0 - pow(B1, float(pc.step));
+    float corr2 = 1.0 - pow(B2, float(pc.step));
+
+    for (uint k = 0u; k < 8u; ++k) {
+        ma[k] = B1 * ma[k] + (1.0 - B1) * g[k];
+        va[k] = B2 * va[k] + (1.0 - B2) * g[k] * g[k];
+        float mhat = ma[k] / corr1;
+        float vhat = va[k] / corr2;
+        float step = lr * mhat / (sqrt(vhat) + EPS);
+        if (k < 3u) step = clamp(step, -MAX_DT, MAX_DT);
+        else step = clamp(step, -MAX_DW, MAX_DW);
+        g[k] = step;
+    }
+
+    CamDelta d = camDeltas[i];
+    d.dt = vec4(clamp(d.dt.x - g[0], -MAX_DT, MAX_DT),
+                clamp(d.dt.y - g[1], -MAX_DT, MAX_DT),
+                clamp(d.dt.z - g[2], -MAX_DT, MAX_DT), 0.0);
+    d.dw = vec4(clamp(d.dw.x - g[3], -MAX_DW, MAX_DW),
+                clamp(d.dw.y - g[4], -MAX_DW, MAX_DW),
+                clamp(d.dw.z - g[5], -MAX_DW, MAX_DW), 0.0);
+    camDeltas[i] = d;
+
+    camM[i * 2u + 0u] = vec4(ma[0], ma[1], ma[2], ma[3]);
+    camM[i * 2u + 1u] = vec4(ma[4], ma[5], ma[6], ma[7]);
+    camV[i * 2u + 0u] = vec4(va[0], va[1], va[2], va[3]);
+    camV[i * 2u + 1u] = vec4(va[4], va[5], va[6], va[7]);
+}

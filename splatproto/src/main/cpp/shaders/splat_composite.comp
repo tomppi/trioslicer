@@ -1,0 +1,56 @@
+#version 450
+// One invocation per pixel: walk the tile's front-to-back splat list and alpha
+// composite until the ray is opaque. Writes non-premultiplied ARGB into the
+// host-visible image buffer (A in bits 24..31, R 16..23, G 8..15, B 0..7).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "shared_camera.glsl"
+
+layout(binding = 1, std430) buffer Splats { Splat splats[]; };
+layout(binding = 2, std430) buffer Counts { uint counts[]; };
+layout(binding = 3, std430) buffer Entries { uvec2 entries[]; };
+layout(binding = 4, std430) buffer Image { uint pixels[]; };
+
+void main() {
+    uvec2 pix = gl_GlobalInvocationID.xy;
+    uint w = uint(cam.params.x);
+    uint h = uint(cam.params.y);
+    if (pix.x >= w || pix.y >= h) return;
+
+    uint tilesX = (w + TILE - 1u) / TILE;
+    uint tile = (pix.y / TILE) * tilesX + (pix.x / TILE);
+    uint n = min(counts[tile], MAX_PER_TILE);
+    uint base = tile * MAX_PER_TILE;
+
+    vec2 pf = vec2(pix) + vec2(0.5);
+    float fx = cam.intr.x, fy = cam.intr.y, cx = cam.intr.z, cy = cam.intr.w;
+    float f = max(fx, fy);
+
+    vec3 col = vec3(0.0);
+    float T = 1.0;
+
+    for (uint k = 0u; k < n; ++k) {
+        uvec2 e = entries[base + k];
+        if (e.x == 0xFFFFFFFFu) break;
+        Splat s = splats[e.x];
+        vec4 wp = applyPose(s.posScale.xyz);
+        if (wp.z <= 0.05) continue;
+        vec2 c = vec2(fx * wp.x / wp.z + cx, fy * wp.y / wp.z + cy);
+        float sig = max(splatSigma(s.posScale) * f / wp.z, 0.35);
+        vec2 d = pf - c;
+        float g = exp(-0.5 * dot(d, d) / (sig * sig));
+        float a = min(0.99, splatOpacity(s.colorOpacity) * g);
+        if (a < 0.002) continue;
+        col += T * a * splatColor(s.colorOpacity);
+        T *= (1.0 - a);
+        if (T < 0.003) break;
+    }
+
+    float A = 1.0 - T;
+    vec3 c = A > 1e-4 ? col / A : vec3(0.0);
+    uint r = uint(clamp(c.r, 0.0, 1.0) * 255.0 + 0.5);
+    uint g = uint(clamp(c.g, 0.0, 1.0) * 255.0 + 0.5);
+    uint b = uint(clamp(c.b, 0.0, 1.0) * 255.0 + 0.5);
+    uint ia = uint(clamp(A, 0.0, 1.0) * 255.0 + 0.5);
+    pixels[pix.y * w + pix.x] = (ia << 24) | (r << 16) | (g << 8) | b;
+}
