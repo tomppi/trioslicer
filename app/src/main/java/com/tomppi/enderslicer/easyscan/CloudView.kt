@@ -54,6 +54,10 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
     private var lastSpan = 0f
     private var lastFocusX = 0f
     private var lastFocusY = 0f
+    private var lastAngle = 0f
+
+    private fun angle(e: MotionEvent): Float =
+        kotlin.math.atan2(e.getY(1) - e.getY(0), e.getX(1) - e.getX(0))
 
     private fun span(e: MotionEvent): Float {
         if (e.pointerCount < 2) return 0f
@@ -76,12 +80,17 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                 lastSpan = span(e)
                 lastFocusX = (e.getX(0) + e.getX(1)) / 2f
                 lastFocusY = (e.getY(0) + e.getY(1)) / 2f
+                lastAngle = angle(e)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (e.pointerCount >= 2) {
                     val sp = span(e)
                     val fx = (e.getX(0) + e.getX(1)) / 2f
                     val fy = (e.getY(0) + e.getY(1)) / 2f
+                    val ang = angle(e)
+                    var dAng = ang - lastAngle
+                    while (dAng > Math.PI.toFloat()) dAng -= (2 * Math.PI).toFloat()
+                    while (dAng < -Math.PI.toFloat()) dAng += (2 * Math.PI).toFloat()
                     if (lastSpan > 0f && sp > 0f) {
                         val factor = sp / lastSpan
                         val dx = fx - lastFocusX
@@ -89,12 +98,14 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                         queueEvent {
                             renderer.zoom(factor)
                             renderer.pan(dx / width, dy / height)
+                            renderer.twist(dAng)
                         }
                         requestRender()
                     }
                     lastSpan = sp
                     lastFocusX = fx
                     lastFocusY = fy
+                    lastAngle = ang
                 } else if (orbiting) {
                     val dx = e.x - lastX
                     val dy = e.y - lastY
@@ -104,7 +115,10 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                     requestRender()
                 }
             }
-            MotionEvent.ACTION_POINTER_UP -> lastSpan = 0f
+            MotionEvent.ACTION_POINTER_UP -> {
+                lastSpan = 0f
+                lastAngle = 0f
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 orbiting = false
                 lastSpan = 0f
@@ -202,6 +216,12 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                 ax /= len; ay /= len; az /= len
                 rotateAxis(ax, ay, az, len)
             }
+        }
+
+        /** Roll about the view direction (two-finger twist). */
+        fun twist(angle: Float) {
+            if (angle == 0f) return
+            rotateAxis(rot[6], rot[7], rot[8], angle)
         }
 
         fun zoom(factor: Float) {
