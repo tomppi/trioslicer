@@ -32,11 +32,6 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 
-    /** Zoom for the on-screen buttons (pinch uses the same renderer path). */
-    fun zoomBy(factor: Float) {
-        queueEvent { renderer.zoom(factor); requestRender() }
-    }
-
     fun show(cloud: PlyCloud) {
         val (centre, radius) = cloud.bounds()
         queueEvent {
@@ -44,19 +39,6 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
             requestRender()
         }
     }
-
-    private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        private var fx = 0f
-        private var fy = 0f
-        override fun onScaleBegin(d: ScaleGestureDetector): Boolean { fx = d.focusX; fy = d.focusY; return true }
-        override fun onScale(d: ScaleGestureDetector): Boolean {
-            val dx = d.focusX - fx; val dy = d.focusY - fy
-            fx = d.focusX; fy = d.focusY
-            queueEvent { renderer.zoom(d.scaleFactor); renderer.pan(dx / height, dy / height) }
-            requestRender()
-            return true
-        }
-    })
 
     private val taps = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDoubleTap(e: MotionEvent): Boolean {
@@ -69,21 +51,64 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
     private var lastX = 0f
     private var lastY = 0f
     private var orbiting = false
+    private var lastSpan = 0f
+    private var lastFocusX = 0f
+    private var lastFocusY = 0f
+
+    private fun span(e: MotionEvent): Float {
+        if (e.pointerCount < 2) return 0f
+        val dx = e.getX(0) - e.getX(1)
+        val dy = e.getY(0) - e.getY(1)
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         taps.onTouchEvent(e)
-        scale.onTouchEvent(e)
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { lastX = e.x; lastY = e.y; orbiting = true }
-            MotionEvent.ACTION_POINTER_DOWN -> orbiting = false
-            MotionEvent.ACTION_MOVE -> if (orbiting && e.pointerCount == 1 && !scale.isInProgress) {
-                val dx = e.x - lastX; val dy = e.y - lastY
-                lastX = e.x; lastY = e.y
-                queueEvent { renderer.orbit(dx / width, dy / height) }
-                requestRender()
+            MotionEvent.ACTION_DOWN -> {
+                lastX = e.x
+                lastY = e.y
+                orbiting = true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> orbiting = false
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                orbiting = false
+                lastSpan = span(e)
+                lastFocusX = (e.getX(0) + e.getX(1)) / 2f
+                lastFocusY = (e.getY(0) + e.getY(1)) / 2f
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (e.pointerCount >= 2) {
+                    val sp = span(e)
+                    val fx = (e.getX(0) + e.getX(1)) / 2f
+                    val fy = (e.getY(0) + e.getY(1)) / 2f
+                    if (lastSpan > 0f && sp > 0f) {
+                        val factor = sp / lastSpan
+                        val dx = fx - lastFocusX
+                        val dy = fy - lastFocusY
+                        queueEvent {
+                            renderer.zoom(factor)
+                            renderer.pan(dx / width, dy / height)
+                        }
+                        requestRender()
+                    }
+                    lastSpan = sp
+                    lastFocusX = fx
+                    lastFocusY = fy
+                } else if (orbiting) {
+                    val dx = e.x - lastX
+                    val dy = e.y - lastY
+                    lastX = e.x
+                    lastY = e.y
+                    queueEvent { renderer.orbit(dx / width, dy / height) }
+                    requestRender()
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> lastSpan = 0f
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                orbiting = false
+                lastSpan = 0f
+            }
         }
         return true
     }

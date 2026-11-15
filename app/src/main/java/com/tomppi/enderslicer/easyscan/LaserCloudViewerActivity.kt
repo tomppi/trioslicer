@@ -31,23 +31,6 @@ class LaserCloudViewerActivity : Activity() {
             text = name + " - loading"
         }
         root.addView(bar, FrameLayout.LayoutParams(-1, -2, android.view.Gravity.TOP))
-        val buttons = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            gravity = android.view.Gravity.CENTER
-        }
-        val zoomIn = android.widget.Button(this).apply {
-            text = "+"
-            textSize = 22f
-            setOnClickListener { view.zoomBy(1.35f) }
-        }
-        val zoomOut = android.widget.Button(this).apply {
-            text = "-"
-            textSize = 22f
-            setOnClickListener { view.zoomBy(1f / 1.35f) }
-        }
-        buttons.addView(zoomIn, android.widget.LinearLayout.LayoutParams(-2, -2, ))
-        buttons.addView(zoomOut, android.widget.LinearLayout.LayoutParams(-2, -2))
-        root.addView(buttons, FrameLayout.LayoutParams(-2, -2, android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL).apply { setMargins(0, 0, 24, 0) })
         setContentView(root)
         Thread {
             val cloud = try { load(file) } catch (ex: Exception) { null }
