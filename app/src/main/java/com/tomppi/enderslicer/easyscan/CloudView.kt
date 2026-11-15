@@ -130,7 +130,9 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
 
         fun orbit(dx: Float, dy: Float) {
             yaw -= dx * 4f
-            pitch = (pitch + dy * 3f).coerceIn(-1.5f, 1.5f)
+            // free pitch: the up vector is derived from the orbit so the view can
+            // tumble through the poles instead of stopping at +-86 deg
+            pitch += dy * 3f
         }
 
         fun zoom(factor: Float) {
@@ -168,7 +170,11 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
             val ex = target[0] + distance * cos(pitch) * cos(yaw)
             val ey = target[1] + distance * cos(pitch) * sin(yaw)
             val ez = target[2] + distance * sin(pitch)
-            Matrix.setLookAtM(view, 0, ex, ey, ez, target[0], target[1], target[2], 0f, 0f, 1f)
+            // orbit-derived up, so the camera never degenerates when pitch passes +-90 deg
+            val ux = -sin(pitch) * cos(yaw)
+            val uy = -sin(pitch) * sin(yaw)
+            val uz = cos(pitch)
+            Matrix.setLookAtM(view, 0, ex, ey, ez, target[0], target[1], target[2], ux, uy, uz)
             Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
             GLES20.glUseProgram(program)
