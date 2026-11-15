@@ -27,7 +27,9 @@ import java.io.FileOutputStream
  * Pipeline, per keyframe: a full-frame pass and its mirror are averaged (flip TTA), the alpha
  * gives the object's bounding box, and a second TTA pass runs on a 1.3x-margin crop of that box
  * so the boundary is resolved at roughly 3-4x the first-pass detail. The resulting probability
- * map is guided-filtered against the frame, closed, and eroded so the mask sits on the object.
+ * map is guided-filtered against the frame and closed so the mask sits on the object. Tuning
+ * (crop margin, threshold, guided radius) was measured on four scans against a high-quality
+ * reference; the first frame reuses the reviewed seed so part edits carry into the scan.
  */
 object NpuMasker {
     private const val TAG = "NpuMasker"
@@ -39,12 +41,24 @@ object NpuMasker {
 
     data class Result(val ok: Boolean, val message: String, val masks: Int = 0)
 
+    /** Tunable U2Net mask parameters. The defaults are the values tuned on four captured scans. */
+    data class Config(
+        val tta: Boolean = true,
+        val twoPass: Boolean = true,
+        val cropMargin: Float = 1.35f,
+        val threshold: Float = 0.55f,
+        val guidedRadius: Int = 8,
+        val closePx: Int = 3,
+    )
+
     /** Masks every keyframe into masks/<image>.png (0 ignore, 255 keep), then the caller reconstructs. */
     fun maskScanU2Net(
         context: Context,
         scan: Scan,
         onProgress: (Float, String) -> Unit,
         onLog: (String) -> Unit,
+        seedMask: File? = null,
+        config: Config = Config(),
     ): Result = runCatching {
         require(OpenCVLoader.initLocal()) { "OpenCV failed to load" }
         val images = scanImages(scan)
@@ -54,22 +68,32 @@ object NpuMasker {
         val work = File(context.filesDir, "masker/u2net")
         runShell("rm -rf '" + work.absolutePath + "'")
         work.mkdirs()
+        onLog("u2net config: tta=" + config.tta + " twoPass=" + config.twoPass +
+            " cropMargin=" + config.cropMargin + " threshold=" + config.threshold +
+            " guidedRadius=" + config.guidedRadius + " closePx=" + config.closePx)
         val masksDir = File(scan.dir, "masks")
         masksDir.mkdirs()
         masksDir.listFiles()?.forEach { if (it.isFile && it.name.endsWith(".png")) it.delete() }
         var written = 0
         val started = System.currentTimeMillis()
         images.forEachIndexed { i, file ->
+            val out = File(masksDir, file.name + ".png")
+            if (i == 0 && seedMask != null && seedMask.isFile) {
+                seedMask.copyTo(out, overwrite = true)
+                written++
+                onLog("u2net frame 0 uses the reviewed seed")
+                onProgress(0.05f + 0.9f * (i + 1) / images.size, "Mask " + (i + 1) + "/" + images.size)
+                return@forEachIndexed
+            }
             val frameStart = System.currentTimeMillis()
             val bgr = Imgcodecs.imread(file.absolutePath, Imgcodecs.IMREAD_COLOR or Imgcodecs.IMREAD_IGNORE_ORIENTATION)
             if (bgr.empty()) return@forEachIndexed
-            val mask = u2netTwoPassMask(bgr, pkg, work, "f" + i)
+            val mask = u2netTwoPassMask(bgr, pkg, work, "f" + i, config)
             if (mask == null) {
                 onLog("u2net frame " + i + " failed")
                 bgr.release()
                 return@forEachIndexed
             }
-            val out = File(masksDir, file.name + ".png")
             Imgcodecs.imwrite(out.absolutePath, mask)
             written++
             val area = Core.countNonZero(mask).toDouble() / (bgr.cols().toDouble() * bgr.rows())
@@ -123,7 +147,8 @@ object NpuMasker {
      * Flip test-time augmentation for one U2Net pass: the image is segmented normally and once
      * mirrored, the two probability maps are averaged and mirrored back.
      */
-    private fun u2netAlphaTTA(pkg: File, bgr: Mat, work: File, tag: String): Mat? = runCatching {
+    private fun u2netAlphaTTA(pkg: File, bgr: Mat, work: File, tag: String, config: Config): Mat? = runCatching {
+        if (!config.tta) return u2netAlpha(pkg, bgr, work, tag + "_a")
         val plain = u2netAlpha(pkg, bgr, work, tag + "_a")
         val flippedInput = Mat()
         Core.flip(bgr, flippedInput, 1)
@@ -154,62 +179,68 @@ object NpuMasker {
     }.getOrNull()
 
     /**
-     * Two-pass U2Net mask: first pass finds the object, the second pass re-runs the model on a
-     * zoomed crop of the object so the boundary is resolved at roughly 3-4x the first-pass detail.
+     * U2Net mask for one frame. The first pass finds the object; with two-pass enabled a second
+     * pass re-runs the model on a crop around that box so the boundary is resolved at higher
+     * detail. [Config] carries the tuned threshold, crop margin, guided radius and closing size.
      */
-    private fun u2netTwoPassMask(bgr: Mat, pkg: File, work: File, tag: String): Mat? = runCatching {
-        val first = u2netAlphaTTA(pkg, bgr, work, tag + "_p1") ?: return null
+    private fun u2netTwoPassMask(bgr: Mat, pkg: File, work: File, tag: String, config: Config): Mat? = runCatching {
+        val first = u2netAlphaTTA(pkg, bgr, work, tag + "_p1", config) ?: return null
         val width = bgr.cols()
         val height = bgr.rows()
-        val thresholded = Mat()
-        Imgproc.threshold(first, thresholded, 153.0, 255.0, Imgproc.THRESH_BINARY)
-        var minX = 320
-        var minY = 320
-        var maxX = -1
-        var maxY = -1
-        for (y in 0 until 320) for (x in 0 until 320) if (thresholded.get(y, x)[0] > 0.0) {
-            if (x < minX) minX = x
-            if (x > maxX) maxX = x
-            if (y < minY) minY = y
-            if (y > maxY) maxY = y
-        }
-        thresholded.release()
-        if (maxX < 0) {
-            first.release()
-            return null
-        }
+        val threshold = (config.threshold * 255f).toInt().toDouble()
         val sx = width.toDouble() / 320.0
         val sy = height.toDouble() / 320.0
-        val marginX = (((maxX - minX + 1) * sx) * 0.3).toInt().coerceAtLeast(12)
-        val marginY = (((maxY - minY + 1) * sy) * 0.3).toInt().coerceAtLeast(12)
-        var x0 = (minX * sx).toInt() - marginX
-        var y0 = (minY * sy).toInt() - marginY
-        var x1 = (maxX * sx).toInt() + marginX
-        var y1 = (maxY * sy).toInt() + marginY
-        x0 = x0.coerceIn(0, maxOf(0, width - 64))
-        y0 = y0.coerceIn(0, maxOf(0, height - 64))
-        x1 = x1.coerceIn(minOf(width, x0 + 64), width)
-        y1 = y1.coerceIn(minOf(height, y0 + 64), height)
-        val cropWidth = x1 - x0
-        val cropHeight = y1 - y0
-        val crop = Mat(bgr, Rect(x0, y0, cropWidth, cropHeight))
-        val second = u2netAlphaTTA(pkg, crop, work, tag + "_p2")
-        crop.release()
         val maskFull = Mat(height, width, CvType.CV_8UC1, Scalar(0.0))
-        if (second != null) {
+        var second: Mat? = null
+        if (config.twoPass) {
+            val thresholded = Mat()
+            Imgproc.threshold(first, thresholded, threshold, 255.0, Imgproc.THRESH_BINARY)
+            var minX = 320
+            var minY = 320
+            var maxX = -1
+            var maxY = -1
+            for (y in 0 until 320) for (x in 0 until 320) if (thresholded.get(y, x)[0] > 0.0) {
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
+            thresholded.release()
+            if (maxX >= 0) {
+                val side = ((config.cropMargin - 1f) / 2f).coerceAtLeast(0f)
+                val marginX = (((maxX - minX + 1) * sx) * side).toInt().coerceAtLeast(12)
+                val marginY = (((maxY - minY + 1) * sy) * side).toInt().coerceAtLeast(12)
+                var x0 = (minX * sx).toInt() - marginX
+                var y0 = (minY * sy).toInt() - marginY
+                var x1 = (maxX * sx).toInt() + marginX
+                var y1 = (maxY * sy).toInt() + marginY
+                x0 = x0.coerceIn(0, maxOf(0, width - 64))
+                y0 = y0.coerceIn(0, maxOf(0, height - 64))
+                x1 = x1.coerceIn(minOf(width, x0 + 64), width)
+                y1 = y1.coerceIn(minOf(height, y0 + 64), height)
+                val cropWidth = x1 - x0
+                val cropHeight = y1 - y0
+                val crop = Mat(bgr, Rect(x0, y0, cropWidth, cropHeight))
+                second = u2netAlphaTTA(pkg, crop, work, tag + "_p2", config)
+                crop.release()
+                if (second != null) {
+                    val bin = Mat()
+                    Imgproc.threshold(second, bin, threshold, 255.0, Imgproc.THRESH_BINARY)
+                    second.release()
+                    second = null
+                    val big = Mat()
+                    Imgproc.resize(bin, big, Size(cropWidth.toDouble(), cropHeight.toDouble()), 0.0, 0.0, Imgproc.INTER_NEAREST)
+                    bin.release()
+                    val roi = maskFull.submat(Rect(x0, y0, cropWidth, cropHeight))
+                    big.copyTo(roi)
+                    roi.release()
+                    big.release()
+                }
+            }
+        }
+        if (second == null && Core.countNonZero(maskFull) == 0) {
             val bin = Mat()
-            Imgproc.threshold(second, bin, 153.0, 255.0, Imgproc.THRESH_BINARY)
-            second.release()
-            val big = Mat()
-            Imgproc.resize(bin, big, Size(cropWidth.toDouble(), cropHeight.toDouble()), 0.0, 0.0, Imgproc.INTER_NEAREST)
-            bin.release()
-            val roi = maskFull.submat(Rect(x0, y0, cropWidth, cropHeight))
-            big.copyTo(roi)
-            roi.release()
-            big.release()
-        } else {
-            val bin = Mat()
-            Imgproc.threshold(first, bin, 153.0, 255.0, Imgproc.THRESH_BINARY)
+            Imgproc.threshold(first, bin, threshold, 255.0, Imgproc.THRESH_BINARY)
             val big = Mat()
             Imgproc.resize(bin, big, Size(width.toDouble(), height.toDouble()), 0.0, 0.0, Imgproc.INTER_NEAREST)
             bin.release()
@@ -220,21 +251,23 @@ object NpuMasker {
         val prob = Mat()
         maskFull.convertTo(prob, CvType.CV_32FC1, 1.0 / 255.0)
         maskFull.release()
-        val refined = guidedRefine(bgr, prob, 4)
+        val refined = guidedRefine(bgr, prob, config.guidedRadius)
         prob.release()
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
-        Imgproc.morphologyEx(refined, refined, Imgproc.MORPH_CLOSE, kernel)
-        val erodeKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
-        val eroded = Mat()
-        Imgproc.erode(refined, eroded, erodeKernel)
-        refined.release()
-        kernel.release()
-        erodeKernel.release()
-        eroded
+        if (config.closePx > 1) {
+            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(config.closePx.toDouble(), config.closePx.toDouble()))
+            Imgproc.morphologyEx(refined, refined, Imgproc.MORPH_CLOSE, kernel)
+            kernel.release()
+        }
+        refined
     }.getOrNull()
 
     /** Runs two-pass U2Net on the first keyframe and returns the seed mask and its area. */
-    fun u2netSegmentFirstFrame(context: Context, scan: Scan, onLog: (String) -> Unit): Pair<File, Float>? = runCatching {
+    fun u2netSegmentFirstFrame(
+        context: Context,
+        scan: Scan,
+        onLog: (String) -> Unit,
+        config: Config = Config(),
+    ): Pair<File, Float>? = runCatching {
         require(OpenCVLoader.initLocal()) { "OpenCV failed to load" }
         val images = scanImages(scan)
         require(images.isNotEmpty()) { "No keyframes" }
@@ -248,7 +281,7 @@ object NpuMasker {
         val work = File(context.filesDir, "masker/u2net_auto")
         runShell("rm -rf '" + work.absolutePath + "'")
         work.mkdirs()
-        val mask = u2netTwoPassMask(bgr, pkg, work, "seed") ?: return null
+        val mask = u2netTwoPassMask(bgr, pkg, work, "seed", config) ?: return null
         val seedDir = File(context.filesDir, "masker").apply { mkdirs() }
         val seed = File(seedDir, "u2net_seed.png")
         Imgcodecs.imwrite(seed.absolutePath, mask)

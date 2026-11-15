@@ -36,6 +36,13 @@ data class PipelineSettings(
     /** Mip-Splatting scale floor; larger suppresses needle floaters. */
     val minScaleFactor: Float = 0.1f,
     val ssimWeight: Float = 0.2f,
+    /** U2Net NPU masking knobs; the defaults are the values tuned on captured scans. */
+    val maskTta: Boolean = true,
+    val maskTwoPass: Boolean = true,
+    val maskCropMargin: Float = 1.35f,
+    val maskThreshold: Float = 0.55f,
+    val maskGuidedRadius: Int = 8,
+    val maskClosePx: Int = 3,
 ) {
     companion object {
         private const val PREFS = "pipeline_settings"
@@ -72,6 +79,12 @@ data class PipelineSettings(
                 growthStopIter = p.getInt("growthStopIter", d.growthStopIter),
                 minScaleFactor = p.getFloat("minScaleFactor", d.minScaleFactor),
                 ssimWeight = p.getFloat("ssimWeight", d.ssimWeight),
+                maskTta = p.getBoolean("maskTta", d.maskTta),
+                maskTwoPass = p.getBoolean("maskTwoPass", d.maskTwoPass),
+                maskCropMargin = p.getFloat("maskCropMargin", d.maskCropMargin),
+                maskThreshold = p.getFloat("maskThreshold", d.maskThreshold),
+                maskGuidedRadius = p.getInt("maskGuidedRadius", d.maskGuidedRadius),
+                maskClosePx = p.getInt("maskClosePx", d.maskClosePx),
             )
         }
     }
@@ -106,6 +119,12 @@ data class PipelineSettings(
             .putInt("growthStopIter", growthStopIter)
             .putFloat("minScaleFactor", minScaleFactor)
             .putFloat("ssimWeight", ssimWeight)
+            .putBoolean("maskTta", maskTta)
+            .putBoolean("maskTwoPass", maskTwoPass)
+            .putFloat("maskCropMargin", maskCropMargin)
+            .putFloat("maskThreshold", maskThreshold)
+            .putInt("maskGuidedRadius", maskGuidedRadius)
+            .putInt("maskClosePx", maskClosePx)
             .apply()
     }
 }

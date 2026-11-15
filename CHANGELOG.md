@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-15
+
+### Changed
+
+- **Better object masks from the NPU masker.** The U2Net mask pipeline was tuned on four captured
+  scans against a high-quality reference: flip test-time augmentation, a second pass on a 1.35x crop
+  around the first pass's object box, a wider guided filter, a stricter threshold (0.55 instead of
+  0.60) and no erosion. The masks follow the object more consistently from frame to frame, and the
+  reviewed seed from the first keyframe - including any parts the user added or removed - is now
+  reused for that frame instead of being segmented again.
+- **Masker settings.** Settings -> Masking (U2Net NPU) exposes the masker's knobs - flip TTA,
+  two-pass crop, crop margin, threshold, guided-filter radius and closing size - so masks can be
+  tuned per scan without a new build.
+
 ## [1.20.0] - 2026-11-14
 
 ### Added

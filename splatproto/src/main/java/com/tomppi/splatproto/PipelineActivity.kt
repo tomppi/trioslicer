@@ -691,6 +691,16 @@ class PipelineActivity : ComponentActivity() {
         return stored.first.coerceIn(0f, 1f) to stored.second.coerceIn(0f, 1f)
     }
 
+    /** The U2Net mask configuration chosen in the settings sheet. */
+    private fun u2netConfig() = NpuMasker.Config(
+        tta = settings.maskTta,
+        twoPass = settings.maskTwoPass,
+        cropMargin = settings.maskCropMargin,
+        threshold = settings.maskThreshold,
+        guidedRadius = settings.maskGuidedRadius,
+        closePx = settings.maskClosePx,
+    )
+
     /** Auto seed from U2Net on the NPU: segments the first keyframe and shows the mask. */
     private fun autoMask() {
         val scan = lastScan ?: return
@@ -708,7 +718,7 @@ class PipelineActivity : ComponentActivity() {
         scope.launch(Dispatchers.IO) {
             val logger: (String) -> Unit = { message -> dbg("u2net: " + message) }
             MaskParts.rememberContext(this@PipelineActivity)
-            val segmented = NpuMasker.u2netSegmentFirstFrame(this@PipelineActivity, scan, logger)
+            val segmented = NpuMasker.u2netSegmentFirstFrame(this@PipelineActivity, scan, logger, u2netConfig())
             segmented?.let { MaskParts.prepareParts(it.first, keyframe) }
             val bitmap = segmented?.let { MaskParts.previewBitmap(it.first, keyframe) }
             withContext(Dispatchers.Main) {
@@ -762,6 +772,8 @@ class PipelineActivity : ComponentActivity() {
                     }
                 },
                 logger,
+                seedMask = seedMask.value,
+                config = u2netConfig(),
             )
             dbg("mask: u2net ok=" + result.ok + " msg=" + result.message +
                 " rss=" + MaskParts.rssMb() + " MB")
@@ -1183,6 +1195,21 @@ class PipelineActivity : ComponentActivity() {
                         .heightIn(max = 520.dp)
                         .verticalScroll(rememberScrollState()),
                 ) {
+                    Text("Masking (U2Net NPU)", style = MaterialTheme.typography.titleSmall)
+                    SettingsToggle("Flip TTA", s.maskTta) { v -> s = s.copy(maskTta = v) }
+                    SettingsToggle("Two-pass crop", s.maskTwoPass) { v -> s = s.copy(maskTwoPass = v) }
+                    SettingsNumber("Crop margin", s.maskCropMargin) { v ->
+                        s = s.copy(maskCropMargin = v.coerceIn(1f, 3f))
+                    }
+                    SettingsNumber("Mask threshold", s.maskThreshold) { v ->
+                        s = s.copy(maskThreshold = v.coerceIn(0.2f, 0.9f))
+                    }
+                    SettingsNumber("Guided radius", s.maskGuidedRadius.toFloat()) { v ->
+                        s = s.copy(maskGuidedRadius = v.toInt().coerceIn(1, 20))
+                    }
+                    SettingsNumber("Close px", s.maskClosePx.toFloat()) { v ->
+                        s = s.copy(maskClosePx = v.toInt().coerceIn(0, 9))
+                    }
                     Text("SfM (Parallax)", style = MaterialTheme.typography.titleSmall)
                     SettingsNumber("Feature side", s.sfmFeatureSide.toFloat()) { v ->
                         s = s.copy(sfmFeatureSide = v.toInt().coerceAtLeast(256))
