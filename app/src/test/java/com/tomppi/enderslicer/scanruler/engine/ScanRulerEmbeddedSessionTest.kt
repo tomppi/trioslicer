@@ -89,6 +89,26 @@ class ScanRulerEmbeddedSessionTest {
         throw AssertionError("the session never asked the page for anything")
     }
 
+
+    /** A released listening port can take a moment to become bindable again. */
+    private fun assertPortIsFree(port: Int) {
+        val deadline = System.currentTimeMillis() + 5_000
+        var last: Exception? = null
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                ServerSocket().use {
+                    it.reuseAddress = true
+                    it.bind(InetSocketAddress("127.0.0.1", port))
+                }
+                return
+            } catch (error: java.net.BindException) {
+                last = error
+                Thread.sleep(25)
+            }
+        }
+        throw AssertionError("port " + port + " was never released", last)
+    }
+
     @Test
     fun aFailedStartReleasesTheServersItAlreadyStarted() {
         val squatter = ServerSocket()
@@ -106,10 +126,7 @@ class ScanRulerEmbeddedSessionTest {
             squatter.close()
         }
         // The asset server the failed start created is gone, so its port binds again.
-        ServerSocket().use {
-            it.reuseAddress = true
-            it.bind(InetSocketAddress("127.0.0.1", ScanRulerAssetServer.DEFAULT_PORT))
-        }
+        assertPortIsFree(ScanRulerAssetServer.DEFAULT_PORT)
     }
 
     @Test
@@ -136,10 +153,7 @@ class ScanRulerEmbeddedSessionTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue("the cancelled start destroyed its WebView", shadowOf(session.webView).wasDestroyCalled())
         // The servers the cancelled start made are released, so its port binds again.
-        ServerSocket().use {
-            it.reuseAddress = true
-            it.bind(InetSocketAddress("127.0.0.1", ScanRulerAssetServer.DEFAULT_PORT))
-        }
+        assertPortIsFree(ScanRulerAssetServer.DEFAULT_PORT)
     }
 
     @Test

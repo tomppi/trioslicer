@@ -197,7 +197,7 @@ class PipelineActivity : ComponentActivity() {
     /** Prompt points on the first keyframe, in normalised image coordinates. */
     private val maskPoints = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
     private val maskNegatives = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
-    /** Full-resolution RMBG-2 seed mask for the first keyframe (null until auto-masked). */
+    /** Full-resolution U2Net seed mask for the first keyframe (null until auto-masked). */
     private val seedMask = mutableStateOf<File?>(null)
     private val maskPreview = mutableStateOf<android.graphics.Bitmap?>(null)
     private val showScans = mutableStateOf(false)
