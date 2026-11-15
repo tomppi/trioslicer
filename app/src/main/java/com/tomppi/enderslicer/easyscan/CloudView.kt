@@ -32,6 +32,11 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 
+    /** Zoom for the on-screen buttons (pinch uses the same renderer path). */
+    fun zoomBy(factor: Float) {
+        queueEvent { renderer.zoom(factor); requestRender() }
+    }
+
     fun show(cloud: PlyCloud) {
         val (centre, radius) = cloud.bounds()
         queueEvent {
@@ -129,10 +134,13 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         }
 
         fun orbit(dx: Float, dy: Float) {
-            yaw -= dx * 4f
+            // when the camera is upside down the scene moves the other way, so the
+            // gesture has to follow the view: flip both axes past the poles
+            val flip = if (cos(pitch) >= 0f) 1f else -1f
+            yaw -= dx * 4f * flip
             // free pitch: the up vector is derived from the orbit so the view can
             // tumble through the poles instead of stopping at +-86 deg
-            pitch += dy * 3f
+            pitch += dy * 3f * flip
         }
 
         fun zoom(factor: Float) {
