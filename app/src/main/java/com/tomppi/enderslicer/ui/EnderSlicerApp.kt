@@ -276,6 +276,12 @@ fun EnderSlicerApp(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val solidCraftSheetOpen by viewModel.solidCraftSheetOpen.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val easyScanPrefs = remember { context.getSharedPreferences("easyscan", 0) }
+    val startEasyScan = {
+        context.startActivity(
+            android.content.Intent(context, com.tomppi.enderslicer.easyscan.ArActivity::class.java),
+        )
+    }
     val scope = rememberCoroutineScope()
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.PLATE) }
     // The wide rail's own menu block (the five destinations) folds away with its arrow so the
@@ -339,6 +345,7 @@ fun EnderSlicerApp(
     var layerEventsOpen by rememberSaveable { mutableStateOf(false) }
     var meshLimitOpen by rememberSaveable { mutableStateOf(false) }
     var splatLibraryOpen by rememberSaveable { mutableStateOf(false) }
+    var easyScanIntroOpen by rememberSaveable { mutableStateOf(false) }
     var uiScaleOpen by rememberSaveable { mutableStateOf(false) }
     var diagnosticsLogOpen by rememberSaveable { mutableStateOf(false) }
     val diagnosticsOn by Diagnostics.enabled.collectAsStateWithLifecycle()
@@ -3318,6 +3325,10 @@ fun EnderSlicerApp(
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onMeshToStep = viewModel::openMeshToStep,
                         onSplatViewer = { splatLibraryOpen = true },
+                        onEasyScan = {
+                            if (easyScanPrefs.getBoolean("intro_ack", false)) startEasyScan()
+                            else easyScanIntroOpen = true
+                        },
                         onScanRuler = ::launchScanRuler,
                         onNonPlanar = { nonPlanarOpen = true },
                         onConical = { conicalOpen = true },
@@ -3422,6 +3433,45 @@ fun EnderSlicerApp(
         AppBottomSheet(onDismissRequest = { splatLibraryOpen = false }) {
             SplatLibrarySheet(onDismiss = { splatLibraryOpen = false })
         }
+    }
+
+    if (easyScanIntroOpen) {
+        AlertDialog(
+            onDismissRequest = { easyScanIntroOpen = false },
+            title = { Text("EasyScan laser capture") },
+            text = {
+                Column {
+                    Text(
+                        "Calibrate once with the board (camera and laser plane), then keep the " +
+                            "object inside the cyan box: the box is the volume that is saved.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "ARCore tracks the phone while you move. SuperPoint runs on keyframes " +
+                            "(NPU) to recognise views it has seen already: it corrects drift on " +
+                            "longer or walk-around scans and can recover the pose after tracking loss.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "The NPU path needs root access for this app. Without it the scan still " +
+                            "works, but long scans may drift and tracking loss cannot be recovered.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    easyScanPrefs.edit().putBoolean("intro_ack", true).apply()
+                    easyScanIntroOpen = false
+                    startEasyScan()
+                }) { Text("Acknowledge and start") }
+            },
+            dismissButton = {
+                TextButton(onClick = { easyScanIntroOpen = false }) { Text("Cancel") }
+            },
+        )
     }
 
     if (cadViewerOpen) {
@@ -4333,6 +4383,7 @@ private fun MoreScreen(
     onBumpMeshStudio: () -> Unit,
     onMeshToStep: () -> Unit,
     onSplatViewer: () -> Unit,
+    onEasyScan: () -> Unit,
     onScanRuler: () -> Unit,
     onNonPlanar: () -> Unit,
     onConical: () -> Unit,
@@ -4463,6 +4514,18 @@ private fun MoreScreen(
                 enabled = !state.isBusy,
                 badge = "EXP",
                 onClick = onSplatViewer,
+            )
+            MoreDivider()
+            // EasyScan is a capture workspace: the handheld laser scanner writes point
+            // clouds and splats on the phone; it is not a plate action.
+            MoreRow(
+                icon = AppIcons.Mesh,
+                title = "EasyScan",
+                subtitle = "Handheld laser scanner: ARCore pose, box capture, saves point clouds " +
+                    "and splats - nothing leaves the phone",
+                enabled = !state.isBusy,
+                badge = "EXP",
+                onClick = onEasyScan,
             )
             MoreDivider()
             extraItems()

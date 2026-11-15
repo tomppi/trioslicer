@@ -115,13 +115,6 @@ internal fun SplatLibrarySheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
-                onClick = {
-                    context.startActivity(
-                        android.content.Intent(context, com.tomppi.enderslicer.easyscan.ArActivity::class.java),
-                    )
-                },
-            ) { Text("Scan with EasyScan") }
-            OutlinedButton(
                 onClick = { picker.launch(arrayOf("application/octet-stream", "*/*")) },
             ) { Text("Import a splat") }
             Text(
