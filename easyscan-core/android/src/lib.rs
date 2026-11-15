@@ -65,7 +65,7 @@ fn buffer<'b>(env: &mut JNIEnv, buf: &JByteBuffer) -> Result<&'b [u8], String> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeCreate<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeCreate<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     files_dir: JString<'l>,
@@ -80,7 +80,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeCrea
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeDestroy<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeDestroy<'l>(
     _env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
@@ -92,7 +92,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeDest
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeConfigure<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeConfigure<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
@@ -105,7 +105,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeConf
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeCommand<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeCommand<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
@@ -120,7 +120,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeComm
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeMessages<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeMessages<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
@@ -136,7 +136,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeMess
 /// (R | t); `intrinsics` is [fx, fy, cx, cy, width, height, k1, k2, p1, p2, k3].
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeProcessAr<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeProcessAr<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
@@ -217,7 +217,7 @@ pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeProc
 /// too small (nothing written).
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeProcess<'l>(
+pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeProcess<'l>(
     mut env: JNIEnv<'l>,
     _cls: JClass<'l>,
     handle: jlong,
