@@ -143,24 +143,19 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
             rot[6] = cp * cy; rot[7] = cp * sy; rot[8] = sp
         }
 
-        /** rot = R(axis, angle) * rot, so the camera turns in world space and never locks. */
+        /** rot = R(axis, angle) * rot, applied column by column (rot is column-major). */
         private fun rotateAxis(ax: Float, ay: Float, az: Float, angle: Float) {
             val c = cos(angle); val s = sin(angle); val t = 1f - c
             val m00 = c + ax * ax * t; val m01 = ax * ay * t - az * s; val m02 = ax * az * t + ay * s
             val m10 = ay * ax * t + az * s; val m11 = c + ay * ay * t; val m12 = ay * az * t - ax * s
             val m20 = az * ax * t - ay * s; val m21 = az * ay * t + ax * s; val m22 = c + az * az * t
-            val r0 = rot[0]; val r1 = rot[1]; val r2 = rot[2]
-            val r3 = rot[3]; val r4 = rot[4]; val r5 = rot[5]
-            val r6 = rot[6]; val r7 = rot[7]; val r8 = rot[8]
-            rot[0] = m00 * r0 + m01 * r3 + m02 * r6
-            rot[1] = m00 * r1 + m01 * r4 + m02 * r7
-            rot[2] = m00 * r2 + m01 * r5 + m02 * r8
-            rot[3] = m10 * r0 + m11 * r3 + m12 * r6
-            rot[4] = m10 * r1 + m11 * r4 + m12 * r7
-            rot[5] = m10 * r2 + m11 * r5 + m12 * r8
-            rot[6] = m20 * r0 + m21 * r3 + m22 * r6
-            rot[7] = m20 * r1 + m21 * r4 + m22 * r7
-            rot[8] = m20 * r2 + m21 * r5 + m22 * r8
+            val r = rot.copyOf()
+            for (col in 0..2) {
+                val x = r[col * 3]; val y = r[col * 3 + 1]; val z = r[col * 3 + 2]
+                rot[col * 3] = m00 * x + m01 * y + m02 * z
+                rot[col * 3 + 1] = m10 * x + m11 * y + m12 * z
+                rot[col * 3 + 2] = m20 * x + m21 * y + m22 * z
+            }
         }
 
         fun upload(cloud: PlyCloud, c: FloatArray, r: Float) {
