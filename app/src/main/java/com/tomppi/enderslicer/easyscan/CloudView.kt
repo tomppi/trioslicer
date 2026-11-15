@@ -192,11 +192,21 @@ class CloudView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         }
 
         fun orbit(dx: Float, dy: Float) {
-            // Turn about the camera's own up axis for horizontal drags and about its
-            // own right axis for vertical ones: both follow the view and have no poles,
-            // so the model can tumble through a full 360 deg in either direction.
-            rotateAxis(rot[3], rot[4], rot[5], -dx * 4f)
-            rotateAxis(rot[0], rot[1], rot[2], -dy * 3f)
+            // One rotation per drag step, about the screen-plane axis perpendicular to
+            // the drag: horizontal drags spin about the view's up axis, vertical ones
+            // about its right axis, and mixed drags about a diagonal between them. A
+            // single axis keeps the direction the finger asks for (two sequential
+            // rotations mixed the axes and sent a sideways swipe downwards).
+            val uw = -dx * 4f
+            val vw = -dy * 3f
+            var ax = rot[3] * uw + rot[0] * vw
+            var ay = rot[4] * uw + rot[1] * vw
+            var az = rot[5] * uw + rot[2] * vw
+            val len = kotlin.math.sqrt(ax * ax + ay * ay + az * az)
+            if (len > 1e-6f) {
+                ax /= len; ay /= len; az /= len
+                rotateAxis(ax, ay, az, len)
+            }
         }
 
         fun zoom(factor: Float) {
