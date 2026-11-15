@@ -1,0 +1,11 @@
+[package]
+name = "scan-algo"
+version = "0.1.0"
+edition = "2024"
+description = "EasyScanner's pure-Rust core: laser stripe, geometry, plane fit, point cloud, config and calibration files — everything without OpenCV or JNI, so it tests on the host"
+
+[dependencies]
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
     <!-- Foreground service keeps the embedded engine alive with the screen off/locked. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -37,6 +40,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.EnderSlicer">
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
         <activity
             android:name=".smartinfill.SmartInfillActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
@@ -55,7 +59,17 @@
             android:hardwareAccelerated="true" />
         <!-- The Gaussian-splat viewer: an offline WebGL page over app storage, no network. -->
         <activity
+            android:name=".easyscan.ArActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|keyboardHidden|uiMode"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
+        <activity
             android:name=".splat.SplatViewerActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
+            android:exported="false"
+            android:hardwareAccelerated="true" />
+        <activity
+            android:name=".easyscan.LaserCloudViewerActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|touchscreen|keyboard|keyboardHidden|uiMode"
             android:exported="false"
             android:hardwareAccelerated="true" />

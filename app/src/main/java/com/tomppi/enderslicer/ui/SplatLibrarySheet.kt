@@ -115,6 +115,13 @@ internal fun SplatLibrarySheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        android.content.Intent(context, com.tomppi.enderslicer.easyscan.ArActivity::class.java),
+                    )
+                },
+            ) { Text("Scan with EasyScan") }
+            OutlinedButton(
                 onClick = { picker.launch(arrayOf("application/octet-stream", "*/*")) },
             ) { Text("Import a splat") }
             Text(
@@ -194,9 +201,14 @@ private fun SplatRow(file: File, onOpen: () -> Unit, onDelete: () -> Unit) {
 
 private fun openSplat(context: Context, file: File) {
     context.startActivity(
-        Intent(context, SplatViewerActivity::class.java)
-            .putExtra(SplatViewerActivity.EXTRA_FILE, file.name)
-            .putExtra(SplatViewerActivity.EXTRA_TITLE, SplatLibrary.titleOf(file)),
+        if (file.extension.lowercase() == "splat") {
+            Intent(context, com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity::class.java)
+                .putExtra(com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity.EXTRA_FILE, file.name)
+        } else {
+            Intent(context, SplatViewerActivity::class.java)
+                .putExtra(SplatViewerActivity.EXTRA_FILE, file.name)
+                .putExtra(SplatViewerActivity.EXTRA_TITLE, SplatLibrary.titleOf(file))
+        },
     )
 }
 

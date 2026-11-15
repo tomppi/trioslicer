@@ -1477,3 +1477,106 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
 }
+
+// ── EasyScan (laser scanner) integration ─────────────────────────────────────
+// The capture core: ARCore pose + laser engine (Rust, ../easyscan-core) + the
+// SuperPoint NPU runtime. The viewer lives in .easyscan too.
+val easyscanCoreDir = rootProject.file("easyscan-core")
+val easyscanLocalProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+/** Android API the Rust core is compiled for (= minSdk). */
+val easyscanRustApi = 29
+val easyscanAbis = listOf("arm64-v8a")
+val easyscanTriples = mapOf("arm64-v8a" to "aarch64-linux-android")
+val opencvAar: Configuration by configurations.creating
+val opencvVersion = "4.14.0"
+val easyScanNdkVersion = "28.2.13676358"
+
+dependencies {
+    implementation("com.google.ar:core:1.49.0")
+    implementation("org.opencv:opencv:4.14.0")
+    opencvAar("org.opencv:opencv:4.14.0@aar")
+}
+
+android {
+    ndkVersion = easyScanNdkVersion
+    defaultConfig {
+        ndk { abiFilters += easyscanAbis }
+    }
+    sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.get().asFile.resolve("rustJniLibs"))
+}
+
+val opencvPrefab = layout.buildDirectory.dir("opencv-prefab")
+
+val extractOpenCvPrefab by tasks.registering(Copy::class) {
+    from({ zipTree(opencvAar.singleFile) }) {
+        include("prefab/modules/opencv_java4/**")
+        eachFile { path = path.removePrefix("prefab/modules/opencv_java4/") }
+        includeEmptyDirs = false
+    }
+    into(opencvPrefab)
+}
+
+fun easyScanHostTag(): String {
+    val os = System.getProperty("os.name").lowercase()
+    return when {
+        os.contains("win") -> "windows-x86_64"
+        os.contains("mac") -> "darwin-x86_64"
+        else -> "linux-x86_64"
+    }
+}
+
+val easyScanCargoTasks = easyscanAbis.map { abi ->
+    val triple = easyscanTriples.getValue(abi)
+    tasks.register<Exec>("easyscanCargo-$abi") {
+        group = "rust"
+        description = "Build the EasyScan Rust core for $abi"
+        dependsOn(extractOpenCvPrefab)
+        workingDir = easyscanCoreDir
+        inputs.files(fileTree(easyscanCoreDir) {
+            include("**/*.rs", "**/Cargo.toml", "Cargo.lock")
+            exclude("target/**")
+        })
+        inputs.property("opencv", opencvVersion)
+        outputs.file(easyscanCoreDir.resolve("target/$triple/release/libeasyscanner_core.so"))
+        commandLine("cargo", "build", "--release", "--target", triple, "-p", "easyscanner-core")
+        doFirst {
+            val ndk = androidComponents.sdkComponents.ndkDirectory.get().asFile
+            val tc = ndk.resolve("toolchains/llvm/prebuilt/" + easyScanHostTag())
+            val win = easyScanHostTag().startsWith("windows")
+            val exe = if (win) ".exe" else ""
+            val clangTarget = triple + easyscanRustApi
+            val libclang = easyscanLocalProps.getProperty("libclang.dir") ?: System.getenv("LIBCLANG_PATH")
+                ?: throw GradleException("libclang not found: set libclang.dir in local.properties")
+            val prefab = opencvPrefab.get().asFile
+            val envTriple = triple.replace('-', '_')
+            val cargoTriple = envTriple.uppercase()
+            fun p(f: File) = f.absolutePath.replace('\\', '/')
+            environment("CC_$envTriple", p(tc.resolve("bin/clang$exe")))
+            environment("CXX_$envTriple", p(tc.resolve("bin/clang++$exe")))
+            environment("AR_$envTriple", p(tc.resolve("bin/llvm-ar$exe")))
+            environment("CFLAGS_$envTriple", "--target=$clangTarget")
+            environment("CXXFLAGS_$envTriple", "--target=$clangTarget")
+            environment("CARGO_TARGET_${cargoTriple}_LINKER", p(tc.resolve("bin/clang$exe")))
+            environment("CARGO_TARGET_${cargoTriple}_RUSTFLAGS", "-C link-arg=--target=$clangTarget")
+            environment("CLANG_PATH", p(tc.resolve(if (win) "bin/$clangTarget-clang++.cmd" else "bin/$clangTarget-clang++")))
+            environment("LIBCLANG_PATH", libclang)
+            environment("OPENCV_INCLUDE_PATHS", p(prefab.resolve("include")))
+            environment("OPENCV_LINK_PATHS", p(prefab.resolve("libs/android.$abi")))
+            environment("OPENCV_LINK_LIBS", "opencv_java4")
+            environment("OPENCV_DISABLE_PROBES", "pkg_config,cmake,vcpkg_cmake,vcpkg")
+            environment("OPENCV_CLANG_ARGS", "--target=$clangTarget --sysroot=" + p(tc.resolve("sysroot")) + " -resource-dir " + p(tc.resolve("lib/clang").listFiles()!!.first()))
+        }
+    }
+}
+
+val easyScanCopyRustLibs by tasks.registering(Copy::class) {
+    dependsOn(easyScanCargoTasks)
+    easyscanAbis.forEach { abi ->
+        from(easyscanCoreDir.resolve("target/" + easyscanTriples.getValue(abi) + "/release/libeasyscanner_core.so")) { into(abi) }
+    }
+    into(layout.buildDirectory.dir("rustJniLibs"))
+}
+
+tasks.named("preBuild") { dependsOn(easyScanCopyRustLibs) }

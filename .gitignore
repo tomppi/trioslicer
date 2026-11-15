@@ -78,3 +78,4 @@ app/src/main/assets/klipper/
 # (cad_mcp_slim.py) is source and is committed; only the built tree is not.
 app/src/main/assets/cad/lib/
 app/src/main/assets/cad/libexec/
+easyscan-core/target/
