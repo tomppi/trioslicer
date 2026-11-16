@@ -158,6 +158,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
     private val io = Executors.newSingleThreadExecutor()
     private var kfDir: File? = null
     private var kfIndex = 0
+    private var lastFrameNo = 0
     private var lastKfMs = 0L
     private var lastProcessNs = 0L
     private var lastGlFrameNs = 0L
@@ -278,6 +279,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         button("Scan") { toggleScan() }
         button("Save PLY") { exportPly() }
         smallButton("SAVE SPLAT") { exportSplat() }
+        smallButton("FIX DRIFT") { fixDrift() }
         val barScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             setBackgroundColor(0xCC000000.toInt())
@@ -761,6 +763,48 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         }
     }
 
+    private fun fixDrift() {
+        val dir = getExternalFilesDir(null) ?: filesDir
+        val plies = (dir.listFiles { f -> f.isFile && f.name.startsWith("ar-scan-") && f.name.endsWith(".ply") } ?: emptyArray())
+            .filter { File(it.absolutePath + ".frames").isFile }
+            .sortedByDescending { it.lastModified() }
+        val ply = plies.firstOrNull()
+        if (ply == null) {
+            status.text = "fix drift: no scan with frame ids yet"
+            return
+        }
+        val dir2 = getExternalFilesDir(null) ?: filesDir
+        val kf = (dir2.listFiles { f -> f.isDirectory && f.name.startsWith("kf-") } ?: emptyArray())
+            .maxByOrNull { it.lastModified() }
+        if (kf == null) {
+            status.text = "fix drift: no keyframes"
+            return
+        }
+        status.text = "fixing drift on " + ply.name + " ..."
+        io.execute {
+            val res = try {
+                DriftFix.fix(this, ply, kf) { msg -> runOnUiThread { status.text = msg } }
+            } catch (ex: Exception) { null }
+            var splat: File? = null
+            if (res != null) {
+                try {
+                    val out = File(com.tomppi.enderslicer.splat.SplatLibrary.directory(this), res.out.name.removeSuffix(".ply") + ".splat")
+                    SplatExporter.convert(res.out, out)
+                    splat = out
+                } catch (ex: Exception) {
+                    Log.w(TAG, "fixed splat failed: " + ex.message)
+                }
+            }
+            runOnUiThread {
+                status.text = if (res == null) "fix drift failed"
+                else "drift fixed: " + res.keyframes + " poses, " + res.points + " pts, rot " + String.format("%.2f", res.meanRotDeg) +
+                    " deg, shift " + String.format("%.1f", res.meanTransMm) + " mm, cost " + String.format("%.1f", res.before) +
+                    " -> " + String.format("%.1f", res.after) + " -> " + res.out.name +
+                    (if (splat != null) " (+splat)" else "")
+            }
+        }
+    }
+
     private fun exportSplat() {
         val dir = getExternalFilesDir(null) ?: filesDir
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
@@ -797,6 +841,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         lastOut = copyLayer(r, FrameResult.Layer.LASER_OUT)
         lastVol = copyLayer(r, FrameResult.Layer.VOLUME)
         pointCount = r[FrameResult.H.CLOUD_POINTS].toInt()
+        lastFrameNo = r[FrameResult.H.FRAME_NO].toInt()
         if (frames % 30 == 0) {
             val now2 = System.nanoTime()
             resWindowCount++
@@ -1085,7 +1130,8 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
                     val poseCopy = pose.copyOf()
                     val kCopy = k.copyOf()
                     val ts = image.timestamp
-                    io.execute { saveKeyframe(dir, idx, planesCopy, strides, w, h, ts, poseCopy, kCopy) }
+                    val frameNo = lastFrameNo + 1
+                    io.execute { saveKeyframe(dir, idx, planesCopy, strides, w, h, ts, poseCopy, kCopy, frameNo) }
                 }
             }
             processor.processArFrame(
@@ -1176,6 +1222,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         ts: Long,
         pose: DoubleArray,
         k: DoubleArray,
+        frameNo: Int,
     ) {
         try {
             val yStride = strides[0]
@@ -1208,6 +1255,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
                 put("file", file.name)
                 put("pose", org.json.JSONArray(pose.toList()))
                 put("k", org.json.JSONArray(k.toList()))
+                put("frame", frameNo)
             }
             File(dir, "keyframes.jsonl").appendText(row.toString() + System.lineSeparator())
         } catch (ex: Exception) {

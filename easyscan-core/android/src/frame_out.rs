@@ -67,7 +67,9 @@ pub mod h {
     /// a laser plane is saved but was fitted with another camera model
     pub const PLANE_STALE: usize = 53;
     pub const N_MARKERS: usize = 54;
-    pub const LEN: usize = 55;
+    /// the engine frame counter when this result was produced
+    pub const FRAME_NO: usize = 55;
+    pub const LEN: usize = 56;
 }
 
 /// One-shot event bits in `h::EVENTS`.

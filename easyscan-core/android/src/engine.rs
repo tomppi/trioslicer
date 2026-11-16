@@ -149,6 +149,8 @@ pub struct Engine {
     /// Pose comes from an external tracker (ARCore): no board, plane model check skipped.
     ar_mode: bool,
     cloud: PointCloud,
+    /// Frame number that produced each cloud point (same order as the cloud).
+    point_frames: Vec<u32>,
     /// The cloud has points the open session (or, with none open, any session) has not written.
     cloud_unsaved: bool,
     preview: Vec<[f32; 3]>,
@@ -184,6 +186,7 @@ impl Engine {
             calib: LiveCalibrator::new(cfg.calib_views),
             plane_cal: PlaneCalibrator::new(cfg.plane_views),
             cloud: PointCloud::new(cfg.max_cloud_points),
+            point_frames: Vec::new(),
             dir,
             tracker,
             k_base: default_guess(),
@@ -460,14 +463,17 @@ impl Engine {
         if let (true, Some((n, d)), Some(p)) = (classified, plane, pose) {
             let mut inside = vec![false; self.laser_px.len()];
             let mut pushed = false;
-            let (cloud, px, scan_on) = (&mut self.cloud, &self.laser_px, self.scan_on);
+            let frame_id = self.frame_no.min(u32::MAX as u64) as u32;
+            let (cloud, frames, px, scan_on) = (&mut self.cloud, &mut self.point_frames, &self.laser_px, self.scan_on);
             stripe::to_laser_plane(px, &k, n, d, |i, x| {
                 let b = p.to_board(x);
                 if vol.contains(&p, b, up) {
                     inside[i] = true;
                     if scan_on {
                         let (u, v) = (px[i][0].round() as usize, px[i][1].round() as usize);
-                        cloud.push(b, f.rgb_at(u.min(f.width - 1), v.min(f.height - 1)));
+                        if cloud.push(b, f.rgb_at(u.min(f.width - 1), v.min(f.height - 1))) {
+                            frames.push(frame_id);
+                        }
                         pushed = true;
                     }
                 }
@@ -521,6 +527,7 @@ impl Engine {
             o.set(h::CAM_TURN, w);
         }
         o.set(h::EVENTS, self.events as f64);
+        o.set(h::FRAME_NO, self.frame_no as f64);
         Ok(&self.out.buf)
     }
 
@@ -788,6 +795,7 @@ impl Engine {
             }
             cmd::CLOUD_CLEAR => {
                 self.cloud.clear();
+                self.point_frames.clear();
                 self.preview.clear();
                 self.cloud_unsaved = false;
                 self.scan_on = false;
@@ -850,7 +858,12 @@ impl Engine {
             return "nothing to export yet".to_string();
         }
         match self.write_scan_ply(Path::new(path)) {
-            Ok(n) => format!("exported {n} pts -> {path}"),
+            Ok(n) => {
+                if let Err(e) = self.write_frames_sidecar(Path::new(path)) {
+                    return format!("exported {n} pts -> {path} (frame ids failed: {e})");
+                }
+                format!("exported {n} pts -> {path}")
+            }
             Err(e) => format!("export failed: {e}"),
         }
     }
@@ -867,6 +880,20 @@ impl Engine {
         drop(w);
         fs::rename(&tmp, path)?;
         Ok(n)
+    }
+
+    /// Per-point frame ids beside the PLY, for the drift correction pass:
+    /// u32 point count, then one u32 frame number per vertex in PLY order.
+    fn write_frames_sidecar(&self, path: &Path) -> std::io::Result<()> {
+        let n = self.cloud.len();
+        let mut buf = Vec::with_capacity(4 + 4 * n);
+        buf.extend_from_slice(&(n as u32).to_le_bytes());
+        for i in 0..n {
+            let f = self.point_frames.get(i).copied().unwrap_or(0);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        let side = PathBuf::from(format!("{}.frames", path.display()));
+        fs::write(side, buf)
     }
 
     /// Write the cloud into the open session (`laser.ply` for orbiter-recon,
@@ -945,6 +972,7 @@ impl Engine {
                 );
                 if a.fresh && !self.cloud_unsaved {
                     self.cloud.clear();
+                    self.point_frames.clear();
                     self.preview.clear();
                 }
                 // whatever the cloud holds now is not in this session yet

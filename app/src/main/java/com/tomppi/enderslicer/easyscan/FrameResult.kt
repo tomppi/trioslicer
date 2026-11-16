@@ -88,7 +88,9 @@ class FrameResult(capacity: Int = 32 * 1024) {
         const val K_OK = 52
         const val PLANE_STALE = 53
         const val N_MARKERS = 54
-        const val LEN = 55
+        /** engine frame counter when this result was produced */
+        const val FRAME_NO = 55
+        const val LEN = 56
     }
 
     /** Event bits in [H.EVENTS], mirroring `frame_out::ev`. */
