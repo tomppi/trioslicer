@@ -770,7 +770,6 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         val splat = File(splatDir, "ar-scan-$stamp.splat")
         processor?.command(Cmd.EXPORT_PLY, ply.absolutePath) { msg ->
             val n = try {
-                GroundCut.cut(ply)
                 SplatExporter.convert(ply, splat)
             } catch (ex: Exception) {
                 -1
@@ -786,10 +785,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val file = File(dir, "ar-scan-$stamp.ply")
         processor?.command(Cmd.EXPORT_PLY, file.absolutePath) { msg ->
-            val removed = try { GroundCut.cut(file) } catch (ex: Exception) { -1 }
-            runOnUiThread {
-                status.text = if (removed >= 0) "$msg (ground: -$removed pts)" else msg
-            }
+            runOnUiThread { status.text = msg }
         }
     }
 
