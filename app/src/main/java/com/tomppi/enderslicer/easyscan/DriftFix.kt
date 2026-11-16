@@ -16,7 +16,7 @@ import java.nio.ByteOrder
 object DriftFix {
     private const val TAG = "DriftFix"
     private const val MAX_KF = 60
-    private const val MAX_KP = 500
+    private const val MAX_KP = 300
     private const val ROT_SCALE = 100.0
     private const val PRIOR_W = 500.0
     private const val ODOM_W = 1.0
@@ -67,7 +67,7 @@ object DriftFix {
         }
         var loops = 0
         for (u in valid.indices) {
-            for (gap in intArrayOf(8, 14, 22, 32, 45)) {
+            for (gap in intArrayOf(12, 26)) {
                 val v = u + gap
                 if (v >= valid.size) continue
                 val a = valid[u]; val b = valid[v]
@@ -79,6 +79,10 @@ object DriftFix {
                 edges.add(Edge(a, b, m.first, m.second, s, LOOP_W, LOOP_W))
                 loops++
             }
+        }
+        if (loops < 2) {
+            onProgress("fix drift: no verified loop pairs (walk back over the object)")
+            return null
         }
         onProgress("fix drift: " + loops + " loop edges, solving " + kfs.size + " poses...")
 

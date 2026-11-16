@@ -775,7 +775,7 @@ class ArActivity : Activity(), GLSurfaceView.Renderer, FrameProcessor.Listener {
         }
         val dir2 = getExternalFilesDir(null) ?: filesDir
         val kf = (dir2.listFiles { f -> f.isDirectory && f.name.startsWith("kf-") } ?: emptyArray())
-            .maxByOrNull { it.lastModified() }
+            .minByOrNull { Math.abs(it.lastModified() - ply.lastModified()) }
         if (kf == null) {
             status.text = "fix drift: no keyframes"
             return
