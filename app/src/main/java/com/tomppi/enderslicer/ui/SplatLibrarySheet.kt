@@ -194,7 +194,9 @@ private fun SplatRow(file: File, onOpen: () -> Unit, onDelete: () -> Unit) {
 
 private fun openSplat(context: Context, file: File) {
     context.startActivity(
-        if (file.extension.lowercase() == "splat") {
+        // laser clouds and our .splat exports open in the native CloudView; only the
+        // Gaussian-scene formats still go through the Aholo WebGL viewer
+        if (file.extension.lowercase() in setOf("splat", "ply")) {
             Intent(context, com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity::class.java)
                 .putExtra(com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity.EXTRA_FILE, file.name)
         } else {
