@@ -104,6 +104,8 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
     /** The camera was (re)opened for the current resume; reset by onPause. */
     private var cameraStarted = false
+    /** Offline tracker development recorder (Settings -> Development). */
+    private var trackerRecorder: TrackerRecorder? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +113,9 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         setContentView(b.root)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         mgr = getSystemService(CameraManager::class.java)
+        settings = AppSettings.load(this)
+        // camera's factory calibration as the starting model (no board camera step needed)
+        VendorIntrinsics.ensure(this, settings)
         processor = FrameProcessor(filesDir.absolutePath, this)
         camera = CameraController(
             mgr, processor.handler, processor,
@@ -120,7 +125,6 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             onStillFailed = { msg, fatal -> main.post { onStillFailed(msg, fatal) } },
         )
         b.overlay.source = processor.results
-        settings = AppSettings.load(this)
 
         b.settingsButton.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         b.libraryButton.setOnClickListener { startActivity(Intent(this, LibraryActivity::class.java)) }
@@ -177,6 +181,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         // settings change the board or the camera); its cloud goes to disk now,
         // in case the process does not come back
         if (photoDir != null) processor.command(Cmd.CHECKPOINT)
+        stopTrackerRecorder()
         camera.close()
         cameraStarted = false
         super.onPause()
@@ -216,8 +221,42 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                 .also { it.reset(0, System.nanoTime()) }
         } else null
         camera.open(inf, b.texture.surfaceTexture!!, sizes.first(), st)
+        startTrackerRecorder(st, inf, sizes.first())
         renderButtons()
         offerPending()
+    }
+
+    /** Start the offline tracker recorder when the Development switch is on. */
+    private fun startTrackerRecorder(st: AppSettings, inf: CameraInfo, size: android.util.Size) {
+        if (!st.trackerDebug) return
+        stopTrackerRecorder()
+        val meta = org.json.JSONObject()
+            .put("camera", inf.label)
+            .put("camera_id", inf.id)
+            .put("sensor_orientation", inf.sensorOrientation)
+            .put("analysis", size.width.toString() + "x" + size.height)
+            .put("max_long_side", st.maxLongSide)
+            .put("target_fps", st.targetFps)
+            .put("manual_focus", st.manualFocus)
+            .put("focus_diopters", st.focusDiopters.toDouble())
+            .put("manual_exposure", st.manualExposure)
+            .put("exposure_us", st.exposureUs)
+            .put("iso", st.iso)
+            .put("native_config", org.json.JSONObject(st.nativeConfig(inf)))
+            .toString(2)
+        val rec = TrackerRecorder(this, meta)
+        trackerRecorder = rec
+        processor.trackerRecorder = rec
+        rec.start()
+        Toast.makeText(this, "Tracker debug recording: " + (rec.sessionDir?.absolutePath ?: "?"), Toast.LENGTH_LONG).show()
+    }
+
+    private fun stopTrackerRecorder() {
+        val rec = trackerRecorder ?: return
+        processor.trackerRecorder = null
+        trackerRecorder = null
+        rec.stop()
+        Toast.makeText(this, "Tracker debug: " + rec.savedFrames + " frames, " + rec.droppedFrames + " dropped, " + (rec.sessionDir?.absolutePath ?: ""), Toast.LENGTH_LONG).show()
     }
 
     /** The camera refused [size]: continue one size smaller and never retry it. */

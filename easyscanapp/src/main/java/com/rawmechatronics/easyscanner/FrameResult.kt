@@ -126,6 +126,8 @@ class FrameResult(capacity: Int = 32 * 1024) {
         const val LASER_IN = 10
         const val LASER_OUT = 11
         const val LASER_FIT = 12
+        const val LASER_CAM = 13
+        const val POSE = 14
     }
 
     /** Calibration states in [H.CALIB_STATE], mirroring `calib::CalibState`. */

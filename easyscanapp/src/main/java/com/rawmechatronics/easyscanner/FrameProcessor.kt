@@ -34,6 +34,8 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     val handler = Handler(thread.looper)
     private val main = Handler(Looper.getMainLooper())
     val results = TripleBuffer { FrameResult() }
+    /** Optional offline tracker development recorder (Settings -> Development). */
+    @Volatile var trackerRecorder: TrackerRecorder? = null
     private var handle = 0L
     private var loggedW = 0
     private var loggedH = 0
@@ -102,6 +104,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             out.timestampNs = img.timestamp
             if (n == 0) return
             val ev = out.events()
+            trackerRecorder?.capture(img, out, out.procMs)
             results.publish()
             if (ev and FrameResult.Ev.PHOTO_DUE != 0) listener.onPhotoDue()
             listener.onResult(out)

@@ -18,6 +18,17 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    ndkVersion = "28.2.13676358"
+
+    defaultConfig {
+        ndk { abiFilters += "arm64-v8a" }
+        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+    }
+
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt") }
+    }
 }
 
 dependencies {

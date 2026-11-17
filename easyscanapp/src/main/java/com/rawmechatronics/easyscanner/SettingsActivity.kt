@@ -18,6 +18,10 @@ class SettingsActivity : AppCompatActivity() {
     class Fragment : PreferenceFragmentCompat() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+            findPreference<androidx.preference.Preference>("tracking_selftest")?.setOnPreferenceClickListener {
+                startActivity(android.content.Intent(requireContext(), TrackingSelfTestActivity::class.java))
+                true
+            }
             val mgr = requireContext().getSystemService(CameraManager::class.java)
             val fps = AppSettings.load(requireContext()).targetFps
             val cams = CameraInfo.backCameraIds(mgr).map { CameraInfo.query(mgr, it, fps, 0) }

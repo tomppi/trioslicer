@@ -40,6 +40,9 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.EnderSlicer">
+    <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+    <uses-native-library android:name="libadsprpc.so" android:required="false" />
+    <uses-native-library android:name="libsdsprpc.so" android:required="false" />
         <meta-data android:name="com.google.ar.core" android:value="optional" />
         <activity
             android:name=".smartinfill.SmartInfillActivity"

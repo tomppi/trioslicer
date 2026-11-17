@@ -34,6 +34,8 @@ data class AppSettings(
     val photos: Photos,
     /** The four tool modes instead of the guided steps. */
     val expertMode: Boolean,
+    /** Record frames, IMU and board poses for offline tracker development. */
+    val trackerDebug: Boolean,
     /** [board] as last confirmed in the guided Board step, or null. */
     val boardConfirmed: String?,
 ) {
@@ -168,6 +170,7 @@ data class AppSettings(
                     withScan = p.getBoolean("photos_with_scan", true),
                 ),
                 expertMode = p.getBoolean("expert_mode", false),
+                trackerDebug = p.getBoolean("tracker_debug", false),
                 boardConfirmed = p.getString("board_confirmed", null),
             )
         }

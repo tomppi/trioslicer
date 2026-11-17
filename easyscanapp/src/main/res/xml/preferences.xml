@@ -226,4 +226,16 @@
         <SwitchPreferenceCompat android:key="draw_volume" android:title="Draw the working volume" android:defaultValue="true" />
         <SwitchPreferenceCompat android:key="draw_cloud" android:title="Draw the scan cloud" android:defaultValue="true" />
     </PreferenceCategory>
+    <PreferenceCategory android:title="Development">
+        <SwitchPreferenceCompat
+            android:key="tracker_debug"
+            android:title="Record tracker debug data"
+            android:summary="Writes grayscale frames, IMU samples and board poses to Android/data/.../files/tracker-debug while a scan runs; pull the folder over adb"
+            android:defaultValue="false" />
+        <Preference
+            android:key="tracking_selftest"
+            android:title="Tracking self-test"
+            android:summary="Runs the SuperPoint front-end on this phone and records a calibrated session" />
+    </PreferenceCategory>
+
 </PreferenceScreen>

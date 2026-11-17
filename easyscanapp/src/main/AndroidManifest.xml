@@ -52,5 +52,11 @@
             android:name=".PhotoActivity"
             android:exported="false"
             android:theme="@style/Theme.EasyScanner" />
+        <activity
+            android:name=".TrackingSelfTestActivity"
+            android:exported="false"
+            android:label="Tracking self-test"
+            android:screenOrientation="portrait" />
+
     </application>
 </manifest>
