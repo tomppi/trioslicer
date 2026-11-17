@@ -278,8 +278,12 @@ fun EnderSlicerApp(
     val context = LocalContext.current
     val easyScanPrefs = remember { context.getSharedPreferences("easyscan", 0) }
     val startEasyScan = {
+        // The complete EasyScanner workspace is bundled as a library module:
+        // its own activities, layouts and engine, started here.
         context.startActivity(
-            android.content.Intent(context, com.tomppi.enderslicer.easyscan.ArActivity::class.java),
+            android.content.Intent().setClassName(
+                context, "com.rawmechatronics.easyscanner.MainActivity",
+            ),
         )
     }
     val scope = rememberCoroutineScope()

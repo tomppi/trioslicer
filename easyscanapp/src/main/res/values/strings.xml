@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Easy Scanner</string>
+    <string name="settings">Settings</string>
+
+    <string name="mode_view">View</string>
+    <string name="mode_camera">Camera</string>
+    <string name="mode_laser">Laser</string>
+    <string name="mode_scan">Scan</string>
+
+    <string name="act_start">Start</string>
+    <string name="act_pause">Pause</string>
+    <string name="act_stop">Stop</string>
+    <string name="act_capture">Capture</string>
+    <string name="act_reset">Reset</string>
+    <string name="act_forget_k">Forget K</string>
+    <string name="act_force">Force fit</string>
+    <string name="act_forget_plane">Forget plane</string>
+    <string name="act_export">Export PLY</string>
+    <string name="act_clear">Clear</string>
+    <string name="act_laser_on">Laser: on</string>
+    <string name="act_laser_off">Laser: off</string>
+    <string name="act_photos_on">Photos ■</string>
+    <string name="act_photos_off">Photos ▶</string>
+
+    <string name="hint_view">Point the phone at the ChArUco board: the overlay shows the pose and its error.</string>
+    <string name="hint_camera">Calibrate the camera: Start, then move and tilt the board slowly through the frame until SAVED.</string>
+    <string name="hint_laser">Calibrate the laser plane: Start, then sweep the stripe across the board at varied tilts.</string>
+    <string name="hint_scan">Scan: Start, sweep the laser over the object; Export writes a Z-up PLY over the board (mm) to Download/EasyScanner and offers to share it. Photos takes posed full-resolution keyframes into an orbiter-native session (long press: one now); stopping it adds laser.ply.</string>
+    <string name="share_scan">Share scan</string>
+    <string name="scan_saved">Saved to Download/%1$s</string>
+    <string name="scan_copy_failed">Could not copy the scan to Downloads; it stays in the app\'s files.</string>
+    <string name="photos_unavailable">This camera offers no photo size with the analysis aspect.</string>
+
+    <string name="need_camera">Camera permission is required.</string>
+    <string name="no_camera">No back camera found.</string>
+
+    <!-- guided steps -->
+    <string name="step_board">Board</string>
+    <string name="step_focus">Focus</string>
+    <string name="step_camera">Camera</string>
+    <string name="step_laser">Laser</string>
+    <string name="step_scan">Scan</string>
+    <string name="step_locked">Finish %1$s first</string>
+
+    <string name="title_board">1 · Board</string>
+    <string name="body_board">Lay the printed board flat and point the phone at it. The board\'s numbers are printed on the sheet.\nBoard: %1$s</string>
+    <string name="board_seen">✓ Board found: %1$d corners, %2$.1f px. If the grid lies on the print, it is the right board.</string>
+    <string name="board_mismatch">! %1$d markers seen but no board corners: the board in the settings is not the printed one.</string>
+    <string name="board_none">No board in view.</string>
+    <string name="act_board_ok">Board OK</string>
+    <string name="act_board_change">Change board</string>
+    <string name="board_pick">The board you printed</string>
+    <string name="board_other">Other (Settings)</string>
+
+    <string name="title_focus">2 · Focus</string>
+    <string name="body_focus">Hold the phone where you will scan from — about as far from the board as from the object — and wait until the picture is sharp. Then lock the focus: a calibration only holds at the focus it was taken at.</string>
+    <string name="focus_live">Autofocus: %1$s at %2$s.</string>
+    <string name="focus_settled">settled</string>
+    <string name="focus_moving">focusing</string>
+    <string name="focus_locked">Focus locked at %1$s.</string>
+    <string name="focus_calibrated">The saved calibration was taken at %1$s.</string>
+    <string name="act_focus_lock">Lock focus</string>
+    <string name="act_focus_calibrated">Use calibrated</string>
+    <string name="act_focus_auto">Autofocus</string>
+
+    <string name="title_camera">3 · Camera</string>
+    <string name="body_camera">Start, then move the phone slowly around the board: tilt it 30–45° to every side, near and far, so the board visits every part of the picture. It saves on its own.</string>
+    <string name="camera_live">Views %1$d/%2$d · last solve %3$s</string>
+
+    <string name="title_laser">4 · Laser plane</string>
+    <string name="body_laser">Laser on, nothing on the board. Start, then sweep the stripe across the board, changing the phone\'s tilt between sweeps. It saves on its own.</string>
+    <string name="laser_stale">The saved laser plane was fitted with an earlier camera calibration: calibrate it again.</string>
+    <string name="laser_live">Lines %1$d/%2$d · spread %3$.2f · last fit %4$s</string>
+
+    <string name="title_scan">5 · Scan</string>
+    <string name="body_scan">Put the object on the board. Start, then sweep the laser over it and walk slowly around it, the board always in view.</string>
+    <string name="body_scan_photos">Photos are taken on the way: hold still for a moment now and then.</string>
+    <string name="scan_live">%1$s points · %2$s</string>
+    <string name="scan_photos">%1$d photos (%2$s)</string>
+    <string name="scan_no_photos">no photos</string>
+    <string name="act_resume">Resume</string>
+    <string name="act_finish">Finish</string>
+    <string name="act_discard">Discard</string>
+    <string name="act_photo_now">Photo now</string>
+    <string name="discard_title">Discard this scan?</string>
+    <string name="discard_body">Its points and photos are deleted from the phone.</string>
+
+    <string name="title_done">Saved</string>
+    <string name="done_saving">Saving to Download/EasyScanner…</string>
+    <string name="done_body">Saved to %1$s/: %2$s (%3$d files). scan.ply is the cloud in mm, Z up; the folder as a whole is a session for orbiter-recon.\nOn a computer: connect the phone over USB and open Download/EasyScanner.</string>
+    <plurals name="photos">
+        <item quantity="one">%d photo</item>
+        <item quantity="other">%d photos</item>
+    </plurals>
+    <string name="closed_saved">The scan session was closed and saved to %1$s.</string>
+    <string name="closed_kept">The scan session was closed; copying it to Download failed, it stays in the app (%1$s) and is offered at the next start.</string>
+    <string name="done_failed">The copy to Download failed (%1$s). The scan stays in the app\'s files: %2$s</string>
+    <string name="done_empty">Nothing was captured: the scan had no points and no photos.</string>
+    <string name="act_new_scan">New scan</string>
+    <string name="act_share_ply">Share PLY</string>
+
+    <string name="pending_title">Unsaved scans</string>
+    <string name="pending_body">%1$d scan(s) were never copied to Download (latest %2$s, %3$d photos). Copy them now?</string>
+    <string name="act_save_now">Copy to Download</string>
+    <string name="act_later">Later</string>
+    <string name="pending_saved">%1$d scan(s) copied to Download/EasyScanner</string>
+
+    <!-- the on-phone viewer: scans, their clouds and photos -->
+    <string name="library">Scans</string>
+    <string name="library_empty">No scans yet. A guided scan or an expert-mode export lands here.</string>
+    <string name="library_points">%1$,d points</string>
+    <string name="library_cloud">cloud</string>
+    <string name="cloud_none">No cloud in this scan</string>
+    <string name="cloud_loading">Loading the cloud…</string>
+    <string name="cloud_failed">Could not read the cloud: %1$s</string>
+    <string name="cloud_points_thinned">%1$,d points, showing %2$,d</string>
+    <string name="photo">Scan photo</string>
+    <string name="photo_counter">%1$d / %2$d  %3$s</string>
+</resources>

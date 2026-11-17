@@ -24,6 +24,11 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
   filament` sheet can only ever change the settings the running engine reads.
 - **Takes the setup you already have.** Cura `.3mf` projects and `.curaprofile` files, PrusaSlicer
   `.ini` config bundles, OrcaSlicer presets and bundles, and models as STL, 3MF, STEP or IGES.
+- **A handheld laser scanner in the app.** The **EasyScan** menu opens the full
+  [Easy Scanner](https://github.com/RawMechatronicsOrg/EasyScanner) workspace bundled with TrioSlicer:
+  ChArUco camera and laser-plane calibration, live laser-line scanning to a point cloud, posed
+  full-resolution photos for photogrammetry, a scan library and its own settings. The upstream
+  repository carries the hardware assembly, printable boards and step-by-step instructions.
 - **Plate, viewer and preview.** Several models on the plate, packed by the app's own arranger
   (Auto arrange or Manual) or one at a time with a clearance check; move, rotate, scale, centre,
   lay flat and drop to bed the selected part; build-volume
@@ -199,6 +204,8 @@ Generated G-code is checked for valid extrusion temperatures, machine bounds, me
 - [docs/gcode-correctness/](docs/gcode-correctness/) - one document per engine comparing the G-code this
   app produces against the real slicer, with the model, the preset and every difference found
 - [CHANGELOG.md](CHANGELOG.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [EasyScan laser scanner](#easyscan-laser-scanner) - the bundled Easy Scanner app: where its
+  hardware, calibration and usage instructions live
 
 ### Does it slice like the real thing?
 
@@ -221,11 +228,39 @@ segment stays identical - so support is not a correctness signal for any slicer.
 [docs/gcode-correctness/](docs/gcode-correctness/) has the models, presets, settings and every
 difference; `scripts/compare-gcode.py` is the comparator.
 
+## EasyScan laser scanner
+
+The **EasyScan** menu starts **Easy Scanner**, the complete handheld laser-line scanner app from
+[RawMechatronicsOrg/EasyScanner](https://github.com/RawMechatronicsOrg/EasyScanner), bundled at
+version 0.3.1 (Apache-2.0, source commit 90545c2). It keeps its own UI, camera controller and Rust
+engine, and its layout: guided steps or expert mode, board pose viewing, camera calibration,
+laser-plane calibration, live scanning, posed photo sessions, a scan library and settings.
+
+Its instructions are upstream, not here:
+
+- [README](https://github.com/RawMechatronicsOrg/EasyScanner#readme) - what the pieces are and how a
+  first scan goes
+- [printable ChArUco boards](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/charuco) and
+  the [assembly](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/cad/assembly) with the
+  parts list, including the laser clamp
+- [releases](https://github.com/RawMechatronicsOrg/EasyScanner/releases) and its
+  [docs](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/docs) for the phone, laser and
+  board calibration details
+
+TrioSlicer only bundles and launches it: the sources live in [easyscanapp/](easyscanapp/) with their
+Apache-2.0 license and provenance, and their application logic is unchanged (the integration changes are
+listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Its SuperPoint/QNN assets and Rust core are
+carried in the same APK.
+
 ## License
 
 TrioSlicer is distributed under GNU AGPL-3.0-or-later because it links to CuraEngine. The embedded
 BumpMesh and filaSim source are retained under `AGPL-3.0-only`. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+The bundled EasyScan workspace (easyscanapp/) is the Easy Scanner app under the Apache License
+2.0; its full text ships as easyscanapp/LICENSE.txt and its attribution is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 `SPDX-License-Identifier: AGPL-3.0-or-later`
 

@@ -18,6 +18,27 @@ The filaSim web build includes its declared permissive or AGPL-compatible depend
 The native TrioSlicer wavefront generator is an independent CuraEngine adaptation of the propagation method documented by `dennisklappe/OrcaSlicer-WaveOverhangs`, itself based on `stmcculloch/PrusaSlicer-WaveOverhangs`. Those projects and CuraEngine are distributed under the GNU AGPL. The adapted source is retained under `native/curaengine/patches/` with attribution headers.
 
 
+## Easy Scanner (EasyScan laser scanner)
+
+- Project: RawMechatronicsOrg/EasyScanner - https://github.com/RawMechatronicsOrg/EasyScanner
+- Pinned source: commit 90545c2275c98dc70d99453f9561661e63c5761e (app version 0.3.1)
+- License: Apache License 2.0, Copyright (c) 2026 EasyScanner contributors; the license text ships as
+  easyscanapp/LICENSE.txt
+- Vendored artifact: the app's Kotlin/Java sources, layouts, themes, preferences, SuperPoint context
+  assets and QNN HTP runtime libraries under easyscanapp/src/main/, plus its Rust core
+  (android/core at the pinned commit) prebuilt for arm64-v8a as
+  lib/arm64-v8a/libeasyscanner_core_raw.so. The upstream repository's charuco/ boards and
+  cad/assembly/ parts are not included in the APK; they are linked from the README as the
+  hardware/calibration instructions.
+- Changes for integration (Apache-2.0 section 4(b)): the app is packaged as a library module of
+  TrioSlicer. Its launcher intent filters were removed, because the workspace is started only from
+  TrioSlicer's EasyScan menu; its activities are not exported; the Easy Scanner theme is applied to
+  the two activities that used to inherit the application theme; and the native library file and
+  load name changed from libeasyscanner_core.so to libeasyscanner_core_raw.so so it cannot collide
+  with TrioSlicer's own libeasyscanner_core.so. No scanning, calibration or UI logic was modified.
+- Instructions: the upstream README and docs (hardware, printable ChArUco boards, assembly and
+  calibration steps) remain the reference; provenance is also recorded in easyscanapp/README.md.
+
 ## ScanRuler (offline 3D scan measurement) 
 
 - Project: `CNCKitchen/ScanRuler` - https://github.com/CNCKitchen/scanruler

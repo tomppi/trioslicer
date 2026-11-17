@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-17
+
+### Added
+
+- **EasyScan is the complete Easy Scanner app.** The **EasyScan** menu now opens the full handheld
+  laser-line scanner workspace bundled in the APK, instead of a capture prototype: the guided and
+  expert modes, board pose view, ChArUco camera calibration, laser-plane calibration, live laser
+  scanning and posed exports, posed full-resolution photo sessions, the scan library and the scanner's
+  own settings. Upstream is the Apache-2.0 [EasyScanner](https://github.com/RawMechatronicsOrg/EasyScanner)
+  project at v0.3.1, bundled as an independent module with its own camera controller, UI and Rust
+  engine, and launched from the menu. Its hardware, printable-board and calibration instructions live
+  in that repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the exact source pin,
+  license and the small integration changes.
+
 ## [1.19.0] - 2026-11-11
 
 ### Added

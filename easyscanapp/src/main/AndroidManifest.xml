@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature android:name="android.hardware.camera.any" android:required="true" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
+
+    <application>
+
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
+
+        <activity
+            android:name=".ArActivity"
+            android:theme="@style/Theme.EasyScanner"
+            android:exported="false"
+            android:label="EasyScanner AR"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation">
+        </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:theme="@style/Theme.EasyScanner"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation">
+        </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.EasyScanner.Settings" />
+
+        <activity
+            android:name=".LibraryActivity"
+            android:exported="false"
+            android:label="@string/library"
+            android:parentActivityName=".MainActivity"
+            android:theme="@style/Theme.EasyScanner.Settings" />
+
+        <activity
+            android:name=".ScanViewActivity"
+            android:exported="false"
+            android:parentActivityName=".LibraryActivity"
+            android:theme="@style/Theme.EasyScanner.Settings" />
+
+        <activity
+            android:name=".PhotoActivity"
+            android:exported="false"
+            android:theme="@style/Theme.EasyScanner" />
+    </application>
+</manifest>

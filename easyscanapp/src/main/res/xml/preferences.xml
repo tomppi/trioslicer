@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory android:title="Interface">
+        <SwitchPreferenceCompat
+            android:key="expert_mode"
+            android:title="Expert mode"
+            android:summary="The four tool modes (View, Camera, Laser, Scan) instead of the guided steps"
+            android:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Performance">
+        <ListPreference
+            android:key="target_fps"
+            android:title="Target frame rate"
+            android:defaultValue="30"
+            android:entries="@array/fps_labels"
+            android:entryValues="@array/fps_values"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            android:key="auto_resolution"
+            android:title="Auto resolution"
+            android:summary="Lower the analysis resolution until processing keeps up with the target frame rate (and raise it back when there is headroom)"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="max_long_side"
+            android:title="Maximum resolution"
+            android:summary="%s — the starting point for auto, the fixed size otherwise"
+            android:defaultValue="1920"
+            android:entries="@array/long_side_labels"
+            android:entryValues="@array/long_side_values" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Camera">
+        <ListPreference
+            android:key="camera_id"
+            android:title="Back camera"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            android:key="manual_focus"
+            android:title="Manual focus"
+            android:summary="Lock the lens: the calibration only holds at the focus it was taken at"
+            android:defaultValue="false" />
+        <SeekBarPreference
+            android:key="focus_tenths"
+            android:title="Focus (tenths of a diopter; 30 = 33 cm)"
+            android:dependency="manual_focus"
+            android:defaultValue="30"
+            android:max="100"
+            app:min="0"
+            app:showSeekBarValue="true" />
+        <SwitchPreferenceCompat
+            android:key="manual_exposure"
+            android:title="Manual exposure"
+            android:summary="Short exposure makes the laser stand out"
+            android:defaultValue="false" />
+        <SeekBarPreference
+            android:key="exposure_us"
+            android:title="Exposure (µs)"
+            android:dependency="manual_exposure"
+            android:defaultValue="8000"
+            android:max="33000"
+            app:min="100"
+            app:seekBarIncrement="100"
+            app:showSeekBarValue="true" />
+        <SeekBarPreference
+            android:key="iso"
+            android:title="ISO"
+            android:dependency="manual_exposure"
+            android:defaultValue="400"
+            android:max="3200"
+            app:min="50"
+            app:seekBarIncrement="50"
+            app:showSeekBarValue="true" />
+        <SeekBarPreference
+            android:key="exposure_comp"
+            android:title="Exposure compensation (auto exposure, steps)"
+            android:defaultValue="0"
+            android:max="12"
+            app:min="-12"
+            app:showSeekBarValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="ChArUco board">
+        <EditTextPreference
+            android:key="board_squares_x"
+            android:title="Squares X"
+            android:defaultValue="8"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="board_squares_y"
+            android:title="Squares Y"
+            android:defaultValue="8"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="board_square_mm"
+            android:title="Square (mm)"
+            android:defaultValue="45.0"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="board_marker_mm"
+            android:title="Marker (mm)"
+            android:defaultValue="33.3"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="board_dict"
+            android:title="ArUco dictionary id (5 = DICT_5X5_100)"
+            android:defaultValue="5"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Laser">
+        <SwitchPreferenceCompat
+            android:key="laser_enabled"
+            android:title="Detect the laser stripe"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="laser_color"
+            android:title="Laser colour"
+            android:defaultValue="red"
+            android:entries="@array/laser_color_labels"
+            android:entryValues="@array/laser_color_values"
+            app:useSimpleSummaryProvider="true" />
+        <SeekBarPreference
+            android:key="laser_thresh"
+            android:title="Response floor (lower = more sensitive)"
+            android:defaultValue="12"
+            android:max="80"
+            app:min="1"
+            app:showSeekBarValue="true" />
+        <SeekBarPreference
+            android:key="laser_min_sat"
+            android:title="Minimum saturation"
+            android:defaultValue="40"
+            android:max="200"
+            app:min="0"
+            app:showSeekBarValue="true" />
+        <SwitchPreferenceCompat
+            android:key="laser_without_board"
+            android:title="Search without the board"
+            android:summary="Look for the stripe in the whole frame when no pose is known (shown, not triangulated)"
+            android:defaultValue="true" />
+        <EditTextPreference
+            android:key="volume_height_mm"
+            android:title="Working volume height (mm, 0 = board side)"
+            android:defaultValue="0"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="volume_margin_mm"
+            android:title="Working volume margin (mm)"
+            android:defaultValue="20"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Photos">
+        <SwitchPreferenceCompat
+            android:key="photos_with_scan"
+            android:title="Take photos during every scan"
+            android:summary="Posed full-resolution photos next to the laser cloud, for a textured mesh (orbiter-recon)"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="photo_trigger"
+            android:title="Take a photo"
+            android:defaultValue="both"
+            android:entries="@array/photo_trigger_labels"
+            android:entryValues="@array/photo_trigger_values"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="photo_interval_s"
+            android:title="Interval (s)"
+            android:defaultValue="5"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="photo_move_mm"
+            android:title="Movement: distance (mm)"
+            android:defaultValue="50"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="photo_turn_deg"
+            android:title="Movement: turn (degrees)"
+            android:defaultValue="10"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="photo_max_speed"
+            android:title="Hold while moving faster than (mm/s)"
+            android:defaultValue="40"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            android:key="photo_max_turn"
+            android:title="Hold while turning faster than (deg/s)"
+            android:defaultValue="8"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Calibration">
+        <SeekBarPreference
+            android:key="calib_views"
+            android:title="Camera calibration views"
+            android:defaultValue="64"
+            android:max="128"
+            app:min="8"
+            app:showSeekBarValue="true" />
+        <SeekBarPreference
+            android:key="plane_views"
+            android:title="Laser plane distinct lines"
+            android:defaultValue="10"
+            android:max="32"
+            app:min="3"
+            app:showSeekBarValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Detector and overlay">
+        <SwitchPreferenceCompat
+            android:key="aruco3"
+            android:title="ArUco3 fast detection"
+            android:summary="Faster on large boards, but loses small or distant ones (and the governor shrinks the image)"
+            android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="roi_tracking"
+            android:title="Track the board (search near its last position)"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat android:key="draw_grid" android:title="Draw the board grid" android:defaultValue="true" />
+        <SwitchPreferenceCompat android:key="draw_axes" android:title="Draw the axes" android:defaultValue="true" />
+        <SwitchPreferenceCompat android:key="draw_corners" android:title="Draw detected corners" android:defaultValue="true" />
+        <SwitchPreferenceCompat android:key="draw_volume" android:title="Draw the working volume" android:defaultValue="true" />
+        <SwitchPreferenceCompat android:key="draw_cloud" android:title="Draw the scan cloud" android:defaultValue="true" />
+    </PreferenceCategory>
+</PreferenceScreen>

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="fps_labels">
+        <item>15 fps</item>
+        <item>24 fps</item>
+        <item>30 fps</item>
+        <item>60 fps</item>
+    </string-array>
+    <string-array name="fps_values">
+        <item>15</item>
+        <item>24</item>
+        <item>30</item>
+        <item>60</item>
+    </string-array>
+
+    <string-array name="long_side_labels">
+        <item>Camera maximum</item>
+        <item>4000 px</item>
+        <item>3264 px</item>
+        <item>2560 px</item>
+        <item>1920 px</item>
+        <item>1600 px</item>
+        <item>1280 px</item>
+        <item>960 px</item>
+        <item>640 px</item>
+    </string-array>
+    <string-array name="long_side_values">
+        <item>0</item>
+        <item>4000</item>
+        <item>3264</item>
+        <item>2560</item>
+        <item>1920</item>
+        <item>1600</item>
+        <item>1280</item>
+        <item>960</item>
+        <item>640</item>
+    </string-array>
+
+    <string-array name="photo_trigger_labels">
+        <item>Interval or movement, whichever first</item>
+        <item>Every N seconds</item>
+        <item>On movement</item>
+    </string-array>
+    <string-array name="photo_trigger_values">
+        <item>both</item>
+        <item>interval</item>
+        <item>motion</item>
+    </string-array>
+
+    <string-array name="laser_color_labels">
+        <item>Red / pink / magenta</item>
+        <item>Green</item>
+        <item>Auto (both)</item>
+    </string-array>
+    <string-array name="laser_color_values">
+        <item>red</item>
+        <item>green</item>
+        <item>auto</item>
+    </string-array>
+</resources>

@@ -59,8 +59,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 149
-        versionName = "1.19.0"
+        versionCode = 150
+        versionName = "1.20.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -1419,6 +1419,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 }
 
 dependencies {
+    implementation(project(":easyscanapp"))
     // USB serial in userspace (MIT). Drives CH340/CH341A, which is what Creality
     // 4.2.x boards carry, without any kernel driver - the phone's kernel has
     // CONFIG_USB_SERIAL unset, so this is the only route to a printer.
