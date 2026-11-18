@@ -55,6 +55,8 @@ protected:
   std::unordered_map<size_t, std::vector<int>> track_miss;
 };
 
+void setLaserBand(float cx, float cy, float nx, float ny, float half_width, int on);
+
 } // namespace ov_core
 
 // Runtime caps for the flood experiment (defaults: 200 tracks, 10 px spacing).
@@ -63,5 +65,7 @@ void setReacqEnabled(int enabled);
 
 // Clear all cross-session tracker state (lost-track pool, descriptors, pending frames).
 void superpoint_reset();
+
+// Exclude the laser stripe band from tracking (line in 640x480 feature coords).
 
 #endif // OV_CORE_TRACK_SUPERPOINT_H

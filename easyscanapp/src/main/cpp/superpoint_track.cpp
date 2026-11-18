@@ -62,7 +62,20 @@ struct LostTrack {
 };
 
 std::mutex g_lost_mtx;
-std::atomic<int> g_reacq_enabled{1};  // descriptor re-acquisition off by default: it creates long-gap tracks that destabilise the MSCKF
+std::atomic<int> g_reacq_enabled{1};
+
+// Laser stripe exclusion: the line is rigidly attached to the camera, so points on it do not move
+// with the scene and would inject false zero-motion constraints into the MSCKF.
+static std::atomic<float> g_band_cx{0.f}, g_band_cy{0.f}, g_band_nx{0.f}, g_band_ny{1.f}, g_band_hw{0.f};
+static std::atomic<int> g_band_on{0};
+
+static inline bool laserBandHit(float x, float y) {
+  if (!g_band_on.load(std::memory_order_relaxed)) return false;
+  const float d = g_band_nx.load(std::memory_order_relaxed) * (x - g_band_cx.load(std::memory_order_relaxed)) +
+                  g_band_ny.load(std::memory_order_relaxed) * (y - g_band_cy.load(std::memory_order_relaxed));
+  return std::fabs(d) < g_band_hw.load(std::memory_order_relaxed);
+}
+  // descriptor re-acquisition off by default: it creates long-gap tracks that destabilise the MSCKF
 std::unordered_map<int, std::vector<LostTrack>> g_lost;
 std::unordered_map<int, std::vector<std::vector<float>>> g_prev_desc;
 int g_reacq_total = 0;
@@ -92,6 +105,12 @@ inline void pushLost(int cam_id, int id, int age, float x, float y, const std::v
   v.push_back(std::move(lt));
 }
 } // namespace
+
+void setLaserBand(float cx, float cy, float nx, float ny, float half_width, int on) {
+  g_band_cx.store(cx); g_band_cy.store(cy);
+  g_band_nx.store(nx); g_band_ny.store(ny);
+  g_band_hw.store(half_width); g_band_on.store(on);
+}
 
 void TrackSuperPoint::feed_monocular(const CameraData &message, size_t msg_id) {
   int cam_id = message.sensor_ids.at(msg_id);
@@ -157,6 +176,10 @@ void TrackSuperPoint::feed_monocular(const CameraData &message, size_t msg_id) {
         continue;
       }
 
+      if (laserBandHit(fwd[i].x, fwd[i].y)) {
+        pushLost(cam_id, (int)ids_prev[i], age_prev[i], pts_prev[i].x, pts_prev[i].y, last_desc);
+        continue;
+      }
       cv::Point2f pt = fwd[i];
       int miss = miss_prev[i];
       bool supported = false;
@@ -243,6 +266,7 @@ void TrackSuperPoint::feed_monocular(const CameraData &message, size_t msg_id) {
             if (a < 0 || lostUsed[a]) continue;
             if (bestSim[i] < 0.90f || (bestSim[i] - secondSim[i]) < 0.05f) continue;
             int b = detIdx[i];
+            if (laserBandHit(det.kp[b].x, det.kp[b].y)) continue;
             // geometry gate: a recovered track must reappear near where it was last seen
             int missed = 30 - lost[a].ttl;
             float radius = 18.0f + 2.0f * (float)missed;
@@ -284,6 +308,7 @@ void TrackSuperPoint::feed_monocular(const CameraData &message, size_t msg_id) {
   for (size_t b = 0; b < det.kp.size(); b++) {
     if (detUsed[b]) continue;
     const cv::Point2f &d = det.kp[b];
+    if (laserBandHit(d.x, d.y)) continue;
     if (d.x < 1 || d.y < 1 || d.x > cur.cols - 2 || d.y > cur.rows - 2) continue;
     bool near = false;
     for (auto &t : tracked) {

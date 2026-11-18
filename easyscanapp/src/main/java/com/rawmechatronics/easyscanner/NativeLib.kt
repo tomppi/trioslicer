@@ -14,6 +14,7 @@ internal object NativeLib {
 
     @JvmStatic external fun nativeVioSetCaps(maxTracks: Int, minDist: Float)
     @JvmStatic external fun nativeVioSetReacq(enabled: Int)
+    @JvmStatic external fun nativeVioSetLaserBand(handle: Long, cx: Double, cy: Double, nx: Double, ny: Double, hw: Double, on: Boolean)
     @JvmStatic external fun nativeVioCreate(configDir: String): Long
     @JvmStatic external fun nativeVioDestroy(handle: Long)
     @JvmStatic external fun nativeVioSetFeatures(handle: Long, camId: Int, timestampSec: Double, kp: FloatArray, desc: FloatArray, n: Int)

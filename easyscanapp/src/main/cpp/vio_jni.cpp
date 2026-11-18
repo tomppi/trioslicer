@@ -147,6 +147,12 @@ Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioInitReadyToMove(JNIEnv *
   return g_init_ready_to_move.load() ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioSetLaserBand(
+    JNIEnv *, jclass, jlong h, jdouble cx, jdouble cy, jdouble nx, jdouble ny, jdouble hw, jboolean on) {
+  ov_core::setLaserBand((float)cx, (float)cy, (float)nx, (float)ny, (float)hw, on ? 1 : 0);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioInitialized(JNIEnv *, jclass, jlong h) {
   auto *st = reinterpret_cast<VioState *>(h);

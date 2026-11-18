@@ -27,6 +27,12 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var haveGyro = false
     private var lastImuTs = 0.0
     private var lastFrameTs = 0.0
+    // IMU path diagnostics: a wrong rate/pairing here corrupts every propagation step.
+    private var imuAccelEvents = 0L
+    private var imuGyroEvents = 0L
+    private var imuFed = 0L
+    private var imuRejected = 0L
+    private var lastAccelNorm = 0.0
     private var frameCount = 0
 
     @Volatile var initialized = false
@@ -57,6 +63,15 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     @Volatile private var laserPx = FloatArray(0)
     private var laserW = 0
     private var laserH = 0
+    // Laser stripe exclusion band: line through (cx,cy) with unit normal (nx,ny), half width hw,
+    // all in 640x480 feature coordinates. The stripe is fixed to the camera, so its points do not
+    // move with the scene and would corrupt the filter if tracked.
+    @Volatile private var bandOn = false
+    private var bandCx = 0f
+    private var bandCy = 0f
+    private var bandNx = 0f
+    private var bandNy = 1f
+    private var bandHw = 0f
 
     fun start(handler: android.os.Handler) {
         val dir = File(ctx.filesDir, "openvins-config")
@@ -159,6 +174,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         val type = event.sensor.type
         val ts = event.timestamp * 1e-9
         if (type == Sensor.TYPE_ACCELEROMETER) {
+            imuAccelEvents++
             if (accelTs > 0.0) {
                 accelPrev[0] = accel[0]
                 accelPrev[1] = accel[1]
@@ -178,8 +194,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         gyro[2] = event.values[2]
         gyroTs = ts
         haveGyro = true
+        imuGyroEvents++
         if (vio == 0L || !haveAccel) return
-        if (!(ts > lastImuTs)) return  // reject duplicate/reversed samples
+        if (!(ts > lastImuTs)) { imuRejected++; return }  // reject duplicate/reversed samples
         // Pair the gyro sample with the accelerometer interpolated to the gyro timestamp so the
         // two sensor values carry one consistent timestamp (feeding a stale value under the other
         // sensor's stamp biases propagation).
@@ -198,6 +215,8 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
         if (!ax.isFinite() || !ay.isFinite() || !az.isFinite()) return
         lastImuTs = ts
+        lastAccelNorm = Math.sqrt((ax * ax + ay * ay + az * az).toDouble())
+        imuFed++
         NativeLib.nativeVioFeedImu(vio, ax, ay, az, gyro[0], gyro[1], gyro[2], ts)
     }
 
@@ -233,7 +252,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             val x = feat[1 + i * 2]
             val y = feat[2 + i * 2]
             var ok = true
-            if (lpx.isNotEmpty() && lw > 0 && lh > 0) {
+            if (bandOn) {
+                val d = bandNx * (x - bandCx) + bandNy * (y - bandCy)
+                if (kotlin.math.abs(d) < bandHw) ok = false
+            } else if (lpx.isNotEmpty() && lw > 0 && lh > 0) {
                 val sx = 640f / lw
                 val sy = 480f / lh
                 val r2 = 14f * 14f
@@ -248,12 +270,15 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             keep[i] = ok
             if (ok) nKeep++
         }
-        if (nKeep < 20) nKeep = n
+        if (nKeep < 20) {
+            if (frameCount % 30 == 0) Log.w(TAG, "too few features after stripe mask: " + nKeep)
+            return initialized
+        }
         val kp = FloatArray(nKeep * 2)
         val desc = FloatArray(nKeep * 256)
         var w = 0
         for (i in 0 until n) {
-            if (nKeep != n && !keep[i]) continue
+            if (!keep[i]) continue
             kp[w * 2] = feat[1 + i * 2]
             kp[w * 2 + 1] = feat[2 + i * 2]
             System.arraycopy(feat, 1 + n * 2 + i * 256, desc, w * 256, 256)
@@ -270,7 +295,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             Log.i(TAG, "VIO initialized=" + now)
         }
         frameCount++
-        if (frameCount % 60 == 0) Log.i(TAG, "VIO frames=" + frameCount + " init=" + initialized + " features=" + n)
+        if (frameCount % 60 == 0) Log.i(TAG, "VIO frames=" + frameCount + " init=" + initialized + " features=" + n +
+                " imu: accelEv=" + imuAccelEvents + " gyroEv=" + imuGyroEvents + " fed=" + imuFed +
+                " reversed=" + imuRejected + " |a|=" + String.format(java.util.Locale.US, "%.2f", lastAccelNorm))
         return initialized
     }
 
@@ -328,6 +355,31 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         laserPx = px
         laserW = w
         laserH = h
+    }
+
+    /**
+     * Update the laser stripe exclusion band from the engine header (analysis-frame pixels and
+     * degrees). state: 0 laser off, 1 on but no stripe found, 2 stripe found.
+     */
+    fun setLaserLine(meanX: Float, meanY: Float, angleDeg: Float, state: Int, w: Int, h: Int) {
+        if (state != 2 || w <= 0 || h <= 0 || !meanX.isFinite() || !meanY.isFinite() || !angleDeg.isFinite()) {
+            bandOn = false
+            if (vio != 0L) NativeLib.nativeVioSetLaserBand(vio, 0.0, 0.0, 0.0, 1.0, 0.0, false)
+            return
+        }
+        val sx = GW.toFloat() / w
+        val sy = GH.toFloat() / h
+        val a = Math.toRadians(angleDeg.toDouble())
+        bandCx = meanX * sx
+        bandCy = meanY * sy
+        bandNx = -Math.sin(a).toFloat()
+        bandNy = Math.cos(a).toFloat()
+        bandHw = 22f
+        bandOn = true
+        if (vio != 0L) {
+            NativeLib.nativeVioSetLaserBand(vio, bandCx.toDouble(), bandCy.toDouble(),
+                bandNx.toDouble(), bandNy.toDouble(), bandHw.toDouble(), true)
+        }
     }
 
     fun trajectorySize(): Int = trajectory.size
@@ -406,6 +458,11 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         gyroTs = 0.0
         lastImuTs = 0.0
         lastFrameTs = 0.0
+        imuAccelEvents = 0L
+        imuGyroEvents = 0L
+        imuFed = 0L
+        imuRejected = 0L
+        lastAccelNorm = 0.0
     }
 
     private companion object {

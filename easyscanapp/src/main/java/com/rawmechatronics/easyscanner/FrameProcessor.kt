@@ -162,6 +162,15 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             if (n == 0) return
             updateAnchor(out, vioValid, img.width, img.height)
             vio?.let { v ->
+                val state = out[FrameResult.H.LASER_STATE].toInt()
+                if (state == 2) {
+                    v.setLaserLine(out[FrameResult.H.LASER_MEAN_X], out[FrameResult.H.LASER_MEAN_Y],
+                        out[FrameResult.H.LASER_ANGLE], state, img.width, img.height)
+                } else if (state == 0) {
+                    v.setLaserLine(0f, 0f, 0f, 0, img.width, img.height)
+                }
+            }
+            vio?.let { v ->
                 var px: FloatArray? = null
                 out.forEachLayer { kind, stride, count, offset ->
                     if (kind == FrameResult.Layer.LASER_RAW && stride == 2 && count > 0) {
