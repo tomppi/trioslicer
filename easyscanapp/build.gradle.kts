@@ -3,6 +3,13 @@ plugins {
 }
 
 android {
+    packaging {
+        jniLibs {
+            pickFirsts += listOf("**/libc++_shared.so")
+            excludes += listOf("**/libopencv_java4.so")
+        }
+    }
+
     namespace = "com.rawmechatronics.easyscanner"
     compileSdk = 36
 
@@ -32,6 +39,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("com.google.ar:core:1.49.0")
     implementation("org.opencv:opencv:4.14.0")
     implementation("androidx.core:core-ktx:1.13.1")

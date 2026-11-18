@@ -12,6 +12,10 @@
         <meta-data android:name="com.google.ar.core" android:value="optional" />
 
         <activity
+            android:name=".CalibrationActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ArActivity"
             android:theme="@style/Theme.EasyScanner"
             android:exported="false"

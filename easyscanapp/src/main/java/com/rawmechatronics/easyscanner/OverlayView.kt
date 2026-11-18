@@ -17,6 +17,7 @@ import com.rawmechatronics.easyscanner.FrameResult.Layer
 class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : View(ctx, attrs) {
 
     var source: TripleBuffer<FrameResult>? = null
+    @Volatile var vio: VioRunner? = null
     var sensorOrientation = 90
 
     private val m = Matrix()
@@ -73,5 +74,60 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
             paint.strokeWidth = base
         }
         canvas.restore()
+
+        val vs = vio
+        if (vs != null) {
+            val kp = vs.lastKp
+            if (vs.spOverlay && kp != null) {
+                canvas.save()
+                canvas.concat(m)
+                val sx = fw / 640f
+                val sy = fh / 480f
+                val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.rgb(0, 255, 190)
+                    style = Paint.Style.FILL
+                }
+                var i = 0
+                while (i + 1 < kp.size) {
+                    canvas.drawCircle(kp[i] * sx, kp[i + 1] * sy, 2.5f * dp, dot)
+                    i += 2
+                }
+                canvas.restore()
+            }
+            drawVioStatus(canvas, vs)
+        }
+    }
+
+    private fun drawVioStatus(canvas: Canvas, vs: VioRunner) {
+        val label = when {
+            vs.initialized -> "VIO TRACKING"
+            vs.tracking -> "VIO WAIT"
+            else -> "VIO OFF"
+        }
+        val color = when {
+            vs.initialized -> Color.rgb(0, 230, 80)
+            vs.tracking -> Color.rgb(255, 210, 0)
+            else -> Color.rgb(170, 170, 170)
+        }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            textSize = 12f * dp
+            style = Paint.Style.FILL
+            isFakeBoldText = true
+        }
+        canvas.drawText(label, 12f * dp, height - 12f * dp, text)
+        if (vs.initialized && vs.trajectorySize() > 1) {
+            val size = 96f * dp
+            val left = width - size - 10f * dp
+            val top = height - size - 10f * dp
+            val bg = Paint().apply { this.color = Color.argb(110, 0, 0, 0); style = Paint.Style.FILL }
+            canvas.drawRect(left, top, left + size, top + size, bg)
+            val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = Color.rgb(0, 190, 255)
+                strokeWidth = 1.5f * dp
+                style = Paint.Style.STROKE
+            }
+            vs.drawTrajectory(canvas, left, top, size, line)
+        }
     }
 }

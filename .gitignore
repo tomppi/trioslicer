@@ -79,3 +79,6 @@ app/src/main/assets/klipper/
 app/src/main/assets/cad/lib/
 app/src/main/assets/cad/libexec/
 easyscan-core/target/
+
+# vendored OpenVINS arm64 dependencies (large binaries/headers, restorable from open_vins_mobile)
+easyscanapp/src/main/cpp/openvins/thirdparty/

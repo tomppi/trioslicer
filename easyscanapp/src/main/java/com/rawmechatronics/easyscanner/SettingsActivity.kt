@@ -18,6 +18,10 @@ class SettingsActivity : AppCompatActivity() {
     class Fragment : PreferenceFragmentCompat() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+            findPreference<androidx.preference.Preference>("calib_details")?.setOnPreferenceClickListener {
+                startActivity(android.content.Intent(requireContext(), CalibrationActivity::class.java))
+                true
+            }
             findPreference<androidx.preference.Preference>("tracking_selftest")?.setOnPreferenceClickListener {
                 startActivity(android.content.Intent(requireContext(), TrackingSelfTestActivity::class.java))
                 true

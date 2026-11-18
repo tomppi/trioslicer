@@ -33,6 +33,8 @@ import java.util.concurrent.TimeUnit
 class TrackerRecorder(
     private val context: Context,
     private val metaJson: String,
+    private val gateOnScan: Boolean = true,
+    private val recordFrames: Boolean = true,
 ) {
     @Volatile var sessionDir: File? = null
         private set
@@ -49,7 +51,7 @@ class TrackerRecorder(
     private var imuRunning = false
     private var sensorManager: SensorManager? = null
 
-    private data class Frame(val nv21: ByteArray, val w: Int, val h: Int, val result: FloatArray, val tsNs: Long, val procMs: Double)
+    private data class Frame(val nv21: ByteArray, val w: Int, val h: Int, val result: FloatArray, val tsNs: Long, val procMs: Double, val vioPose: DoubleArray?)
 
     private val imuListener = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent) {
@@ -105,10 +107,11 @@ class TrackerRecorder(
     }
 
     /** Copy the planes while the Image is valid; encode and write on the IO thread. */
-    fun capture(img: Image, r: FrameResult, procMs: Double) {
+    fun capture(img: Image, r: FrameResult, procMs: Double, vioPose: DoubleArray? = null) {
         if (sessionDir == null || savedFrames >= MAX_FRAMES) return
+        if (!recordFrames) return
         if (r.length <= FrameResult.H.SCAN_ON) return
-        if (r[FrameResult.H.SCAN_ON] < 0.5f) return
+        if (gateOnScan && r[FrameResult.H.SCAN_ON] < 0.5f) return
         val w = img.width
         val h = img.height
         val planes = img.planes
@@ -126,7 +129,7 @@ class TrackerRecorder(
                 nv21[p++] = u.buffer.get(uvRow + col * u.pixelStride)
             }
         }
-        val frame = Frame(nv21, w, h, r.data.copyOf(r.length), r.timestampNs, procMs)
+        val frame = Frame(nv21, w, h, r.data.copyOf(r.length), r.timestampNs, procMs, vioPose)
         if (!queue.offer(frame)) droppedFrames++
     }
 
@@ -195,7 +198,13 @@ class TrackerRecorder(
                 .append("%.2f".format(f.procMs)).append(',')
                 .append(laserCamCount).append(',')
                 .append(poseStr).append(',')
-                .append(name).append('\n')
+            val vp = f.vioPose
+            val sb2 = StringBuilder(256)
+            if (vp != null && vp.size == 16) {
+                for (k in 0 until 16) { if (k > 0) sb2.append(' '); sb2.append(vp[k]) }
+            }
+            row.append(sb2.toString())
+            row.append(',').append(name).append('\n')
             synchronized(lock) {
                 framesWriter?.write(row.toString())
                 if (savedFrames % 10 == 0) framesWriter?.flush()
@@ -211,7 +220,7 @@ class TrackerRecorder(
         val dir = sessionDir
         sessionDir = null
         queue.clear()
-        queue.offer(Frame(ByteArray(0), 0, 0, FloatArray(0), 0, 0.0))
+        queue.offer(Frame(ByteArray(0), 0, 0, FloatArray(0), 0, 0.0, null))
         io.shutdown()
         try { io.awaitTermination(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
         synchronized(lock) {

@@ -466,6 +466,59 @@ Java_com_rawmechatronics_easyscanner_SpTflite_run(JNIEnv* env, jclass, jlong han
   return arr;
 }
 
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_rawmechatronics_easyscanner_SpTflite_features(JNIEnv* env, jclass, jlong handle, jbyteArray grayJ) {
+  { intptr_t hi = reinterpret_cast<intptr_t>(handle); if (hi >= -4 && hi <= 0) return nullptr; }
+  auto* e = reinterpret_cast<Engine*>(handle);
+  if (!e || !e->interp) return nullptr;
+  jsize len = env->GetArrayLength(grayJ);
+  if (len != WH) return nullptr;
+  jbyte* gray = env->GetByteArrayElements(grayJ, nullptr);
+  for (int c = 0; c < 3; c++) {
+    float* dst = e->img_b.data() + c * WH;
+    for (int i = 0; i < WH; i++) dst[i] = (static_cast<unsigned char>(gray[i])) * (1.0f / 255.0f);
+  }
+  env->ReleaseByteArrayElements(grayJ, gray, JNI_ABORT);
+  e->img_a = e->img_b;
+  auto inBytes = static_cast<size_t>(3 * WH) * sizeof(float);
+  TfLiteTensorCopyFromBuffer(e->in_a, e->img_a.data(), inBytes);
+  TfLiteTensorCopyFromBuffer(e->in_b, e->img_b.data(), inBytes);
+  if (TfLiteInterpreterInvoke(e->interp) != kTfLiteOk) return nullptr;
+  TfLiteTensorCopyToBuffer(e->scores_a, e->sc_a.data(), static_cast<size_t>(WH) * sizeof(float));
+  TfLiteTensorCopyToBuffer(e->desc_a, e->de_a.data(), static_cast<size_t>(DESC) * sizeof(float));
+  struct FKp { float x, y, s; };
+  std::vector<FKp> kps; kps.reserve(2048);
+  for (int y = NMS; y < H - NMS; y++) for (int x = NMS; x < W - NMS; x++) {
+    float v = e->sc_a[y * W + x];
+    if (v <= THRESH) continue;
+    bool mx = true;
+    for (int dy = -NMS; dy <= NMS && mx; dy++) for (int dx = -NMS; dx <= NMS && mx; dx++)
+      if ((dx || dy) && e->sc_a[(y + dy) * W + (x + dx)] > v) mx = false;
+    if (mx) kps.push_back({(float)x, (float)y, v});
+  }
+  std::sort(kps.begin(), kps.end(), [](const FKp& a, const FKp& b) { return a.s > b.s; });
+  if (kps.size() > 300) kps.resize(300);
+  const int DW = 80, DH = 60;
+  std::vector<float> out;
+  out.reserve(1 + kps.size() * 2 + kps.size() * 256);
+  out.push_back((float)kps.size());
+  for (auto& k : kps) { out.push_back(k.x); out.push_back(k.y); }
+  for (auto& k : kps) {
+    int col = std::min(DW - 1, std::max(0, (int)(k.x) / 8));
+    int row = std::min(DH - 1, std::max(0, (int)(k.y) / 8));
+    int bidx = row * DW + col;
+    double norm = 0;
+    float d[256];
+    for (int c = 0; c < 256; c++) { d[c] = e->de_a[c * DW * DH + bidx]; norm += d[c] * d[c]; }
+    norm = std::sqrt(norm) + 1e-9;
+    for (int c = 0; c < 256; c++) out.push_back((float)(d[c] / norm));
+  }
+  jfloatArray arr = env->NewFloatArray((jsize)out.size());
+  if (!arr) return nullptr;
+  env->SetFloatArrayRegion(arr, 0, (jsize)out.size(), out.data());
+  return arr;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_rawmechatronics_easyscanner_SpTflite_close(JNIEnv*, jclass, jlong handle) {
   auto* e = reinterpret_cast<Engine*>(handle);

@@ -32,6 +32,13 @@
             android:entryValues="@array/long_side_values" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Calibration">
+        <Preference
+            android:key="calib_details"
+            android:title="Calibration values"
+            android:summary="Camera, laser plane, VIO camera-IMU, IMU noise and estimator settings" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Camera">
         <ListPreference
             android:key="camera_id"

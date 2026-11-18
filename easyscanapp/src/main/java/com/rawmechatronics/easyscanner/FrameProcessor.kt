@@ -36,6 +36,12 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     val results = TripleBuffer { FrameResult() }
     /** Optional offline tracker development recorder (Settings -> Development). */
     @Volatile var trackerRecorder: TrackerRecorder? = null
+    @Volatile var vio: VioRunner? = null
+    /** When true the engine takes its camera pose from the VIO instead of the board. */
+    @Volatile var useVioPose = false
+
+    private val vioPose = DoubleArray(16)
+    private val vioK = DoubleArray(11)
     private var handle = 0L
     private var loggedW = 0
     private var loggedH = 0
@@ -88,7 +94,37 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             }
             val out = results.writeBuffer()
             val t0 = System.nanoTime()
-            var n = NativeLib.nativeProcess(
+            var arPose: DoubleArray? = null
+            val vr = vio
+            if (vr != null && vr.tracking) {
+                try {
+                    val yDup = p[0].buffer.duplicate()
+                    yDup.rewind()
+                    val yBytes = ByteArray(yDup.remaining())
+                    yDup.get(yBytes)
+                    val ts = img.timestamp * 1e-9
+                    val inited = vr.submitFrame(yBytes, p[0].rowStride, img.width, img.height, ts)
+                    if (inited && useVioPose && vr.cameraPose(vioPose)) {
+                        val sc = img.width / 4080.0
+                        vioK[0] = 2755.14624023 * sc
+                        vioK[1] = 2752.69726562 * sc
+                        vioK[2] = 2048.50415039 * sc
+                        vioK[3] = 1543.37402344 * sc
+                        vioK[4] = img.width.toDouble()
+                        vioK[5] = img.height.toDouble()
+                        for (i in 6..10) vioK[i] = 0.0
+                        arPose = vioPose
+                    }
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "VIO frame failed", e)
+                }
+            }
+            var n = if (arPose != null) NativeLib.nativeProcessAr(
+                handle,
+                p[0].buffer, p[0].rowStride,
+                p[1].buffer, p[2].buffer, p[1].rowStride, p[1].pixelStride,
+                img.width, img.height, img.timestamp, arPose, vioK, 1.0, out.data,
+            ) else NativeLib.nativeProcess(
                 handle,
                 p[0].buffer, p[0].rowStride,
                 p[1].buffer, p[2].buffer, p[1].rowStride, p[1].pixelStride,
@@ -103,8 +139,23 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             out.length = n
             out.timestampNs = img.timestamp
             if (n == 0) return
+            vio?.let { v ->
+                var px: FloatArray? = null
+                out.forEachLayer { kind, stride, count, offset ->
+                    if (kind == FrameResult.Layer.LASER_RAW && stride == 2 && count > 0) {
+                        px = FloatArray(count * 2)
+                        System.arraycopy(out.data, offset, px!!, 0, count * 2)
+                    }
+                }
+                val lp = px
+                if (lp != null) v.setLaserPixels(lp, img.width, img.height)
+            }
             val ev = out.events()
-            trackerRecorder?.capture(img, out, out.procMs)
+            val vioPoseToRecord = if (vio?.initialized == true) {
+                val vp = DoubleArray(16)
+                if (vio?.cameraPose(vp) == true) vp else null
+            } else null
+            trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
             results.publish()
             if (ev and FrameResult.Ev.PHOTO_DUE != 0) listener.onPhotoDue()
             listener.onResult(out)

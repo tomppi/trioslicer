@@ -52,6 +52,12 @@ tasks.matching {
 }
 
 android {
+    packaging {
+        jniLibs {
+            pickFirsts += listOf("**/libc++_shared.so", "**/libopencv_java4.so")
+        }
+    }
+
     namespace = "com.tomppi.enderslicer"
     compileSdk = 36
 

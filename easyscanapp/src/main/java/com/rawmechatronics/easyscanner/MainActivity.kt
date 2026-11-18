@@ -106,6 +106,8 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     private var cameraStarted = false
     /** Offline tracker development recorder (Settings -> Development). */
     private var trackerRecorder: TrackerRecorder? = null
+    /** Marker-free pose source (OpenVINS + SuperPoint on the NPU). */
+    private var vio: VioRunner? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,7 +117,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         mgr = getSystemService(CameraManager::class.java)
         settings = AppSettings.load(this)
         // camera's factory calibration as the starting model (no board camera step needed)
-        VendorIntrinsics.ensure(this, settings)
+        VendorIntrinsics.ensure(this, settings!!)
         processor = FrameProcessor(filesDir.absolutePath, this)
         camera = CameraController(
             mgr, processor.handler, processor,
@@ -125,6 +127,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             onStillFailed = { msg, fatal -> main.post { onStillFailed(msg, fatal) } },
         )
         b.overlay.source = processor.results
+        ensureVio()
 
         b.settingsButton.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         b.libraryButton.setOnClickListener { startActivity(Intent(this, LibraryActivity::class.java)) }
@@ -188,9 +191,72 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     }
 
     override fun onDestroy() {
+        stopVio()
         camera.quit()
         processor.release()
         super.onDestroy()
+    }
+
+    /** Start the marker-free pose source on the processing thread (also registers IMU there). */
+    private fun ensureVio() {
+        if (vio != null) return
+        processor.handler.post {
+            if (vio != null) return@post
+            try {
+                val v = VioRunner(this)
+                v.start(processor.handler)
+                vio = v
+                processor.vio = v
+                b.overlay.vio = v
+                Log.i(TAG, "VIO ready")
+            } catch (e: Throwable) {
+                Log.e(TAG, "VIO start failed", e)
+            }
+        }
+    }
+
+    private var calibStop: Runnable? = null
+
+    /** Record a fixed-length calibration session (still IMU or board motion). */
+    private fun startCalibRecording(board: Boolean, seconds: Int = 30) {
+        calibStop?.let { main.removeCallbacks(it) }
+        stopTrackerRecorder()
+        val meta = org.json.JSONObject()
+            .put("calib_mode", if (board) "board" else "still")
+            .put("duration_s", seconds)
+            .toString(2)
+        val rec = TrackerRecorder(this, meta, gateOnScan = false, recordFrames = board)
+        trackerRecorder = rec
+        processor.trackerRecorder = rec
+        rec.start()
+        status(if (board) "Calibration: hold still 1 s, then move the phone in front of the board for " + seconds + " s"
+        else "Calibration: put the phone down and don't touch it for " + seconds + " s")
+        val r = Runnable {
+            stopTrackerRecorder()
+            status("Calibration recording saved (" + rec.sessionDir?.name + ")")
+        }
+        calibStop = r
+        main.postDelayed(r, seconds * 1000L)
+    }
+
+    private fun toggleVioTracking() {
+        val v = vio ?: return
+        v.tracking = !v.tracking
+        if (!v.tracking) v.spOverlay = false
+        status(if (v.tracking) "VIO tracking started" else "VIO tracking stopped")
+    }
+
+    private fun toggleVioPoints() {
+        val v = vio ?: return
+        v.spOverlay = !v.spOverlay
+        status(if (v.spOverlay) "SuperPoint overlay on" else "SuperPoint overlay off")
+    }
+
+    private fun stopVio() {
+        val v = vio ?: return
+        vio = null
+        processor.vio = null
+        processor.handler.post { v.release() }
     }
 
     /** (Re)read the settings and (re)open the camera with them. */
@@ -216,10 +282,8 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
         processor.configure(st.nativeConfig(inf))
         val sizes = inf.analysisSizes
-        governor = if (st.autoResolution) {
-            ResolutionGovernor(sizes.map { FrameSize(it.width, it.height) }, st.targetFps, 0)
-                .also { it.reset(0, System.nanoTime()) }
-        } else null
+        // Resolution is the user's choice: no automatic switching at all.
+        governor = null
         camera.open(inf, b.texture.surfaceTexture!!, sizes.first(), st)
         startTrackerRecorder(st, inf, sizes.first())
         renderButtons()
@@ -430,6 +494,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             calibActive = newCalib
             planeActive = newPlane
             scanOn = newScan
+            processor.useVioPose = newScan && vio != null
             renderButtons()
         }
         if (!expert) renderWizard()
@@ -743,7 +808,11 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                 body = intro + "\n\n" + getString(R.string.scan_live, pointsText(f(H.CLOUD_POINTS)), photos) +
                     msg("scan") + msg("photos")
                 acts = listOf(
-                    Act(getString(if (scanOn) R.string.act_pause else if (open) R.string.act_resume else R.string.act_start)) {
+                    Act(if (vio?.tracking == true) "Stop VIO" else "Track VIO", enabled = vio != null) { toggleVioTracking() },
+                Act(if (vio?.spOverlay == true) "Hide SP" else "Show SP", enabled = vio?.tracking == true) { toggleVioPoints() },
+                Act("Calib still 30s") { startCalibRecording(board = false) },
+                Act("Calib board 30s") { startCalibRecording(board = true) },
+                Act(getString(if (scanOn) R.string.act_pause else if (open) R.string.act_resume else R.string.act_start)) {
                         toggleScan()
                     },
                     Act(getString(R.string.act_finish), enabled = open) { finishScan() },
