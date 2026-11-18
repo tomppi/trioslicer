@@ -15,7 +15,15 @@ file(GLOB_RECURSE OV_CORE_SRC ${OV}/ov_core/src/*.cpp)
 list(FILTER OV_CORE_SRC EXCLUDE REGEX "dummy\\.cpp$")
 list(FILTER OV_CORE_SRC EXCLUDE REGEX "test_")
 list(FILTER OV_CORE_SRC EXCLUDE REGEX "sim/BsplineSE3\\.cpp$")
-set(OV_INIT_SRC ${OV}/ov_init/src/init/InertialInitializer.cpp ${OV}/ov_init/src/static/StaticInitializer.cpp)
+set(OV_INIT_SRC
+  ${OV}/ov_init/src/init/InertialInitializer.cpp
+  ${OV}/ov_init/src/static/StaticInitializer.cpp
+  ${OV}/ov_init/src/dynamic/DynamicInitializer.cpp
+  ${OV}/ov_init/src/ceres/Factor_GenericPrior.cpp
+  ${OV}/ov_init/src/ceres/Factor_ImageReprojCalib.cpp
+  ${OV}/ov_init/src/ceres/Factor_ImuCPIv1.cpp
+  ${OV}/ov_init/src/ceres/State_JPLQuatLocal.cpp
+)
 file(GLOB_RECURSE OV_MSCKF_SRC ${OV}/ov_msckf/src/*.cpp)
 list(FILTER OV_MSCKF_SRC EXCLUDE REGEX "run_subscribe_msckf\\.cpp$")
 list(FILTER OV_MSCKF_SRC EXCLUDE REGEX "dummy\\.cpp$")
@@ -35,7 +43,10 @@ add_library(openvins_jni SHARED ${OV_CORE_SRC} ${OV_INIT_SRC} ${OV_MSCKF_SRC} ${
 set_target_properties(openvins_jni PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_compile_definitions(openvins_jni PRIVATE __ANDROID__)
 target_compile_options(openvins_jni PRIVATE -O3 -fexceptions -frtti -Wno-unused-parameter)
-target_include_directories(openvins_jni PRIVATE ${OV}/ov_core/src ${OV}/ov_init/src ${OV}/ov_msckf/src ${CMAKE_CURRENT_SOURCE_DIR} ${OV}/thirdparty ${OV}/thirdparty/opencv_include ${OV}/thirdparty/boost_include)
+target_include_directories(openvins_jni PRIVATE ${OV}/ov_core/src ${OV}/ov_init/src ${OV}/ov_msckf/src ${CMAKE_CURRENT_SOURCE_DIR} ${OV}/thirdparty ${OV}/thirdparty/opencv_include ${OV}/thirdparty/boost_include /root/src/ceres-android-src/install/include /root/src/ceres-android-src/install/include/ceres/internal/miniglog)
+
+add_library(ceres_android STATIC IMPORTED)
+set_target_properties(ceres_android PROPERTIES IMPORTED_LOCATION /root/src/ceres-android-src/install/lib/libceres.a)
 
 add_library(lib_opencv SHARED IMPORTED)
 set_target_properties(lib_opencv PROPERTIES IMPORTED_LOCATION ${OV}/thirdparty/opencv_lib/arm64-v8a/libopencv_vio4.so)
@@ -52,5 +63,5 @@ set_target_properties(boost_date_time PROPERTIES IMPORTED_LOCATION ${OV}/thirdpa
 add_library(boost_atomic SHARED IMPORTED)
 set_target_properties(boost_atomic PROPERTIES IMPORTED_LOCATION ${OV}/thirdparty/boost_lib/arm64-v8a/libboost_atomic.so)
 
-target_link_libraries(openvins_jni lib_opencv boost_system boost_filesystem boost_thread boost_chrono boost_date_time boost_atomic log android dl)
+target_link_libraries(openvins_jni lib_opencv boost_system boost_filesystem boost_thread boost_chrono boost_date_time boost_atomic log android dl ceres_android)
 target_link_libraries(openvins_jni sptflite)
