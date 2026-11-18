@@ -186,13 +186,24 @@ class CalibSolverTest {
                 val steps = 8
                 for (k in 0..steps) {
                     val tt = s0 + (s1 - s0) * k / steps
+                    val gyroNoise = 1e-3
                     val w = doubleArrayOf(
-                        rv[0] / (s1 - s0) + biasTrue[0],
-                        rv[1] / (s1 - s0) + biasTrue[1],
-                        rv[2] / (s1 - s0) + biasTrue[2],
+                        rv[0] / (s1 - s0) + biasTrue[0] + gyroNoise * rng.nextGaussian(),
+                        rv[1] / (s1 - s0) + biasTrue[1] + gyroNoise * rng.nextGaussian(),
+                        rv[2] / (s1 - s0) + biasTrue[2] + gyroNoise * rng.nextGaussian(),
                     )
                     imu.append("g,").append((tt * 1e9).toLong()).append(',').append(w[0]).append(',').append(w[1]).append(',').append(w[2]).append('\n')
                 }
+            }
+            // Accelerometer samples covering the same session, so the solver's noise estimate and
+            // its >=500 sample / >=5 s validation are exercised like a real still recording.
+            val accelNoise = 5e-3
+            for (k in 0 until 8) {
+                val tt = ts + (k / 8.0) * dtFrame
+                imu.append("a,").append((tt * 1e9).toLong()).append(',')
+                    .append(accelNoise * rng.nextGaussian()).append(',')
+                    .append(accelNoise * rng.nextGaussian()).append(',')
+                    .append(9.81 + accelNoise * rng.nextGaussian()).append('\n')
             }
             prevFrames.add(m)
         }
