@@ -238,9 +238,7 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
 
   // Check if we are currently zero velocity
   // We need to pass the chi2 and not be above our velocity threshold
-  const bool chi2_ok = std::isfinite(chi2) && chi2 <= _options.chi2_multipler * chi2_check;
-  const bool vel_ok = state->_imu->vel().norm() <= _zupt_max_velocity;
-  if (!disparity_passed || !chi2_ok || !vel_ok) {
+  if (!disparity_passed && (chi2 > _options.chi2_multipler * chi2_check || state->_imu->vel().norm() > _zupt_max_velocity)) {
     last_zupt_state_timestamp = 0.0;
     last_zupt_count = 0;
     PRINT_DEBUG(YELLOW "[ZUPT]: rejected |v_IinG| = %.3f (chi2 %.3f > %.3f)\n" RESET, state->_imu->vel().norm(), chi2,

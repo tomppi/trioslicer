@@ -172,52 +172,32 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         val type = event.sensor.type
-        val ts = event.timestamp * 1e-9
         if (type == Sensor.TYPE_ACCELEROMETER) {
             imuAccelEvents++
-            if (accelTs > 0.0) {
-                accelPrev[0] = accel[0]
-                accelPrev[1] = accel[1]
-                accelPrev[2] = accel[2]
-                accelPrevTs = accelTs
-            }
             accel[0] = event.values[0]
             accel[1] = event.values[1]
             accel[2] = event.values[2]
-            accelTs = ts
             haveAccel = true
+        } else if (type == Sensor.TYPE_GYROSCOPE) {
+            imuGyroEvents++
+            gyro[0] = event.values[0]
+            gyro[1] = event.values[1]
+            gyro[2] = event.values[2]
+            haveGyro = true
+        } else {
             return
         }
-        if (type != Sensor.TYPE_GYROSCOPE) return
-        gyro[0] = event.values[0]
-        gyro[1] = event.values[1]
-        gyro[2] = event.values[2]
-        gyroTs = ts
-        haveGyro = true
-        imuGyroEvents++
-        if (vio == 0L || !haveAccel) return
-        if (!(ts > lastImuTs)) { imuRejected++; return }  // reject duplicate/reversed samples
-        // Pair the gyro sample with the accelerometer interpolated to the gyro timestamp so the
-        // two sensor values carry one consistent timestamp (feeding a stale value under the other
-        // sensor's stamp biases propagation).
-        val ax: Float
-        val ay: Float
-        val az: Float
-        if (accelPrevTs > 0.0 && ts > accelPrevTs && ts <= accelTs) {
-            val a = ((ts - accelPrevTs) / (accelTs - accelPrevTs)).toFloat()
-            ax = accelPrev[0] + (accel[0] - accelPrev[0]) * a
-            ay = accelPrev[1] + (accel[1] - accelPrev[1]) * a
-            az = accelPrev[2] + (accel[2] - accelPrev[2]) * a
-        } else {
-            ax = accel[0]
-            ay = accel[1]
-            az = accel[2]
-        }
-        if (!ax.isFinite() || !ay.isFinite() || !az.isFinite()) return
+        // Reference implementation (OpenVINS Android): feed one combined sample at the completing
+        // event's timestamp, then wait for a fresh pair. One sample per sensor event pair.
+        if (vio == 0L || !haveAccel || !haveGyro) return
+        val ts = event.timestamp * 1e-9
+        if (!(ts > lastImuTs)) { imuRejected++; return }
         lastImuTs = ts
-        lastAccelNorm = Math.sqrt((ax * ax + ay * ay + az * az).toDouble())
+        lastAccelNorm = Math.sqrt((accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]).toDouble())
         imuFed++
-        NativeLib.nativeVioFeedImu(vio, ax, ay, az, gyro[0], gyro[1], gyro[2], ts)
+        NativeLib.nativeVioFeedImu(vio, accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], ts)
+        haveAccel = false
+        haveGyro = false
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}

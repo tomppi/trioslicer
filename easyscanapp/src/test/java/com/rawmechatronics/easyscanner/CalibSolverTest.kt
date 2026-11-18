@@ -138,7 +138,7 @@ class CalibSolverTest {
         val aTrue = rotvecToMat(doubleArrayOf(30.0, -20.0, 55.0))
         val dtTrue = 0.011
         val biasTrue = doubleArrayOf(0.0015, -0.0008, 0.0009)
-        val n = 120
+        val n = 180
         val dtFrame = 1.0 / 30.0
         val t0 = 200.0
         val rng = java.util.Random(11)

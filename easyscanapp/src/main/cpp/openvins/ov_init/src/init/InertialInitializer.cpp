@@ -137,20 +137,16 @@ bool InertialInitializer::initialize(double &timestamp, Eigen::MatrixXd &covaria
   // CASE2: if both disparities are below the threshold, then the platform has been stationary during both periods
   bool has_jerk = (!disparity_detected_moving_1to0 && disparity_detected_moving_2to1);
   bool is_still = (!disparity_detected_moving_1to0 && !disparity_detected_moving_2to1);
-  bool static_tried = false;
   if (((has_jerk && wait_for_jerk) || (is_still && !wait_for_jerk)) && params.init_imu_thresh > 0.0) {
     PRINT_DEBUG(GREEN "[init]: USING STATIC INITIALIZER METHOD!\n" RESET);
-    static_tried = true;
-    if (init_static->initialize(timestamp, covariance, order, t_imu, wait_for_jerk)) return true;
-  }
-  // Fall through to the dynamic initialiser when the static one cannot use this window.
-  static double last_dyn_try = 0.0;
-  if (params.init_dyn_use && init_dynamic && (!is_still || static_tried) && (timestamp - last_dyn_try) > 0.5) {
-    last_dyn_try = timestamp;
+    return init_static->initialize(timestamp, covariance, order, t_imu, wait_for_jerk);
+  } else if (params.init_dyn_use && !is_still) {
     PRINT_DEBUG(GREEN "[init]: USING DYNAMIC INITIALIZER METHOD!\n" RESET);
     std::map<double, std::shared_ptr<ov_type::PoseJPL>> _clones_IMU;
     std::unordered_map<size_t, std::shared_ptr<ov_type::Landmark>> _features_SLAM;
-    return init_dynamic->initialize(timestamp, covariance, order, t_imu, _clones_IMU, _features_SLAM);
+    if (init_dynamic) {
+      return init_dynamic->initialize(timestamp, covariance, order, t_imu, _clones_IMU, _features_SLAM);
+    }
   } else {
     std::string msg = (has_jerk) ? "" : "no accel jerk detected";
     msg += (has_jerk || is_still) ? "" : ", ";
