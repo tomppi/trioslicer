@@ -101,7 +101,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             }
         }
         sp = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
-        if (sp <= 0L) {
+        // Handles are native pointers (Android tags the top byte, so they can look negative);
+        // only 0 and the create error codes -1..-4 mean failure.
+        if (sp == 0L || (sp >= -4L && sp <= -1L)) {
             Log.e(TAG, "SuperPoint engine create failed (" + sp + ") - marker-free pose disabled")
             sp = 0L
         }
