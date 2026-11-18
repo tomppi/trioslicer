@@ -1083,13 +1083,19 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                 val intro = getString(R.string.body_scan) +
                     if (st.photos.withScan) " " + getString(R.string.body_scan_photos) else ""
                 body = intro + "\n\n" + getString(R.string.scan_live, pointsText(f(H.CLOUD_POINTS)), photos) +
-                    msg("scan") + msg("photos")
+                    msg("scan") + msg("photos") +
+                    if (vio?.tracking == true) {
+                        if (processor.arLaneReady) "\n\nMarker-free anchor ready: the board may leave the view."
+                        else "\n\nKeep the board in view until the marker-free anchor is established."
+                    } else ""
+                val trackLabel = if (vio?.tracking == true) "Stop VIO" else "Track VIO"
                 acts = listOf(
                     Act(getString(if (scanOn) R.string.act_pause else if (open) R.string.act_resume else R.string.act_start)) {
                         toggleScan()
                     },
-                    Act(getString(R.string.act_finish), enabled = open) { finishScan() },
-                    Act(getString(R.string.act_discard), enabled = open) { discardScan() },
+                    if (!open) Act(trackLabel, enabled = vio != null) { toggleVioTracking() }
+                    else Act(getString(R.string.act_finish), enabled = open) { finishScan() },
+                    if (open) Act(getString(R.string.act_discard), enabled = open) { discardScan() } else null,
                     if (open && photoState != Photo.NO_PHOTOS) Act(getString(R.string.act_photo_now)) {
                         processor.command(Cmd.PHOTO_SNAP)
                     } else null,

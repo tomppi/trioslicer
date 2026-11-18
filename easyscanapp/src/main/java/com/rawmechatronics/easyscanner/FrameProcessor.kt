@@ -39,6 +39,8 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     @Volatile var vio: VioRunner? = null
     /** When true the engine takes its camera pose from the VIO instead of the board. */
     @Volatile var useVioPose = false
+    /** true once the board anchor is verified and the engine AR lane is active. */
+    @Volatile var arLaneReady = false
     /** frames the engine actually finished (used to gate calibration captures) */
     @Volatile var framesProcessed = 0
 
@@ -116,6 +118,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 lastVio = vr
                 if (arLane) {
                     arLane = false
+                    arLaneReady = false
                     useVioPose = false
                     sendArMode(false)
                 }
@@ -245,6 +248,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 anchorGood++
                 if (anchorGood >= 15) {
                     arLane = true
+                    arLaneReady = true
                     useVioPose = true
                     sendArMode(true)
                     Log.i(TAG, "ANCHOR VERIFIED: pos err %.1f mm, rot err %.2f deg -> AR LANE ENABLED".format(posErr, rotErr))
