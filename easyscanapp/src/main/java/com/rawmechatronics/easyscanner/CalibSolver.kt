@@ -31,6 +31,12 @@ object CalibSolver {
 
     fun solve(ctx: android.content.Context): Result {
         val root = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "tracker-debug")
+        val configDir = File(ctx.filesDir, "openvins-config")
+        return solveIn(root, configDir)
+    }
+
+    /** The whole solve, with directories passed in so it can be unit tested off-device. */
+    internal fun solveIn(root: File, configDir: File): Result {
         val sessions = root.listFiles { f -> f.isDirectory }?.sortedByDescending { it.name } ?: emptyList()
         if (sessions.isEmpty()) {
             return Result(false, "No calibration recording found. Use Scan step -> 'Calib board 30s' with the board visible, then try again.")
@@ -54,7 +60,7 @@ object CalibSolver {
         val noise = estimateNoise(imu)
         val fit = fitCameraImu(frames, imu, noise.bias)
 
-        val dir = File(ctx.filesDir, "openvins-config").apply { mkdirs() }
+        val dir = configDir.apply { mkdirs() }
         writeImuCam(dir, fit.rotDeg, fit.dt)
         writeImuNoise(dir, noise)
 
@@ -198,17 +204,9 @@ object CalibSolver {
             val dRb = mul3(transpose3(rb0), rb1)
             val v0 = a.vio!!
             val v1 = b.vio!!
-            val rv0 = arrayOf(
-                doubleArrayOf(v0[0], v0[4], v0[8]),
-                doubleArrayOf(v0[1], v0[5], v0[9]),
-                doubleArrayOf(v0[2], v0[6], v0[10]),
-            )
-            val rv1 = arrayOf(
-                doubleArrayOf(v1[0], v1[4], v1[8]),
-                doubleArrayOf(v1[1], v1[5], v1[9]),
-                doubleArrayOf(v1[2], v1[6], v1[10]),
-            )
-            // relative rotation in the camera frame: R_wc(t0)^T R_wc(t1) = R_cw0 R_cw1^T
+            // stored pose is world->camera; relative rotation in the camera frame is R_cw0 R_cw1^T
+            val rv0 = rotOf(v0)
+            val rv1 = rotOf(v1)
             val dRv = mul3(rv0, transpose3(rv1))
             if (angleDeg(dRb) < 0.2) continue
             errs.add(angleDeg(mul3(transpose3(dRb), dRv)))
