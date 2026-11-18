@@ -689,9 +689,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             calibActive = newCalib
             planeActive = newPlane
             scanOn = newScan
-            // VIO poses are world/metres; the engine AR lane needs board-frame/mm with a verified
-            // anchor, so the lane stays off until anchoring is implemented. Board lane is used.
-            processor.useVioPose = false
+            // The AR lane is enabled by FrameProcessor itself once the board anchor is verified.
             renderButtons()
         }
         if (!expert) renderWizard()
