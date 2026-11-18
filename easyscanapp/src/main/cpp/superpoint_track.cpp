@@ -62,7 +62,7 @@ struct LostTrack {
 };
 
 std::mutex g_lost_mtx;
-std::atomic<int> g_reacq_enabled{0};  // descriptor re-acquisition off by default: it creates long-gap tracks that destabilise the MSCKF
+std::atomic<int> g_reacq_enabled{1};  // descriptor re-acquisition off by default: it creates long-gap tracks that destabilise the MSCKF
 std::unordered_map<int, std::vector<LostTrack>> g_lost;
 std::unordered_map<int, std::vector<std::vector<float>>> g_prev_desc;
 int g_reacq_total = 0;
