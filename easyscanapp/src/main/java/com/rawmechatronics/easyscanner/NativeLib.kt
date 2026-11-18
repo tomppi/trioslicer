@@ -12,12 +12,15 @@ internal object NativeLib {
         System.loadLibrary("openvins_jni")
     }
 
+    @JvmStatic external fun nativeVioSetCaps(maxTracks: Int, minDist: Float)
+    @JvmStatic external fun nativeVioSetReacq(enabled: Int)
     @JvmStatic external fun nativeVioCreate(configDir: String): Long
     @JvmStatic external fun nativeVioDestroy(handle: Long)
     @JvmStatic external fun nativeVioSetFeatures(handle: Long, camId: Int, timestampSec: Double, kp: FloatArray, desc: FloatArray, n: Int)
     @JvmStatic external fun nativeVioFeedImu(handle: Long, ax: Float, ay: Float, az: Float, gx: Float, gy: Float, gz: Float, timestampSec: Double)
     @JvmStatic external fun nativeVioFeedFrame(handle: Long, gray: ByteArray, width: Int, height: Int, timestampSec: Double): Boolean
     @JvmStatic external fun nativeVioInitialized(handle: Long): Boolean
+    @JvmStatic external fun nativeVioInitReadyToMove(handle: Long): Boolean
     @JvmStatic external fun nativeVioGetPose(handle: Long, position: DoubleArray, quaternion: DoubleArray): Boolean
 
     @JvmStatic external fun nativeCreate(filesDir: String): Long

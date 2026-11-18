@@ -20,6 +20,7 @@
             android:theme="@style/Theme.EasyScanner"
             android:exported="false"
             android:label="EasyScanner AR"
+            android:resizeableActivity="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation">
         </activity>
@@ -28,6 +29,7 @@
             android:name=".MainActivity"
             android:theme="@style/Theme.EasyScanner"
             android:exported="false"
+            android:resizeableActivity="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode|keyboard|keyboardHidden|navigation">
         </activity>

@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <atomic>
 
 #include <android/log.h>
 #include <memory>
@@ -127,6 +128,15 @@ Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioFeedFrame(
   return JNI_TRUE;
 }
 
+extern std::atomic<bool> g_init_ready_to_move;
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioInitReadyToMove(JNIEnv *, jclass, jlong h) {
+  auto *st = reinterpret_cast<VioState *>(h);
+  if (!st || !st->sys) return JNI_FALSE;
+  return g_init_ready_to_move.load() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioInitialized(JNIEnv *, jclass, jlong h) {
   auto *st = reinterpret_cast<VioState *>(h);
@@ -158,4 +168,14 @@ Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioGetPose(
     __android_log_print(ANDROID_LOG_ERROR, VTAG, "getPose failed: %s", e.what());
     return JNI_FALSE;
   }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioSetCaps(JNIEnv*, jclass, jint maxTracks, jfloat minDist) {
+  setTrackCaps((int)maxTracks, (float)minDist);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioSetReacq(JNIEnv*, jclass, jint enabled) {
+  setReacqEnabled((int)enabled);
 }

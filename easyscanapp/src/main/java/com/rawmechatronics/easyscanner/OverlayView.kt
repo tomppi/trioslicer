@@ -98,36 +98,29 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
         }
     }
 
+    /** The minimap is the tracking indicator: it only moves while VIO is actually tracking. */
     private fun drawVioStatus(canvas: Canvas, vs: VioRunner) {
-        val label = when {
-            vs.initialized -> "VIO TRACKING"
-            vs.tracking -> "VIO WAIT"
-            else -> "VIO OFF"
+        if (!vs.initialized) return
+        if (!vs.trajectoryHasData()) return   // no box, no empty map: absence means "not tracking yet"
+        val size = 96f * dp
+        val left = width - size - 10f * dp
+        val top = height - size - 10f * dp
+        val bg = Paint().apply { this.color = Color.argb(110, 0, 0, 0); style = Paint.Style.FILL }
+        canvas.drawRect(left, top, left + size, top + size, bg)
+        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.rgb(0, 190, 255)
+            strokeWidth = 1.5f * dp
+            style = Paint.Style.STROKE
         }
-        val color = when {
-            vs.initialized -> Color.rgb(0, 230, 80)
-            vs.tracking -> Color.rgb(255, 210, 0)
-            else -> Color.rgb(170, 170, 170)
-        }
-        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            textSize = 12f * dp
-            style = Paint.Style.FILL
-            isFakeBoldText = true
-        }
-        canvas.drawText(label, 12f * dp, height - 12f * dp, text)
-        if (vs.initialized && vs.trajectorySize() > 1) {
-            val size = 96f * dp
-            val left = width - size - 10f * dp
-            val top = height - size - 10f * dp
-            val bg = Paint().apply { this.color = Color.argb(110, 0, 0, 0); style = Paint.Style.FILL }
-            canvas.drawRect(left, top, left + size, top + size, bg)
-            val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        vs.drawTrajectory(canvas, left, top, size, line)
+        if (vs.poseIsLive()) {
+            val caption = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.color = Color.rgb(0, 190, 255)
-                strokeWidth = 1.5f * dp
-                style = Paint.Style.STROKE
+                textSize = 9f * dp
+                style = Paint.Style.FILL
+                isFakeBoldText = true
             }
-            vs.drawTrajectory(canvas, left, top, size, line)
+            canvas.drawText("TRACKING", left + 4f * dp, top + 12f * dp, caption)
         }
     }
 }

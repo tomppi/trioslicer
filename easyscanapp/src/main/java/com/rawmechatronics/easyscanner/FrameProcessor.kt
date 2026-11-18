@@ -39,6 +39,8 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     @Volatile var vio: VioRunner? = null
     /** When true the engine takes its camera pose from the VIO instead of the board. */
     @Volatile var useVioPose = false
+    /** frames the engine actually finished (used to gate calibration captures) */
+    @Volatile var framesProcessed = 0
 
     private val vioPose = DoubleArray(16)
     private val vioK = DoubleArray(11)
@@ -104,7 +106,9 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                     yDup.get(yBytes)
                     val ts = img.timestamp * 1e-9
                     val inited = vr.submitFrame(yBytes, p[0].rowStride, img.width, img.height, ts)
-                    if (inited && useVioPose && vr.cameraPose(vioPose)) {
+                    if (inited) {
+                        val poseOk = vr.cameraPose(vioPose)
+                        if (poseOk && useVioPose) {
                         val sc = img.width / 4080.0
                         vioK[0] = 2755.14624023 * sc
                         vioK[1] = 2752.69726562 * sc
@@ -114,6 +118,9 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                         vioK[5] = img.height.toDouble()
                         for (i in 6..10) vioK[i] = 0.0
                         arPose = vioPose
+                        vr.poseApplied = true
+                        vr.lastPoseAppliedNs = System.nanoTime()
+                        }
                     }
                 } catch (e: RuntimeException) {
                     Log.w(TAG, "VIO frame failed", e)
@@ -153,10 +160,11 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             val ev = out.events()
             val vioPoseToRecord = if (vio?.initialized == true) {
                 val vp = DoubleArray(16)
-                if (vio?.cameraPose(vp) == true) vp else null
+                if (vio?.cameraPose(vp, false) == true) vp else null
             } else null
             trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
             results.publish()
+            framesProcessed++
             if (ev and FrameResult.Ev.PHOTO_DUE != 0) listener.onPhotoDue()
             listener.onResult(out)
             if (ev and FrameResult.Ev.MESSAGES != 0) pullMessages()

@@ -168,6 +168,34 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         }
         applyInterface()
         setMode(Mode.VIEW)
+        b.stepTitle.setOnLongClickListener { toggleVioPoints(); true }
+        handleCalibCaptureIntent(intent)
+        val rootForFit = findViewById<android.view.View>(R.id.root)
+        rootForFit.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitPreviewToScreen() }
+        rootForFit.post { fitPreviewToScreen() }
+    }
+
+    /** Size the 3:4 preview to the room left above the panel (unfolded tablets/phones). */
+    private fun fitPreviewToScreen() {
+        val root = findViewById<android.view.View>(R.id.root) ?: return
+        val frame = findViewById<android.view.View>(R.id.previewFrame) ?: return
+        val panel = findViewById<android.view.View>(R.id.panel) ?: return
+        val wAvail = root.width - root.paddingLeft - root.paddingRight
+        var panelH = panel.height
+        if (panelH <= 0) panelH = (root.height * 0.45f).toInt()   // first pass: panel not measured yet
+        val hAvail = root.height - root.paddingTop - root.paddingBottom - panelH
+        if (wAvail <= 0 || hAvail <= 0) return
+        val s = minOf(wAvail / 3f, hAvail / 4f)
+        val w = (3 * s).toInt().coerceAtLeast(1)
+        val h = (4 * s).toInt().coerceAtLeast(1)
+        val lp = frame.layoutParams
+        if (lp.width != w || lp.height != h) {
+            lp.width = w
+            lp.height = h
+            frame.layoutParams = lp
+        }
+        android.util.Log.i("EasyScanner", "fitPreview sizes root=" + root.width + "x" + root.height +
+                " panelH=" + panel.height + " availH=" + hAvail + " preview=" + w + "x" + h)
     }
 
     override fun onResume() {
@@ -184,6 +212,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         // settings change the board or the camera); its cloud goes to disk now,
         // in case the process does not come back
         if (photoDir != null) processor.command(Cmd.CHECKPOINT)
+        if (captureActive) cancelCapture()
+        warmupActive = false
+        warmupTicker?.let { main.removeCallbacks(it) }
+        registerStillSensor(false)
         stopTrackerRecorder()
         camera.close()
         cameraStarted = false
@@ -216,9 +248,78 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     }
 
     private var calibStop: Runnable? = null
+    private var captureReturnToCalib = false
+
+    private fun handleCalibCaptureIntent(intent: android.content.Intent?) {
+        val kind = intent?.getStringExtra(EXTRA_CALIB_CAPTURE) ?: return
+        intent.removeExtra(EXTRA_CALIB_CAPTURE)
+        captureReturnToCalib = true
+        // Wait until the camera is open AND frames are actually being processed: a capture that
+        // starts before the pipeline runs records an empty session.
+        var tries = 0
+        var baseline = -1
+        val wait = object : Runnable {
+            override fun run() {
+                if (captureActive) return
+                if (info == null || !cameraStarted) {
+                    if (++tries < 100) main.postDelayed(this, 100L) else status("Calibration capture: camera did not start")
+                    return
+                }
+                val n = processor.framesProcessed
+                if (baseline < 0) baseline = n
+                if (n - baseline < 5) {
+                    if (++tries < 100) main.postDelayed(this, 100L)
+                    else status("Calibration capture: engine is not processing frames")
+                    return
+                }
+                // warm-up first: nothing starts before the warm-up has completed
+                if (vio != null && vio?.warmupDone != true) {
+                    if (vio?.tracking != true) vio?.startTrackingSilent()
+                    if (!warmupActive) startWarmup()
+                    status("Calibration: warm-up first — hold still, then move gently")
+                    if (++tries < 900) main.postDelayed(this, 100L)
+                    else status("Calibration capture: warm-up did not complete — capture aborted")
+                    return
+                }
+                if (kind == "board") {
+                    val r = processor.results.latest()
+                    val boardPose = r?.flag(FrameResult.H.DETECTED) == true &&
+                            !r!!.get(FrameResult.H.CAM_X).isNaN() && !r!!.get(FrameResult.H.CAM_Z).isNaN()
+                    val vioPose = vio?.initialized == true
+                    if (!boardPose || !vioPose) {
+                        android.util.Log.i("EasyScanner", "calib board: waiting boardPose=" + boardPose + " vioPose=" + vioPose)
+                        status(if (!boardPose) "Calibration: point the camera at the board — waiting for board pose"
+                               else "Calibration: waiting for VIO pose (hold still, then move gently)")
+                        if (++tries < 600) main.postDelayed(this, 100L)
+                        else status("Calibration capture: pose tracking did not start — capture aborted")
+                        return
+                    }
+                }
+                android.util.Log.i("EasyScanner", "calib capture starting: kind=" + kind + " frames=" + (n - baseline))
+                startCalibRecording(board = kind == "board")
+            }
+        }
+        main.postDelayed(wait, 200L)
+    }
+
+    override fun onBackPressed() {
+        if (captureReturnToCalib) {
+            captureReturnToCalib = false
+            startActivity(android.content.Intent(this, CalibrationActivity::class.java))
+            return
+        }
+        super.onBackPressed()
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleCalibCaptureIntent(intent)
+    }
 
     /** Record a fixed-length calibration session (still IMU or board motion). */
     private fun startCalibRecording(board: Boolean, seconds: Int = 30) {
+        if (captureActive) return
         calibStop?.let { main.removeCallbacks(it) }
         stopTrackerRecorder()
         val meta = org.json.JSONObject()
@@ -229,21 +330,110 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         trackerRecorder = rec
         processor.trackerRecorder = rec
         rec.start()
-        status(if (board) "Calibration: hold still 1 s, then move the phone in front of the board for " + seconds + " s"
-        else "Calibration: put the phone down and don't touch it for " + seconds + " s")
-        val r = Runnable {
-            stopTrackerRecorder()
-            status("Calibration recording saved (" + rec.sessionDir?.name + ")")
+        captureActive = true
+        captureBoard = board
+        captureTargetS = seconds.toDouble()
+        captureStartNs = System.nanoTime()
+        captureLastNs = captureStartNs
+        captureQuietS = 0.0
+        captureSeen = 0
+        captureFrames = 0
+        gyroMag = 0f
+        if (!board) registerStillSensor(true)
+        val tick = object : Runnable {
+            override fun run() {
+                if (!captureActive) return
+                val now = System.nanoTime()
+                val dt = (now - captureLastNs) / 1e9
+                captureLastNs = now
+                val elapsed = (now - captureStartNs) / 1e9
+                if (!captureBoard) {
+                    if (gyroMag < 0.06f) captureQuietS += dt
+                } else {
+                    processor.results.latest()?.let { r ->
+                        captureFrames++
+                        if (r.flag(FrameResult.H.DETECTED)) captureSeen++
+                    }
+                }
+                val progress = if (captureBoard) elapsed else captureQuietS
+                val pct = (100 * progress / captureTargetS).toInt().coerceIn(0, 100)
+                val seenPct = if (captureFrames > 0) 100 * captureSeen / captureFrames else 0
+                val head = if (captureBoard) "BOARD CALIBRATION" else "STILL CALIBRATION"
+                val hint = when {
+                    !captureBoard && gyroMag >= 0.06f -> "move detected - hold the phone still"
+                    !captureBoard -> "keep the phone down"
+                    seenPct < 30 -> "point at the board so it is fully visible"
+                    else -> "hold still 1 s, then move slowly in 3D"
+                }
+                val line2 = if (captureBoard)
+                    "%.1f / %.0f s   board seen %d%%".format(elapsed, captureTargetS, seenPct)
+                else "%.1f / %.0f s quiet".format(captureQuietS, captureTargetS)
+                banner(head + "\n" + line2 + "\n" + hint + "\n" + pct + "%")
+                val done = progress >= captureTargetS
+                val hardCap = elapsed >= captureTargetS * 2.5
+                if (done || hardCap) finishCapture() else main.postDelayed(this, 100)
+            }
         }
-        calibStop = r
-        main.postDelayed(r, seconds * 1000L)
+        captureTicker = tick
+        banner((if (board) "BOARD CALIBRATION" else "STILL CALIBRATION") + "\nstarting...")
+        main.postDelayed(tick, 100)
     }
 
     private fun toggleVioTracking() {
         val v = vio ?: return
         v.tracking = !v.tracking
-        if (!v.tracking) v.spOverlay = false
-        status(if (v.tracking) "VIO tracking started" else "VIO tracking stopped")
+        if (!v.tracking) {
+            v.spOverlay = false
+            warmupActive = false
+            warmupTicker?.let { main.removeCallbacks(it) }
+            registerStillSensor(false)
+            banner(null)
+            status("VIO tracking stopped")
+        } else {
+            startWarmup()
+            status("VIO tracking started")
+        }
+    }
+
+    /** The warm-up IS the OpenVINS static initialisation: still -> move -> initialized = tracking. */
+    private fun startWarmup() {
+        val v = vio ?: return
+        if (v.initialized) {
+            v.warmupDone = true
+            if (pendingScanStart) { pendingScanStart = false; performScanStart() }
+            return
+        }
+        warmupActive = true
+        vio?.warmupDone = false
+        if (v.tracking != true) v.startTrackingSilent()
+        val tick = object : Runnable {
+            override fun run() {
+                if (!warmupActive || vio?.tracking != true) return
+                val init = v.initialized
+                val ready = v.initReadyToMove()
+                val line = when {
+                    init -> "TRACKING - the minimap moves when you move"
+                    ready -> "now move gently to initialise"
+                    else -> "hold still for a moment"
+                }
+                banner("VIO INIT\n" + line)
+                if (init) {
+                    v.warmupDone = true
+                    warmupActive = false
+                    banner("VIO TRACKING\nminimap movement is the tracking indicator")
+                    if (pendingScanStart) {
+                        pendingScanStart = false
+                        performScanStart()
+                    }
+                    main.postDelayed({ if (vio?.tracking == true && !captureActive) banner(null) }, 3000)
+                    return
+                }
+                main.postDelayed(this, 100)
+            }
+        }
+        warmupTicker?.let { main.removeCallbacks(it) }
+        warmupTicker = tick
+        main.postDelayed(tick, 100)
     }
 
     private fun toggleVioPoints() {
@@ -566,7 +756,11 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             return
         }
         val labels: List<String?> = when (mode) {
-            Mode.VIEW -> listOf(getString(if (laserEnabled()) R.string.act_laser_on else R.string.act_laser_off), null, null, null)
+            Mode.VIEW -> listOf(
+                getString(if (laserEnabled()) R.string.act_laser_on else R.string.act_laser_off),
+                if (vio?.tracking == true) "Stop VIO" else "Track VIO",
+                null, null,
+            )
             Mode.CAMERA -> listOf(
                 getString(if (calibCollecting()) R.string.act_pause else R.string.act_start),
                 getString(R.string.act_capture), getString(R.string.act_reset), getString(R.string.act_forget_k),
@@ -604,6 +798,81 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         status(if (msg.isEmpty()) getString(hint) else "$msg\n\n${getString(hint)}")
     }
 
+    // ---- guided capture / warm-up feedback ----
+    private var captureActive = false
+    private var captureBoard = false
+    private var captureStartNs = 0L
+    private var captureLastNs = 0L
+    private var captureTargetS = 30.0
+    private var captureQuietS = 0.0
+    private var captureSeen = 0
+    private var captureFrames = 0
+    private var captureTicker: Runnable? = null
+    private var warmupActive = false
+    private var warmupGatherS = 0.0
+    private var pendingScanStart = false
+    private var warmupTicker: Runnable? = null
+    private var gyroMag = 0f
+    private var stillSensors: android.hardware.SensorManager? = null
+    private var stillGyroListener: android.hardware.SensorEventListener? = null
+
+    private fun banner(text: String?) {
+        val b = findViewById<android.widget.TextView>(R.id.captureBanner) ?: return
+        if (text == null) {
+            b.visibility = android.view.View.GONE
+        } else {
+            b.text = text
+            b.visibility = android.view.View.VISIBLE
+        }
+    }
+
+    private fun registerStillSensor(on: Boolean) {
+        stillGyroListener?.let { l -> stillSensors?.unregisterListener(l) }
+        stillGyroListener = null
+        if (!on) return
+        val sm = getSystemService(android.hardware.SensorManager::class.java) ?: return
+        stillSensors = sm
+        val l = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                val m = kotlin.math.sqrt(e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2])
+                gyroMag = 0.8f * gyroMag + 0.2f * m
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+        }
+        stillGyroListener = l
+        sm.registerListener(l, sm.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE),
+            android.hardware.SensorManager.SENSOR_DELAY_GAME)
+    }
+
+    private fun cancelCapture() {
+        captureActive = false
+        captureTicker?.let { main.removeCallbacks(it) }
+        captureTicker = null
+        registerStillSensor(false)
+        banner(null)
+    }
+
+    private fun finishCapture() {
+        if (!captureActive) return
+        val elapsed = (System.nanoTime() - captureStartNs) / 1e9
+        val boardMode = captureBoard
+        val quiet = captureQuietS
+        val seenPct = if (captureFrames > 0) 100 * captureSeen / captureFrames else 0
+        cancelCapture()
+        stopTrackerRecorder()
+        val msg = if (boardMode)
+            "BOARD CAPTURE DONE\n%.1f s recorded · board seen %d%%\nNow: Settings > Calibration > Solve & save".format(elapsed, seenPct)
+        else
+            "STILL CAPTURE DONE\n%.1f s of quiet recorded\nNow do the board capture".format(quiet)
+        banner(msg)
+        main.postDelayed({ if (!captureActive) banner(null) }, 6000)
+        if (captureReturnToCalib) {
+            banner(msg + "\n\npress back to return to Calibration")
+        }
+        status(if (boardMode) "Board calibration saved (%.1f s, board %d%%)".format(elapsed, seenPct)
+               else "Still calibration saved (%.1f s quiet)".format(quiet))
+    }
+
     private fun status(text: String) {
         b.status.text = text
     }
@@ -616,11 +885,14 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         }
         val show: (String) -> Unit = { renderStatus() }
         when (mode) {
-            Mode.VIEW -> if (i == 0) {
-                val p = PreferenceManager.getDefaultSharedPreferences(this)
-                p.edit().putBoolean("laser_enabled", !laserEnabled()).apply()
-                applySettingsLive()
-                renderButtons()
+            Mode.VIEW -> when (i) {
+                0 -> {
+                    val p = PreferenceManager.getDefaultSharedPreferences(this)
+                    p.edit().putBoolean("laser_enabled", !laserEnabled()).apply()
+                    applySettingsLive()
+                    renderButtons()
+                }
+                1 -> { toggleVioTracking(); renderButtons() }
             }
             Mode.CAMERA -> when (i) {
                 0 -> processor.command(if (calibCollecting()) Cmd.CALIB_STOP else Cmd.CALIB_START, done = show)
@@ -808,11 +1080,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                 body = intro + "\n\n" + getString(R.string.scan_live, pointsText(f(H.CLOUD_POINTS)), photos) +
                     msg("scan") + msg("photos")
                 acts = listOf(
-                    Act(if (vio?.tracking == true) "Stop VIO" else "Track VIO", enabled = vio != null) { toggleVioTracking() },
-                Act(if (vio?.spOverlay == true) "Hide SP" else "Show SP", enabled = vio?.tracking == true) { toggleVioPoints() },
-                Act("Calib still 30s") { startCalibRecording(board = false) },
-                Act("Calib board 30s") { startCalibRecording(board = true) },
-                Act(getString(if (scanOn) R.string.act_pause else if (open) R.string.act_resume else R.string.act_start)) {
+                    Act(getString(if (scanOn) R.string.act_pause else if (open) R.string.act_resume else R.string.act_start)) {
                         toggleScan()
                     },
                     Act(getString(R.string.act_finish), enabled = open) { finishScan() },
@@ -910,8 +1178,20 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     private fun toggleScan() {
         if (scanOn) {
             processor.command(Cmd.SCAN_STOP)
+            vio?.warmupDone = false   // the next start warms up again
             return
         }
+        // every start needs the warm-up before the scan runs
+        if (vio != null && vio?.warmupDone != true) {
+            pendingScanStart = true
+            if (vio?.tracking != true) toggleVioTracking() else startWarmup()
+            status("Warm up first: hold still, then move gently")
+            return
+        }
+        performScanStart()
+    }
+
+    private fun performScanStart() {
         ensureLaserOn()
         if (photoDir != null) {
             processor.command(Cmd.SCAN_START)
@@ -1133,6 +1413,8 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     }
 
     private companion object {
+        const val EXTRA_CALIB_CAPTURE = "calib_capture"
+
         const val TAG = "EasyScanner"
         const val HUD_PERIOD_MS = 100L
         /** No registered PLY type; a generic one keeps MediaStore from renaming the file. */

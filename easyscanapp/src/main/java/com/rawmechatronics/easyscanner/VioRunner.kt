@@ -26,13 +26,29 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     var initialized = false
         private set
+    /** Start feeding VIO without the warm-up banner (calibration captures). */
+    fun startTrackingSilent() { tracking = true }
+
+    /** OpenVINS static-init stage: after stillness it asks the user to move. */
+    fun initReadyToMove(): Boolean = vio != 0L && NativeLib.nativeVioInitReadyToMove(vio)
+
     /** Feed frames only while tracking is on (the UI has a Track button). */
     @Volatile var tracking = false
     /** Draw the SuperPoint features on the preview. */
     @Volatile var spOverlay = false
     /** Latest SuperPoint keypoints in the native 640x480 frame (x,y pairs). */
     @Volatile var lastKp: FloatArray? = null
-    private val trajectory = ArrayList<FloatArray>()
+    /** SuperPoint features submitted this frame (always updated, overlay or not). */
+    @Volatile var lastFeatureCount = 0
+    /** true when the engine actually received a VIO pose this frame (real capture, not just init). */
+    @Volatile var poseApplied = false
+    /** the 5 s warm-up completed; nothing (scan or calibration) starts before this */
+    @Volatile var warmupDone = false
+    @Volatile var lastPoseAppliedNs = 0L
+
+    fun poseIsLive(): Boolean = poseApplied && System.nanoTime() - lastPoseAppliedNs < 1_500_000_000L
+    // drawn by the UI thread while the VIO thread appends: must be thread-safe
+    private val trajectory = java.util.concurrent.CopyOnWriteArrayList<FloatArray>()
     @Volatile private var laserPx = FloatArray(0)
     private var laserW = 0
     private var laserH = 0
@@ -42,7 +58,22 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         dir.mkdirs()
         for (name in CONFIGS) {
             val out = File(dir, name)
-            if (out.exists() && out.length() > 0) continue // keep an on-phone solved calibration
+            if (out.exists() && out.length() > 0) {
+                // OpenVINS throws (and aborts) on malformed YAML; a locale-comma file from an
+                // older solver must fall back to the bundled, valid calibration instead.
+                val bad = try {
+                    val text = out.readText()
+                    Regex("\\d,\\d").containsMatchIn(text) || !text.contains("T_cam_imu") && name.contains("imucam")
+                } catch (e: Exception) {
+                    true
+                }
+                if (bad) {
+                    Log.w(TAG, "reset invalid calibration yaml: " + name)
+                    out.delete()
+                } else {
+                    continue // keep an on-phone solved calibration
+                }
+            }
             try {
                 ctx.assets.open("openvins/" + name).use { input ->
                     out.outputStream().use { input.copyTo(it) }
@@ -50,6 +81,23 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             } catch (e: Exception) {
                 Log.w(TAG, "config copy failed: " + name, e)
             }
+        }
+        // The camera-IMU transform and time offset are solved by the on-phone calibration;
+        // estimating them online diverges on this tracker and turns the whole state NaN.
+        try {
+            val est = File(dir, "estimator_config.yaml")
+            if (est.exists()) {
+                var txt = est.readText()
+                val before = txt
+                txt = txt.replace(Regex("calib_cam_extrinsics:\\s*true"), "calib_cam_extrinsics: false")
+                txt = txt.replace(Regex("calib_cam_timeoffset:\\s*true"), "calib_cam_timeoffset: false")
+                // ZUPT everywhere: holding still must zero the velocity, not just at the start
+                txt = txt.replace(Regex("zupt_only_at_beginning:\\s*true"), "zupt_only_at_beginning: false")
+                txt = txt.replace(Regex("try_zupt:\\s*false"), "try_zupt: true")
+                if (txt != before) { est.writeText(txt); Log.i(TAG, "force-offline-calib: online extrinsics/timeoffset disabled") }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "estimator config patch failed", e)
         }
         vio = NativeLib.nativeVioCreate(dir.absolutePath)
         val model = File(ctx.filesDir, "superpoint.tflite")
@@ -63,6 +111,44 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             }
         }
         sp = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
+        // NPU matmul used by the tracker to re-acquire lost tracks (hybrid tracker)
+        try {
+            val mm = File(ctx.filesDir, "superpoint_matmul.tflite")
+            if (!mm.exists() || mm.length() < 100) {
+                ctx.assets.open("superpoint_matmul.tflite").use { input -> mm.outputStream().use { input.copyTo(it) } }
+            }
+            val ok = SpTflite.matmulInit(ctx.applicationInfo.nativeLibraryDir, mm.absolutePath)
+            Log.i(TAG, "OVMM init=" + ok)
+        } catch (e: Exception) {
+            Log.w(TAG, "OVMM init failed", e)
+        }
+        // flood experiment: optional caps from files/flood.txt (max_tracks=, min_dist=, max_features=)
+        try {
+            val f = java.io.File(ctx.filesDir, "flood.txt")
+            if (f.exists()) {
+                var mt = 200
+                var md = 10.0f
+                var mf = 300
+                var rq = 1
+                for (line in f.readLines()) {
+                    val p = line.split('=')
+                    if (p.size == 2) {
+                        when (p[0].trim()) {
+                            "max_tracks" -> mt = p[1].trim().toIntOrNull() ?: mt
+                            "min_dist" -> md = p[1].trim().toFloatOrNull() ?: md
+                            "max_features" -> mf = p[1].trim().toIntOrNull() ?: mf
+                            "reacq" -> rq = p[1].trim().toIntOrNull() ?: rq
+                        }
+                    }
+                }
+                NativeLib.nativeVioSetCaps(mt, md)
+                SpTflite.setFeatureCap(mf)
+                NativeLib.nativeVioSetReacq(rq)
+                Log.i(TAG, "VIO flood caps: tracks=" + mt + " min_dist=" + md + " features=" + mf + " reacq=" + rq)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "flood.txt read failed", e)
+        }
         sensors = ctx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         sensors?.let { sm ->
             sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -152,6 +238,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             w++
         }
         val nn = w
+        lastFeatureCount = nKeep
         lastKp = if (spOverlay) kp else null
         NativeLib.nativeVioSetFeatures(vio, 0, timestampSec, kp, desc, nn)
         NativeLib.nativeVioFeedFrame(vio, gray, GW, GH, timestampSec)
@@ -166,7 +253,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     }
 
     /** Camera pose as a 4x4 row-major matrix: world (VIO) -> camera, as the engine expects. */
-    fun cameraPose(out: DoubleArray): Boolean {
+    fun cameraPose(out: DoubleArray, addTrajectory: Boolean = true): Boolean {
         if (vio == 0L) return false
         val p = DoubleArray(3)
         val q = DoubleArray(4)
@@ -185,8 +272,14 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         val r20 = 2.0 * (x * z - y * w)
         val r21 = 2.0 * (y * z + x * w)
         val r22 = 1.0 - 2.0 * (x * x + y * y)
-        if (trajectory.size > 4000) trajectory.removeAt(0)
-        trajectory.add(floatArrayOf(p[0].toFloat(), p[2].toFloat()))
+        if (frameCount % 60 == 0) {
+            android.util.Log.i(TAG, "pose log p=(%.3f,%.3f,%.3f) q=(%.3f,%.3f,%.3f,%.3f) traj=%d".format(
+                p[0], p[1], p[2], q[0], q[1], q[2], q[3], trajectory.size))
+        }
+        if (addTrajectory) {
+            if (trajectory.size > 4000) trajectory.removeAt(0)
+            trajectory.add(floatArrayOf(p[0].toFloat(), p[2].toFloat()))
+        }
         // engine wants world -> camera: transpose
         out[0] = r00
         out[1] = r10
@@ -216,27 +309,51 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     fun trajectorySize(): Int = trajectory.size
 
-    /** Draw the tracked path (x,z) into a square box. */
-    fun drawTrajectory(canvas: android.graphics.Canvas, left: Float, top: Float, size: Float, paint: android.graphics.Paint) {
-        val n = trajectory.size
-        if (n < 2) return
+    /** True only when the trajectory has real, finite extent worth drawing. */
+    fun trajectoryHasData(): Boolean {
+        var finite = 0
         var minX = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE
         var minZ = Float.MAX_VALUE
         var maxZ = -Float.MAX_VALUE
         for (pt in trajectory) {
+            if (pt[0].isNaN() || pt[1].isNaN() || pt[0].isInfinite() || pt[1].isInfinite()) continue
+            finite++
             if (pt[0] < minX) minX = pt[0]
             if (pt[0] > maxX) maxX = pt[0]
             if (pt[1] < minZ) minZ = pt[1]
             if (pt[1] > maxZ) maxZ = pt[1]
         }
+        if (finite < 2) return false
+        val span = maxOf(maxX - minX, maxZ - minZ)
+        return span > 0.003f   // 3 mm of real movement at least
+    }
+
+    /** Draw the tracked path (x,z) into a square box. */
+    fun drawTrajectory(canvas: android.graphics.Canvas, left: Float, top: Float, size: Float, paint: android.graphics.Paint) {
+        val pts = trajectory.toTypedArray()
+        val n = pts.size
+        if (n < 2) return
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minZ = Float.MAX_VALUE
+        var maxZ = -Float.MAX_VALUE
+        for (pt in pts) {
+            if (pt[0].isNaN() || pt[1].isNaN()) continue
+            if (pt[0] < minX) minX = pt[0]
+            if (pt[0] > maxX) maxX = pt[0]
+            if (pt[1] < minZ) minZ = pt[1]
+            if (pt[1] > maxZ) maxZ = pt[1]
+        }
+        if (minX > maxX || minZ > maxZ) return
         val span = maxOf(maxX - minX, maxZ - minZ, 0.05f)
         val scale = size * 0.9f / span
         val path = android.graphics.Path()
         for (i in 0 until n) {
-            val x = left + size * 0.05f + (trajectory[i][0] - minX) * scale
-            val y = top + size * 0.95f - (trajectory[i][1] - minZ) * scale
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            if (pts[i][0].isNaN() || pts[i][1].isNaN()) continue
+            val x = left + size * 0.05f + (pts[i][0] - minX) * scale
+            val y = top + size * 0.95f - (pts[i][1] - minZ) * scale
+            if (path.isEmpty) path.moveTo(x, y) else path.lineTo(x, y)
         }
         canvas.drawPath(path, paint)
     }

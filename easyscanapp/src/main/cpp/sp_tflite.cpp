@@ -466,6 +466,13 @@ Java_com_rawmechatronics_easyscanner_SpTflite_run(JNIEnv* env, jclass, jlong han
   return arr;
 }
 
+static int g_feat_cap = 300;
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawmechatronics_easyscanner_SpTflite_setFeatureCap(JNIEnv*, jclass, jint cap) {
+  g_feat_cap = cap < 20 ? 20 : (cap > 2000 ? 2000 : cap);
+}
+
 extern "C" JNIEXPORT jfloatArray JNICALL
 Java_com_rawmechatronics_easyscanner_SpTflite_features(JNIEnv* env, jclass, jlong handle, jbyteArray grayJ) {
   { intptr_t hi = reinterpret_cast<intptr_t>(handle); if (hi >= -4 && hi <= 0) return nullptr; }
@@ -497,7 +504,7 @@ Java_com_rawmechatronics_easyscanner_SpTflite_features(JNIEnv* env, jclass, jlon
     if (mx) kps.push_back({(float)x, (float)y, v});
   }
   std::sort(kps.begin(), kps.end(), [](const FKp& a, const FKp& b) { return a.s > b.s; });
-  if (kps.size() > 300) kps.resize(300);
+  if ((int)kps.size() > g_feat_cap) kps.resize(g_feat_cap);
   const int DW = 80, DH = 60;
   std::vector<float> out;
   out.reserve(1 + kps.size() * 2 + kps.size() * 256);

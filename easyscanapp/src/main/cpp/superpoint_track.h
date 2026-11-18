@@ -57,4 +57,8 @@ protected:
 
 } // namespace ov_core
 
+// Runtime caps for the flood experiment (defaults: 200 tracks, 10 px spacing).
+void setTrackCaps(int maxTracks, float minNewDist);
+void setReacqEnabled(int enabled);
+
 #endif // OV_CORE_TRACK_SUPERPOINT_H

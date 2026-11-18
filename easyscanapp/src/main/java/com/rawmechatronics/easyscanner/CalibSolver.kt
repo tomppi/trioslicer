@@ -19,6 +19,10 @@ import kotlin.math.sqrt
  */
 object CalibSolver {
 
+    /** YAML/OpenVINS numbers always use a dot, whatever the phone locale is. */
+    private fun us(f: String, vararg a: Any): String = String.format(java.util.Locale.US, f, *a)
+
+
     typealias M3 = Array<DoubleArray>
 
     data class Result(val ok: Boolean, val message: String, val lines: List<String> = emptyList())
@@ -57,9 +61,21 @@ object CalibSolver {
         }
         if (imu.size < 200) return Result(false, "Too few IMU samples: " + imu.size)
 
-        val noise = estimateNoise(imu)
+        // A dedicated still recording gives the honest noise floor; fall back to the board session.
+        var stillSession: File? = null
+        for (s2 in sessions) {
+            val cf = File(s2, "frames.csv")
+            if (!cf.exists()) continue
+            val rows = cf.readLines().size
+            if (rows <= 2) { stillSession = s2; break }
+        }
+        val noiseImu = stillSession?.let { parseImu(File(it, "imu.csv")) } ?: imu
+        val noise = estimateNoise(noiseImu)
         val fit = fitCameraImu(frames, imu, noise.bias)
 
+        if (fit.rmsDeg > 1.0 || kotlin.math.abs(fit.dt) > 0.1) {
+            return Result(false, "Fit rejected: rotation rms %.2f deg, time offset %.1f ms. Redo the board capture (slow 3D motion, board fully visible).".format(fit.rmsDeg, fit.dt * 1000.0))
+        }
         val dir = configDir.apply { mkdirs() }
         writeImuCam(dir, fit.rotDeg, fit.dt)
         writeImuNoise(dir, noise)
@@ -69,6 +85,7 @@ object CalibSolver {
         val lines = ArrayList<String>()
         lines.add("session: " + session.name)
         lines.add("board frames: " + frames.size + ", IMU samples: " + imu.size + " (" + "%.0f Hz".format(noise.rateHz) + ")")
+        lines.add("noise from: " + (stillSession?.name ?: session.name) + " (" + noiseImu.size + " samples)")
         lines.add("")
         lines.add("R_cam_imu rotvec (deg): %.2f %.2f %.2f".format(fit.rotDeg[0], fit.rotDeg[1], fit.rotDeg[2]))
         lines.add("time offset: %.1f ms".format(fit.dt * 1000.0))
@@ -168,7 +185,7 @@ object CalibSolver {
         val r = rotvecToMat(rotDeg)
         val sb = StringBuilder()
         sb.append("%YAML:1.0\n\ncam0:\n  T_cam_imu:\n")
-        for (i in 0..2) sb.append("    - [%.9f, %.9f, %.9f, 0.0]\n".format(r[i][0], r[i][1], r[i][2]))
+        for (i in 0..2) sb.append(us("    - [%.9f, %.9f, %.9f, 0.0]\n", r[i][0], r[i][1], r[i][2]))
         sb.append("    - [0.0, 0.0, 0.0, 1.0]\n")
         sb.append("  cam_overlaps: []\n  camera_model: pinhole\n")
         sb.append("  distortion_coeffs: ").append(distortion).append('\n')
@@ -176,7 +193,7 @@ object CalibSolver {
         sb.append("  intrinsics: ").append(intrinsics).append('\n')
         sb.append("  resolution: ").append(resolution).append('\n')
         sb.append("  rostopic: /cam0/image_raw\n")
-        sb.append("  timeshift_cam_imu: %.6f\n".format(dt))
+        sb.append(us("  timeshift_cam_imu: %.6f\n", dt))
         File(dir, "kalibr_imucam_chain.yaml").writeText(sb.toString())
     }
 
@@ -184,9 +201,9 @@ object CalibSolver {
         val f = File(dir, "kalibr_imu_chain.yaml")
         if (!f.exists()) return
         var text = f.readText()
-        text = text.replace(Regex("accelerometer_noise_density:\\s*[^\\s#]+"), "accelerometer_noise_density: %.4e".format(n.accelNd))
-        text = text.replace(Regex("gyroscope_noise_density:\\s*[^\\s#]+"), "gyroscope_noise_density: %.4e".format(n.gyroNd))
-        text = text.replace(Regex("update_rate:\\s*[^\\s#]+"), "update_rate: %.1f".format(n.rateHz))
+        text = text.replace(Regex("accelerometer_noise_density:\\s*[^\\s#]+"), us("accelerometer_noise_density: %.4e", n.accelNd))
+        text = text.replace(Regex("gyroscope_noise_density:\\s*[^\\s#]+"), us("gyroscope_noise_density: %.4e", n.gyroNd))
+        text = text.replace(Regex("update_rate:\\s*[^\\s#]+"), us("update_rate: %.1f", n.rateHz))
         f.writeText(text)
     }
 
@@ -323,7 +340,10 @@ object CalibSolver {
         if (pairs.size < 15) {
             return Fit(DoubleArray(3), 0.0, bias0, Double.MAX_VALUE, pairs.size)
         }
-        var p = doubleArrayOf(0.0, 0.0, 0.0, bias0[0], bias0[1], bias0[2], 0.0)
+        var bestP: DoubleArray? = null
+        var bestRms = Double.MAX_VALUE
+        for (dt0 in doubleArrayOf(-0.040, -0.020, -0.010, 0.0, 0.010, 0.020, 0.040)) {
+        var p = doubleArrayOf(0.0, 0.0, 0.0, bias0[0], bias0[1], bias0[2], dt0)
         var lastRms = Double.MAX_VALUE
         repeat(50) {
             val res = residuals(p, pairs, gyro)
@@ -351,8 +371,12 @@ object CalibSolver {
             for (c in 0 until cols) a[c][c] += 1e-3
             val delta = solve7(a, g) ?: return@repeat
             for (c in 0 until cols) p[c] -= delta[c]
+            p[6] = p[6].coerceIn(-0.1, 0.1)   // time offset must stay physical
         }
-        return Fit(doubleArrayOf(p[0], p[1], p[2]), p[6], doubleArrayOf(p[3], p[4], p[5]), lastRms, pairs.size)
+        if (lastRms < bestRms) { bestRms = lastRms; bestP = p.copyOf() }
+        }
+        val bp = bestP ?: doubleArrayOf(0.0, 0.0, 0.0, bias0[0], bias0[1], bias0[2], 0.0)
+        return Fit(doubleArrayOf(bp[0], bp[1], bp[2]), bp[6], doubleArrayOf(bp[3], bp[4], bp[5]), bestRms, pairs.size)
     }
 
     private fun residuals(p: DoubleArray, pairs: List<DataPair>, gyro: List<Imu>): Pair<DoubleArray, Double> {

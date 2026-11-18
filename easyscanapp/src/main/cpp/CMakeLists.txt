@@ -3,7 +3,7 @@ project(sptflite CXX)
 
 set(TFLITE_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a/libtensorflowlite_jni.so)
 set(QNN_DELEGATE_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a/libQnnTFLiteDelegate.so)
-add_library(sptflite SHARED sp_tflite.cpp)
+add_library(sptflite SHARED sp_tflite.cpp npu_matmul.cpp)
 target_include_directories(sptflite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tflite_headers ${CMAKE_CURRENT_SOURCE_DIR}/qnn_tflite)
 target_compile_options(sptflite PRIVATE -O3 -ffast-math -std=c++17)
 target_link_libraries(sptflite ${TFLITE_LIB} ${QNN_DELEGATE_LIB} log android dl)
@@ -53,3 +53,4 @@ add_library(boost_atomic SHARED IMPORTED)
 set_target_properties(boost_atomic PROPERTIES IMPORTED_LOCATION ${OV}/thirdparty/boost_lib/arm64-v8a/libboost_atomic.so)
 
 target_link_libraries(openvins_jni lib_opencv boost_system boost_filesystem boost_thread boost_chrono boost_date_time boost_atomic log android dl)
+target_link_libraries(openvins_jni sptflite)

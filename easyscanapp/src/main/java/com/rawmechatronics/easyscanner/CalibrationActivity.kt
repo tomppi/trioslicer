@@ -5,7 +5,6 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONObject
 import java.io.File
 
@@ -14,7 +13,7 @@ import java.io.File
  * Read-only view of the files the engines load; plus a reset that makes the VIO
  * fall back to the calibrated defaults bundled in the APK.
  */
-class CalibrationActivity : AppCompatActivity() {
+class CalibrationActivity : android.app.Activity() {
 
     private lateinit var body: TextView
 
@@ -43,6 +42,16 @@ class CalibrationActivity : AppCompatActivity() {
         body.setPadding(0, pad, 0, pad)
         col.addView(body)
 
+        val still = Button(this)
+        still.text = "Capture still (30 s) — phone flat, untouched"
+        still.setOnClickListener { launchCapture("still") }
+        col.addView(still)
+
+        val board = Button(this)
+        board.text = "Capture board (30 s) — board visible, slow 3D motion"
+        board.setOnClickListener { launchCapture("board") }
+        col.addView(board)
+
         val solve = Button(this)
         solve.text = "Solve & save from latest recording"
         solve.setOnClickListener {
@@ -70,6 +79,13 @@ class CalibrationActivity : AppCompatActivity() {
 
         setContentView(scroll)
         render()
+    }
+
+    private fun launchCapture(kind: String) {
+        val i = android.content.Intent(this, MainActivity::class.java)
+        i.putExtra("calib_capture", kind)
+        i.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        startActivity(i)
     }
 
     private fun render() {
@@ -135,7 +151,7 @@ class CalibrationActivity : AppCompatActivity() {
         val rec = java.io.File(getExternalFilesDir(null) ?: filesDir, "tracker-debug")
             .listFiles { f -> f.isDirectory }?.maxByOrNull { it.name }
         sb.append("\nCalibration recording\n")
-        if (rec == null) sb.append("  none yet — use Scan step -> Calib still / Calib board 30s\n")
+        if (rec == null) sb.append("  none yet — use the capture buttons above\n")
         else {
             val csv = java.io.File(rec, "frames.csv")
             val rows = if (csv.exists()) csv.readLines().size - 1 else 0
