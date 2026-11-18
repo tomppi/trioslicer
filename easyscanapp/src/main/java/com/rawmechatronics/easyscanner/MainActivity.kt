@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     /** Offline tracker development recorder (Settings -> Development). */
     private var trackerRecorder: TrackerRecorder? = null
     /** Marker-free pose source (OpenVINS + SuperPoint on the NPU). */
-    private var vio: VioRunner? = null
+    @Volatile private var vio: VioRunner? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -193,13 +193,14 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             lp.width = w
             lp.height = h
             frame.layoutParams = lp
+            android.util.Log.i("EasyScanner", "fitPreview sizes root=" + root.width + "x" + root.height +
+                    " panelH=" + panel.height + " availH=" + hAvail + " preview=" + w + "x" + h)
         }
-        android.util.Log.i("EasyScanner", "fitPreview sizes root=" + root.width + "x" + root.height +
-                " panelH=" + panel.height + " availH=" + hAvail + " preview=" + w + "x" + h)
     }
 
     override fun onResume() {
         super.onResume()
+        ensureVio()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             askCamera.launch(Manifest.permission.CAMERA)
         } else {
@@ -219,6 +220,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         stopTrackerRecorder()
         camera.close()
         cameraStarted = false
+        // Do not carry a stale VIO across a pause: the IMU would integrate the whole background gap
+        // into the next frame. Tear it down; onResume creates a fresh one.
+        stopVio()
+        pendingScanStart = false
         super.onPause()
     }
 
@@ -684,7 +689,9 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             calibActive = newCalib
             planeActive = newPlane
             scanOn = newScan
-            processor.useVioPose = newScan && vio != null
+            // VIO poses are world/metres; the engine AR lane needs board-frame/mm with a verified
+            // anchor, so the lane stays off until anchoring is implemented. Board lane is used.
+            processor.useVioPose = false
             renderButtons()
         }
         if (!expert) renderWizard()

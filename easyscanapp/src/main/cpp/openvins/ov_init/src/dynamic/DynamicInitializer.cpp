@@ -899,7 +899,7 @@ bool DynamicInitializer::initialize(double &timestamp, Eigen::MatrixXd &covarian
 
   // Return if we have failed!
   timestamp = newest_cam_time;
-  if (params.init_dyn_mle_max_iter != 0 && summary.termination_type != ceres::CONVERGENCE) {
+  if (params.init_dyn_mle_max_iter != 0 && summary.termination_type == ceres::FAILURE) {
     PRINT_WARNING(YELLOW "[init-d]: opt failed: %s!\n" RESET, summary.message.c_str());
     free_state_memory();
     return false;

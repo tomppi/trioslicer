@@ -61,4 +61,7 @@ protected:
 void setTrackCaps(int maxTracks, float minNewDist);
 void setReacqEnabled(int enabled);
 
+// Clear all cross-session tracker state (lost-track pool, descriptors, pending frames).
+void superpoint_reset();
+
 #endif // OV_CORE_TRACK_SUPERPOINT_H

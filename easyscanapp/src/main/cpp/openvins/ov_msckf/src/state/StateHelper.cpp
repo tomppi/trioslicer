@@ -160,6 +160,10 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
   Eigen::MatrixXd Sinv = Eigen::MatrixXd::Identity(R.rows(), R.rows());
   S.selfadjointView<Eigen::Upper>().llt().solveInPlace(Sinv);
   Eigen::MatrixXd K = M_a * Sinv.selfadjointView<Eigen::Upper>();
+  if (!K.allFinite()) {
+    PRINT_WARNING(RED "StateHelper::EKFUpdate(): non-finite gain, skipping update\n" RESET);
+    return;
+  }
   // Eigen::MatrixXd K = M_a * S.inverse();
 
   // Update Covariance
@@ -178,11 +182,16 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
     }
   }
   if (found_neg) {
-    std::exit(EXIT_FAILURE);
+    PRINT_WARNING(RED "StateHelper::EKFUpdate(): covariance became negative/NaN, skipping update\n" RESET);
+    return;
   }
 
   // Calculate our delta and update all our active states
   Eigen::VectorXd dx = K * res;
+  if (!dx.allFinite()) {
+    PRINT_WARNING(RED "StateHelper::EKFUpdate(): non-finite delta, skipping update\n" RESET);
+    return;
+  }
   for (size_t i = 0; i < state->_variables.size(); i++) {
     state->_variables.at(i)->update(dx.block(state->_variables.at(i)->id(), 0, state->_variables.at(i)->size(), 1));
   }

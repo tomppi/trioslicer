@@ -209,6 +209,12 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
     Eigen::MatrixXd P_marg = StateHelper::get_marginal_covariance(state, Hx_order);
     Eigen::MatrixXd S = H_x * P_marg * H_x.transpose();
     S.diagonal() += _options.sigma_pix_sq * Eigen::VectorXd::Ones(S.rows());
+    if (!res.allFinite() || !S.allFinite()) {
+      PRINT_WARNING(YELLOW "UpdaterMSCKF: non-finite feature system, dropping feature\n" RESET);
+      (*it2)->to_delete = true;
+      it2 = feature_vec.erase(it2);
+      continue;
+    }
     double chi2 = res.dot(S.llt().solve(res));
 
     // Get our threshold (we precompute up to 500 but handle the case that it is more)

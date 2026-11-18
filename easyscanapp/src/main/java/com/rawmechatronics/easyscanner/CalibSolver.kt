@@ -70,7 +70,14 @@ object CalibSolver {
             if (rows <= 2) { stillSession = s2; break }
         }
         val noiseImu = stillSession?.let { parseImu(File(it, "imu.csv")) } ?: imu
+        val noiseDur = if (noiseImu.size >= 2) noiseImu.last().ts - noiseImu.first().ts else 0.0
+        if (noiseImu.size < 500 || noiseDur < 5.0) {
+            return Result(false, "IMU noise recording too short: " + noiseImu.size + " samples, " + "%.1f".format(noiseDur) + " s. Record the still capture for at least 10 s with the phone untouched.")
+        }
         val noise = estimateNoise(noiseImu)
+        if (!noise.accelNd.isFinite() || !noise.gyroNd.isFinite() || noise.accelNd < 1e-4 || noise.gyroNd < 3e-5 || noise.rateHz !in 50.0..2000.0) {
+            return Result(false, "IMU noise estimate invalid (accel " + "%.2e".format(noise.accelNd) + ", gyro " + "%.2e".format(noise.gyroNd) + "). Redo the still capture.")
+        }
         val fit = fitCameraImu(frames, imu, noise.bias)
 
         if (fit.rmsDeg > 1.0 || kotlin.math.abs(fit.dt) > 0.1) {
@@ -90,7 +97,7 @@ object CalibSolver {
         lines.add("R_cam_imu rotvec (deg): %.2f %.2f %.2f".format(fit.rotDeg[0], fit.rotDeg[1], fit.rotDeg[2]))
         lines.add("time offset: %.1f ms".format(fit.dt * 1000.0))
         lines.add("rotation fit rms: %.3f deg over %d pairs".format(fit.rmsDeg, fit.pairs))
-        lines.add("gyro bias (deg/s): %.3f %.3f %.3f".format(fit.bias[0], fit.bias[1], fit.bias[2]))
+        lines.add("gyro bias (rad/s): %.3f %.3f %.3f".format(fit.bias[0], fit.bias[1], fit.bias[2]))
         lines.add("accel noise density: %.3e m/s2/rtHz".format(noise.accelNd))
         lines.add("gyro noise density: %.3e rad/s/rtHz".format(noise.gyroNd))
         if (scale != null) {
@@ -116,23 +123,38 @@ object CalibSolver {
     private fun parseFrames(f: File): List<FrameRow>? {
         if (!f.exists()) return null
         val out = ArrayList<FrameRow>()
+        fun parse16(field: String): DoubleArray? {
+            if (field.isBlank()) return null
+            val vals = field.trim().split(' ').mapNotNull { it.toDoubleOrNull() }
+            return if (vals.size == 16) vals.toDoubleArray() else null
+        }
         try {
             f.bufferedReader().useLines { seq ->
                 val it = seq.iterator()
                 if (!it.hasNext()) return null
                 val header = it.next().split(',')
                 val iTs = header.indexOf("ts_ns").let { if (it >= 0) it else 1 }
+                val iDet = header.indexOf("detected")
+                val iPose = header.indexOf("pose16")
+                val iVio = header.indexOf("vio_pose16")
                 while (it.hasNext()) {
                     val p = it.next().split(',')
                     if (p.size < 5) continue
                     val ts = p[iTs].toDoubleOrNull() ?: continue
-                    // rows may have more fields than the header; find the 16-float pose fields
+                    if (iDet >= 0 && (p.getOrNull(iDet)?.toDoubleOrNull() ?: 0.0) <= 0.5) continue
                     var board: DoubleArray? = null
                     var vio: DoubleArray? = null
-                    for (c in 4 until p.size) {
-                        val vals = p[c].trim().split(' ').mapNotNull { it.toDoubleOrNull() }
-                        if (vals.size != 16) continue
-                        if (board == null) board = vals.toDoubleArray() else if (vio == null) vio = vals.toDoubleArray()
+                    if (iPose >= 0) {
+                        board = parse16(p.getOrNull(iPose) ?: "")
+                        if (iVio >= 0) vio = parse16(p.getOrNull(iVio) ?: "")
+                    }
+                    if (board == null) {
+                        // legacy rows: first non-empty 16-float field is the board pose; never
+                        // substitute the VIO pose column for it.
+                        for (c in 4 until p.size) {
+                            val vals = parse16(p[c]) ?: continue
+                            if (board == null) board = vals else if (vio == null) vio = vals
+                        }
                     }
                     if (board == null) continue
                     out.add(FrameRow(ts * 1e-9, board, vio))
@@ -174,18 +196,27 @@ object CalibSolver {
         var intrinsics = "[432.179802389, 431.795649509, 321.333984375, 242.097886030]"
         var distortion = "[0.100007, -0.121012, -0.005155, -0.001849]"
         var resolution = "[640, 480]"
+        val lever = doubleArrayOf(0.0, 0.0, 0.0)
         if (old.exists()) {
+            var inPose = false
+            var row = 0
             for (line in old.readLines()) {
                 val t = line.trim()
                 if (t.startsWith("intrinsics:")) intrinsics = t.substringAfter("intrinsics:").substringBefore('#').trim()
                 if (t.startsWith("distortion_coeffs:")) distortion = t.substringAfter("distortion_coeffs:").substringBefore('#').trim()
                 if (t.startsWith("resolution:")) resolution = t.substringAfter("resolution:").substringBefore('#').trim()
+                if (t.startsWith("T_cam_imu:")) { inPose = true; continue }
+                if (inPose && t.startsWith("- [") && row < 3) {
+                    val nums = Regex("[-+0-9.eE]+").findAll(t).mapNotNull { it.value.toDoubleOrNull() }.toList()
+                    if (nums.size >= 4) lever[row] = nums[3]
+                    row++
+                }
             }
         }
         val r = rotvecToMat(rotDeg)
         val sb = StringBuilder()
         sb.append("%YAML:1.0\n\ncam0:\n  T_cam_imu:\n")
-        for (i in 0..2) sb.append(us("    - [%.9f, %.9f, %.9f, 0.0]\n", r[i][0], r[i][1], r[i][2]))
+        for (i in 0..2) sb.append(us("    - [%.9f, %.9f, %.9f, %.9f]\n", r[i][0], r[i][1], r[i][2], lever[i]))
         sb.append("    - [0.0, 0.0, 0.0, 1.0]\n")
         sb.append("  cam_overlaps: []\n  camera_model: pinhole\n")
         sb.append("  distortion_coeffs: ").append(distortion).append('\n')
@@ -200,10 +231,15 @@ object CalibSolver {
     private fun writeImuNoise(dir: File, n: ImuNoise) {
         val f = File(dir, "kalibr_imu_chain.yaml")
         if (!f.exists()) return
+        if (!n.accelNd.isFinite() || !n.gyroNd.isFinite() || !n.rateHz.isFinite()) return
+        // Never write a zero/absurd noise density: OpenVINS divides by it (ZUPT -> Inf/NaN).
+        val accelNd = n.accelNd.coerceIn(1e-4, 1e-1)
+        val gyroNd = n.gyroNd.coerceIn(3e-5, 1e-2)
+        val rate = n.rateHz.coerceIn(50.0, 2000.0)
         var text = f.readText()
-        text = text.replace(Regex("accelerometer_noise_density:\\s*[^\\s#]+"), us("accelerometer_noise_density: %.4e", n.accelNd))
-        text = text.replace(Regex("gyroscope_noise_density:\\s*[^\\s#]+"), us("gyroscope_noise_density: %.4e", n.gyroNd))
-        text = text.replace(Regex("update_rate:\\s*[^\\s#]+"), us("update_rate: %.1f", n.rateHz))
+        text = text.replace(Regex("accelerometer_noise_density:\\s*[^\\s#]+"), us("accelerometer_noise_density: %.4e", accelNd))
+        text = text.replace(Regex("gyroscope_noise_density:\\s*[^\\s#]+"), us("gyroscope_noise_density: %.4e", gyroNd))
+        text = text.replace(Regex("update_rate:\\s*[^\\s#]+"), us("update_rate: %.1f", rate))
         f.writeText(text)
     }
 

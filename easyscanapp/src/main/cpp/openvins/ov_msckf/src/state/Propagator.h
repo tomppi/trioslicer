@@ -64,8 +64,9 @@ public:
    */
   void feed_imu(const ov_core::ImuData &message, double oldest_time = -1) {
 
-    // Append it to our vector
+    // Append it to our vector (reject duplicate/reversed samples: negative dt poisons the covariance)
     std::lock_guard<std::mutex> lck(imu_data_mtx);
+    if (!imu_data.empty() && message.timestamp <= imu_data.back().timestamp) return;
     imu_data.emplace_back(message);
 
     // Clean old measurements

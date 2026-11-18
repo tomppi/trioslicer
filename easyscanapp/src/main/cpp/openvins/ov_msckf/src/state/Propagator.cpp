@@ -35,15 +35,16 @@ void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timest
   // If the difference between the current update time and state is zero
   // We should crash, as this means we would have two clones at the same time!!!!
   if (state->_timestamp == timestamp) {
-    PRINT_ERROR(RED "Propagator::propagate_and_clone(): Propagation called again at same timestep at last update timestep!!!!\n" RESET);
-    std::exit(EXIT_FAILURE);
+    PRINT_WARNING(RED "Propagator::propagate_and_clone(): same timestep, dropping clone\n" RESET);
+    return;
   }
 
   // We should crash if we are trying to propagate backwards
   if (state->_timestamp > timestamp) {
     PRINT_ERROR(RED "Propagator::propagate_and_clone(): Propagation called trying to propagate backwards in time!!!!\n" RESET);
-    PRINT_ERROR(RED "Propagator::propagate_and_clone(): desired propagation = %.4f\n" RESET, (timestamp - state->_timestamp));
-    std::exit(EXIT_FAILURE);
+    PRINT_WARNING(RED "Propagator::propagate_and_clone(): backwards propagation %.4f, dropping clone\n" RESET,
+                  (timestamp - state->_timestamp));
+    return;
   }
 
   //===================================================================================

@@ -55,11 +55,22 @@ class CalibrationActivity : android.app.Activity() {
         val solve = Button(this)
         solve.text = "Solve & save from latest recording"
         solve.setOnClickListener {
-            val res = CalibSolver.solve(this)
-            val text = StringBuilder()
-            text.append(if (res.ok) "OK: " else "FAILED: ").append(res.message).append("\n")
-            for (l in res.lines) text.append(l).append('\n')
-            body.text = text.toString() + "\n\n" + describe()
+            solve.isEnabled = false
+            body.text = "Solving…"
+            Thread {
+                val res = try {
+                    CalibSolver.solve(this)
+                } catch (e: Throwable) {
+                    CalibSolver.Result(false, e.message ?: "solve failed")
+                }
+                runOnUiThread {
+                    val text = StringBuilder()
+                    text.append(if (res.ok) "OK: " else "FAILED: ").append(res.message).append("\n")
+                    for (l in res.lines) text.append(l).append('\n')
+                    body.text = text.toString() + "\n\n" + describe()
+                    solve.isEnabled = true
+                }
+            }.start()
         }
         col.addView(solve)
 
@@ -143,7 +154,10 @@ class CalibrationActivity : android.app.Activity() {
             if (t.startsWith("use_fej") || t.startsWith("calib_cam") || t.startsWith("try_zupt") ||
                 t.startsWith("max_slam") || t.startsWith("max_msckf") || t.startsWith("num_pts") ||
                 t.startsWith("track_frequency") || t.startsWith("init_max_disparity") ||
-                t.startsWith("init_imu_thresh") || t.startsWith("up_msckf")) {
+                t.startsWith("init_imu_thresh") || t.startsWith("up_msckf") ||
+                t.startsWith("init_dyn_use") || t.startsWith("init_window_time") ||
+                t.startsWith("try_zupt") || t.startsWith("zupt_max_disparity") ||
+                t.startsWith("zupt_noise_multiplier") || t.startsWith("zupt_chi2_multipler")) {
                 sb.append("  ").append(t).append('\n')
             }
         }

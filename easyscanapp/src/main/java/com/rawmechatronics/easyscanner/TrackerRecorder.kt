@@ -75,7 +75,7 @@ class TrackerRecorder(
         val dir = File(root, "tracker-debug/session-" + System.currentTimeMillis())
         dir.mkdirs()
         framesWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "frames.csv")), Charsets.UTF_8))
-        framesWriter?.write("frame,ts_ns,scan_on,detected,corners,cam_x,cam_y,cam_z,roll,pitch,yaw,distance,reproj_rms,fx,fy,cx,cy,laser_state,laser_points,proc_ms,laser_cam_count,pose16,jpeg\n")
+        framesWriter?.write("frame,ts_ns,scan_on,detected,corners,cam_x,cam_y,cam_z,roll,pitch,yaw,distance,reproj_rms,fx,fy,cx,cy,laser_state,laser_points,proc_ms,laser_cam_count,pose16,vio_pose16,jpeg\n")
         framesWriter?.flush()
         imuWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "imu.csv")), Charsets.UTF_8))
         imuWriter?.write("type,ts_ns,x,y,z\n")

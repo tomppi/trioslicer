@@ -237,15 +237,15 @@ void TrackSuperPoint::feed_monocular(const CameraData &message, size_t msg_id) {
         if (ovmm_match(dA.data(), nL, dB.data(), nD, bestSim.data(), secondSim.data(), bestA.data())) {
           std::vector<char> lostUsed(nL, 0);
           int rejectedGate = 0;
-          const int MAX_REACQ_PER_FRAME = 30;
+          const int MAX_REACQ_PER_FRAME = 5;
           for (int i = 0; i < nD && reacq < MAX_REACQ_PER_FRAME; i++) {
             int a = bestA[i];
             if (a < 0 || lostUsed[a]) continue;
-            if (bestSim[i] < 0.85f || (bestSim[i] - secondSim[i]) < 0.04f) continue;
+            if (bestSim[i] < 0.90f || (bestSim[i] - secondSim[i]) < 0.05f) continue;
             int b = detIdx[i];
             // geometry gate: a recovered track must reappear near where it was last seen
             int missed = 30 - lost[a].ttl;
-            float radius = 50.0f + 8.0f * (float)missed;
+            float radius = 18.0f + 2.0f * (float)missed;
             float dx = det.kp[b].x - lost[a].x;
             float dy = det.kp[b].y - lost[a].y;
             if (dx * dx + dy * dy > radius * radius) { rejectedGate++; continue; }
@@ -385,4 +385,18 @@ void setTrackCaps(int maxTracks, float minNewDist) {
 
 void setReacqEnabled(int enabled) {
   ov_core::g_reacq_enabled.store(enabled != 0 ? 1 : 0);
+}
+
+// Clear all cross-session tracker state (lost-track pool, descriptor history, pending frames).
+void superpoint_reset() {
+  {
+    std::lock_guard<std::mutex> lck(ov_core::g_lost_mtx);
+    ov_core::g_lost.clear();
+    ov_core::g_prev_desc.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lck(ov_core::g_sp_mtx);
+    ov_core::g_sp_frames.clear();
+  }
+  ov_core::g_reacq_total = 0;
 }

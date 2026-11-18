@@ -19,12 +19,17 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var sensors: SensorManager? = null
     private val accel = FloatArray(3)
     private val gyro = FloatArray(3)
+    private val accelPrev = FloatArray(3)
+    private var accelTs = 0.0
+    private var accelPrevTs = -1.0
+    private var gyroTs = 0.0
     private var haveAccel = false
     private var haveGyro = false
     private var lastImuTs = 0.0
+    private var lastFrameTs = 0.0
     private var frameCount = 0
 
-    var initialized = false
+    @Volatile var initialized = false
         private set
     /** Start feeding VIO without the warm-up banner (calibration captures). */
     fun startTrackingSilent() { tracking = true }
@@ -58,21 +63,19 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         dir.mkdirs()
         for (name in CONFIGS) {
             val out = File(dir, name)
-            if (out.exists() && out.length() > 0) {
-                // OpenVINS throws (and aborts) on malformed YAML; a locale-comma file from an
-                // older solver must fall back to the bundled, valid calibration instead.
+            // estimator_config is app-owned: always take the bundled version so new defaults reach
+            // existing installs. The Kalibr camera-IMU/IMU files are on-phone calibration results
+            // and are only replaced when missing or malformed.
+            if (name != "estimator_config.yaml" && out.exists() && out.length() > 0) {
                 val bad = try {
                     val text = out.readText()
-                    Regex("\\d,\\d").containsMatchIn(text) || !text.contains("T_cam_imu") && name.contains("imucam")
+                    Regex("\\d,\\d").containsMatchIn(text) || (!text.contains("T_cam_imu") && name.contains("imucam"))
                 } catch (e: Exception) {
                     true
                 }
-                if (bad) {
-                    Log.w(TAG, "reset invalid calibration yaml: " + name)
-                    out.delete()
-                } else {
-                    continue // keep an on-phone solved calibration
-                }
+                if (!bad) continue
+                Log.w(TAG, "reset invalid calibration yaml: " + name)
+                out.delete()
             }
             try {
                 ctx.assets.open("openvins/" + name).use { input ->
@@ -82,24 +85,11 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                 Log.w(TAG, "config copy failed: " + name, e)
             }
         }
-        // The camera-IMU transform and time offset are solved by the on-phone calibration;
-        // estimating them online diverges on this tracker and turns the whole state NaN.
-        try {
-            val est = File(dir, "estimator_config.yaml")
-            if (est.exists()) {
-                var txt = est.readText()
-                val before = txt
-                txt = txt.replace(Regex("calib_cam_extrinsics:\\s*true"), "calib_cam_extrinsics: false")
-                txt = txt.replace(Regex("calib_cam_timeoffset:\\s*true"), "calib_cam_timeoffset: false")
-                // ZUPT everywhere: holding still must zero the velocity, not just at the start
-                txt = txt.replace(Regex("zupt_only_at_beginning:\\s*true"), "zupt_only_at_beginning: false")
-                txt = txt.replace(Regex("try_zupt:\\s*false"), "try_zupt: true")
-                if (txt != before) { est.writeText(txt); Log.i(TAG, "force-offline-calib: online extrinsics/timeoffset disabled") }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "estimator config patch failed", e)
-        }
         vio = NativeLib.nativeVioCreate(dir.absolutePath)
+        if (vio == 0L) {
+            Log.e(TAG, "VIO create failed (config/parse error) - marker-free pose disabled")
+            return
+        }
         val model = File(ctx.filesDir, "superpoint.tflite")
         if (!model.exists()) {
             try {
@@ -111,6 +101,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             }
         }
         sp = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
+        if (sp <= 0L) {
+            Log.e(TAG, "SuperPoint engine create failed (" + sp + ") - marker-free pose disabled")
+            sp = 0L
+        }
         // NPU matmul used by the tracker to re-acquire lost tracks (hybrid tracker)
         try {
             val mm = File(ctx.filesDir, "superpoint_matmul.tflite")
@@ -163,22 +157,46 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         val type = event.sensor.type
         val ts = event.timestamp * 1e-9
         if (type == Sensor.TYPE_ACCELEROMETER) {
+            if (accelTs > 0.0) {
+                accelPrev[0] = accel[0]
+                accelPrev[1] = accel[1]
+                accelPrev[2] = accel[2]
+                accelPrevTs = accelTs
+            }
             accel[0] = event.values[0]
             accel[1] = event.values[1]
             accel[2] = event.values[2]
+            accelTs = ts
             haveAccel = true
-        } else if (type == Sensor.TYPE_GYROSCOPE) {
-            gyro[0] = event.values[0]
-            gyro[1] = event.values[1]
-            gyro[2] = event.values[2]
-            haveGyro = true
-        } else {
             return
         }
-        if (vio == 0L || !haveAccel || !haveGyro) return
-        if (abs(ts - lastImuTs) < 1.0 / 400.0) return
+        if (type != Sensor.TYPE_GYROSCOPE) return
+        gyro[0] = event.values[0]
+        gyro[1] = event.values[1]
+        gyro[2] = event.values[2]
+        gyroTs = ts
+        haveGyro = true
+        if (vio == 0L || !haveAccel) return
+        if (!(ts > lastImuTs)) return  // reject duplicate/reversed samples
+        // Pair the gyro sample with the accelerometer interpolated to the gyro timestamp so the
+        // two sensor values carry one consistent timestamp (feeding a stale value under the other
+        // sensor's stamp biases propagation).
+        val ax: Float
+        val ay: Float
+        val az: Float
+        if (accelPrevTs > 0.0 && ts > accelPrevTs && ts <= accelTs) {
+            val a = ((ts - accelPrevTs) / (accelTs - accelPrevTs)).toFloat()
+            ax = accelPrev[0] + (accel[0] - accelPrev[0]) * a
+            ay = accelPrev[1] + (accel[1] - accelPrev[1]) * a
+            az = accelPrev[2] + (accel[2] - accelPrev[2]) * a
+        } else {
+            ax = accel[0]
+            ay = accel[1]
+            az = accel[2]
+        }
+        if (!ax.isFinite() || !ay.isFinite() || !az.isFinite()) return
         lastImuTs = ts
-        NativeLib.nativeVioFeedImu(vio, accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], ts)
+        NativeLib.nativeVioFeedImu(vio, ax, ay, az, gyro[0], gyro[1], gyro[2], ts)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -187,6 +205,8 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     fun submitFrame(y: ByteArray, yStride: Int, width: Int, height: Int, timestampSec: Double): Boolean {
         if (!tracking) { lastKp = null; return initialized }
         if (vio == 0L || sp == 0L) return false
+        if (!(timestampSec > lastFrameTs)) return initialized  // drop duplicate/reversed camera frames
+        lastFrameTs = timestampSec
         val gray = ByteArray(GW * GH)
         for (yy in 0 until GH) {
             val sy = yy * height / GH
@@ -258,6 +278,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         val p = DoubleArray(3)
         val q = DoubleArray(4)
         if (!NativeLib.nativeVioGetPose(vio, p, q)) return false
+        if (!p.all { it.isFinite() } || !q.all { it.isFinite() }) return false
         val w = q[0]
         val x = q[1]
         val y = q[2]
@@ -376,6 +397,13 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         tracking = false
         lastKp = null
         frameCount = 0
+        haveAccel = false
+        haveGyro = false
+        accelTs = 0.0
+        accelPrevTs = -1.0
+        gyroTs = 0.0
+        lastImuTs = 0.0
+        lastFrameTs = 0.0
     }
 
     private companion object {
