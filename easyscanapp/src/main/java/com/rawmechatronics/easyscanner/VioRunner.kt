@@ -37,6 +37,12 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     @Volatile var initialized = false
         private set
+    // Per-stage timing of the VIO front-end (updated in submitFrame, logged by FrameProcessor).
+    @Volatile var tYConvMs = 0.0
+    @Volatile var tFeatMs = 0.0
+    @Volatile var tMaskMs = 0.0
+    @Volatile var tFeedMs = 0.0
+    @Volatile var lastDetN = 0
     /** Start feeding VIO without the warm-up banner (calibration captures). */
     fun startTrackingSilent() { tracking = true }
 
@@ -208,6 +214,8 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         if (vio == 0L || sp == 0L) return false
         if (!(timestampSec > lastFrameTs)) return initialized  // drop duplicate/reversed camera frames
         lastFrameTs = timestampSec
+        tYConvMs = 0.0; tFeatMs = 0.0; tMaskMs = 0.0; tFeedMs = 0.0
+        val tStage0 = System.nanoTime()
         val gray = ByteArray(GW * GH)
         for (yy in 0 until GH) {
             val sy = yy * height / GH
@@ -217,11 +225,16 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                 gray[yy * GW + xx] = y[row + sx]
             }
         }
+        tYConvMs = (System.nanoTime() - tStage0) / 1e6
+        val tFeat0 = System.nanoTime()
         val feat = SpTflite.features(sp, gray)
+        tFeatMs = (System.nanoTime() - tFeat0) / 1e6
         if (feat == null) { if (frameCount % 30 == 0) Log.w(TAG, "features() null sp=" + sp); return false }
         if (feat.isEmpty()) return false
         val n = feat[0].toInt()
+        lastDetN = n
         if (n <= 0) return false
+        val tMask0 = System.nanoTime()
         // drop features on the laser stripe (they move with the line and corrupt tracks)
         val lw = laserW
         val lh = laserH
@@ -265,8 +278,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             w++
         }
         val nn = w
+        tMaskMs = (System.nanoTime() - tMask0) / 1e6
         lastFeatureCount = nKeep
         lastKp = if (spOverlay) kp else null
+        val tFeed0 = System.nanoTime()
         NativeLib.nativeVioSetFeatures(vio, 0, timestampSec, kp, desc, nn)
         NativeLib.nativeVioFeedFrame(vio, gray, GW, GH, timestampSec)
         val now = NativeLib.nativeVioInitialized(vio)
@@ -274,6 +289,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             initialized = now
             Log.i(TAG, "VIO initialized=" + now)
         }
+        tFeedMs = (System.nanoTime() - tFeed0) / 1e6
         frameCount++
         if (frameCount % 60 == 0) Log.i(TAG, "VIO frames=" + frameCount + " init=" + initialized + " features=" + n +
                 " imu: accelEv=" + imuAccelEvents + " gyroEv=" + imuGyroEvents + " fed=" + imuFed +

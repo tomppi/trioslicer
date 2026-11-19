@@ -44,6 +44,18 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     /** frames the engine actually finished (used to gate calibration captures) */
     @Volatile var framesProcessed = 0
 
+    // Instrumentation: rates and per-stage times, logged once a second while frames run.
+    private var deliveredFrames = 0L
+    private var lastLogNs = 0L
+    private var lastLogDelivered = 0L
+    private var lastLogProcessed = 0L
+    private var lastBoardMs = 0.0
+    private var lastLaserMs = 0.0
+    private var lastSnapMs = 0.0
+    private var lastEngMs = 0.0
+    private var lastVioMs = 0.0
+    private var lastRestMs = 0.0
+    private var lastArLane = 0
     private val vioPose = DoubleArray(16)
     private val vioK = DoubleArray(11)
     private var handle = 0L
@@ -87,8 +99,10 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
         } catch (e: IllegalStateException) {
             null // reader closed by a resolution switch
         } ?: return
+        deliveredFrames++
         try {
             if (handle == 0L) return
+            val cycle0 = System.nanoTime()
             val p = img.planes
             if (img.width != loggedW || img.height != loggedH) {
                 loggedW = img.width
@@ -152,6 +166,9 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 img.width, img.height, img.timestamp, out.data,
             )
             out.procMs = (System.nanoTime() - t0) / 1e6
+            lastVioMs = if (vio != null && vio?.tracking == true) {
+                (vio?.tYConvMs ?: 0.0) + (vio?.tFeatMs ?: 0.0) + (vio?.tMaskMs ?: 0.0) + (vio?.tFeedMs ?: 0.0)
+            } else 0.0
             if (n < 0) {
                 // the frame was processed but its layers did not fit: grow for next time
                 out.data = FloatArray(-n * 2)
@@ -181,17 +198,40 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 val lp = px
                 if (lp != null) v.setLaserPixels(lp, img.width, img.height)
             }
+            lastBoardMs = out[FrameResult.H.T_BOARD_MS].toDouble()
+            lastLaserMs = out[FrameResult.H.T_LASER_MS].toDouble()
+            lastEngMs = out.procMs - (if (arPose != null || vio != null) 0.0 else 0.0)
             val ev = out.events()
             val vioPoseToRecord = if (vio?.initialized == true) {
                 val vp = DoubleArray(16)
                 if (vio?.cameraPose(vp, false) == true) vp else null
             } else null
+            val tSnap0 = System.nanoTime()
             trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
+            lastSnapMs = (System.nanoTime() - tSnap0) / 1e6
             results.publish()
             framesProcessed++
             if (ev and FrameResult.Ev.PHOTO_DUE != 0) listener.onPhotoDue()
             listener.onResult(out)
             if (ev and FrameResult.Ev.MESSAGES != 0) pullMessages()
+            val now = System.nanoTime()
+            lastRestMs = (now - cycle0) / 1e6 - out.procMs - lastSnapMs
+            lastEngMs = out.procMs - lastVioMs   // procMs covers VIO front-end + engine call
+            lastArLane = if (arPose != null) 1 else 0
+            if (now - lastLogNs > 1_000_000_000L) {
+                val sec = if (lastLogNs == 0L) 1.0 else (now - lastLogNs) / 1e9
+                val dRate = (deliveredFrames - lastLogDelivered) / sec
+                val pRate = (framesProcessed - lastLogProcessed) / sec
+                val v = vio
+                Log.i(TAG, "stage total=%.1f eng=%.1f board=%.1f laser=%.1f vio=%.1f yconv=%.1f feat=%.1f mask=%.1f feed=%.1f snap=%.1f rest=%.1f ar=%d det=%d res=%dx%d delivered=%.1f processed=%.1f".format(
+                    out.procMs, lastEngMs, lastBoardMs, lastLaserMs, lastVioMs,
+                    v?.tYConvMs ?: 0.0, v?.tFeatMs ?: 0.0, v?.tMaskMs ?: 0.0, v?.tFeedMs ?: 0.0,
+                    lastSnapMs, lastRestMs, lastArLane, v?.lastDetN ?: 0,
+                    img.width, img.height, dRate, pRate))
+                lastLogNs = now
+                lastLogDelivered = deliveredFrames
+                lastLogProcessed = framesProcessed
+            }
         } catch (e: RuntimeException) {
             Log.e(TAG, "frame failed", e)
             report(e.message ?: "frame failed")
