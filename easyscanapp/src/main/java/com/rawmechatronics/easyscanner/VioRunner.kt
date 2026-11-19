@@ -17,6 +17,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var vio = 0L
     private var sp = 0L
     private var sensors: SensorManager? = null
+    private val EMPTY_F = FloatArray(0)
     private val accel = FloatArray(3)
     private val gyro = FloatArray(3)
     private val accelPrev = FloatArray(3)
@@ -215,6 +216,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         if (!(timestampSec > lastFrameTs)) return initialized  // drop duplicate/reversed camera frames
         lastFrameTs = timestampSec
         tYConvMs = 0.0; tFeatMs = 0.0; tMaskMs = 0.0; tFeedMs = 0.0
+        val doDetect = (frameCount % 2) == 0
         val tStage0 = System.nanoTime()
         val gray = ByteArray(GW * GH)
         for (yy in 0 until GH) {
@@ -226,6 +228,18 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             }
         }
         tYConvMs = (System.nanoTime() - tStage0) / 1e6
+        // SuperPoint runs at half the camera rate; on the other frames KLT carries the existing
+        // tracks through this image and only the timestamp is handed to the tracker (VINS-Mobile
+        // style). This keeps every camera frame in the estimator without paying the NPU twice.
+        if (!doDetect) {
+            lastDetN = 0
+            val tFeed0 = System.nanoTime()
+            NativeLib.nativeVioSetFeatures(vio, 0, timestampSec, EMPTY_F, EMPTY_F, 0)
+            NativeLib.nativeVioFeedFrame(vio, gray, GW, GH, timestampSec)
+            tFeedMs = (System.nanoTime() - tFeed0) / 1e6
+            frameCount++
+            return initialized
+        }
         val tFeat0 = System.nanoTime()
         val feat = SpTflite.features(sp, gray)
         tFeatMs = (System.nanoTime() - tFeat0) / 1e6

@@ -84,7 +84,13 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioSetFeatures(
     JNIEnv *env, jclass, jlong h, jint camId, jdouble ts, jfloatArray kpJ, jfloatArray descJ, jint n) {
   auto *st = reinterpret_cast<VioState *>(h);
-  if (!st || !st->sys || n <= 0) return;
+  if (!st || !st->sys || n < 0) return;
+  if (n == 0) {
+    // Track-only frame: no new SuperPoint detections; KLT carries the existing tracks on this
+    // frame's image. Submitting the timestamp keeps the tracker in step with every camera frame.
+    ov_core::superpoint_submit((int)camId, (double)ts, nullptr, nullptr, 0);
+    return;
+  }
   jfloat *kp = env->GetFloatArrayElements(kpJ, nullptr);
   jfloat *desc = env->GetFloatArrayElements(descJ, nullptr);
   if (kp && desc) ov_core::superpoint_submit((int)camId, (double)ts, kp, desc, (int)n);
