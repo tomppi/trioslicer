@@ -221,7 +221,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             if (now - lastLogNs > 1_000_000_000L) {
                 val sec = if (lastLogNs == 0L) 1.0 else (now - lastLogNs) / 1e9
                 val dRate = (deliveredFrames - lastLogDelivered) / sec
-                val pRate = (framesProcessed - lastLogProcessed) / sec
+                val pRate = (framesProcessed.toLong() - lastLogProcessed) / sec
                 val v = vio
                 Log.i(TAG, "stage total=%.1f eng=%.1f board=%.1f laser=%.1f vio=%.1f yconv=%.1f feat=%.1f mask=%.1f feed=%.1f snap=%.1f rest=%.1f ar=%d det=%d res=%dx%d delivered=%.1f processed=%.1f".format(
                     out.procMs, lastEngMs, lastBoardMs, lastLaserMs, lastVioMs,
@@ -230,7 +230,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                     img.width, img.height, dRate, pRate))
                 lastLogNs = now
                 lastLogDelivered = deliveredFrames
-                lastLogProcessed = framesProcessed
+                lastLogProcessed = framesProcessed.toLong()
             }
         } catch (e: RuntimeException) {
             Log.e(TAG, "frame failed", e)
