@@ -19,6 +19,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.util.Log
 import android.util.Size
@@ -211,6 +213,11 @@ class PipelineActivity : ComponentActivity() {
     private var controller: CaptureController? = null
     /** VIO pose source: the same OpenVINS + SuperPoint runner the scanner uses. */
     private var vio: VioRunner? = null
+    private var warmupActive = false
+    private var warmupTicker: Runnable? = null
+    private var warmupStartMs = 0L
+    private var pendingCaptureStart = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var captureModes: List<CaptureMode> = emptyList()
     private var previewImage by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
     private var live = LiveState()
@@ -605,6 +612,7 @@ class PipelineActivity : ComponentActivity() {
                 vio = v
                 controller?.vio = v
             }.onFailure { dbg("VIO start failed: " + it.message) }
+            startWarmup()
             controller?.torchMode = torchMode
             // CameraProbe lists the dual-lens rig first, but rig frames from two different
             // lenses do not reconstruct as one scan here (previous scan: 2/30 registered).
@@ -638,9 +646,97 @@ class PipelineActivity : ComponentActivity() {
             return
         }
         if (controller == null) openViewfinder()
+        // The pose source is OpenVINS: it must finish its static initialisation
+        // (still, then a gentle move) before captured keyframes have usable poses.
+        if (vio != null && vio?.warmupDone != true) {
+            pendingCaptureStart = true
+            startWarmup()
+            state.value = state.value.copy(
+                phase = "idle",
+                status = "Warm up first",
+                detail = "Hold the phone still, then move it gently until tracking starts",
+                hint = "The scan starts by itself once VIO is tracking",
+            )
+            return
+        }
+        startCaptureNow()
+    }
+
+    private fun startCaptureNow() {
         val capture = controller ?: return
         capture.startScan()
         state.value = State(phase = "capturing", status = "Walk slowly around the object")
+    }
+
+    /** OpenVINS static initialisation: hold still, then move gently. */
+    private fun startWarmup() {
+        val v = vio ?: return
+        if (v.initialized) {
+            v.warmupDone = true
+            if (pendingCaptureStart) {
+                pendingCaptureStart = false
+                startCaptureNow()
+            }
+            return
+        }
+        if (warmupActive) return
+        warmupActive = true
+        warmupStartMs = System.currentTimeMillis()
+        v.warmupDone = false
+        if (!v.tracking) v.startTrackingSilent()
+        val tick = object : Runnable {
+            override fun run() {
+                if (!warmupActive) return
+                val vv = vio ?: return
+                val init = vv.initialized
+                val ready = vv.initReadyToMove()
+                val line = when {
+                    init -> "VIO TRACKING"
+                    ready -> "Move gently to initialise tracking"
+                    else -> "Hold still for a moment"
+                }
+                val now = System.currentTimeMillis()
+                if (init) {
+                    vv.warmupDone = true
+                    warmupActive = false
+                    state.value = state.value.copy(
+                        phase = "idle",
+                        status = "VIO tracking ready",
+                        detail = "Move slowly around the object, then press Start scan",
+                        hint = "Keyframes now carry an OpenVINS pose",
+                    )
+                    if (pendingCaptureStart) {
+                        pendingCaptureStart = false
+                        startCaptureNow()
+                    }
+                    return
+                }
+                if (now - warmupStartMs > 25_000L) {
+                    warmupActive = false
+                    vv.warmupDone = true
+                    state.value = state.value.copy(
+                        phase = "idle",
+                        status = "VIO did not initialise",
+                        detail = "Capturing without VIO poses - use a textured scene and move slowly",
+                        hint = "Reconstruction will fall back to image-only SfM",
+                    )
+                    if (pendingCaptureStart) {
+                        pendingCaptureStart = false
+                        startCaptureNow()
+                    }
+                    return
+                }
+                state.value = state.value.copy(
+                    phase = "idle",
+                    status = line,
+                    detail = "OpenVINS initialisation - hold still, then move gently",
+                    hint = "Tracking starts automatically; the scan begins after it",
+                )
+                mainHandler.postDelayed(this, 100L)
+            }
+        }
+        warmupTicker = tick
+        mainHandler.postDelayed(tick, 100L)
     }
 
     private fun stopAndReconstruct() {
@@ -976,10 +1072,18 @@ class PipelineActivity : ComponentActivity() {
 
     /** Releases the camera; the next scan reopens it. */
     private fun closeCamera() {
+        stopWarmup()
         controller?.close()
         controller = null
         previewImage = null
         live = LiveState()
+    }
+
+    private fun stopWarmup() {
+        warmupActive = false
+        warmupTicker?.let { mainHandler.removeCallbacks(it) }
+        warmupTicker = null
+        pendingCaptureStart = false
     }
 
     private fun train(useMasksOverride: Boolean? = null, warmStart: Boolean = false) {
