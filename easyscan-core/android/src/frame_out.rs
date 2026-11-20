@@ -112,6 +112,9 @@ pub mod layer {
     pub const LASER_IN: f32 = 10.0;
     pub const LASER_OUT: f32 = 11.0;
     pub const LASER_FIT: f32 = 12.0;
+    pub const LASER_CAM: f32 = 13.0;
+    /// Board pose: row-major 4x4, board -> camera, translation in mm.
+    pub const POSE: f32 = 14.0;
 }
 
 #[derive(Default)]
@@ -144,5 +147,17 @@ impl FrameOut {
         }
         self.buf.extend_from_slice(&[kind, 4.0, segs.len() as f32]);
         self.buf.extend(segs.iter().flatten());
+    }
+
+    /// One rigid transform as a row-major 4x4: `[kind, stride, count, ...]`.
+    pub fn rigid4(&mut self, kind: f32, r: &[[f64; 3]; 3], t: &[f64; 3]) {
+        self.buf.extend_from_slice(&[kind, 16.0, 1.0]);
+        for row in 0..3 {
+            for col in 0..3 {
+                self.buf.push(r[row][col] as f32);
+            }
+            self.buf.push(t[row] as f32);
+        }
+        self.buf.extend_from_slice(&[0.0, 0.0, 0.0, 1.0]);
     }
 }

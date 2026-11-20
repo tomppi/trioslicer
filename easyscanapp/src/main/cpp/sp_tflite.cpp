@@ -280,8 +280,21 @@ Java_com_rawmechatronics_easyscanner_SpTflite_create(JNIEnv* env, jclass, jstrin
     else if (n.find("descriptors_a") != std::string::npos) e->desc_a = t;
     else if (n.find("descriptors_b") != std::string::npos) e->desc_b = t;
   }
-  if (!e->scores_b) e->scores_b = const_cast<TfLiteTensor*>(TfLiteInterpreterGetOutputTensor(e->interp, 2));
-  if (!e->desc_b) e->desc_b = const_cast<TfLiteTensor*>(TfLiteInterpreterGetOutputTensor(e->interp, 3));
+  // Quantized/renamed graphs may not keep scores_a/descriptors_a names: map by tensor shape.
+  {
+    std::vector<TfLiteTensor*> scoreT, descT;
+    for (int i = 0; i < nOut; i++) {
+      auto* t = const_cast<TfLiteTensor*>(TfLiteInterpreterGetOutputTensor(e->interp, i));
+      if (!t) continue;
+      int nd = TfLiteTensorNumDims(t);
+      if (nd == 3 && TfLiteTensorDim(t, 1) == H && TfLiteTensorDim(t, 2) == W) scoreT.push_back(t);
+      else if (nd == 4 && TfLiteTensorDim(t, 1) == 256) descT.push_back(t);
+    }
+    if (!e->scores_a && !scoreT.empty()) e->scores_a = scoreT[0];
+    if (!e->scores_b && scoreT.size() > 1) e->scores_b = scoreT[1];
+    if (!e->desc_a && !descT.empty()) e->desc_a = descT[0];
+    if (!e->desc_b && descT.size() > 1) e->desc_b = descT[1];
+  }
 
   env->ReleaseStringUTFChars(libDirJ, libDir);
   env->ReleaseStringUTFChars(modelPathJ, modelPath);
@@ -303,19 +316,36 @@ Java_com_rawmechatronics_easyscanner_SpTflite_run(JNIEnv* env, jclass, jlong han
   if (!e->have_prev) { e->img_a = e->img_b; e->have_prev = true; }
 
   auto inBytes = static_cast<size_t>(3 * WH) * sizeof(float);
-  TfLiteTensorCopyFromBuffer(e->in_a, e->img_a.data(), inBytes);
-  TfLiteTensorCopyFromBuffer(e->in_b, e->img_b.data(), inBytes);
-
   auto t0 = std::chrono::steady_clock::now();
-  TfLiteStatus st = TfLiteInterpreterInvoke(e->interp);
-  auto t1 = std::chrono::steady_clock::now();
-  double inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-  if (st != kTfLiteOk) { LOG("invoke failed"); return nullptr; }
-
-  if (e->scores_a) TfLiteTensorCopyToBuffer(e->scores_a, e->sc_a.data(), static_cast<size_t>(WH) * sizeof(float));
-  if (e->desc_a) TfLiteTensorCopyToBuffer(e->desc_a, e->de_a.data(), static_cast<size_t>(DESC) * sizeof(float));
-  TfLiteTensorCopyToBuffer(e->scores_b, e->sc_b.data(), static_cast<size_t>(WH) * sizeof(float));
-  TfLiteTensorCopyToBuffer(e->desc_b, e->de_b.data(), static_cast<size_t>(DESC) * sizeof(float));
+  double inferMs = 0.0;
+  TfLiteStatus st = kTfLiteOk;
+  if (e->in_b) {
+    TfLiteTensorCopyFromBuffer(e->in_a, e->img_a.data(), inBytes);
+    TfLiteTensorCopyFromBuffer(e->in_b, e->img_b.data(), inBytes);
+    st = TfLiteInterpreterInvoke(e->interp);
+    auto t1 = std::chrono::steady_clock::now();
+    inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (st != kTfLiteOk) { LOG("invoke failed"); return nullptr; }
+    if (e->scores_a) TfLiteTensorCopyToBuffer(e->scores_a, e->sc_a.data(), static_cast<size_t>(WH) * sizeof(float));
+    if (e->desc_a) TfLiteTensorCopyToBuffer(e->desc_a, e->de_a.data(), static_cast<size_t>(DESC) * sizeof(float));
+    if (e->scores_b) TfLiteTensorCopyToBuffer(e->scores_b, e->sc_b.data(), static_cast<size_t>(WH) * sizeof(float));
+    if (e->desc_b) TfLiteTensorCopyToBuffer(e->desc_b, e->de_b.data(), static_cast<size_t>(DESC) * sizeof(float));
+  } else {
+    // Single-image SuperPoint model (the matched double-branch graph reduced to one branch):
+    // run it twice, once per image, to keep the two-image matcher API unchanged.
+    TfLiteTensorCopyFromBuffer(e->in_a, e->img_a.data(), inBytes);
+    st = TfLiteInterpreterInvoke(e->interp);
+    auto t1 = std::chrono::steady_clock::now();
+    inferMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (st != kTfLiteOk) { LOG("invoke failed"); return nullptr; }
+    TfLiteTensorCopyToBuffer(e->scores_a, e->sc_a.data(), static_cast<size_t>(WH) * sizeof(float));
+    TfLiteTensorCopyToBuffer(e->desc_a, e->de_a.data(), static_cast<size_t>(DESC) * sizeof(float));
+    TfLiteTensorCopyFromBuffer(e->in_a, e->img_b.data(), inBytes);
+    st = TfLiteInterpreterInvoke(e->interp);
+    if (st != kTfLiteOk) { LOG("invoke failed"); return nullptr; }
+    TfLiteTensorCopyToBuffer(e->scores_a, e->sc_b.data(), static_cast<size_t>(WH) * sizeof(float));
+    TfLiteTensorCopyToBuffer(e->desc_a, e->de_b.data(), static_cast<size_t>(DESC) * sizeof(float));
+  }
 
   struct Kp { float x, y, s; };
   auto extract = [](const float* sc, int cap) {
@@ -489,7 +519,7 @@ Java_com_rawmechatronics_easyscanner_SpTflite_features(JNIEnv* env, jclass, jlon
   e->img_a = e->img_b;
   auto inBytes = static_cast<size_t>(3 * WH) * sizeof(float);
   TfLiteTensorCopyFromBuffer(e->in_a, e->img_a.data(), inBytes);
-  TfLiteTensorCopyFromBuffer(e->in_b, e->img_b.data(), inBytes);
+  if (e->in_b) TfLiteTensorCopyFromBuffer(e->in_b, e->img_b.data(), inBytes);
   if (TfLiteInterpreterInvoke(e->interp) != kTfLiteOk) return nullptr;
   TfLiteTensorCopyToBuffer(e->scores_a, e->sc_a.data(), static_cast<size_t>(WH) * sizeof(float));
   TfLiteTensorCopyToBuffer(e->desc_a, e->de_a.data(), static_cast<size_t>(DESC) * sizeof(float));

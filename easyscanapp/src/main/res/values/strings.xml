@@ -68,6 +68,7 @@
     <string name="body_camera">Start, then move the phone slowly around the board: tilt it 30–45° to every side, near and far, so the board visits every part of the picture. It saves on its own.</string>
     <string name="camera_live">Views %1$d/%2$d · last solve %3$s</string>
 
+
     <string name="title_laser">4 · Laser plane</string>
     <string name="body_laser">Laser on, nothing on the board. Start, then sweep the stripe across the board, changing the phone\'s tilt between sweeps. It saves on its own.</string>
     <string name="laser_stale">The saved laser plane was fitted with an earlier camera calibration: calibrate it again.</string>
@@ -117,4 +118,12 @@
     <string name="cloud_points_thinned">%1$,d points, showing %2$,d</string>
     <string name="photo">Scan photo</string>
     <string name="photo_counter">%1$d / %2$d  %3$s</string>
+
+    <string name="range_too_close">TOO CLOSE — move back</string>
+    <string name="range_too_far">TOO FAR — move closer</string>
+    <string name="range_in">IN RANGE · %1$d cm</string>
+    <string name="range_no_board">BOARD NOT IN VIEW</string>
+    <string name="range_paused">PAUSED — move to the green range</string>
+    <string name="camera_focus_moved">The lens focus moved since the saved camera calibration. Go to Focus and relock at the calibrated focus, or start a new calibration here.</string>
+    <string name="act_relock_focus">Go to Focus</string>
 </resources>

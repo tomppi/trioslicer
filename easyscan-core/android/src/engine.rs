@@ -623,6 +623,8 @@ impl Engine {
             o.set(h::DISTANCE, distance(&p.pose));
             o.set(h::REPROJ_RMS, p.reproj_rms);
             o.set(h::POSE_MARGIN, p.margin.unwrap_or(f64::NAN));
+            // Offline recorder / calibration app: board -> camera pose, rows of a 4x4.
+            o.rigid4(layer::POSE, &p.pose.r, &p.pose.t);
         }
         o.set(h::FOCUS_PCT, focus_pct.unwrap_or(f64::NAN));
         o.set(h::LASER_STATE, if !self.cfg.laser.enabled { 0.0 } else if found { 2.0 } else { 1.0 });

@@ -38,7 +38,7 @@ static bool build_system(VioState *st, const std::string &config_dir) {
   auto parser = std::make_shared<ov_core::YamlParser>(config_path, true);
   ov_msckf::VioManagerOptions params;
   params.print_and_load(parser);
-  ov_core::Printer::setPrintLevel(ov_core::Printer::PrintLevel::ALL);
+  ov_core::Printer::setPrintLevel(ov_core::Printer::PrintLevel::INFO);
   auto tracker = std::make_shared<ov_core::TrackSuperPoint>(
       params.camera_intrinsics, params.num_pts, params.state_options.max_aruco_features,
       params.use_stereo, params.histogram_method);
@@ -164,6 +164,35 @@ Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioInitialized(JNIEnv *, jc
   auto *st = reinterpret_cast<VioState *>(h);
   if (!st || !st->sys) return JNI_FALSE;
   return st->sys->initialized() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_rawmechatronics_easyscanner_NativeLib_nativeVioGetState(
+    JNIEnv *env, jclass, jlong h, jdoubleArray pJ, jdoubleArray vJ, jdoubleArray bgJ, jdoubleArray baJ, jdoubleArray quatJ) {
+  auto *st = reinterpret_cast<VioState *>(h);
+  if (!st || !st->sys || !st->sys->initialized()) return JNI_FALSE;
+  try {
+    auto state = st->sys->get_state();
+    Eigen::Vector4d q = state->_imu->quat();
+    Eigen::Vector3d p = state->_imu->pos();
+    Eigen::Vector3d v = state->_imu->vel();
+    Eigen::Vector3d bg = state->_imu->bias_g();
+    Eigen::Vector3d ba = state->_imu->bias_a();
+    if (!p.allFinite() || !v.allFinite() || !bg.allFinite() || !ba.allFinite() || !q.allFinite()) return JNI_FALSE;
+    jdouble pd[3] = {p(0), p(1), p(2)};
+    jdouble vd[3] = {v(0), v(1), v(2)};
+    jdouble bgd[3] = {bg(0), bg(1), bg(2)};
+    jdouble bad[3] = {ba(0), ba(1), ba(2)};
+    jdouble qd[4] = {q(3), q(0), q(1), q(2)};
+    env->SetDoubleArrayRegion(pJ, 0, 3, pd);
+    env->SetDoubleArrayRegion(vJ, 0, 3, vd);
+    env->SetDoubleArrayRegion(bgJ, 0, 3, bgd);
+    env->SetDoubleArrayRegion(baJ, 0, 3, bad);
+    env->SetDoubleArrayRegion(quatJ, 0, 4, qd);
+    return JNI_TRUE;
+  } catch (...) {
+    return JNI_FALSE;
+  }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

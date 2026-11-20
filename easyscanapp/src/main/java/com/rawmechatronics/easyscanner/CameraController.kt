@@ -70,7 +70,8 @@ data class CameraInfo(
             mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
         }
 
-        fun query(mgr: CameraManager, id: String, targetFps: Int, maxLongSide: Int): CameraInfo {
+        fun query(mgr: CameraManager, id: String, targetFps: Int, maxLongSide: Int,
+              preferHighestResolution: Boolean = false): CameraInfo {
             val c = mgr.getCameraCharacteristics(id)
             val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             val active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)!!
@@ -88,14 +89,24 @@ data class CameraInfo(
             val capped = reachable.filter { maxLongSide <= 0 || maxOf(it.width, it.height) <= maxLongSide }
                 .ifEmpty { reachable.sortedBy { it.width * it.height }.take(1) }
             // same aspect as the sensor → every stream is the same crop and K scales exactly
-            val analysis = capped.filter(::sameAspect).ifEmpty { capped }
-                .sortedByDescending { it.width * it.height }
+            val analysis = if (preferHighestResolution) {
+                // Calibration wants the most pixels the camera can actually stream, even
+                // if that means a lower frame rate than the scanner's target.
+                yuv.filter { it.width * it.height >= 320 * 240 && sameAspect(it) }
+                    .ifEmpty { yuv }
+                    .sortedByDescending { it.width * it.height }
+            } else {
+                capped.filter(::sameAspect).ifEmpty { capped }
+                    .sortedByDescending { it.width * it.height }
+            }
 
             // exactly the analysis aspect: Camera2 crops every stream to its own
             // aspect, so only an equal one is the same crop and K scales exactly
             val ref = analysis.first()
+            // Calibration wants sensor-resolution stills: the JPEG sizes that match the
+            // sensor's own aspect, independent of whatever analysis stream is chosen.
             val stills = map.getOutputSizes(ImageFormat.JPEG)
-                .filter { it.width.toLong() * ref.height == it.height.toLong() * ref.width }
+                .filter { it.width * it.height >= 320 * 240 && sameAspect(it) }
                 .sortedByDescending { it.width * it.height }
 
             val texture = map.getOutputSizes(SurfaceTexture::class.java).toList()

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IMU Calibration</string>
+    <string name="instructions">Records the camera-IMU calibration the marker-free tracker needs: engine board poses, camera timestamps, 480 Hz accelerometer/gyro samples and full-rate frames for an offline Kalibr bag.\n\nStand 30-60 cm from the ChArUco board with the whole board in view. Press Record, hold still 3 s, then for ~35 s rotate the phone slowly through yaw, pitch and roll. It stops itself at 40 s and solves on the phone; the Kalibr YAML and a residual report are written to the app\'s calib-output folder.</string>
+</resources>

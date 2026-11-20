@@ -1,12 +1,18 @@
 package com.rawmechatronics.easyscanner
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Shows exactly what the camera model, laser plane and VIO are running with.
@@ -16,6 +22,8 @@ import java.io.File
 class CalibrationActivity : android.app.Activity() {
 
     private lateinit var body: TextView
+
+    private val REQUEST_LOAD = 41
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,6 +82,21 @@ class CalibrationActivity : android.app.Activity() {
         }
         col.addView(solve)
 
+        val load = Button(this)
+        load.text = "Load calibrations… (YAML profile)"
+        load.setOnClickListener {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+            try {
+                startActivityForResult(i, REQUEST_LOAD)
+            } catch (e: Exception) {
+                Toast.makeText(this, "No file picker: " + e.message, Toast.LENGTH_LONG).show()
+            }
+        }
+        col.addView(load)
+
         val refresh = Button(this)
         refresh.text = "Refresh"
         refresh.setOnClickListener { render() }
@@ -90,6 +113,57 @@ class CalibrationActivity : android.app.Activity() {
 
         setContentView(scroll)
         render()
+    }
+
+    @Deprecated("Activity API from before the result contracts")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_LOAD || resultCode != RESULT_OK) return
+        val uri: Uri = data?.data ?: return
+        val text = try {
+            contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        } catch (e: Exception) {
+            null
+        }
+        if (text == null) {
+            body.text = "Could not read the selected file.\n\n" + describe()
+            Toast.makeText(this, "Could not read the selected file", Toast.LENGTH_LONG).show()
+            return
+        }
+        val msg = applyLoadedCalibration(text)
+        body.text = msg + "\n\n" + describe()
+        Toast.makeText(this, msg.lineSequence().first(), Toast.LENGTH_LONG).show()
+    }
+
+    /** Validate a Kalibr camchain-imucam YAML and make it the active VIO profile. */
+    private fun applyLoadedCalibration(text: String): String {
+        val v = VioCalibrationProfile.validate(text)
+        if (!v.ok) return "Load failed: " + v.message
+        val dir = File(filesDir, "openvins-config")
+        dir.mkdirs()
+        val target = File(dir, "kalibr_imucam_chain.yaml")
+        var backup: String? = null
+        if (target.exists()) {
+            val bak = File(dir, "kalibr_imucam_chain.yaml.bak-load-" +
+                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()))
+            try {
+                target.copyTo(bak, overwrite = true)
+                backup = bak.name
+            } catch (_: Exception) {
+            }
+        }
+        return try {
+            target.writeText(text)
+            val sb = StringBuilder()
+            sb.append("Loaded camera-IMU calibration profile.\n")
+            sb.append("  ").append(v.message).append('\n')
+            sb.append("  saved to files/openvins-config/kalibr_imucam_chain.yaml\n")
+            if (backup != null) sb.append("  previous profile kept as ").append(backup).append('\n')
+            sb.append("  Restart tracking (leave EasyScan and start the Scanner again) so the VIO reloads it.")
+            sb.toString()
+        } catch (e: Exception) {
+            "Load failed while writing the profile: " + (e.message ?: e.javaClass.simpleName)
+        }
     }
 
     private fun launchCapture(kind: String) {
@@ -194,6 +268,10 @@ class CalibrationActivity : android.app.Activity() {
 5. Solve: the phone computes R_cam_imu, camera-IMU time offset, gyro bias, IMU
    noise and the VIO/board scale ratio, writes the kalibr files and shows the
    residuals (rotation rms in deg, time offset in ms, scale error %).
+   A calibration computed elsewhere (PC/Kalibr, or the separate IMU Calibration
+   app exported to Download/dsh-agent) can be applied with "Load calibrations…":
+   pick the kalibr_imucam_chain.yaml file, it is validated and saved as the
+   active VIO profile (the previous one is kept as a backup).
 6. Verify: record one more board pass; scale error should stay near 0 % and
    rotation rms under ~0.5 deg. Then scan marker-free with Track VIO.
 

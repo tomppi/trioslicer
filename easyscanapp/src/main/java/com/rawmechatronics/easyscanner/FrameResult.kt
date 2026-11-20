@@ -128,6 +128,8 @@ class FrameResult(capacity: Int = 32 * 1024) {
         const val LASER_FIT = 12
         const val LASER_CAM = 13
         const val POSE = 14
+        /** ChArUco corner triples [id, u, v] for offline calibration. */
+        const val CORNERS_ID = 15
     }
 
     /** Calibration states in [H.CALIB_STATE], mirroring `calib::CalibState`. */

@@ -17,7 +17,6 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var vio = 0L
     private var sp = 0L
     private var sensors: SensorManager? = null
-    private val EMPTY_F = FloatArray(0)
     private val accel = FloatArray(3)
     private val gyro = FloatArray(3)
     private val accelPrev = FloatArray(3)
@@ -34,6 +33,22 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var imuFed = 0L
     private var imuRejected = 0L
     private var lastAccelNorm = 0.0
+    private var accelStaleSum = 0.0
+    private var gyroStaleSum = 0.0
+    private var staleMax = 0.0
+    private var feedDtSum = 0.0
+    private var lastFedTs = 0.0
+    private var statSamples = 0L
+    private var gyroSum = 0.0
+    private var gyroMax = 0.0
+    private var camOffSum = 0.0
+    private var camOffMax = 0.0
+    private var camOffN = 0L
+    private val stPos = DoubleArray(3)
+    private val stVel = DoubleArray(3)
+    private val stBg = DoubleArray(3)
+    private val stBa = DoubleArray(3)
+    private val stQuat = DoubleArray(4)
     private var frameCount = 0
 
     @Volatile var initialized = false
@@ -107,22 +122,33 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                 Log.w(TAG, "config copy failed: " + name, e)
             }
         }
+        syncVioIntrinsics(dir)
         vio = NativeLib.nativeVioCreate(dir.absolutePath)
         if (vio == 0L) {
             Log.e(TAG, "VIO create failed (config/parse error) - marker-free pose disabled")
             return
         }
-        val model = File(ctx.filesDir, "superpoint.tflite")
-        if (!model.exists()) {
-            try {
-                ctx.assets.open("superpoint.tflite").use { input ->
-                    model.outputStream().use { input.copyTo(it) }
+        // Prefer the int8-quantized SuperPoint (QNN HTP int8 path); fall back to float16/float32.
+        var spHandle = 0L
+        for (name in arrayOf("superpoint_single.tflite", "superpoint.tflite")) {
+            val model = File(ctx.filesDir, name)
+            if (!model.exists() || model.length() < 1000) {
+                try {
+                    ctx.assets.open(name).use { input -> model.outputStream().use { input.copyTo(it) } }
+                } catch (e: Exception) {
+                    Log.w(TAG, "model copy failed: " + name, e)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "model copy failed", e)
             }
+            if (!model.exists() || model.length() < 1000) continue
+            val h = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
+            if (h != 0L && !(h >= -4L && h <= -1L)) {
+                spHandle = h
+                Log.i(TAG, "SuperPoint model: " + name + " (" + model.length() + " bytes)")
+                break
+            }
+            Log.w(TAG, "model create failed: " + name + " (" + h + ")")
         }
-        sp = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
+        sp = spHandle
         // Handles are native pointers (Android tags the top byte, so they can look negative);
         // only 0 and the create error codes -1..-4 mean failure.
         if (sp == 0L || (sp >= -4L && sp <= -1L)) {
@@ -179,14 +205,17 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         val type = event.sensor.type
+        val evTs = event.timestamp * 1e-9
         if (type == Sensor.TYPE_ACCELEROMETER) {
             imuAccelEvents++
+            accelTs = evTs
             accel[0] = event.values[0]
             accel[1] = event.values[1]
             accel[2] = event.values[2]
             haveAccel = true
         } else if (type == Sensor.TYPE_GYROSCOPE) {
             imuGyroEvents++
+            gyroTs = evTs
             gyro[0] = event.values[0]
             gyro[1] = event.values[1]
             gyro[2] = event.values[2]
@@ -202,6 +231,18 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         lastImuTs = ts
         lastAccelNorm = Math.sqrt((accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]).toDouble())
         imuFed++
+        val aStale = Math.abs(ts - accelTs)
+        val gStale = Math.abs(ts - gyroTs)
+        accelStaleSum += aStale
+        gyroStaleSum += gStale
+        if (aStale > staleMax) staleMax = aStale
+        if (gStale > staleMax) staleMax = gStale
+        if (lastFedTs > 0.0) feedDtSum += (ts - lastFedTs)
+        lastFedTs = ts
+        statSamples++
+        val gw = Math.sqrt((gyro[0]*gyro[0] + gyro[1]*gyro[1] + gyro[2]*gyro[2]).toDouble())
+        gyroSum += gw
+        if (gw > gyroMax) gyroMax = gw
         NativeLib.nativeVioFeedImu(vio, accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], ts)
         haveAccel = false
         haveGyro = false
@@ -216,8 +257,13 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         if (!(timestampSec > lastFrameTs)) return initialized  // drop duplicate/reversed camera frames
         lastFrameTs = timestampSec
         tYConvMs = 0.0; tFeatMs = 0.0; tMaskMs = 0.0; tFeedMs = 0.0
-        val doDetect = (frameCount % 2) == 0
         val tStage0 = System.nanoTime()
+        if (lastImuTs > 0.0) {
+            val off = timestampSec - lastImuTs
+            camOffSum += Math.abs(off)
+            if (Math.abs(off) > camOffMax) camOffMax = Math.abs(off)
+            camOffN++
+        }
         val gray = ByteArray(GW * GH)
         for (yy in 0 until GH) {
             val sy = yy * height / GH
@@ -228,18 +274,6 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             }
         }
         tYConvMs = (System.nanoTime() - tStage0) / 1e6
-        // SuperPoint runs at half the camera rate; on the other frames KLT carries the existing
-        // tracks through this image and only the timestamp is handed to the tracker (VINS-Mobile
-        // style). This keeps every camera frame in the estimator without paying the NPU twice.
-        if (!doDetect) {
-            lastDetN = 0
-            val tFeed0 = System.nanoTime()
-            NativeLib.nativeVioSetFeatures(vio, 0, timestampSec, EMPTY_F, EMPTY_F, 0)
-            NativeLib.nativeVioFeedFrame(vio, gray, GW, GH, timestampSec)
-            tFeedMs = (System.nanoTime() - tFeed0) / 1e6
-            frameCount++
-            return initialized
-        }
         val tFeat0 = System.nanoTime()
         val feat = SpTflite.features(sp, gray)
         tFeatMs = (System.nanoTime() - tFeat0) / 1e6
@@ -305,10 +339,77 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
         tFeedMs = (System.nanoTime() - tFeed0) / 1e6
         frameCount++
+        if (frameCount % 60 == 0) {
+            val ok = NativeLib.nativeVioGetState(vio, stPos, stVel, stBg, stBa, stQuat)
+            val ns = statSamples.coerceAtLeast(1).toDouble()
+            Log.i(TAG, "VIOSTAGE ok=" + ok +
+                " p=%.3f,%.3f,%.3f v=%.3f,%.3f,%.3f |v|=%.3f bg=%.4f,%.4f,%.4f ba=%.4f,%.4f,%.4f".format(
+                    stPos[0], stPos[1], stPos[2], stVel[0], stVel[1], stVel[2],
+                    Math.sqrt(stVel[0]*stVel[0]+stVel[1]*stVel[1]+stVel[2]*stVel[2]),
+                    stBg[0], stBg[1], stBg[2], stBa[0], stBa[1], stBa[2]) +
+                " evA=" + imuAccelEvents + " evG=" + imuGyroEvents + " fed=" + imuFed +
+                " rej=" + imuRejected + " dt=%.2fms aStale=%.2fms gStale=%.2fms staleMax=%.2fms gyro=%.1f/%.1fdeg camOff=%.1f/%.1fms".format(
+                    feedDtSum / ns * 1000.0, accelStaleSum / ns * 1000.0, gyroStaleSum / ns * 1000.0, staleMax * 1000.0,
+                    Math.toDegrees(gyroSum / ns), Math.toDegrees(gyroMax),
+                    if (camOffN > 0) camOffSum / camOffN * 1000.0 else 0.0,
+                    camOffMax * 1000.0))
+            accelStaleSum = 0.0; gyroStaleSum = 0.0; staleMax = 0.0
+            feedDtSum = 0.0; lastFedTs = 0.0; statSamples = 0; imuRejected = 0
+            gyroSum = 0.0; gyroMax = 0.0; camOffSum = 0.0; camOffMax = 0.0; camOffN = 0
+        }
         if (frameCount % 60 == 0) Log.i(TAG, "VIO frames=" + frameCount + " init=" + initialized + " features=" + n +
                 " imu: accelEv=" + imuAccelEvents + " gyroEv=" + imuGyroEvents + " fed=" + imuFed +
                 " reversed=" + imuRejected + " |a|=" + String.format(java.util.Locale.US, "%.2f", lastAccelNorm))
         return initialized
+    }
+
+    /**
+     * The VIO front-end consumes the same camera as the engine, downscaled to 640x480, so its
+     * pinhole+radtan model must be the engine's calibrated live_intrinsics.json scaled by
+     * 640 / calibrated_width. The on-device Kalibr file is only an initial/legacy source for
+     * T_cam_imu and timeshift; using a stale intrinsics block here biases every visual residual
+     * and shows up as accelerometer-bias drift.
+     */
+    private fun syncVioIntrinsics(dir: File) {
+        try {
+            val live = File(ctx.filesDir, "live_intrinsics.json")
+            if (!live.exists() || live.length() < 20) return
+            val o = org.json.JSONObject(live.readText())
+            if (!o.optBoolean("calibrated", false)) return
+            val w = o.optDouble("width", 0.0)
+            val h = o.optDouble("height", 0.0)
+            if (w <= 1.0 || h <= 1.0) return
+            val s = 640.0 / w
+            val fx = o.optDouble("fx", 0.0) * s
+            val fy = o.optDouble("fy", 0.0) * s
+            val cx = o.optDouble("cx", 0.0) * s
+            val cy = o.optDouble("cy", 0.0) * s
+            if (!fx.isFinite() || !fy.isFinite() || !cx.isFinite() || !cy.isFinite() || fx <= 0 || fy <= 0) return
+            val dist = o.optJSONArray("dist")
+            val d = DoubleArray(4)
+            if (dist != null) for (i in 0 until minOf(4, dist.length())) d[i] = dist.optDouble(i, 0.0)
+            val f = File(dir, "kalibr_imucam_chain.yaml")
+            if (!f.exists()) return
+            var text = f.readText()
+            fun repl(key: String, value: String): Boolean {
+                val re = Regex("(?m)^(\\s*$key:).*$")
+                if (!re.containsMatchIn(text)) return false
+                text = re.replace(text) { m -> m.groupValues[1] + " " + value }
+                return true
+            }
+            repl("intrinsics", String.format(java.util.Locale.US, "[%.9f, %.9f, %.9f, %.9f]", fx, fy, cx, cy))
+            repl("distortion_coeffs", String.format(java.util.Locale.US, "[%.9f, %.9f, %.9f, %.9f]", d[0], d[1], d[2], d[3]))
+            repl("resolution", "[640, 480]")
+            // drop any cached projection matrices from a previous aspect/resolution
+            val kf = File(dir, "camera_intrinsics.yaml")
+            if (kf.exists()) kf.delete()
+            f.writeText(text)
+            Log.i(TAG, String.format(java.util.Locale.US,
+                "VIO camera model: fx=%.2f fy=%.2f cx=%.2f cy=%.2f dist=[%.3f,%.3f,%.3f,%.3f] (engine %.0fx%.0f)",
+                fx, fy, cx, cy, d[0], d[1], d[2], d[3], w, h))
+        } catch (e: Exception) {
+            Log.w(TAG, "syncVioIntrinsics failed", e)
+        }
     }
 
     /** Camera pose as a 4x4 row-major matrix: world (VIO) -> camera, as the engine expects. */
@@ -338,7 +439,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
         if (addTrajectory) {
             if (trajectory.size > 4000) trajectory.removeAt(0)
-            trajectory.add(floatArrayOf(p[0].toFloat(), p[2].toFloat()))
+            trajectory.add(floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat()))
         }
         // engine wants world -> camera: transpose
         out[0] = r00
@@ -394,53 +495,26 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     fun trajectorySize(): Int = trajectory.size
 
+    /** Snapshot of the tracked path in VIO world metres (x, y, z; +Z is up). */
+    fun trajectoryPoints(): Array<FloatArray> = trajectory.toTypedArray()
+
     /** True only when the trajectory has real, finite extent worth drawing. */
     fun trajectoryHasData(): Boolean {
         var finite = 0
-        var minX = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE
-        var minZ = Float.MAX_VALUE
-        var maxZ = -Float.MAX_VALUE
+        val min = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE)
+        val max = floatArrayOf(-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE)
         for (pt in trajectory) {
-            if (pt[0].isNaN() || pt[1].isNaN() || pt[0].isInfinite() || pt[1].isInfinite()) continue
+            if (pt.size < 3) continue
+            if (!pt[0].isFinite() || !pt[1].isFinite() || !pt[2].isFinite()) continue
             finite++
-            if (pt[0] < minX) minX = pt[0]
-            if (pt[0] > maxX) maxX = pt[0]
-            if (pt[1] < minZ) minZ = pt[1]
-            if (pt[1] > maxZ) maxZ = pt[1]
+            for (k in 0 until 3) {
+                if (pt[k] < min[k]) min[k] = pt[k]
+                if (pt[k] > max[k]) max[k] = pt[k]
+            }
         }
         if (finite < 2) return false
-        val span = maxOf(maxX - minX, maxZ - minZ)
+        val span = maxOf(max[0] - min[0], max[1] - min[1], max[2] - min[2])
         return span > 0.003f   // 3 mm of real movement at least
-    }
-
-    /** Draw the tracked path (x,z) into a square box. */
-    fun drawTrajectory(canvas: android.graphics.Canvas, left: Float, top: Float, size: Float, paint: android.graphics.Paint) {
-        val pts = trajectory.toTypedArray()
-        val n = pts.size
-        if (n < 2) return
-        var minX = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE
-        var minZ = Float.MAX_VALUE
-        var maxZ = -Float.MAX_VALUE
-        for (pt in pts) {
-            if (pt[0].isNaN() || pt[1].isNaN()) continue
-            if (pt[0] < minX) minX = pt[0]
-            if (pt[0] > maxX) maxX = pt[0]
-            if (pt[1] < minZ) minZ = pt[1]
-            if (pt[1] > maxZ) maxZ = pt[1]
-        }
-        if (minX > maxX || minZ > maxZ) return
-        val span = maxOf(maxX - minX, maxZ - minZ, 0.05f)
-        val scale = size * 0.9f / span
-        val path = android.graphics.Path()
-        for (i in 0 until n) {
-            if (pts[i][0].isNaN() || pts[i][1].isNaN()) continue
-            val x = left + size * 0.05f + (pts[i][0] - minX) * scale
-            val y = top + size * 0.95f - (pts[i][1] - minZ) * scale
-            if (path.isEmpty) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        canvas.drawPath(path, paint)
     }
 
     fun release() {

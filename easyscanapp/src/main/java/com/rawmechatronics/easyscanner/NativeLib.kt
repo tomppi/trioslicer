@@ -23,6 +23,7 @@ internal object NativeLib {
     @JvmStatic external fun nativeVioInitialized(handle: Long): Boolean
     @JvmStatic external fun nativeVioInitReadyToMove(handle: Long): Boolean
     @JvmStatic external fun nativeVioGetPose(handle: Long, position: DoubleArray, quaternion: DoubleArray): Boolean
+    @JvmStatic external fun nativeVioGetState(handle: Long, pos: DoubleArray, vel: DoubleArray, bg: DoubleArray, ba: DoubleArray, quat: DoubleArray): Boolean
 
     @JvmStatic external fun nativeCreate(filesDir: String): Long
     @JvmStatic external fun nativeDestroy(handle: Long)

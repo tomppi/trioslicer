@@ -67,6 +67,12 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     private var settings: AppSettings? = null
     private var mode = Mode.VIEW
     private var messages = JSONObject()
+    /** Focus the saved camera calibration was taken at, diopters (NaN = unknown). */
+    private var kFocusDiopters = Double.NaN
+    /** The working-distance guard paused the scan; resume when back in range. */
+    private var rangePausedByApp = false
+    private var rangeOutRun = 0
+    private var rangeInRun = 0
     private val fps = FpsMeter()
     private val hudPending = AtomicBoolean(false)
 
@@ -610,6 +616,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
     override fun onMessages(json: String) {
         messages = runCatching { JSONObject(json) }.getOrDefault(messages)
+        kFocusDiopters = messages.optDouble("k_focus", Double.NaN)
         renderStatus()
     }
 
@@ -674,6 +681,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             else -> {}
         }
         b.hud.text = sb
+        updateRangeHud(r)
 
         // every read of r is above: what follows can render, which takes a newer frame
         val newCalib = r.flag(H.CALIB_ACTIVE)
@@ -693,6 +701,86 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             renderButtons()
         }
         if (!expert) renderWizard()
+    }
+
+    /**
+     * Obvious working-distance guidance: a large banner plus a gauge, and (while
+     * scanning) an automatic pause when the board leaves the calibrated focus band.
+     */
+    private fun updateRangeHud(r: FrameResult) {
+        fun f(slot: Int) = r[slot]
+        fun has(slot: Int) = !f(slot).isNaN()
+        val targetMm = focusTargetMm()
+        val detected = r.flag(H.DETECTED) && has(H.DISTANCE)
+        val distMm = if (detected) f(H.DISTANCE).toDouble() else Double.NaN
+        var state = 0 // 0 unknown, 1 too close, 2 in range, 3 too far
+        if (targetMm != null && detected && distMm.isFinite()) {
+            val ratio = distMm / targetMm
+            state = when {
+                ratio < NEAR_RATIO -> 1
+                ratio > FAR_RATIO -> 3
+                else -> 2
+            }
+        }
+        // auto-pause / resume, with a few frames of hysteresis
+        if (targetMm != null && detected) {
+            if (state == 1 || state == 3) { rangeOutRun++; rangeInRun = 0 } else if (state == 2) { rangeInRun++; rangeOutRun = 0 }
+            if (scanOn && (state == 1 || state == 3) && rangeOutRun >= 3 && !rangePausedByApp) {
+                rangePausedByApp = true
+                processor.command(Cmd.SCAN_STOP)
+            }
+            if (rangePausedByApp && state == 2 && rangeInRun >= 3) {
+                rangePausedByApp = false
+                processor.command(Cmd.SCAN_START)
+            }
+        } else if (!scanOn && !rangePausedByApp) {
+            rangeOutRun = 0
+            rangeInRun = 0
+        }
+        val banner = b.rangeBanner
+        val gauge = b.rangeGauge
+        val ratio = if (targetMm != null && detected) (distMm / targetMm).toFloat() else Float.NaN
+        val green = ContextCompat.getColor(this, android.R.color.holo_green_dark)
+        val red = ContextCompat.getColor(this, android.R.color.holo_red_dark)
+        val amber = ContextCompat.getColor(this, android.R.color.holo_orange_dark)
+        val bg = when {
+            !detected && scanOn -> amber
+            state == 1 || state == 3 -> red
+            state == 2 -> green
+            else -> amber
+        }
+        val text: String? = when {
+            !detected && scanOn -> getString(R.string.range_no_board)
+            targetMm == null -> null
+            state == 2 -> getString(R.string.range_in, (distMm / 10.0).roundToInt())
+            state == 1 -> getString(R.string.range_too_close)
+            state == 3 -> getString(R.string.range_too_far)
+            else -> if (detected) getString(R.string.range_in, (distMm / 10.0).roundToInt()) else null
+        }
+        if (text == null) {
+            banner.visibility = View.GONE
+            gauge.visibility = View.GONE
+        } else {
+            banner.visibility = View.VISIBLE
+            banner.text = text
+            banner.backgroundTintList = android.content.res.ColorStateList.valueOf(bg)
+            if (ratio.isFinite() && targetMm != null) {
+                gauge.visibility = View.VISIBLE
+                gauge.progress = (ratio * 100f).roundToInt().coerceIn(0, 200)
+                gauge.progressTintList = android.content.res.ColorStateList.valueOf(bg)
+            } else {
+                gauge.visibility = View.GONE
+            }
+        }
+    }
+
+    /** Distance the lens was focused at, mm: the saved calibration focus first, then the lock. */
+    private fun focusTargetMm(): Double? {
+        val fromCalib = kFocusDiopters
+        if (fromCalib.isFinite() && fromCalib > 0.01) return 1000.0 / fromCalib
+        val st = settings ?: return null
+        if (st.manualFocus && st.focusDiopters > 0.01f) return 1000.0 / st.focusDiopters.toDouble()
+        return null
     }
 
     private fun photoStateLabel(state: Int) = when (state) {
@@ -1043,15 +1131,18 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             Step.CAMERA -> {
                 title = R.string.title_camera
                 val rms = f(H.CALIB_RMS)
+                val focusMoved = r?.flag(H.K_CALIBRATED) == true && r?.flag(H.K_OK) == false
                 body = getString(R.string.body_camera) + "\n\n" +
                     getString(R.string.camera_live, f(H.CALIB_COUNT).toInt(), f(H.CALIB_TARGET).toInt(),
-                        if (rms.isNaN()) "-" else "%.2f px".format(rms)) + msg("calib")
+                        if (rms.isNaN()) "-" else "%.2f px".format(rms)) + msg("calib") +
+                    if (focusMoved) "\n\n" + getString(R.string.camera_focus_moved) else ""
                 acts = listOf(
                     Act(getString(if (calibActive) R.string.act_pause else R.string.act_start)) {
                         processor.command(if (calibActive) Cmd.CALIB_STOP else Cmd.CALIB_START)
                     },
                     Act(getString(R.string.act_reset)) { processor.command(Cmd.CALIB_RESET) },
-                    null, null,
+                    if (focusMoved) Act(getString(R.string.act_relock_focus)) { openStep(Step.FOCUS) } else null,
+                    null,
                 )
             }
             Step.LASER -> {
@@ -1428,6 +1519,9 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
         const val TAG = "EasyScanner"
         const val HUD_PERIOD_MS = 100L
+        /** Focus band for the working-distance HUD, as a fraction of the focus distance. */
+        const val NEAR_RATIO = 0.78
+        const val FAR_RATIO = 1.28
         /** No registered PLY type; a generic one keeps MediaStore from renaming the file. */
         const val PLY_MIME = "application/octet-stream"
         val STEPS = listOf(Step.BOARD, Step.FOCUS, Step.CAMERA, Step.LASER, Step.SCAN)

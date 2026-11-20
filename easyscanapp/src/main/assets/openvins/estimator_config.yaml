@@ -7,9 +7,9 @@ integration: "rk4" # discrete, rk4, analytical (if rk4 or analytical used then a
 use_stereo: false # if we have more than 1 camera, if we should try to track stereo constraints between pairs
 max_cameras: 1 # how many cameras we have 1 = mono, 2 = stereo, >2 = binocular (all mono tracking)
 
-calib_cam_extrinsics: false # if the transform between camera and IMU should be optimized R_ItoC, p_CinI
-calib_cam_intrinsics: false # if camera intrinsics should be optimized (focal, center, distortion)
-calib_cam_timeoffset: false # if timeoffset between camera and IMU should be optimized
+calib_cam_extrinsics: false  # if the transform between camera and IMU should be optimized R_ItoC, p_CinI
+calib_cam_intrinsics: false  # if camera intrinsics should be optimized (focal, center, distortion)
+calib_cam_timeoffset: true  # if timeoffset between camera and IMU should be optimized
 calib_imu_intrinsics: false # if imu intrinsics should be calibrated (rotation and skew-scale matrix)
 calib_imu_g_sensitivity: false # if gyroscope gravity sensitivity (Tg) should be calibrated
 
@@ -28,7 +28,7 @@ feat_rep_aruco: "ANCHORED_MSCKF_INVERSE_DEPTH"
 # zero velocity update parameters we can use
 # we support either IMU-based or disparity detection.
 try_zupt: true
-zupt_chi2_multipler: 0  # set to 0 for only disp-based
+zupt_chi2_multipler: 5  # set to 0 for only disp-based
 zupt_max_velocity: 0.1
 zupt_noise_multiplier: 50
 zupt_max_disparity: 1.5  # set to 0 for only imu-based
@@ -38,7 +38,7 @@ init_imu_thresh: 0.4  # threshold for variance of the accelerometer to detect a 
 init_max_disparity: 2.0  # max disparity to consider the platform stationary (dependent on resolution)
 init_max_features: 25 # how many features to track during initialization (saves on computation)
 
-init_dyn_use: false  # if dynamic initialization should be used
+init_dyn_use: true  # if dynamic initialization should be used
 init_dyn_mle_opt_calib: false # if we should optimize calibration during intialization (not recommended)
 init_dyn_mle_max_iter: 50 # how many iterations the MLE refinement should use (zero to skip the MLE)
 init_dyn_mle_max_time: 0.05 # how many seconds the MLE should be completed in

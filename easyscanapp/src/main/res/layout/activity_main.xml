@@ -37,6 +37,34 @@
             android:textSize="10sp" />
 
         <TextView
+            android:id="@+id/rangeBanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="64dp"
+            android:background="@drawable/bg_range_banner"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:paddingStart="18dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="10dp"
+            android:textColor="#101010"
+            android:textSize="20sp"
+            android:visibility="gone" />
+
+        <ProgressBar
+            android:id="@+id/rangeGauge"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="240dp"
+            android:layout_height="8dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="118dp"
+            android:max="200"
+            android:progress="100"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/captureBanner"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

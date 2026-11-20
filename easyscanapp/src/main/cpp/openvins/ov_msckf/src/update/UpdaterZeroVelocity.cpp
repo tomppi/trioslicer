@@ -232,16 +232,21 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
     if (disparity_passed) {
       PRINT_INFO(CYAN "[ZUPT]: passed disparity (%.3f < %.3f, %d features)\n" RESET, disp_avg, _zupt_max_disparity, (int)num_features);
     } else {
-      PRINT_DEBUG(YELLOW "[ZUPT]: failed disparity (%.3f > %.3f, %d features)\n" RESET, disp_avg, _zupt_max_disparity, (int)num_features);
+      PRINT_INFO(YELLOW "[ZUPT]: failed disparity (%.3f > %.3f, %d features)\n" RESET, disp_avg, _zupt_max_disparity, (int)num_features);
     }
   }
 
   // Check if we are currently zero velocity
   // We need to pass the chi2 and not be above our velocity threshold
-  if (!disparity_passed && (chi2 > _options.chi2_multipler * chi2_check || state->_imu->vel().norm() > _zupt_max_velocity)) {
+  const bool vel_ok = state->_imu->vel().norm() <= _zupt_max_velocity;
+  const bool chi2_ok = chi2 <= _options.chi2_multipler * chi2_check;
+  // Documented semantics: zupt_max_velocity is "max velocity we will consider to try to do a
+  // zupt (i.e. if above this, don't do zupt)" so it applies whether or not disparity passed.
+  // The chi2 gate is the inertial detector and is needed when disparity does not confirm stillness.
+  if (!vel_ok || (!disparity_passed && !chi2_ok)) {
     last_zupt_state_timestamp = 0.0;
     last_zupt_count = 0;
-    PRINT_DEBUG(YELLOW "[ZUPT]: rejected |v_IinG| = %.3f (chi2 %.3f > %.3f)\n" RESET, state->_imu->vel().norm(), chi2,
+    PRINT_INFO(YELLOW "[ZUPT]: rejected |v_IinG| = %.3f (chi2 %.3f > %.3f)\n" RESET, state->_imu->vel().norm(), chi2,
                 _options.chi2_multipler * chi2_check);
     return false;
   }

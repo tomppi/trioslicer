@@ -35,7 +35,13 @@ class TrackerRecorder(
     private val metaJson: String,
     private val gateOnScan: Boolean = true,
     private val recordFrames: Boolean = true,
+    /** Session directory prefix under tracker-debug/ ("session-" for dev, "imu-calib-" for calibration). */
+    private val dirPrefix: String = "session-",
+    /** Write a JPEG every Nth accepted frame; 1 writes all, 0 or less also writes all. */
+    private val imageEveryN: Int = 1,
 ) {
+    /** Accepted frames counted before the row index; JPEGs are decimated with imageEveryN. */
+    private var captureCount = 0L
     @Volatile var sessionDir: File? = null
         private set
     @Volatile var savedFrames = 0
@@ -48,6 +54,7 @@ class TrackerRecorder(
     private val queue = ArrayBlockingQueue<Frame>(8)
     private var framesWriter: BufferedWriter? = null
     private var imuWriter: BufferedWriter? = null
+    private var cornersWriter: BufferedWriter? = null
     private var imuRunning = false
     private var sensorManager: SensorManager? = null
 
@@ -72,7 +79,7 @@ class TrackerRecorder(
 
     fun start(): File {
         val root = context.getExternalFilesDir(null) ?: context.filesDir
-        val dir = File(root, "tracker-debug/session-" + System.currentTimeMillis())
+        val dir = File(root, "tracker-debug/" + dirPrefix + System.currentTimeMillis())
         dir.mkdirs()
         framesWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "frames.csv")), Charsets.UTF_8))
         framesWriter?.write("frame,ts_ns,scan_on,detected,corners,cam_x,cam_y,cam_z,roll,pitch,yaw,distance,reproj_rms,fx,fy,cx,cy,laser_state,laser_points,proc_ms,laser_cam_count,pose16,vio_pose16,jpeg\n")
@@ -80,6 +87,9 @@ class TrackerRecorder(
         imuWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "imu.csv")), Charsets.UTF_8))
         imuWriter?.write("type,ts_ns,x,y,z\n")
         imuWriter?.flush()
+        cornersWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "corners.csv")), Charsets.UTF_8))
+        cornersWriter?.write("frame,ts_ns,id,u,v\n")
+        cornersWriter?.flush()
         File(dir, "meta.json").writeText(metaJson)
         startImu()
         io.execute { drainLoop() }
@@ -114,20 +124,27 @@ class TrackerRecorder(
         if (gateOnScan && r[FrameResult.H.SCAN_ON] < 0.5f) return
         val w = img.width
         val h = img.height
-        val planes = img.planes
-        val y = planes[0]; val u = planes[1]; val v = planes[2]
-        val nv21 = ByteArray(w * h + w * h / 2)
-        for (row in 0 until h) {
-            y.buffer.position(row * y.rowStride)
-            y.buffer.get(nv21, row * w, w)
-        }
-        var p = w * h
-        for (row in 0 until h / 2) {
-            val uvRow = row * u.rowStride
-            for (col in 0 until w / 2) {
-                nv21[p++] = v.buffer.get(uvRow + col * v.pixelStride)
-                nv21[p++] = u.buffer.get(uvRow + col * u.pixelStride)
+        val wantImage = imageEveryN <= 1 || captureCount % imageEveryN == 0L
+        captureCount++
+        val nv21: ByteArray
+        if (wantImage) {
+            nv21 = ByteArray(w * h + w * h / 2)
+            val planes = img.planes
+            val y = planes[0]; val u = planes[1]; val v = planes[2]
+            for (row in 0 until h) {
+                y.buffer.position(row * y.rowStride)
+                y.buffer.get(nv21, row * w, w)
             }
+            var p = w * h
+            for (row in 0 until h / 2) {
+                val uvRow = row * u.rowStride
+                for (col in 0 until w / 2) {
+                    nv21[p++] = v.buffer.get(uvRow + col * v.pixelStride)
+                    nv21[p++] = u.buffer.get(uvRow + col * u.pixelStride)
+                }
+            }
+        } else {
+            nv21 = ByteArray(0)
         }
         val frame = Frame(nv21, w, h, r.data.copyOf(r.length), r.timestampNs, procMs, vioPose)
         if (!queue.offer(frame)) droppedFrames++
@@ -136,7 +153,7 @@ class TrackerRecorder(
     private fun drainLoop() {
         while (true) {
             val f = try { queue.poll(200, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null } ?: continue
-            if (f.w == 0 || f.nv21.isEmpty()) {
+            if (f.w == 0) {
                 if (sessionDir == null) return else continue
             }
             writeFrame(f)
@@ -147,13 +164,17 @@ class TrackerRecorder(
         val dir = sessionDir ?: return
         val idx = savedFrames
         try {
-            val bos = ByteArrayOutputStream(256 * 1024)
-            YuvImage(f.nv21, ImageFormat.NV21, f.w, f.h, null).compressToJpeg(Rect(0, 0, f.w, f.h), 88, bos)
-            val name = "f%05d.jpg".format(idx)
-            File(dir, name).writeBytes(bos.toByteArray())
+            val name = if (f.nv21.isNotEmpty()) {
+                val bos = ByteArrayOutputStream(256 * 1024)
+                YuvImage(f.nv21, ImageFormat.NV21, f.w, f.h, null).compressToJpeg(Rect(0, 0, f.w, f.h), 88, bos)
+                val n = "f%05d.jpg".format(idx)
+                File(dir, n).writeBytes(bos.toByteArray())
+                n
+            } else ""
             val laserDir = File(dir, "laser").apply { mkdirs() }
             var laserCamCount = 0
             var poseStr = ""
+            val corners = StringBuilder(1024)
             var li = FrameResult.H.LEN
             while (li + 3 <= f.result.size) {
                 val kind = f.result[li].toInt()
@@ -169,6 +190,14 @@ class TrackerRecorder(
                     val sb = StringBuilder(256)
                     for (k in 0 until 16) { if (k > 0) sb.append(' '); sb.append(f.result[off + k]) }
                     poseStr = sb.toString()
+                } else if (kind == FrameResult.Layer.CORNERS_ID && stride == 3 && count > 0) {
+                    for (k in 0 until count) {
+                        val b = off + k * 3
+                        corners.append(idx).append(',').append(f.tsNs).append(',')
+                            .append(f.result[b].toInt()).append(',')
+                            .append(f.result[b + 1]).append(',')
+                            .append(f.result[b + 2]).append('\n')
+                    }
                 }
                 if (stride <= 0) break
                 li += 3 + stride * count
@@ -207,7 +236,11 @@ class TrackerRecorder(
             row.append(',').append(name).append('\n')
             synchronized(lock) {
                 framesWriter?.write(row.toString())
-                if (savedFrames % 10 == 0) framesWriter?.flush()
+                if (corners.isNotEmpty()) cornersWriter?.write(corners.toString())
+                if (savedFrames % 10 == 0) {
+                    framesWriter?.flush()
+                    cornersWriter?.flush()
+                }
             }
             savedFrames++
         } catch (e: Exception) {
@@ -226,8 +259,10 @@ class TrackerRecorder(
         synchronized(lock) {
             try { framesWriter?.flush(); framesWriter?.close() } catch (_: Exception) {}
             try { imuWriter?.flush(); imuWriter?.close() } catch (_: Exception) {}
+            try { cornersWriter?.flush(); cornersWriter?.close() } catch (_: Exception) {}
             framesWriter = null
             imuWriter = null
+            cornersWriter = null
         }
         if (dir != null) Log.i(TAG, "tracker recording stopped: " + dir.absolutePath + " frames=" + savedFrames + " dropped=" + droppedFrames)
     }

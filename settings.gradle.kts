@@ -21,3 +21,5 @@ dependencyResolutionManagement {
 rootProject.name = "EnderSlicer"
 include(":app")
 include(":easyscanapp")
+include(":imucalibcore")
+include(":imucalib")
