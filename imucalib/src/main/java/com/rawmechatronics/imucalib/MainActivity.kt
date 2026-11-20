@@ -63,6 +63,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     private lateinit var solveBtn: Button
     private lateinit var resolutionBtn: Button
     private lateinit var noiseBtn: Button
+    private lateinit var exposureBtn: Button
+    private lateinit var isoBtn: Button
     private var noiseRecorder: ImuNoiseRecorder? = null
     private val main = Handler(Looper.getMainLooper())
     private var activeAnalysis: Size? = null
@@ -160,6 +162,17 @@ class MainActivity : Activity(), FrameProcessor.Listener {
             setOnClickListener { showResolutionMenu() }
         }
         root.addView(resolutionBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val exposureRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        exposureBtn = Button(this).apply {
+            setOnClickListener { showExposureMenu() }
+        }
+        isoBtn = Button(this).apply {
+            setOnClickListener { showIsoMenu() }
+        }
+        exposureRow.addView(exposureBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        exposureRow.addView(isoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(exposureRow)
+        updateExposureLabels()
         noiseBtn = Button(this).apply {
             text = "Measure IMU noise (stationary)"
             setOnClickListener { toggleNoise() }
@@ -282,6 +295,50 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         openCamera()
     }
 
+    private fun appPrefs() =
+        getSharedPreferences("com.rawmechatronics.imucalib_preferences", MODE_PRIVATE)
+
+    private fun updateExposureLabels() {
+        val p = appPrefs()
+        val manual = p.getBoolean("manual_exposure", false)
+        val us = p.getInt("exposure_us", 8000)
+        val iso = p.getInt("iso", 400)
+        if (::exposureBtn.isInitialized) exposureBtn.text =
+            if (manual) "Exposure: " + (us / 1000.0) + " ms" else "Exposure: Auto"
+        if (::isoBtn.isInitialized) isoBtn.text =
+            if (manual) "ISO: " + iso else "ISO: Auto"
+    }
+
+    private fun showExposureMenu() {
+        if (rec != null || solving) { status("Stop recording/solve before changing exposure"); return }
+        val labels = arrayOf("Auto exposure", "1 ms", "2 ms", "4 ms", "8 ms", "16 ms")
+        val us = intArrayOf(0, 1000, 2000, 4000, 8000, 16000)
+        AlertDialog.Builder(this).setTitle("Camera exposure").setItems(labels) { _, i ->
+            if (i == 0) {
+                appPrefs().edit().putBoolean("manual_exposure", false).apply()
+            } else {
+                appPrefs().edit().putBoolean("manual_exposure", true)
+                    .putInt("exposure_us", us[i]).apply()
+            }
+            updateExposureLabels()
+            status("Exposure set. Reopening camera…")
+            reopenCamera()
+        }.show()
+    }
+
+    private fun showIsoMenu() {
+        if (rec != null || solving) { status("Stop recording/solve before changing ISO"); return }
+        val labels = arrayOf("100", "200", "400", "800", "1600")
+        val values = intArrayOf(100, 200, 400, 800, 1600)
+        AlertDialog.Builder(this).setTitle("ISO (manual exposure)").setItems(labels) { _, i ->
+            appPrefs().edit().putBoolean("manual_exposure", true)
+                .putInt("iso", values[i]).apply()
+            updateExposureLabels()
+            status("ISO set. Reopening camera…")
+            reopenCamera()
+        }.show()
+    }
+
     private fun analysisPref(): String =
         getSharedPreferences("imu_calib", MODE_PRIVATE).getString("analysis_size", "max") ?: "max"
 
@@ -338,6 +395,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         activeAnalysis = chosen
         camera.open(inf, preview.surfaceTexture!!, chosen, st)
         resolutionBtn.text = "Resolution: " + chosen.width + "x" + chosen.height
+        updateExposureLabels()
         Log.i(TAG, "camera " + inf.label + " analysis " + chosen)
         preview.post { fitPreviewToBox() }
     }
