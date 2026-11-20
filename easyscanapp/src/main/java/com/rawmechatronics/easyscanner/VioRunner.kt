@@ -93,6 +93,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     }
     // drawn by the UI thread while the VIO thread appends: must be thread-safe
     private val trajectory = java.util.concurrent.CopyOnWriteArrayList<FloatArray>()
+    private val poseScratch = DoubleArray(16)
     @Volatile private var laserPx = FloatArray(0)
     private var laserW = 0
     private var laserH = 0
@@ -357,6 +358,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             initialized = now
             Log.i(TAG, "VIO initialized=" + now)
         }
+        // Keep the minimap trajectory live on every frame. The scanner does this in its frame
+        // processor; splatproto previously only sampled the pose when saving a keyframe, so the
+        // minimap stayed empty until the first capture.
+        if (now) cameraPose(poseScratch)
         tFeedMs = (System.nanoTime() - tFeed0) / 1e6
         frameCount++
         if (frameCount % 60 == 0) {
