@@ -36,6 +36,8 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     val results = TripleBuffer { FrameResult() }
     /** Optional offline tracker development recorder (Settings -> Development). */
     @Volatile var trackerRecorder: TrackerRecorder? = null
+    /** Optional per-frame hook for app-specific detectors (imucalib AprilGrid). Runs on the processing thread. */
+    @Volatile var frameListener: ((android.media.Image, FrameResult) -> Unit)? = null
     @Volatile var vio: VioRunner? = null
     /** When true the engine takes its camera pose from the VIO instead of the board. */
     @Volatile var useVioPose = false
@@ -206,6 +208,8 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 val vp = DoubleArray(16)
                 if (vio?.cameraPose(vp, false) == true) vp else null
             } else null
+            val frameHook = frameListener
+            if (frameHook != null) runCatching { frameHook(img, out) }
             val tSnap0 = System.nanoTime()
             trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
             lastSnapMs = (System.nanoTime() - tSnap0) / 1e6

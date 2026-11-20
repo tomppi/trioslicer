@@ -44,4 +44,6 @@ android {
 dependencies {
     implementation(project(":imucalibcore"))
     implementation(project(":easyscanapp"))
+    // AprilGrid detection for the IMU calibration target (OpenCV Java + prefab native lib).
+    implementation("org.opencv:opencv:4.14.0")
 }

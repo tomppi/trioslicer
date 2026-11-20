@@ -33,6 +33,7 @@ import com.rawmechatronics.easyscanner.VendorIntrinsics
 import com.rawmechatronics.imucalib.core.CalibOptions
 import com.rawmechatronics.imucalib.core.CalibrationSession
 import com.rawmechatronics.imucalib.core.KalibrCalibrator
+import org.opencv.android.OpenCVLoader
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -65,6 +66,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     private var settings: AppSettings? = null
     private var info: CameraInfo? = null
     private var cameraStarted = false
+    private var aprilDetector: AprilGridDetector? = null
+    private var aprilRecorder: AprilGridRecorder? = null
+    private var aprilSeen = 0
+    private var aprilFrames = 0
 
     private var rec: TrackerRecorder? = null
     private var recDir: File? = null
@@ -152,6 +157,12 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         scroll.addView(results)
         root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.4f))
         setContentView(root)
+        try {
+            if (!OpenCVLoader.initLocal()) status("OpenCV failed to load; AprilGrid detection unavailable")
+        } catch (e: Throwable) {
+            Log.w(TAG, "OpenCV init failed", e)
+            status("OpenCV failed: " + e.message)
+        }
         // Probe the OpenCL path once; the status is also written to a file because the
         // camera's log spam can evict app log lines from the device log buffer.
         val gpuProbe = runCatching { GpuPixelBatch(applicationInfo.nativeLibraryDir).status }.getOrElse { "probe failed: $it" }
@@ -272,6 +283,34 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         r.start()
         rec = r
         recDir = r.sessionDir
+        // AprilTag live detection: the engine only knows ChArUco, so imucalib detects the
+        // Kalibr AprilGrid itself and writes the frames/points the solver consumes.
+        runCatching {
+            val cm = cameraModel()
+            if (cm != null) {
+                aprilDetector = AprilGridDetector(fx = cm.fx, fy = cm.fy, cx = cm.cx, cy = cm.cy, dist = cm.dist)
+                val sessionDir = r.sessionDir
+                if (sessionDir != null) aprilRecorder = AprilGridRecorder(sessionDir)
+                aprilSeen = 0
+                aprilFrames = 0
+                processor.frameListener = { img, _ ->
+                    val det = aprilDetector
+                    if (det != null) {
+                        val gray = det.gray(img)
+                        try {
+                            val f = det.detect(gray, img.timestamp)
+                            aprilFrames++
+                            if (f.tags > 0) aprilSeen++
+                            aprilRecorder?.write(f)
+                        } finally {
+                            gray.release()
+                        }
+                    }
+                }
+            } else {
+                status("AprilGrid unavailable: camera model not known")
+            }
+        }.onFailure { Log.w(TAG, "AprilGrid detector start failed", it) }
         processor.trackerRecorder = r
         recStartNs = System.nanoTime()
         recFrames = 0
@@ -300,7 +339,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     private fun stopRecording(cancelled: Boolean) {
         val r = rec ?: return
         rec = null
+        processor.frameListener = null
         processor.trackerRecorder = null
+        runCatching { aprilRecorder?.close() }
+        aprilRecorder = null
         stillTimer?.let { main.removeCallbacks(it) }
         stillTimer = null
         val dir = recDir
@@ -311,7 +353,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         val frames = r.savedFrames
         val seenPct = if (recFrames > 0) 100 * recSeen / recFrames else 0
         if (dir == null) { status("Recording failed."); return }
-        status("Recorded " + frames + " frames, board seen " + seenPct + "%.\nSession: " + dir.absolutePath)
+        val aprilPct = if (aprilFrames > 0) 100 * aprilSeen / aprilFrames else 0
+        status("Recorded " + frames + " frames, board seen " + seenPct + "%" +
+            (if (aprilFrames > 0) " (AprilGrid " + aprilPct + "%, " + (aprilDetector?.lastTags ?: 0) + " tags)" else "") +
+            ".\nSession: " + dir.absolutePath)
         if (cancelled) return
         solve(dir)
     }
@@ -347,17 +392,22 @@ class MainActivity : Activity(), FrameProcessor.Listener {
             try {
                 val framesCsv = File(dir, "frames.csv")
                 val imuCsv = File(dir, "imu.csv")
+                val aprilFrames = File(dir, "april_frames.csv")
+                val aprilPoints = File(dir, "april_points.csv")
+                val useApril = aprilFrames.isFile && aprilFrames.length() > 100 &&
+                    aprilPoints.isFile && aprilPoints.length() > 20
+                val framesText = if (useApril) aprilFrames.readText() else framesCsv.readText()
                 val bs = boardSpec(dir)
                 val layout = com.rawmechatronics.imucalib.core.BoardLayout(bs.first, bs.second, bs.third)
                 val cornersFile = File(dir, "corners.csv")
                 val cornersText = if (cornersFile.exists()) cornersFile.readText() else null
                 // AprilGrid points.csv (frame,ts_ns,x,y,z,u,v) is the dense-target
                 // observation format; load it when the recording used that board.
-                val pointsFile = listOf(File(dir, "points.csv"), File(dir, "april_points.csv"))
-                    .firstOrNull { it.exists() }
+                val pointsFile = if (useApril) aprilPoints
+                    else listOf(File(dir, "points.csv"), File(dir, "april_points.csv")).firstOrNull { it.exists() }
                 val pointsText = pointsFile?.readText()
                 val session = CalibrationSession.fromCsv(
-                    framesCsv.readText(), imuCsv.readText(), cornersText, layout, pointsText)
+                    framesText, imuCsv.readText(), cornersText, layout, pointsText)
                 if (session == null) {
                     ui { status("Session has no usable board poses or IMU samples."); finishSolve() }
                     return@Thread
@@ -601,7 +651,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     override fun onResult(r: FrameResult) {
         if (rec == null) return
         recFrames++
-        if (r.flag(FrameResult.H.DETECTED)) recSeen++
+        if (r.flag(FrameResult.H.DETECTED) || (aprilDetector?.lastTags ?: 0) > 0) recSeen++
         val now = System.nanoTime()
         if (now - lastUiNs > 100_000_000L) {
             lastUiNs = now
