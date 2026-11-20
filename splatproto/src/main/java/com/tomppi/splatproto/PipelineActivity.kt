@@ -615,13 +615,15 @@ class PipelineActivity : ComponentActivity() {
                 },
                 onError = { message -> state.value = state.value.copy(status = message) },
             )
-            runCatching {
-                val v = VioRunner(this)
-                v.start(android.os.Handler(android.os.Looper.getMainLooper()))
-                v.startTrackingSilent()
-                vio = v
-                controller?.vio = v
-            }.onFailure { dbg("VIO start failed: " + it.message) }
+            if (vio == null || vio?.released == true) {
+                runCatching {
+                    val v = VioRunner(this)
+                    v.start(android.os.Handler(android.os.Looper.getMainLooper()))
+                    v.startTrackingSilent()
+                    vio = v
+                }.onFailure { dbg("VIO start failed: " + it.message) }
+            }
+            controller?.vio = vio
             startWarmup()
             controller?.torchMode = torchMode
             // CameraProbe lists the dual-lens rig first, but rig frames from two different
@@ -1083,8 +1085,13 @@ class PipelineActivity : ComponentActivity() {
     /** Releases the camera; the next scan reopens it. */
     private fun closeCamera() {
         stopWarmup()
+        controller?.vio = null
         controller?.close()
         controller = null
+        // Release the VIO too: a second VIORunner in the same process means a second
+        // QNN/SuperPoint context, which is what crashed the capture earlier.
+        runCatching { vio?.release() }
+        vio = null
         previewImage = null
         live = LiveState()
     }

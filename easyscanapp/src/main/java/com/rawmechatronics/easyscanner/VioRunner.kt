@@ -53,6 +53,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
 
     @Volatile var initialized = false
         private set
+    /** Set by release(): the native VIO/SuperPoint context is gone and must be recreated. */
+    @Volatile var released = false
+        private set
     // Per-stage timing of the VIO front-end (updated in submitFrame, logged by FrameProcessor).
     @Volatile var tYConvMs = 0.0
     @Volatile var tFeatMs = 0.0
@@ -96,6 +99,15 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var bandHw = 0f
 
     fun start(handler: android.os.Handler) {
+        synchronized(PROCESS_LOCK) {
+            ACTIVE?.let { if (it !== this) it.releaseLocked() }
+            ACTIVE = this
+            released = false
+            startLocked(handler)
+        }
+    }
+
+    private fun startLocked(handler: android.os.Handler) {
         val dir = File(ctx.filesDir, "openvins-config")
         dir.mkdirs()
         for (name in CONFIGS) {
@@ -518,6 +530,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     }
 
     fun release() {
+        synchronized(PROCESS_LOCK) { releaseLocked() }
+    }
+
+    private fun releaseLocked() {
         try {
             sensors?.unregisterListener(this)
         } catch (_: Exception) {
@@ -547,9 +563,13 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         imuFed = 0L
         imuRejected = 0L
         lastAccelNorm = 0.0
+        released = true
+        if (ACTIVE === this) ACTIVE = null
     }
 
     private companion object {
+        private val PROCESS_LOCK = Any()
+        @Volatile private var ACTIVE: VioRunner? = null
         const val TAG = "VioRunner"
         const val GW = 640
         const val GH = 480

@@ -242,9 +242,9 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
     /** Start the marker-free pose source on the processing thread (also registers IMU there). */
     private fun ensureVio() {
-        if (vio != null) return
+        if (vio != null && vio?.released != true) return
         processor.handler.post {
-            if (vio != null) return@post
+            if (vio != null && vio?.released != true) return@post
             try {
                 val v = VioRunner(this)
                 v.start(processor.handler)
