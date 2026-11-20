@@ -202,7 +202,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         val st = settings ?: AppSettings.load(this).also { settings = it }
         val ids = CameraInfo.backCameraIds(mgr)
         if (ids.isEmpty()) { status("No back camera"); return }
-        val inf = CameraInfo.query(mgr, st.cameraId.takeIf { it in ids } ?: ids.first(), st.targetFps, st.maxLongSide)
+        // Calibration wants the most pixels the camera can stream, not the scanner's
+        // real-time 640x480 analysis cap. CameraInfo.query has this mode for exactly this.
+        val inf = CameraInfo.query(mgr, st.cameraId.takeIf { it in ids } ?: ids.first(),
+            st.targetFps, st.maxLongSide, preferHighestResolution = true)
         runCatching {
             File(filesDir, "camera_info.txt").writeText(
                 inf.label + "\n" +
@@ -315,23 +318,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         recStartNs = System.nanoTime()
         recFrames = 0
         recSeen = 0
+        // No periodic full-sensor stills: they are unused by the solver and add camera-still
+        // requests that perturb the analysis frame timing. Old good captures had none either.
         stillSeq = 0
-        val topStill = info?.stillSizes?.firstOrNull()
-        if (topStill != null) {
-            camera.setStills(listOf(topStill))
-            val tick = object : Runnable {
-                override fun run() {
-                    if (rec == null) return
-                    camera.captureStill()
-                    main.postDelayed(this, 500)
-                }
-            }
-            stillTimer = tick
-            main.postDelayed(tick, 800)
-            status("Recording… sensor stills at " + topStill.width + "x" + topStill.height)
-        } else {
-            status("Recording… keep the whole board in view.")
-        }
+        status("Recording… keep the whole board in view.")
         startBtn.text = "Stop"
         solveBtn.isEnabled = false
     }
@@ -356,9 +346,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         val aprilPct = if (aprilFrames > 0) 100 * aprilSeen / aprilFrames else 0
         status("Recorded " + frames + " frames, board seen " + seenPct + "%" +
             (if (aprilFrames > 0) " (AprilGrid " + aprilPct + "%, " + (aprilDetector?.lastTags ?: 0) + " tags)" else "") +
-            ".\nSession: " + dir.absolutePath)
-        if (cancelled) return
-        solve(dir)
+            ".\nSession: " + dir.absolutePath + "\nPress Solve latest recording when ready.")
+        // Solve on demand: the user decides when to spend the (long) solver run.
     }
 
     /** Full-sensor JPEG stills for calibration; saved beside the engine frames. */
@@ -531,7 +520,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
                 val j = JSONObject(f.readText())
                 val w = j.optDouble("width", 0.0)
                 if (w > 1.0) {
-                    val s = 640.0 / w
+                    val analysisW = (activeAnalysis?.width ?: 640).toDouble()
+                    val s = analysisW / w
                     val d = j.optJSONArray("dist")
                     val dist = DoubleArray(4) { if (d != null && it < d.length()) d.optDouble(it, 0.0) else 0.0 }
                     return CameraModel(j.optDouble("fx") * s, j.optDouble("fy") * s, j.optDouble("cx") * s,
@@ -540,7 +530,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
             } catch (_: Throwable) {}
         }
         val g = info?.guess ?: return null
-        val s = 640.0 / g.width
+        val analysisW = (activeAnalysis?.width ?: 640).toDouble()
+        val s = analysisW / g.width
         val dist = DoubleArray(4) { if (it < g.dist.size) g.dist[it] else 0.0 }
         return CameraModel(g.fx * s, g.fy * s, g.cx * s, g.cy * s, dist, "vendor camera2")
     }
