@@ -3480,6 +3480,7 @@ fun EnderSlicerApp(
                 TextButton(onClick = { easyScanIntroOpen = false }) { Text("Cancel") }
             },
         )
+    }
 
     if (gaussianSplattingOpen) {
         AppBottomSheet(onDismissRequest = { gaussianSplattingOpen = false }) {

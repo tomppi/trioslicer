@@ -143,6 +143,7 @@ public:
     }
 
     bool reconstruct() {
+        if (vioReady()) return reconstructFromVio();
         auto init = rankInitialPairs();
         bool started = false;
         for (size_t c = 0; c < init.size() && c < 6 && !started; ++c) started = tryInitialise(s_.pairs[init[c]]);
@@ -198,6 +199,43 @@ public:
         estimateMotion();
         rms_ = globalBA(true, 10);
         filterPoints(true);
+        return registered() >= 2;
+    }
+
+    /// True when most images carry a VIO camera pose; the SfM can then use those poses instead
+    /// of bootstrapping the trajectory from scratch.
+    bool vioReady() const {
+        if (s_.images.size() < 3) return false;
+        int withPose = 0;
+        for (const auto& im : s_.images) if (im.input.hasVio) ++withPose;
+        return withPose * 5 >= int(s_.images.size()) * 4;
+    }
+
+    /// VIO poses are already in one metric world frame, so no incremental bootstrap is needed:
+    /// seed every camera with its VIO pose, triangulate the matched tracks and keep the cameras
+    /// fixed (the VIO is the pose source); the structure is what the photometric data refines.
+    bool reconstructFromVio() {
+        order_.clear();
+        for (size_t i = 0; i < s_.images.size(); ++i) {
+            Image& im = s_.images[i];
+            im.registered = false;
+            if (!im.input.hasVio) continue;
+            const double* r = im.input.vioR;
+            im.R = cv::Matx33d(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]);
+            im.t = cv::Vec3d(im.input.vioT[0], im.input.vioT[1], im.input.vioT[2]);
+            im.registered = true;
+            order_.push_back(int(i));
+        }
+        std::sort(order_.begin(), order_.end(), [&](int a, int b) {
+            return s_.images[a].input.time < s_.images[b].input.time;
+        });
+        completeTracks();
+        for (size_t k = 0; k < s_.tracks.size(); ++k) triangulateTrack(s_, int(k));
+        filterPoints(true);
+        // Refine the structure only: bundleAdjust needs at least one variable camera, so a
+        // point-only pass is not available; the dense stage starts from these points.
+        rms_ = 0.0;
+        log_ += "VIO poses used for all cameras; structure triangulated without photo-BA\n";
         return registered() >= 2;
     }
 

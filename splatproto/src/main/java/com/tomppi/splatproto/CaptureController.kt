@@ -116,6 +116,8 @@ class CaptureController(
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "parallax-writer") }
     private var size = Size(1280, 960)
     private var rig = false
+    /** Optional VIO: fed every analysis frame, its pose is saved with each keyframe. */
+    @Volatile var vio: com.rawmechatronics.easyscanner.VioRunner? = null
 
     // Live state (camera thread).
     /** When true, OIS is left enabled while capturing (experimental; geometry drifts). */
@@ -436,6 +438,13 @@ class CaptureController(
             previewIndex = (previewIndex + 1) % previews.size
             val n = NativeCore.trackFrame(p[0].buffer, p[1].buffer, p[2].buffer, img.width, img.height,
                 p[0].rowStride, p[1].rowStride, p[1].pixelStride, bmp, rot, true, out, pts)
+            vio?.let { vr ->
+                if (vr.tracking) {
+                    val yb = ByteArray(p[0].buffer.remaining())
+                    p[0].buffer.duplicate().also { it.rewind() }.get(yb)
+                    vr.submitFrame(yb, p[0].rowStride, img.width, img.height, img.timestamp * 1e-9)
+                }
+            }
             main.post { onPreview(bmp) }
             lastProgress = out[0]
             lastTracked = out[6].toInt()
@@ -500,8 +509,10 @@ class CaptureController(
         val name = "p_%04d.jpg".format(group)
         val copy = YuvCopy(primary)
         writer.execute { copy.saveJpeg(File(s.imagesDir, name)) }
+        val vioPose = DoubleArray(16).takeIf { vio?.initialized == true && vio?.cameraPose(it) == true }
         images += ScanImage(name, 0, if (rig) group else -1, up, primary.timestamp,
-            exposureNs, iso, focusDiopters, torchOn, rsSkewNs, toCamera(cameras[0].sensorOrientation, w))
+            exposureNs, iso, focusDiopters, torchOn, rsSkewNs,
+            toCamera(cameras[0].sensorOrientation, w), vioPose)
         rotation?.let { coverage[Coverage.bin(it, azimuth0)] = true }
         if (rig) {
             val meta = ScanImage("s_%04d.jpg".format(group), 1, group, upInCamera(cameras[1].sensorOrientation),

@@ -36,6 +36,11 @@ struct ImageInput {
     double time = 0, rollingShutterSkew = 0;
     double gyroX = 0, gyroY = 0, gyroZ = 0;
     bool hasGyro = false;
+    // Visual-inertial odometry camera pose at capture, world -> camera (row-major R then t).
+    // When present the SfM can use it as the pose source instead of bootstrapping from images.
+    bool hasVio = false;
+    double vioR[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    double vioT[3] = {0, 0, 0};
 };
 
 struct Options {

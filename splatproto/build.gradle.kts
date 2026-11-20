@@ -117,6 +117,9 @@ kotlin {
 }
 
 dependencies {
+    // The scanner module owns the VIO front-end (OpenVINS + SuperPoint) and its calibration
+    // profile; the splat capture reuses the same pose source instead of a second copy.
+    implementation(project(":easyscanapp"))
     // Vendored Parallax SfM core links against OpenCV's Prefab package.
     implementation("org.opencv:opencv:4.14.0")
 

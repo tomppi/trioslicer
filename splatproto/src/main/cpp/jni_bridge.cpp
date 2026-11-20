@@ -114,7 +114,8 @@ JNIEXPORT jboolean JNICALL Java_com_tomppi_splatproto_NativeCore_saveJpeg(JNIEnv
 // options: [dense(0/1), featureMaxSide, maxFeatures, denseMaxSide, maxDenseImages, markerSizeMm(optional)]
 JNIEXPORT jstring JNICALL Java_com_tomppi_splatproto_NativeCore_reconstruct(
     JNIEnv* env, jobject, jdoubleArray cameras, jintArray cameraFlags, jobjectArray images, jintArray imageCams,
-    jintArray imageRig, jfloatArray imageUp, jdoubleArray imageMotion, jstring outDir, jstring imageRoot, jintArray options, jobject progress) {
+    jintArray imageRig, jfloatArray imageUp, jdoubleArray imageMotion, jdoubleArray imageVio,
+    jintArray imageVioFlags, jstring outDir, jstring imageRoot, jintArray options, jobject progress) {
     Options opt;
     {
         jint o[6] = {1, 0, 0, 0, 0, 0};
@@ -153,6 +154,10 @@ JNIEXPORT jstring JNICALL Java_com_tomppi_splatproto_NativeCore_reconstruct(
     env->GetFloatArrayRegion(imageUp, 0, ni * 3, up.data());
     std::vector<jdouble> motion(size_t(ni) * 6);
     env->GetDoubleArrayRegion(imageMotion, 0, ni * 6, motion.data());
+    std::vector<jdouble> vio(size_t(ni) * 16, 0.0);
+    if (imageVio) env->GetDoubleArrayRegion(imageVio, 0, ni * 16, vio.data());
+    std::vector<jint> vioFlags(ni, 0);
+    if (imageVioFlags) env->GetIntArrayRegion(imageVioFlags, 0, ni, vioFlags.data());
     for (int i = 0; i < ni; ++i) {
         auto js = static_cast<jstring>(env->GetObjectArrayElement(images, i));
         ImageInput in;
@@ -168,6 +173,12 @@ JNIEXPORT jstring JNICALL Java_com_tomppi_splatproto_NativeCore_reconstruct(
         in.rollingShutterSkew = mo[1];
         in.gyroX = mo[2]; in.gyroY = mo[3]; in.gyroZ = mo[4];
         in.hasGyro = mo[5] > 0.5;
+        if (vioFlags[i] > 0) {
+            in.hasVio = true;
+            const double* v = &vio[size_t(i) * 16];
+            for (int k = 0; k < 9; ++k) in.vioR[k] = v[k];
+            in.vioT[0] = v[12]; in.vioT[1] = v[13]; in.vioT[2] = v[14];
+        }
         rec.addImage(in);
     }
 

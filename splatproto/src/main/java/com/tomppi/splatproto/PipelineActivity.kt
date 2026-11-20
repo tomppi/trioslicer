@@ -1,5 +1,7 @@
 package com.tomppi.splatproto
 
+import com.rawmechatronics.easyscanner.VioRunner
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -207,6 +209,8 @@ class PipelineActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var scanDir: File? = null
     private var controller: CaptureController? = null
+    /** VIO pose source: the same OpenVINS + SuperPoint runner the scanner uses. */
+    private var vio: VioRunner? = null
     private var captureModes: List<CaptureMode> = emptyList()
     private var previewImage by mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
     private var live = LiveState()
@@ -557,6 +561,8 @@ class PipelineActivity : ComponentActivity() {
         super.onDestroy()
         scope.cancel()
         closeCamera()
+        runCatching { vio?.release() }
+        vio = null
     }
 
     // ---------------------------------------------------------------- capture
@@ -592,6 +598,13 @@ class PipelineActivity : ComponentActivity() {
                 },
                 onError = { message -> state.value = state.value.copy(status = message) },
             )
+            runCatching {
+                val v = VioRunner(this)
+                v.start(android.os.Handler(android.os.Looper.getMainLooper()))
+                v.startTrackingSilent()
+                vio = v
+                controller?.vio = v
+            }.onFailure { dbg("VIO start failed: " + it.message) }
             controller?.torchMode = torchMode
             // CameraProbe lists the dual-lens rig first, but rig frames from two different
             // lenses do not reconstruct as one scan here (previous scan: 2/30 registered).

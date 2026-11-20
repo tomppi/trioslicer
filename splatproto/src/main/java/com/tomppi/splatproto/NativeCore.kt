@@ -50,6 +50,10 @@ object NativeCore {
         images: Array<String>, imageCams: IntArray, imageRig: IntArray, imageUp: FloatArray,
         /** Per image: time (s), rolling-shutter readout (s), gyro x y z (rad/s, camera axes), has gyro (0/1). */
         imageMotion: DoubleArray,
+        /** Per image: 16 doubles, VIO camera pose world -> camera (row-major), zeros if absent. */
+        imageVio: DoubleArray,
+        /** Per image: 1 when [imageVio] holds a real pose. */
+        imageVioFlags: IntArray,
         outDir: String, imageRoot: String, options: IntArray, progress: Progress,
     ): String
 }

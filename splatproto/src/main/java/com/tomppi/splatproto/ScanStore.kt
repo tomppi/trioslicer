@@ -21,6 +21,8 @@ data class ScanImage(
     val rsSkewNs: Long = 0,
     /** Gyroscope rate in camera axes (rad/s) at capture, or null. */
     val gyro: FloatArray? = null,
+    /** VIO camera pose at capture: 16 doubles, world -> camera (row-major), or null. */
+    val vioPose: DoubleArray? = null,
 )
 
 /**
@@ -81,6 +83,7 @@ class Scan(val dir: File) {
                 put("focusDiopters", i.focusDiopters.toDouble()); put("torch", i.torch)
                 put("rollingShutterSkewNs", i.rsSkewNs)
                 i.gyro?.let { g -> put("gyro", JSONArray().apply { g.forEach { put(it.toDouble()) } }) }
+                i.vioPose?.let { vp -> put("vioPose", JSONArray().apply { vp.forEach { put(it) } }) }
             })
         })
         val tmp = File(dir, "scan.json.tmp")
@@ -114,7 +117,8 @@ class Scan(val dir: File) {
                     FloatArray(3) { up.getDouble(it).toFloat() }, i.getLong("timestampNs"), i.getLong("exposureNs"),
                     i.getInt("iso"), i.getDouble("focusDiopters").toFloat(), i.getBoolean("torch"),
                     i.optLong("rollingShutterSkewNs", 0L),
-                    i.optJSONArray("gyro")?.let { g -> FloatArray(3) { g.getDouble(it).toFloat() } })
+                    i.optJSONArray("gyro")?.let { g -> FloatArray(3) { g.getDouble(it).toFloat() } },
+                    i.optJSONArray("vioPose")?.let { vp -> DoubleArray(vp.length()) { vp.getDouble(it) } })
             }
         }
         Loaded(cams, imgs)

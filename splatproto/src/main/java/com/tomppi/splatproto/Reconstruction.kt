@@ -34,10 +34,22 @@ object Reconstruction {
             ).copyInto(motion, k * 6)
         }
         val options = processing.asOptions(markerSizeMm)
+        // VIO poses (world -> camera, row-major): the SfM uses them as its pose source when the
+        // capture recorded them. Missing poses stay zero and are masked out.
+        val imageVio = DoubleArray(imgs.size * 16)
+        val imageVioFlags = IntArray(imgs.size)
+        imgs.forEachIndexed { k, im ->
+            val vp = im.vioPose
+            if (vp != null && vp.size == 16 && vp.all { it.isFinite() }) {
+                vp.copyInto(imageVio, k * 16)
+                imageVioFlags[k] = 1
+            }
+        }
         val json = NativeCore.reconstruct(
             camArr, flags,
             imgs.map { File(scan.imagesDir, it.file).absolutePath }.toTypedArray(),
             imgs.map { it.camera }.toIntArray(), imgs.map { it.rig }.toIntArray(), up, motion,
+            imageVio, imageVioFlags,
             scan.dir.absolutePath, scan.imagesDir.absolutePath, options, progress,
         )
         val report = runCatching { JSONObject(json) }.getOrElse { return Result.failure(it) }
