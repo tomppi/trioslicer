@@ -209,7 +209,13 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 if (vio?.cameraPose(vp, false) == true) vp else null
             } else null
             val frameHook = frameListener
-            if (frameHook != null) runCatching { frameHook(img, out) }
+            if (frameHook != null) {
+                try {
+                    frameHook(img, out)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "frame listener failed", t)
+                }
+            }
             val tSnap0 = System.nanoTime()
             trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
             lastSnapMs = (System.nanoTime() - tSnap0) / 1e6

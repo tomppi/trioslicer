@@ -58,9 +58,17 @@ class AprilGridDetector(
         put(2, 2, 1.0)
     }
     private val d = MatOfDouble(*dist.copyOf(4))
+    // OpenCV's default adaptive-threshold window is too large for the 1440x1080 stream:
+    // it detected 0 tags on a perfectly visible target (the 640x480 stream was fine).
+    // Small windows find 29 of 36 tags at 1440x1080; subpixel refinement keeps the corners.
     private val detector = ArucoDetector(
         Objdetect.getPredefinedDictionary(Objdetect.DICT_APRILTAG_36h11),
-        DetectorParameters(),
+        DetectorParameters().apply {
+            set_adaptiveThreshWinSizeMin(3)
+            set_adaptiveThreshWinSizeMax(23)
+            set_adaptiveThreshWinSizeStep(2)
+            set_cornerRefinementMethod(Objdetect.CORNER_REFINE_SUBPIX)
+        },
         RefineParameters(),
     )
 
@@ -70,7 +78,10 @@ class AprilGridDetector(
         val h = img.height
         val plane = img.planes[0]
         val out = ByteArray(w * h)
-        val buf = plane.buffer
+        // The native engine has already read this buffer; copy from a clear duplicate so its
+        // position/limit cannot make the row reads underflow.
+        val buf = plane.buffer.duplicate()
+        buf.clear()
         for (row in 0 until h) {
             buf.position(row * plane.rowStride)
             buf.get(out, row * w, w)
