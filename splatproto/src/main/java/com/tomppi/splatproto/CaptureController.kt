@@ -101,6 +101,9 @@ class CaptureController(
     private val main = Handler(Looper.getMainLooper())
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
+
+    /** The camera/VIO handler: sensor callbacks and frame submission share this thread. */
+    val cameraHandler: Handler? get() = handler
     private val executor = Executor { r -> handler?.post(r) }
 
     private var mode: CaptureMode? = null

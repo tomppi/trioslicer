@@ -241,7 +241,7 @@ public:
         filterPoints(true);
         int valid = 0;
         for (const auto& p : s_.points) valid += p.valid;
-        if (valid < 50) {
+        if (valid < 300) {
             log_ += "VIO poses seeded too few points (";
             log_ += std::to_string(valid);
             log_ += "); falling back to image SfM\n";

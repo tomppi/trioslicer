@@ -87,6 +87,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -168,6 +169,40 @@ class PipelineActivity : ComponentActivity() {
 
     private val state = MutableStateFlow(State())
     private val trailFlow = MutableStateFlow<List<TrackTrail>>(emptyList())
+
+    private data class VioUi(
+        val tracking: Boolean = false,
+        val ready: Boolean = false,
+        val settled: Boolean = false,
+        val moving: Boolean = false,
+        val drifted: Boolean = false,
+        val speed: Double = 0.0,
+        val trail: Array<FloatArray> = emptyArray(),
+    )
+    private val vioUi = MutableStateFlow(VioUi())
+    /** Centered banner, exactly like the scanner's VIO INIT / VIO TRACKING popup. */
+    private val vioBanner = MutableStateFlow<String?>(null)
+    private var lastVioUiAt = 0L
+
+    /** Snapshot for the minimap: OpenVINS is the only thing that knows whether the pose is usable. */
+    private fun refreshVioUi(force: Boolean = false) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && now - lastVioUiAt < 150L) return
+        lastVioUiAt = now
+        val v = vio
+        if (v == null) { vioUi.value = VioUi(); return }
+        val speed = runCatching { v.velocityNorm() }.getOrDefault(0.0)
+        val trail = v.trajectoryPoints()
+        vioUi.value = VioUi(
+            tracking = v.tracking,
+            ready = v.initialized,
+            settled = v.initialized && speed < 0.6,
+            moving = v.initialized && speed >= 0.6 && speed <= 2.0,
+            drifted = v.initialized && speed > 2.0,
+            speed = speed,
+            trail = trail,
+        )
+    }
     private val debugLock = Any()
 
     @Volatile private var hasRoot: Boolean? = null
@@ -286,6 +321,8 @@ class PipelineActivity : ComponentActivity() {
 
         setContent {
             val s by state.collectAsState()
+            val vioState by vioUi.collectAsState()
+            val vioBannerText by vioBanner.collectAsState()
             LaunchedEffect(s.phase) { dbg("ui phase=" + s.phase) }
             LaunchedEffect(s.hint.isEmpty()) {
                 dbg("ui hintEmpty=" + s.hint.isEmpty() + " detailEmpty=" + s.detail.isEmpty() + " phase=" + s.phase)
@@ -336,7 +373,7 @@ class PipelineActivity : ComponentActivity() {
                         val plyPath = s.ply
                         when {
                             s.phase == "done" && plyPath != null -> SplatViewer(File(plyPath))
-                            s.phase == "capturing" || s.phase == "idle" -> CapturePreview()
+                            s.phase == "capturing" || s.phase == "idle" -> CapturePreview(vioState, vioBannerText)
                             s.phase == "maskPrompt" -> MaskPromptScreen(
                                 image = maskFirstFrame,
                                 points = maskPoints.value,
@@ -411,6 +448,11 @@ class PipelineActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        if (s.phase == "idle" || s.phase == "capturing") {
+                            Button(onClick = ::toggleVio, enabled = vio != null) {
+                                Text(if (vioState.tracking) "Stop VIO" else "Start VIO")
+                            }
+                        }
                         when (s.phase) {
                             "capturing" -> Button(onClick = ::stopAndReconstruct) {
                                 Text("Stop & reconstruct")
@@ -518,8 +560,70 @@ class PipelineActivity : ComponentActivity() {
         }
     }
 
+    /** Small trajectory minimap: its movement is the live proof that VIO is tracking. */
     @Composable
-    private fun CapturePreview() {
+    private fun VioMiniMap(ui: VioUi, modifier: Modifier = Modifier) {
+        val label = when {
+            ui.drifted -> "VIO DRIFT"
+            ui.moving -> "VIO MOVING"
+            ui.ready -> "VIO TRACKING"
+            ui.trail.size >= 2 -> "VIO WARM-UP"
+            else -> "VIO OFF"
+        }
+        val tone = when {
+            ui.drifted -> Color(0xFFFF6B6B)
+            ui.moving -> Color(0xFFFFC857)
+            ui.ready -> Color(0xFF6BE3C3)
+            else -> Color(0x9CFFFFFF)
+        }
+        Box(modifier = modifier.size(148.dp).background(Color(0xCC080A10))) {
+            Canvas(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+                val pts = ui.trail
+                if (pts.size >= 2) {
+                    var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+                    var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+                    var n = 0
+                    for (p in pts) {
+                        if (p.size < 2 || !p[0].isFinite() || !p[1].isFinite()) continue
+                        n++
+                        minX = minOf(minX, p[0]); maxX = maxOf(maxX, p[0])
+                        minY = minOf(minY, p[1]); maxY = maxOf(maxY, p[1])
+                    }
+                    if (n >= 2) {
+                        val span = maxOf(maxX - minX, maxY - minY, 0.005f)
+                        val scale = minOf(size.width, size.height) * 0.78f / span
+                        val cx = (minX + maxX) * 0.5f
+                        val cy = (minY + maxY) * 0.5f
+                        fun sx(x: Float) = size.width * 0.5f + (x - cx) * scale
+                        fun sy(y: Float) = size.height * 0.5f - (y - cy) * scale
+                        val path = Path()
+                        var started = false
+                        for (p in pts) {
+                            if (p.size < 2 || !p[0].isFinite() || !p[1].isFinite()) continue
+                            val x = sx(p[0]); val y = sy(p[1])
+                            if (!started) { path.moveTo(x, y); started = true } else path.lineTo(x, y)
+                        }
+                        drawPath(path, tone.copy(alpha = 0.9f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                        val last = pts.lastOrNull { it.size >= 2 && it[0].isFinite() && it[1].isFinite() }
+                        if (last != null) {
+                            drawCircle(tone, radius = 3.2.dp.toPx(), center = Offset(sx(last[0]), sy(last[1])))
+                        }
+                    }
+                }
+            }
+            Text(
+                text = label,
+                color = tone,
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+            )
+        }
+    }
+
+    @Composable
+    private fun CapturePreview(vioState: VioUi, bannerText: String?) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val image = previewImage
             if (image != null) {
@@ -530,6 +634,21 @@ class PipelineActivity : ComponentActivity() {
                     contentScale = ContentScale.FillBounds,
                 )
             }
+            if (bannerText != null) {
+                Box(
+                    modifier = Modifier.align(Alignment.Center)
+                        .background(Color(0xCC080A10))
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                ) {
+                    Text(
+                        text = bannerText,
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
+            VioMiniMap(vioState, Modifier.align(Alignment.BottomStart).padding(12.dp))
             val points = live.points
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val scanning = state.value.phase == "capturing"
@@ -605,6 +724,7 @@ class PipelineActivity : ComponentActivity() {
                 onPreview = { previewImage = it.asImageBitmap() },
                 onState = { liveState ->
                     live = liveState
+                    refreshVioUi()
                     if (state.value.phase == "capturing") {
                         state.value = state.value.copy(
                             frames = liveState.keyframes,
@@ -615,23 +735,34 @@ class PipelineActivity : ComponentActivity() {
                 },
                 onError = { message -> state.value = state.value.copy(status = message) },
             )
-            if (vio == null || vio?.released == true) {
-                runCatching {
-                    val v = VioRunner(this)
-                    v.start(android.os.Handler(android.os.Looper.getMainLooper()))
-                    v.startTrackingSilent()
-                    vio = v
-                }.onFailure { dbg("VIO start failed: " + it.message) }
-            }
-            controller?.vio = vio
-            startWarmup()
-            controller?.torchMode = torchMode
+            refreshVioUi(true)
             // CameraProbe lists the dual-lens rig first, but rig frames from two different
             // lenses do not reconstruct as one scan here (previous scan: 2/30 registered).
             // Use a single lens; it is the same mode Parallax offers first for regular scans.
             val mode = captureModes.firstOrNull { it is CaptureMode.Single } ?: captureModes.first()
             dbg("capture mode=" + mode.label + " rig=" + (mode is CaptureMode.Rig))
             controller?.open(mode)
+            if (vio == null || vio?.released == true) {
+                runCatching {
+                    val v = VioRunner(this)
+                    // OpenVINS is fed from the camera thread; the scanner does the same. Running
+                    // its IMU callbacks on the main looper creates a cross-thread race in the
+                    // filter (seen as a diverging velocity and nonsense poses).
+                    v.start(controller?.cameraHandler ?: android.os.Handler(android.os.Looper.getMainLooper()))
+                    v.startTrackingSilent()
+                    vio = v
+                }.onFailure { dbg("VIO start failed: " + it.message) }
+            }
+            controller?.vio = vio
+            controller?.torchMode = torchMode
+            vioBanner.value = null
+            state.value = state.value.copy(
+                phase = "idle",
+                status = "VIO is stopped",
+                detail = "Press Start VIO, hold still, then move gently to initialise tracking",
+                hint = "The minimap appears when tracking starts",
+            )
+            refreshVioUi(true)
         }
         state.value = state.value.copy(
             phase = "idle",
@@ -648,6 +779,27 @@ class PipelineActivity : ComponentActivity() {
     }
 
     private fun torchLabel(): String = if (torchMode == TorchMode.ON) "Torch: on" else "Torch: off"
+
+    /** Scanner-equivalent VIO control: Start VIO begins tracking + warm-up, Stop VIO tears it down. */
+    private fun toggleVio() {
+        val v = vio ?: return
+        if (v.tracking) {
+            v.tracking = false
+            v.warmupDone = false
+            stopWarmup()
+            vioBanner.value = null
+            state.value = state.value.copy(
+                phase = "idle",
+                status = "VIO stopped",
+                detail = "Start VIO to record OpenVINS poses with the scan",
+                hint = "Image-only SfM is used without VIO poses",
+            )
+        } else {
+            v.startTrackingSilent()
+            startWarmup()
+        }
+        refreshVioUi(true)
+    }
 
     private fun startCapture() {
         if (state.value.phase == "capturing") return
@@ -696,6 +848,7 @@ class PipelineActivity : ComponentActivity() {
         warmupStartMs = System.currentTimeMillis()
         v.warmupDone = false
         if (!v.tracking) v.startTrackingSilent()
+        vioBanner.value = "VIO INIT\nhold still for a moment"
         val tick = object : Runnable {
             override fun run() {
                 if (!warmupActive) return
@@ -711,6 +864,10 @@ class PipelineActivity : ComponentActivity() {
                 if (init) {
                     vv.warmupDone = true
                     warmupActive = false
+                    vioBanner.value = "VIO TRACKING\nminimap movement is the tracking indicator"
+                    mainHandler.postDelayed({
+                        if (!warmupActive && vio?.tracking == true) vioBanner.value = null
+                    }, 3000L)
                     state.value = state.value.copy(
                         phase = "idle",
                         status = "VIO tracking ready",
@@ -726,6 +883,10 @@ class PipelineActivity : ComponentActivity() {
                 if (now - warmupStartMs > 25_000L) {
                     warmupActive = false
                     vv.warmupDone = true
+                    vioBanner.value = "VIO NOT TRACKING\ncapturing without VIO poses"
+                    mainHandler.postDelayed({
+                        if (!warmupActive) vioBanner.value = null
+                    }, 4000L)
                     state.value = state.value.copy(
                         phase = "idle",
                         status = "VIO did not initialise",
@@ -738,6 +899,7 @@ class PipelineActivity : ComponentActivity() {
                     }
                     return
                 }
+                vioBanner.value = "VIO INIT\n" + line.lowercase()
                 state.value = state.value.copy(
                     phase = "idle",
                     status = line,
@@ -1092,6 +1254,7 @@ class PipelineActivity : ComponentActivity() {
         // QNN/SuperPoint context, which is what crashed the capture earlier.
         runCatching { vio?.release() }
         vio = null
+        vioUi.value = VioUi()
         previewImage = null
         live = LiveState()
     }
@@ -1143,11 +1306,15 @@ class PipelineActivity : ComponentActivity() {
             }
         } else {
             val denseInit = File(dir, "dense.ply")
-            if (denseInit.isFile) {
+            // Brush picks init.ply first and a 258-byte empty PLY makes it fail with exit 1.
+            // Only use a dense file that actually contains points; otherwise leave the
+            // COLMAP points / sparse.ply as the initial cloud.
+            if (denseInit.isFile && denseInit.length() > 1024) {
                 runCatching { denseInit.copyTo(initTarget, overwrite = true) }
                 dbg("train init=dense.ply " + denseInit.length() + " bytes")
             } else {
-                dbg("train init=dataset default")
+                if (initTarget.exists()) initTarget.delete()
+                dbg("train init=dataset default (dense.ply=" + denseInit.length() + " bytes)")
             }
         }
         dbg("train steps=" + steps + " res=" + settings.maxResolution + " useMasks=" + useMasks + " hidden=" + hideMasks)

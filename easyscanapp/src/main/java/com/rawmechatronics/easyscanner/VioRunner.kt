@@ -83,6 +83,14 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     @Volatile var lastPoseAppliedNs = 0L
 
     fun poseIsLive(): Boolean = poseApplied && System.nanoTime() - lastPoseAppliedNs < 1_500_000_000L
+
+    /** Current filter speed (m/s); large values mean the filter has lost track/diverged. */
+    fun velocityNorm(): Double {
+        if (!initialized) return 0.0
+        val x = stVel[0]; val y = stVel[1]; val z = stVel[2]
+        if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return Double.POSITIVE_INFINITY
+        return kotlin.math.sqrt(x * x + y * y + z * z)
+    }
     // drawn by the UI thread while the VIO thread appends: must be thread-safe
     private val trajectory = java.util.concurrent.CopyOnWriteArrayList<FloatArray>()
     @Volatile private var laserPx = FloatArray(0)
