@@ -177,7 +177,8 @@ JNIEXPORT jstring JNICALL Java_com_tomppi_splatproto_NativeCore_reconstruct(
             in.hasVio = true;
             const double* v = &vio[size_t(i) * 16];
             for (int k = 0; k < 9; ++k) in.vioR[k] = v[k];
-            in.vioT[0] = v[12]; in.vioT[1] = v[13]; in.vioT[2] = v[14];
+            // row-major 4x4: translation is column 3 of rows 0..2
+            in.vioT[0] = v[3]; in.vioT[1] = v[7]; in.vioT[2] = v[11];
         }
         rec.addImage(in);
     }

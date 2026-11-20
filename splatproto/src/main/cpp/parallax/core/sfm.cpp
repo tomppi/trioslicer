@@ -143,7 +143,7 @@ public:
     }
 
     bool reconstruct() {
-        if (vioReady()) return reconstructFromVio();
+        if (vioReady() && reconstructFromVio()) return true;
         auto init = rankInitialPairs();
         bool started = false;
         for (size_t c = 0; c < init.size() && c < 6 && !started; ++c) started = tryInitialise(s_.pairs[init[c]]);
@@ -232,6 +232,14 @@ public:
         completeTracks();
         for (size_t k = 0; k < s_.tracks.size(); ++k) triangulateTrack(s_, int(k));
         filterPoints(true);
+        int valid = 0;
+        for (const auto& p : s_.points) valid += p.valid;
+        if (valid < 50) {
+            log_ += "VIO poses seeded too few points (";
+            log_ += std::to_string(valid);
+            log_ += "); falling back to image SfM\n";
+            return false;
+        }
         // Refine the structure only: bundleAdjust needs at least one variable camera, so a
         // point-only pass is not available; the dense stage starts from these points.
         rms_ = 0.0;
