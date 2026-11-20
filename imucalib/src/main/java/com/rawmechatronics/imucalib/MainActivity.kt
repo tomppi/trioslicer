@@ -3,6 +3,7 @@ package com.rawmechatronics.imucalib
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
@@ -60,6 +61,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     private lateinit var startBtn: Button
     private lateinit var solveBtn: Button
     private lateinit var resolutionBtn: Button
+    private lateinit var noiseBtn: Button
+    private var noiseRecorder: ImuNoiseRecorder? = null
     private val main = Handler(Looper.getMainLooper())
     private var activeAnalysis: Size? = null
     private var stillSeq = 0
@@ -156,6 +159,11 @@ class MainActivity : Activity(), FrameProcessor.Listener {
             setOnClickListener { showResolutionMenu() }
         }
         root.addView(resolutionBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        noiseBtn = Button(this).apply {
+            text = "Measure IMU noise (stationary)"
+            setOnClickListener { toggleNoise() }
+        }
+        root.addView(noiseBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(startBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         buttons.addView(solveBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -202,6 +210,75 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) openCamera() else status("Camera permission is required.")
+    }
+
+    private fun toggleNoise() {
+        val running = noiseRecorder
+        if (running != null) {
+            noiseRecorder = null
+            running.stop(compute = false)
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            setNoiseUi(false)
+            status("IMU noise capture cancelled.")
+            return
+        }
+        if (rec != null || solving) { status("Stop the calibration recording/solve first."); return }
+        val labels = arrayOf("5 minutes (quick)", "10 minutes", "20 minutes")
+        AlertDialog.Builder(this)
+            .setTitle("Record stationary IMU noise")
+            .setItems(labels) { _, i ->
+                startNoise(intArrayOf(300, 600, 1200)[i])
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun startNoise(seconds: Int) {
+        if (cameraStarted) {
+            camera.close()
+            cameraStarted = false
+            info = null
+            activeAnalysis = null
+        }
+        val r = ImuNoiseRecorder(this, seconds,
+            onProgress = { p ->
+                runOnUiThread { status(String.format(Locale.US, "IMU noise: keep the phone still … %.0f%%", p * 100)) }
+            },
+            onDone = { res -> runOnUiThread { finishNoise(res) } })
+        if (!r.start()) { status("Accelerometer/gyroscope not available"); r.stop(false); return }
+        noiseRecorder = r
+        setNoiseUi(true)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        status("Keep the phone perfectly still on a table for " + (seconds / 60) + " min. Do not touch it.")
+    }
+
+    private fun setNoiseUi(running: Boolean) {
+        noiseBtn.text = if (running) "Stop IMU noise" else "Measure IMU noise (stationary)"
+        startBtn.isEnabled = !running
+        solveBtn.isEnabled = !running
+        resolutionBtn.isEnabled = !running
+    }
+
+    private fun finishNoise(res: ImuNoiseRecorder.Result?) {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        noiseRecorder = null
+        setNoiseUi(false)
+        if (res == null) {
+            status("IMU noise capture stopped — no result.")
+            openCamera()
+            return
+        }
+        val report = res.report()
+        runCatching {
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            val dir = File(filesDir, "imu-noise-" + stamp).apply { mkdirs() }
+            val yaml = File(dir, "imu.yaml").apply { writeText(res.yaml()) }
+            val txt = File(dir, "imu_noise_report.txt").apply { writeText(report) }
+            val exported = exportToDownloads(dir.name, yaml, txt)
+            status("IMU noise measured." + (if (exported != null) " Export: " + exported else " Export failed"))
+            results.append("\nIMU noise\n" + report + "\n")
+        }.onFailure { status("IMU noise result save failed: " + it.message) }
+        openCamera()
     }
 
     private fun analysisPref(): String =
@@ -297,6 +374,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     }
 
     override fun onPause() {
+        noiseRecorder?.let { it.stop(compute = false); noiseRecorder = null }
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (rec != null) stopRecording(true)
         camera.close()
         cameraStarted = false
@@ -304,6 +383,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     }
 
     override fun onDestroy() {
+        runCatching { noiseRecorder?.stop(compute = false) }
+        noiseRecorder = null
         camera.quit()
         processor.release()
         super.onDestroy()
