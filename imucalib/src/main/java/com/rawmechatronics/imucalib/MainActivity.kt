@@ -295,6 +295,25 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         openCamera()
     }
 
+    /**
+     * A pulled session can carry the camera model of the phone that recorded it.
+     * That lets the solver run on another device (or the PC) without silently using
+     * the local camera's intrinsics.
+     */
+    private fun sessionCameraModel(dir: File): CameraModel? {
+        val f = File(dir, "camera_model.json")
+        if (!f.exists()) return null
+        return runCatching {
+            val j = JSONObject(f.readText())
+            val d = j.optJSONArray("dist")
+            val dist = DoubleArray(4) { if (d != null && it < d.length()) d.optDouble(it, 0.0) else 0.0 }
+            val w = j.optInt("width", 640)
+            val h = j.optInt("height", 480)
+            CameraModel(j.getDouble("fx"), j.getDouble("fy"), j.getDouble("cx"), j.getDouble("cy"),
+                dist, "camera_model.json", w, h)
+        }.onFailure { Log.w(TAG, "session camera_model.json failed", it) }.getOrNull()
+    }
+
     private fun appPrefs() =
         getSharedPreferences("com.rawmechatronics.imucalib_preferences", MODE_PRIVATE)
 
@@ -366,6 +385,9 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         cameraStarted = false
         info = null
         activeAnalysis = null
+        // AppSettings is cached at startup; the exposure/ISO/resolution controls write the
+        // shared preferences directly, so reload before reopening or the old values are reused.
+        settings = AppSettings.load(this)
         main.postDelayed({ openCamera() }, 350L)
     }
 
@@ -586,20 +608,20 @@ class MainActivity : Activity(), FrameProcessor.Listener {
                     ui { status("Session has no usable board poses or IMU samples."); finishSolve() }
                     return@Thread
                 }
-                val cm = cameraModel()
+                val cm = sessionCameraModel(dir) ?: cameraModel()
                 val pixelMode = session.corners.isNotEmpty() && cm != null
                 val opts = if (pixelMode) {
                     // Pixel reprojection with Kalibr-style time-varying biases and the lever
                     // arm enabled: this is what turned the lever estimate from a motion-error
                     // absorber into a real measurement (within ~3 mm of Kalibr's).
-                    CalibOptions(splineDt = 0.02, imuSubsample = 4, maxIterations = 100,
+                    CalibOptions(splineDt = 0.02, imuSubsample = 1, maxIterations = 200,
                         useBoardPosePrior = false, pixelSigmaPx = 0.30,
                         biasKnotsPerSecond = 0.1,
                         biasSmoothSigmaG = 1e-4, biasSmoothSigmaA = 1e-3,
                         estimateLeverArm = true, leverArmSigma = 0.02,
                         markerSigmaPx = 0.30)
                 } else {
-                    CalibOptions(splineDt = 0.2, imuSubsample = 8, maxIterations = 20)
+                    CalibOptions(splineDt = 0.2, imuSubsample = 1, maxIterations = 50)
                 }
                 val gpuBatch = if (pixelMode) runCatching { GpuPixelBatch(applicationInfo.nativeLibraryDir, File(filesDir, "gpu_eval_timing.txt")) }
                     .onFailure { Log.w(TAG, "GPU batch init failed: " + it, it) }.getOrNull() else null
@@ -645,8 +667,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
                             if (pixelMode) "pixel" else "pose", row, corr * 1000, tau * 1000, ref)
                     }
                 }
-                val yaml = writeYaml(File(out, "kalibr_imucam_chain.yaml"), params)
-                var report = report(res, session, dir, yaml, params, rowNote)
+                val yaml = writeYaml(File(out, "kalibr_imucam_chain.yaml"), params, cm)
+                var report = report(res, session, dir, yaml, params, rowNote, cm)
                 File(out, "calib_report.txt").writeText(report)
                 File(out, "solve_time_ms.txt").writeText(solveMs.toString())
                 val exported = exportToDownloads(out.name,
@@ -708,7 +730,9 @@ class MainActivity : Activity(), FrameProcessor.Listener {
 
     // ---------------------------------------------------------------- outputs
 
-    private data class CameraModel(val fx: Double, val fy: Double, val cx: Double, val cy: Double, val dist: DoubleArray, val source: String)
+    private data class CameraModel(val fx: Double, val fy: Double, val cx: Double, val cy: Double,
+                                    val dist: DoubleArray, val source: String,
+                                    val width: Int = 640, val height: Int = 480)
 
     /** Camera model of the 640x480 VIO stream, scaled from the engine's live calibration. */
     private fun cameraModel(): CameraModel? {
@@ -791,10 +815,11 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         }
     }
 
-    private fun writeYaml(file: File, p: com.rawmechatronics.imucalib.core.CalibParams): Boolean {
-        val cam = cameraModel() ?: return false
+    private fun writeYaml(file: File, p: com.rawmechatronics.imucalib.core.CalibParams,
+                          camOverride: CameraModel? = null): Boolean {
+        val cam = camOverride ?: cameraModel() ?: return false
         val model = com.rawmechatronics.imucalib.core.CalibCameraModel(
-            cam.fx, cam.fy, cam.cx, cam.cy, cam.dist,
+            cam.fx, cam.fy, cam.cx, cam.cy, cam.dist, cam.width, cam.height,
         )
         file.writeText(com.rawmechatronics.imucalib.core.KalibrYaml.imuCamChain(p, model))
         return true
@@ -807,6 +832,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         wroteYaml: Boolean,
         params: com.rawmechatronics.imucalib.core.CalibParams,
         rowNote: String,
+        camOverride: CameraModel? = null,
     ): String {
         val p = params
         val d = res.diagnostics
@@ -816,7 +842,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         sb.append("board poses: ").append(session.boardPoses.size).append('\n')
         sb.append("corner observations: ").append(session.corners.size).append('\n')
         sb.append("IMU samples: ").append(session.imu.size).append('\n')
-        sb.append("camera model: ").append(cameraModel()?.source ?: "none").append('\n')
+        sb.append("camera model: ").append((camOverride ?: cameraModel())?.source ?: "none").append('\n')
         sb.append(String.format(Locale.US, "T_cam_imu rotvec (deg): %.4f %.4f %.4f\n", Math.toDegrees(p.rCi[0]), Math.toDegrees(p.rCi[1]), Math.toDegrees(p.rCi[2])))
         sb.append(String.format(Locale.US, "lever arm p_ci (mm): %.3f %.3f %.3f\n", p.pCi[0] * 1000, p.pCi[1] * 1000, p.pCi[2] * 1000))
         sb.append(String.format(Locale.US, "timeshift_cam_imu (ms): %.3f\n", p.td * 1000))
