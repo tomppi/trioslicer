@@ -1,4 +1,4 @@
-working on a fusion of lasers and Gaussian splatting into a 3d scanner with VIO, stay tuned. might not work on all devices since it runs on an npu for the slam. includes a kalibr validated CALIBRATION tool for the camera and the IMU.
+working on a fusion of lasers and Gaussian splatting into a 3d scanner with VIO, stay tuned. might not work on all devices since it runs on the npu for the slam. includes a kalibr validated CALIBRATION tool for the camera and the IMU.
 
 <p align="center">
   <img src="docs/trioslicer-icon.svg" width="128" height="128" alt="TrioSlicer icon">
