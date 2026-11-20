@@ -5,6 +5,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraManager
@@ -383,6 +384,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     }
 
     override fun onDestroy() {
+        stopSolveForeground()
         runCatching { noiseRecorder?.stop(compute = false) }
         noiseRecorder = null
         camera.quit()
@@ -501,6 +503,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         solving = true
         solveBtn.isEnabled = false
         status("Solving camera-IMU calibration…")
+        startSolveForeground()
         Thread {
             try {
                 val framesCsv = File(dir, "frames.csv")
@@ -624,9 +627,23 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         }.start()
     }
 
+    private fun startSolveForeground() {
+        runCatching {
+            val i = Intent(this, SolveService::class.java).putExtra(
+                "text", "Solving camera–IMU calibration — keep the app installed and leave the phone alone"
+            )
+            if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+        }.onFailure { Log.w(TAG, "foreground solve service failed", it) }
+    }
+
+    private fun stopSolveForeground() {
+        runCatching { stopService(Intent(this, SolveService::class.java)) }
+    }
+
     private fun finishSolve() {
         solving = false
         solveBtn.isEnabled = true
+        stopSolveForeground()
     }
 
     private fun ui(block: () -> Unit) = main.post(block)
