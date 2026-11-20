@@ -31,6 +31,8 @@ class Pipeline {
 public:
     Pipeline(State& s, const ProgressFn& progress) : s_(s), progress_(progress) {}
 
+    bool usedVio_ = false;
+
     void report(const std::string& stage, float f) {
         if (progress_ && !progress_(stage, f)) throw Cancelled{};
     }
@@ -142,8 +144,13 @@ public:
         }
     }
 
+    bool usedVio() const { return usedVio_; }
+
     bool reconstruct() {
-        if (vioReady() && reconstructFromVio()) return true;
+        if (vioReady() && reconstructFromVio()) {
+            usedVio_ = true;
+            return true;
+        }
         auto init = rankInitialPairs();
         bool started = false;
         for (size_t c = 0; c < init.size() && c < 6 && !started; ++c) started = tryInitialise(s_.pairs[init[c]]);
@@ -686,6 +693,7 @@ Result Reconstructor::run(const std::string& outputDir, const std::string& image
             return res;
         }
         log = pipe.log();
+        res.poseSource = pipe.usedVio() ? "vio" : "image-sfm";
 
         // Frame: metric scale, gravity-up (+Z), origin at the median of the sparse points.
         // A printed marker of known size is a direct measurement; the rig baseline comes from
@@ -795,6 +803,7 @@ std::string resultToJson(const Result& r) {
        << ",\"sparsePoints\":" << r.sparsePoints << ",\"densePoints\":" << r.densePoints
        << ",\"meanReprojError\":" << r.meanReprojError << ",\"metresPerUnit\":" << r.metresPerUnit
        << ",\"scaleSource\":\"" << r.scaleSource << "\""
+       << ",\"poseSource\":\"" << r.poseSource << "\""
        << ",\"gravityAligned\":" << (r.gravityAligned ? "true" : "false") << ",\"cameraCentres\":[";
     for (size_t i = 0; i < r.cameraCentres.size(); ++i) ss << (i ? "," : "") << r.cameraCentres[i];
     ss << "]}";

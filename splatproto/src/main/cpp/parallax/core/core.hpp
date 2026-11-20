@@ -67,6 +67,7 @@ struct Result {
     double meanReprojError = 0;    // pixels, after the final bundle adjustment
     double metresPerUnit = 0;      // 0 when the scale is unknown (single camera)
     std::string scaleSource = "none";  // "marker", "rig" or "none"
+    std::string poseSource = "image-sfm";  // "vio" when the camera poses came from VIO
     bool gravityAligned = false;
     std::vector<float> cameraCentres;  // xyz triples, in the exported frame
     std::vector<int> cameraImages;     // input image index of each centre

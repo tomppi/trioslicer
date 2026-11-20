@@ -295,12 +295,22 @@ class PipelineActivity : ComponentActivity() {
             LaunchedEffect(reconstructionJob) {
                 when (val job = reconstructionJob) {
                     is com.tomppi.splatproto.Job.Done -> {
-                        dbg("reconstruction done frames=" + job.scan.imageCount())
+                        val report = job.scan.reportJson()
+                        val poseSource = report?.optString("poseSource", "?") ?: "?"
+                        val sparse = report?.optInt("sparsePoints", -1) ?: -1
+                        val registered = report?.optInt("imagesRegistered", -1) ?: -1
+                        val total = report?.optInt("imagesTotal", -1) ?: -1
+                        Log.i("Pipeline", "reconstruction done poseSource=" + poseSource +
+                            " images=" + registered + "/" + total + " sparsePoints=" + sparse)
+                        dbg("reconstruction done frames=" + job.scan.imageCount() +
+                            " poseSource=" + poseSource + " points=" + sparse)
                         scanDir = job.scan.dir
                         ReconstructionService.acknowledge()
                         state.value = state.value.copy(
                             phase = "ready", progress = 1f,
-                            status = "Reconstructed", detail = "Ready to train",
+                            status = "Reconstructed · pose " + poseSource,
+                            detail = "Ready to train · " + registered + "/" + total +
+                                " images, " + sparse + " sparse points",
                         )
                     }
                     is com.tomppi.splatproto.Job.Failed -> {
@@ -1134,6 +1144,18 @@ class PipelineActivity : ComponentActivity() {
             }
         }
         dbg("train steps=" + steps + " res=" + settings.maxResolution + " useMasks=" + useMasks + " hidden=" + hideMasks)
+        runCatching {
+            val scan = Scan(dir)
+            val loaded = scan.load()
+            Log.i("Pipeline", "train dir=" + dir + " images=" + (loaded?.images?.size ?: -1) +
+                " vioPoses=" + (loaded?.images?.count { it.vioPose != null } ?: -1))
+            Log.i("Pipeline", "report=" + scan.reportJson())
+            for (name in listOf("scan.json", "dense.ply", "sparse.ply", "init.ply",
+                    "sparse/0/cameras.txt", "sparse/0/images.txt", "sparse/0/points3D.txt")) {
+                val f = File(dir, name)
+                Log.i("Pipeline", "dataset " + name + " exists=" + f.isFile + " bytes=" + f.length())
+            }
+        }.onFailure { Log.w("Pipeline", "train diagnostics failed", it) }
         scope.launch(Dispatchers.Default) {
             val exit = BrushTrainer.nativeTrain(
                 datasetPath = dir.absolutePath,
