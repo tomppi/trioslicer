@@ -23,6 +23,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.PopupMenu
 import com.rawmechatronics.easyscanner.AppSettings
 import com.rawmechatronics.easyscanner.CameraController
 import com.rawmechatronics.easyscanner.CameraInfo
@@ -58,6 +59,7 @@ class MainActivity : Activity(), FrameProcessor.Listener {
     private lateinit var results: TextView
     private lateinit var startBtn: Button
     private lateinit var solveBtn: Button
+    private lateinit var resolutionBtn: Button
     private val main = Handler(Looper.getMainLooper())
     private var activeAnalysis: Size? = null
     private var stillSeq = 0
@@ -149,6 +151,11 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         previewBox.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitPreviewToBox() }
         root.addView(previewBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f))
         root.addView(status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        resolutionBtn = Button(this).apply {
+            text = "Resolution: highest"
+            setOnClickListener { showResolutionMenu() }
+        }
+        root.addView(resolutionBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(startBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         buttons.addView(solveBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -197,6 +204,36 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) openCamera() else status("Camera permission is required.")
     }
 
+    private fun analysisPref(): String =
+        getSharedPreferences("imu_calib", MODE_PRIVATE).getString("analysis_size", "max") ?: "max"
+
+    private fun showResolutionMenu() {
+        if (rec != null || solving) { status("Stop recording before changing resolution"); return }
+        val inf = info ?: return
+        val sizes = inf.analysisSizes.distinctBy { it.width to it.height }
+        if (sizes.isEmpty()) { status("No analysis sizes reported"); return }
+        val menu = PopupMenu(this, resolutionBtn)
+        menu.menu.add(0, 0, 0, "Highest (" + sizes.first().width + "x" + sizes.first().height + ")")
+        sizes.forEachIndexed { i, sz -> menu.menu.add(0, i + 1, i + 1, sz.width.toString() + "x" + sz.height) }
+        menu.setOnMenuItemClickListener { item ->
+            val key = if (item.itemId == 0) "max" else sizes[item.itemId - 1].let { it.width.toString() + "x" + it.height }
+            getSharedPreferences("imu_calib", MODE_PRIVATE).edit().putString("analysis_size", key).apply()
+            status("Resolution selected: " + (if (key == "max") "highest" else key) + " - reopening camera")
+            reopenCamera()
+            true
+        }
+        menu.show()
+    }
+
+    private fun reopenCamera() {
+        if (rec != null || solving) return
+        camera.close()
+        cameraStarted = false
+        info = null
+        activeAnalysis = null
+        main.postDelayed({ openCamera() }, 350L)
+    }
+
     private fun openCamera() {
         if (cameraStarted || !preview.isAvailable) return
         val st = settings ?: AppSettings.load(this).also { settings = it }
@@ -215,9 +252,15 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         info = inf
         cameraStarted = true
         processor.configure(st.nativeConfig(inf))
-        activeAnalysis = inf.analysisSizes.firstOrNull()
-        camera.open(inf, preview.surfaceTexture!!, inf.analysisSizes.first(), st)
-        Log.i(TAG, "camera " + inf.label + " analysis " + inf.analysisSizes.first())
+        val pref = analysisPref()
+        val chosen = if (pref == "max" || pref.isBlank()) inf.analysisSizes.firstOrNull()
+            else inf.analysisSizes.firstOrNull { it.width.toString() + "x" + it.height == pref }
+                ?: inf.analysisSizes.firstOrNull()
+        if (chosen == null) { status("No analysis size"); return }
+        activeAnalysis = chosen
+        camera.open(inf, preview.surfaceTexture!!, chosen, st)
+        resolutionBtn.text = "Resolution: " + chosen.width + "x" + chosen.height
+        Log.i(TAG, "camera " + inf.label + " analysis " + chosen)
         preview.post { fitPreviewToBox() }
     }
 
