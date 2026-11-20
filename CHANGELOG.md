@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-## [1.20.0] - 2026-11-17
+## [1.22.0] - 2026-11-20
 
 ### Added
 
@@ -13,6 +13,49 @@
   engine, and launched from the menu. Its hardware, printable-board and calibration instructions live
   in that repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the exact source pin,
   license and the small integration changes.
+
+## [1.21.0] - 2026-11-15
+
+### Changed
+
+- **Better object masks from the NPU masker.** The U2Net mask pipeline was tuned on four captured
+  scans against a high-quality reference: flip test-time augmentation, a second pass on a 1.35x crop
+  around the first pass's object box, a wider guided filter, a stricter threshold (0.55 instead of
+  0.60) and no erosion. The masks follow the object more consistently from frame to frame, and the
+  reviewed seed from the first keyframe - including any parts the user added or removed - is now
+  reused for that frame instead of being segmented again.
+- **Masker settings.** Settings -> Masking (U2Net NPU) exposes the masker's knobs - flip TTA,
+  two-pass crop, crop margin, threshold, guided-filter radius and closing size - so masks can be
+  tuned per scan without a new build.
+
+## [1.20.0] - 2026-11-14
+
+### Added
+
+- **Gaussian splatting: capture, train and view on the phone, in one menu.** More -> Experimental ->
+  Gaussian splatting opens a workspace of its own. **New scan** captures 20-40 frames with Camera2, masks
+  the object, reconstructs the cameras on-device with the vendored Parallax SfM core, and trains a
+  Gaussian splat with Brush's trainer; the result lands in the splat library under the scan's name.
+  **Splat viewer** is the existing Aholo viewer, now reached from the same menu, so a scene trained on
+  the phone is one press from being seen. Capture, masking, reconstruction, training and viewing all
+  happen on the phone - the frames and the model never leave it.
+- **The splat viewer's camera controls are the turntable rig from Splat Proto.** Two-finger twist rolls
+  the view around the view axis, orbit rotates in the camera's own frame so "up" stays up, and the
+  controls sheet gains a **Roll view** slider; double-tap still resets.
+
+### Changed
+
+- **Object masking needs root, and the app says so.** The masker runs U2Net as an HTP context binary
+  through a prebuilt `qnn-net-run`, which loads an unsigned HTP skeleton the app sandbox cannot load;
+  it is staged to `/data/local/tmp` and started through `su`. Without root the scan still
+  reconstructs and trains, just without a mask - the menu and the scan screen both name the limit.
+
+### Removed
+
+- **EdgeTAM is gone.** Its models, its TFLite encoder/decoder path and its RMBG/ONNX first-frame seed
+  were removed when masking became U2Net-on-NPU; this release deletes the remaining dead code and drops
+  the TFLite and ONNX Runtime dependencies that only it used.
+
 
 ## [1.19.0] - 2026-11-11
 

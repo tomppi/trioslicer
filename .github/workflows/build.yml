@@ -481,6 +481,16 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
       
+      - name: Fetch the Splat Proto payload (Brush JNI + U2Net masker)
+        run: |
+          chmod +x scripts/fetch-splatproto-payload-android.sh
+          scripts/fetch-splatproto-payload-android.sh 2>&1 | tee splatproto-payload-fetch.log
+          test -s splatproto/src/main/jniLibs/arm64-v8a/libbrush_jni.so
+          test -s splatproto/src/main/assets/masker/models/u2net.bin
+          test -s splatproto/src/main/assets/masker/bin/qnn-net-run
+          file splatproto/src/main/jniLibs/arm64-v8a/libbrush_jni.so | tee splatproto-brush.log
+          grep -q 'ARM aarch64' splatproto-brush.log
+
       - name: Fetch and validate the Klipper host payload
         run: |
           chmod +x scripts/fetch-klipper-android.sh
@@ -704,6 +714,13 @@ jobs:
           grep -q 'lib/arm64-v8a/libprusa_slicer_exec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libblender_exec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libfilasim_jni.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libbrush_jni.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libparallaxcore.so' apk-contents.log
+          grep -q 'assets/masker/models/u2net.bin' apk-contents.log
+          grep -q 'assets/masker/bin/qnn-net-run' apk-contents.log
+          grep -q 'assets/masker/skel/libQnnHtpV73Skel.so' apk-contents.log
+          grep -q 'assets/masker/SOURCE.md' apk-contents.log
+          grep -q 'assets/masker/LICENSES/LICENSE-Qualcomm-AI-Stack.pdf' apk-contents.log
           grep -q 'lib/arm64-v8a/libcpython.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libopenvdb.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libavcodec.so' apk-contents.log
@@ -810,6 +827,8 @@ jobs:
             bumpmesh-recovery-build.log
             filasim-build.log
             filasim-warm-build.log
+            splatproto-payload-fetch.log
+            splatproto-brush.log
             curaengine-android-build.log
             curaengine-host-build.log
             curaengine-needed.log

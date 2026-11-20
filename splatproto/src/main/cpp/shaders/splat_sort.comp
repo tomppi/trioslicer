@@ -1,0 +1,58 @@
+#version 450
+// One workgroup sorts one tile's splat references front-to-back by camera depth.
+// Bitonic sort over a fixed MAX_PER_TILE window; padding entries sort as +inf.
+layout(local_size_x = 256) in;
+
+layout(binding = 2, std430) buffer Counts { uint counts[]; };
+layout(binding = 3, std430) buffer Entries { uvec2 entries[]; };
+
+const uint MAX_PER_TILE = 512u;
+
+shared float sz[MAX_PER_TILE];
+shared uint si[MAX_PER_TILE];
+
+void main() {
+    uint tile = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint n = counts[tile];
+    if (n > MAX_PER_TILE) n = MAX_PER_TILE;
+    uint base = tile * MAX_PER_TILE;
+
+    for (uint k = tid; k < MAX_PER_TILE; k += 256u) {
+        if (k < n) {
+            uvec2 e = entries[base + k];
+            sz[k] = uintBitsToFloat(e.y);
+            si[k] = e.x;
+        } else {
+            sz[k] = 1e30;
+            si[k] = 0xFFFFFFFFu;
+        }
+    }
+    barrier();
+
+    for (uint ksize = 2u; ksize <= MAX_PER_TILE; ksize <<= 1) {
+        for (uint j = ksize >> 1; j > 0u; j >>= 1) {
+            for (uint k = tid; k < MAX_PER_TILE; k += 256u) {
+                uint partner = k ^ j;
+                if (partner > k) {
+                    bool asc = ((k & ksize) == 0u);
+                    float a = sz[k];
+                    float b = sz[partner];
+                    bool flip = asc ? (a > b) : (a < b);
+                    if (flip) {
+                        sz[k] = b;
+                        sz[partner] = a;
+                        uint t = si[k];
+                        si[k] = si[partner];
+                        si[partner] = t;
+                    }
+                }
+            }
+            barrier();
+        }
+    }
+
+    for (uint k = tid; k < n; k += 256u) {
+        entries[base + k] = uvec2(si[k], floatBitsToUint(sz[k]));
+    }
+}

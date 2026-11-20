@@ -23,3 +23,5 @@ include(":app")
 include(":easyscanapp")
 include(":imucalibcore")
 include(":imucalib")
+// Splat Proto's capture -> SfM -> Brush training engine, embedded as a library.
+include(":splatproto")
