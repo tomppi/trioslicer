@@ -112,7 +112,19 @@ jobs:
             "cmake;3.22.1" \
             "cmake;3.31.6"
           sudo apt-get update
-          sudo apt-get install -y ninja-build file binutils
+          sudo apt-get install -y ninja-build file binutils libclang-dev
+
+      - name: Point bindgen at libclang
+        run: |
+          set -euo pipefail
+          libclang="$(find /usr/lib -name 'libclang.so*' -o -name 'libclang-*.so*' 2>/dev/null | sort -V | head -n 1)"
+          if [ -z "$libclang" ]; then
+            echo "::error::libclang-dev installed but no libclang shared library was found under /usr/lib" >&2
+            exit 1
+          fi
+          sudo ln -sf "$libclang" /usr/lib/libclang.so
+          echo "LIBCLANG_PATH=/usr/lib" >> "$GITHUB_ENV"
+          ls -l /usr/lib/libclang.so "$libclang"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
