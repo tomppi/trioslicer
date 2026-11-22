@@ -115,12 +115,12 @@ android {
             // Gradle's repositories. repo1.maven.org rate-limits GitHub runners (HTTP
             // 429), which failed every Robolectric class before a test could run. The
             // Google mirror serves the same artifact without that limit.
-            all {
-                systemProperty(
+            all { test ->
+                test.systemProperty(
                     "robolectric.dependency.repo.url",
                     "https://maven-central.storage-download.googleapis.com/maven2",
                 )
-                systemProperty("robolectric.dependency.repo.id", "central")
+                test.systemProperty("robolectric.dependency.repo.id", "central")
             }
         }
     }
