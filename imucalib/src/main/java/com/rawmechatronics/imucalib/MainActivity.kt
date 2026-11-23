@@ -104,6 +104,14 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         mgr = getSystemService(CameraManager::class.java)
+        // Calibration must freeze the exposure; auto exposure chooses tens of
+        // milliseconds and the AprilTag corners smear under motion. 0.5 ms is
+        // within this sensor's range and the vendor path applies it.
+        appPrefs().edit()
+            .putBoolean("manual_exposure", true)
+            .putInt("exposure_us", 500)
+            .putInt("iso", 3200)
+            .apply()
         settings = AppSettings.load(this)
         VendorIntrinsics.ensure(this, settings!!)
         processor = FrameProcessor(filesDir.absolutePath, this)
@@ -330,8 +338,8 @@ class MainActivity : Activity(), FrameProcessor.Listener {
 
     private fun showExposureMenu() {
         if (rec != null || solving) { status("Stop recording/solve before changing exposure"); return }
-        val labels = arrayOf("Auto exposure", "1 ms", "2 ms", "4 ms", "8 ms", "16 ms")
-        val us = intArrayOf(0, 1000, 2000, 4000, 8000, 16000)
+        val labels = arrayOf("Auto exposure", "0.5 ms", "1 ms", "2 ms", "4 ms", "8 ms", "16 ms")
+        val us = intArrayOf(0, 500, 1000, 2000, 4000, 8000, 16000)
         AlertDialog.Builder(this).setTitle("Camera exposure").setItems(labels) { _, i ->
             if (i == 0) {
                 appPrefs().edit().putBoolean("manual_exposure", false).apply()
