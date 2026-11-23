@@ -2,11 +2,16 @@ plugins {
     id("com.android.library")
 }
 
+// The OpenVINS/Ceres native build needs its full third-party tree. When that
+// tree is unavailable, `-PusePrebuiltVio=true` packages the matching prebuilt
+// libs already in src/main/jniLibs instead of running CMake.
+val usePrebuiltVio = providers.gradleProperty("usePrebuiltVio").orNull == "true"
+
 android {
     packaging {
         jniLibs {
             pickFirsts += listOf("**/libc++_shared.so")
-            excludes += listOf("**/libopencv_java4.so")
+            if (!usePrebuiltVio) excludes += listOf("**/libopencv_java4.so")
         }
     }
 
@@ -30,11 +35,15 @@ android {
 
     defaultConfig {
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+        if (!usePrebuiltVio) {
+            externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+        }
     }
 
-    externalNativeBuild {
-        cmake { path = file("src/main/cpp/CMakeLists.txt") }
+    if (!usePrebuiltVio) {
+        externalNativeBuild {
+            cmake { path = file("src/main/cpp/CMakeLists.txt") }
+        }
     }
 }
 
