@@ -122,10 +122,10 @@ index 219166c8..dd1afce0 100644
  
  # Note: I'm not using any of the LOG_xxx options in ExternalProject_Add() commands
 diff --git a/deps/FFMPEG/FFMPEG.cmake b/deps/FFMPEG/FFMPEG.cmake
-index 4fd52132..46c7264e 100644
+index 4fd52132..f408b267 100644
 --- a/deps/FFMPEG/FFMPEG.cmake
 +++ b/deps/FFMPEG/FFMPEG.cmake
-@@ -60,6 +60,17 @@ else ()
+@@ -60,6 +60,22 @@ else ()
          set(_link_cmd --enable-shared)
      endif ()
  
@@ -136,6 +136,11 @@ index 4fd52132..46c7264e 100644
 +        # the dependency prefix explicitly for OpenSSL and friends.
 +        set(_android_ffmpeg_cmd
 +            --disable-x86asm
++            --target-os=android
++            --arch=aarch64
++            --enable-cross-compile
++            "--cc=${ORCA_ANDROID_CC}"
++            "--cxx=${ORCA_ANDROID_CXX}"
 +            "--extra-cflags=-I${DESTDIR}/include"
 +            "--extra-ldflags=-L${DESTDIR}/lib")
 +    endif()
@@ -143,7 +148,7 @@ index 4fd52132..46c7264e 100644
      set(_build_j -j)
      if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
          set(_build_j "-j$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
-@@ -78,6 +89,7 @@ else ()
+@@ -78,6 +94,7 @@ else ()
              "--prefix=${DESTDIR}"
              ${_link_cmd}
              ${_minos_cmd}
