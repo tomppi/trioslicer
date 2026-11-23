@@ -332,6 +332,7 @@ class CameraController(
             // raw sensor orientation: the intrinsics are in it
             b.set(CaptureRequest.JPEG_ORIENTATION, 0)
             b.set(CaptureRequest.JPEG_QUALITY, 95.toByte())
+            SamsungCameraVendor.applyTargetSize(b, stillSizes.firstOrNull())
             s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
                     onStillFailed("still capture failed (reason ${failure.reason})", false)
@@ -455,6 +456,10 @@ class CameraController(
                 b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
                 b.set(CaptureRequest.SENSOR_SENSITIVITY, inf.isoRange?.clamp(st.iso) ?: st.iso)
                 b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(exp, 1_000_000_000L / st.targetFps))
+                // The Samsung HAL ignores the standard exposure keys; the vendor
+                // keys are what the vendor camera path actually applies.
+                val iso = inf.isoRange?.clamp(st.iso) ?: st.iso
+                SamsungCameraVendor.applyExposure(b, exp, iso)
             } else {
                 b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
                 b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, inf.aeCompRange.clamp(st.exposureComp))

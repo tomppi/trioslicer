@@ -396,10 +396,10 @@ class MainActivity : Activity(), FrameProcessor.Listener {
         val st = settings ?: AppSettings.load(this).also { settings = it }
         val ids = CameraInfo.backCameraIds(mgr)
         if (ids.isEmpty()) { status("No back camera"); return }
-        // Calibration wants the most pixels the camera can stream, not the scanner's
-        // real-time 640x480 analysis cap. CameraInfo.query has this mode for exactly this.
+        // Calibrate at the VIO stream resolution. The vendor camera path fixes
+        // exposure; higher sensor modes only add data the VIO pipeline never uses.
         val inf = CameraInfo.query(mgr, st.cameraId.takeIf { it in ids } ?: ids.first(),
-            st.targetFps, st.maxLongSide, preferHighestResolution = true)
+            st.targetFps, 960, preferHighestResolution = false)
         runCatching {
             File(filesDir, "camera_info.txt").writeText(
                 inf.label + "\n" +
