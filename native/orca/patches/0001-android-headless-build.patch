@@ -1,5 +1,5 @@
 diff --git a/deps/CMakeLists.txt b/deps/CMakeLists.txt
-index 219166c8..f7047d25 100644
+index 219166c8..dd1afce0 100644
 --- a/deps/CMakeLists.txt
 +++ b/deps/CMakeLists.txt
 @@ -53,6 +53,44 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_VERSION VERSION_LESS "3.25")
@@ -112,7 +112,7 @@ index 219166c8..f7047d25 100644
 +# A console-only build (Android) drops the GUI-only and CAD-only dependencies from
 +# the aggregate, matching the guarded recipes above.
 +if (NOT SLIC3R_GUI)
-+    list(REMOVE_ITEM _dep_list dep_OpenCSG dep_GLFW dep_OpenCV dep_GLEW dep_wxWidgets)
++    list(REMOVE_ITEM _dep_list dep_OpenCSG dep_GLFW dep_OpenCV dep_GLEW dep_wxWidgets dep_python3 dep_wxInspector)
 +endif()
 +if (NOT SLIC3R_CAD)
 +    list(REMOVE_ITEM _dep_list dep_OCCT)
