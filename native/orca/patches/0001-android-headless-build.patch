@@ -122,23 +122,28 @@ index 219166c8..dd1afce0 100644
  
  # Note: I'm not using any of the LOG_xxx options in ExternalProject_Add() commands
 diff --git a/deps/FFMPEG/FFMPEG.cmake b/deps/FFMPEG/FFMPEG.cmake
-index 4fd52132..47ecbd02 100644
+index 4fd52132..46c7264e 100644
 --- a/deps/FFMPEG/FFMPEG.cmake
 +++ b/deps/FFMPEG/FFMPEG.cmake
-@@ -60,6 +60,12 @@ else ()
+@@ -60,6 +60,17 @@ else ()
          set(_link_cmd --enable-shared)
      endif ()
  
 +    set(_android_ffmpeg_cmd)
 +    if (ANDROID)
 +        # No x86 assembler on the host; the ARM64 build does not need x86asm.
-+        set(_android_ffmpeg_cmd --disable-x86asm)
++        # FFmpeg's configure does not receive CMAKE_PREFIX_PATH, so point it at
++        # the dependency prefix explicitly for OpenSSL and friends.
++        set(_android_ffmpeg_cmd
++            --disable-x86asm
++            "--extra-cflags=-I${DESTDIR}/include"
++            "--extra-ldflags=-L${DESTDIR}/lib")
 +    endif()
 +
      set(_build_j -j)
      if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
          set(_build_j "-j$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
-@@ -78,6 +84,7 @@ else ()
+@@ -78,6 +89,7 @@ else ()
              "--prefix=${DESTDIR}"
              ${_link_cmd}
              ${_minos_cmd}
