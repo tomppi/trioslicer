@@ -279,6 +279,14 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
             isFakeBoldText = true
         }
         canvas.drawText("3D MAP", r.left + 6f * dp, r.top + 12f * dp, title)
+        val distance = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(225, 235, 240, 250)
+            textSize = 8.5f * dp
+            isFakeBoldText = true
+        }
+        canvas.drawText(
+            String.format(java.util.Locale.US, "%.2f m path  ·  %.2f m net", vs.traveledMeters(), vs.netMeters()),
+            r.left + 6f * dp, r.top + 23f * dp, distance)
         if (vs.poseIsLive()) {
             val live = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.rgb(90, 235, 140)

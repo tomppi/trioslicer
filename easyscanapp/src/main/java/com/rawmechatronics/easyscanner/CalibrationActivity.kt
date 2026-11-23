@@ -60,6 +60,16 @@ class CalibrationActivity : android.app.Activity() {
         board.setOnClickListener { launchCapture("board") }
         col.addView(board)
 
+        val tune = Button(this)
+        tune.text = "Manual VIO tuning — live distance + time offset"
+        tune.setOnClickListener {
+            val i = Intent(this, MainActivity::class.java)
+            i.putExtra("vio_tune", true)
+            i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            startActivity(i)
+        }
+        col.addView(tune)
+
         val solve = Button(this)
         solve.text = "Solve & save from latest recording"
         solve.setOnClickListener {

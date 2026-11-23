@@ -20,6 +20,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -176,6 +177,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         setMode(Mode.VIEW)
         b.stepTitle.setOnLongClickListener { toggleVioPoints(); true }
         handleCalibCaptureIntent(intent)
+        if (intent?.getBooleanExtra(EXTRA_VIO_TUNE, false) == true) {
+            intent.removeExtra(EXTRA_VIO_TUNE)
+            main.postDelayed({ showVioTunePanel() }, 800L)
+        }
         val rootForFit = findViewById<android.view.View>(R.id.root)
         rootForFit.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitPreviewToScreen() }
         rootForFit.post { fitPreviewToScreen() }
@@ -241,10 +246,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
     }
 
     /** Start the marker-free pose source on the processing thread (also registers IMU there). */
-    private fun ensureVio() {
-        if (vio != null && vio?.released != true) return
+    private fun ensureVio(onReady: (() -> Unit)? = null) {
+        if (vio != null && vio?.released != true) { onReady?.invoke(); return }
         processor.handler.post {
-            if (vio != null && vio?.released != true) return@post
+            if (vio != null && vio?.released != true) { main.post { onReady?.invoke() }; return@post }
             try {
                 val v = VioRunner(this)
                 v.start(processor.handler)
@@ -252,8 +257,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                 processor.vio = v
                 b.overlay.vio = v
                 Log.i(TAG, "VIO ready")
+                main.post { onReady?.invoke() }
             } catch (e: Throwable) {
                 Log.e(TAG, "VIO start failed", e)
+                main.post { onReady?.invoke() }
             }
         }
     }
@@ -326,6 +333,10 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         super.onNewIntent(intent)
         setIntent(intent)
         handleCalibCaptureIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_VIO_TUNE, false)) {
+            intent.removeExtra(EXTRA_VIO_TUNE)
+            main.postDelayed({ showVioTunePanel() }, 400L)
+        }
     }
 
     /** Record a fixed-length calibration session (still IMU or board motion). */
@@ -388,6 +399,112 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
         captureTicker = tick
         banner((if (board) "BOARD CALIBRATION" else "STILL CALIBRATION") + "\nstarting...")
         main.postDelayed(tick, 100)
+    }
+
+    private var vioTuneDialog: AlertDialog? = null
+    private var vioTuneTicker: Runnable? = null
+
+    /**
+     * Manual camera-IMU timing step: path/net distance live from the VIO, and a
+     * single time-offset slider. OpenVINS reads the offset from its YAML at
+     * startup, so applying restarts the filter without closing the camera.
+     */
+    private fun showVioTunePanel() {
+        if (vioTuneDialog?.isShowing == true) return
+        val dp = resources.displayMetrics.density
+        fun px(v: Int) = (v * dp).toInt()
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(20), px(12), px(20), px(4))
+        }
+        val help = TextView(this).apply {
+            textSize = 13f
+            text = "Move the phone and compare path/net distance with a measured distance. " +
+                "Time offset mainly affects fast rotation; adjust it there, then move again."
+        }
+        col.addView(help)
+        val distance = TextView(this).apply {
+            textSize = 16f
+            setPadding(0, px(12), 0, px(8))
+        }
+        col.addView(distance)
+        val offsetText = TextView(this).apply { textSize = 14f; setPadding(0, px(8), 0, 0) }
+        col.addView(offsetText)
+        val current = VioTuning.readMs(this).coerceIn(-50.0, 50.0)
+        val bar = SeekBar(this).apply {
+            max = 100
+            progress = (current + 50.0).roundToInt()
+        }
+        fun offsetMs() = bar.progress - 50.0
+        fun label() { offsetText.text = "Camera-IMU time offset: %+.1f ms".format(offsetMs()) }
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) = label()
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        label()
+        col.addView(bar)
+        val apply = Button(this).apply {
+            text = "Apply and restart VIO"
+            setOnClickListener {
+                if (!VioTuning.writeMs(this@MainActivity, offsetMs())) {
+                    status("No VIO config yet: start tracking once, then retry")
+                    return@setOnClickListener
+                }
+                status("Time offset %+.1f ms applied; VIO restarting — hold still".format(offsetMs()))
+                vioTuneDialog?.dismiss()
+                restartVioForTuning()
+            }
+        }
+        col.addView(apply)
+        val zero = Button(this).apply {
+            text = "Set to 0 ms"
+            setOnClickListener {
+                bar.progress = 50
+                status("Slider set to 0 ms; press Apply to use it")
+            }
+        }
+        col.addView(zero)
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Manual VIO calibration")
+            .setView(col)
+            .setNegativeButton("Close") { _, _ -> }
+            .create()
+        val tick = object : Runnable {
+            override fun run() {
+                val v = vio
+                distance.text = if (v == null || !v.initialized) {
+                    "VIO not tracking yet"
+                } else {
+                    "Path %.2f m   ·   net %.2f m\nSpeed %.2f m/s".format(
+                        v.traveledMeters(), v.netMeters(), v.velocityNorm())
+                }
+                if (dlg.isShowing) main.postDelayed(this, 200L)
+            }
+        }
+        dlg.setOnDismissListener {
+            vioTuneTicker?.let { main.removeCallbacks(it) }
+            vioTuneTicker = null
+            vioTuneDialog = null
+        }
+        vioTuneDialog = dlg
+        vioTuneTicker = tick
+        dlg.show()
+        main.post(tick)
+    }
+
+    private fun restartVioForTuning() {
+        warmupActive = false
+        warmupTicker?.let { main.removeCallbacks(it) }
+        stopVio()
+        main.postDelayed({
+            ensureVio {
+                val v = vio ?: return@ensureVio
+                v.warmupDone = false
+                v.startTrackingSilent()
+                startWarmup()
+            }
+        }, 300L)
     }
 
     private fun toggleVioTracking() {
@@ -1516,6 +1633,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
 
     private companion object {
         const val EXTRA_CALIB_CAPTURE = "calib_capture"
+        const val EXTRA_VIO_TUNE = "vio_tune"
 
         const val TAG = "EasyScanner"
         const val HUD_PERIOD_MS = 100L

@@ -518,6 +518,34 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
     }
 
+    /** Path length (sum of camera-position steps) in metres. */
+    fun traveledMeters(): Double {
+        var sum = 0.0
+        var px = 0.0; var py = 0.0; var pz = 0.0
+        var have = false
+        for (p in trajectory) {
+            if (p.size < 3 || !p[0].isFinite() || !p[1].isFinite() || !p[2].isFinite()) continue
+            if (have) sum += kotlin.math.sqrt((p[0]-px)*(p[0]-px) + (p[1]-py)*(p[1]-py) + (p[2]-pz)*(p[2]-pz)).toDouble()
+            px = p[0].toDouble(); py = p[1].toDouble(); pz = p[2].toDouble(); have = true
+        }
+        return sum
+    }
+
+    /** Straight-line displacement from the first trajectory point, metres. */
+    fun netMeters(): Double {
+        var first: FloatArray? = null
+        var last: FloatArray? = null
+        for (p in trajectory) {
+            if (p.size < 3 || !p[0].isFinite() || !p[1].isFinite() || !p[2].isFinite()) continue
+            if (first == null) first = p
+            last = p
+        }
+        val a = first ?: return 0.0
+        val b = last ?: return 0.0
+        val dx = (b[0]-a[0]).toDouble(); val dy = (b[1]-a[1]).toDouble(); val dz = (b[2]-a[2]).toDouble()
+        return kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+    }
+
     fun trajectorySize(): Int = trajectory.size
 
     /** Snapshot of the tracked path in VIO world metres (x, y, z; +Z is up). */
