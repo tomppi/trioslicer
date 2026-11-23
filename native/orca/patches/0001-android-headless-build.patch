@@ -121,6 +121,31 @@ index 219166c8..dd1afce0 100644
  add_custom_target(deps ALL DEPENDS ${_dep_list})
  
  # Note: I'm not using any of the LOG_xxx options in ExternalProject_Add() commands
+diff --git a/deps/FFMPEG/FFMPEG.cmake b/deps/FFMPEG/FFMPEG.cmake
+index 4fd52132..47ecbd02 100644
+--- a/deps/FFMPEG/FFMPEG.cmake
++++ b/deps/FFMPEG/FFMPEG.cmake
+@@ -60,6 +60,12 @@ else ()
+         set(_link_cmd --enable-shared)
+     endif ()
+ 
++    set(_android_ffmpeg_cmd)
++    if (ANDROID)
++        # No x86 assembler on the host; the ARM64 build does not need x86asm.
++        set(_android_ffmpeg_cmd --disable-x86asm)
++    endif()
++
+     set(_build_j -j)
+     if(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL})
+         set(_build_j "-j$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+@@ -78,6 +84,7 @@ else ()
+             "--prefix=${DESTDIR}"
+             ${_link_cmd}
+             ${_minos_cmd}
++            ${_android_ffmpeg_cmd}
+             ${_openssl_cmd}
+             --disable-doc
+             --enable-small
 diff --git a/deps/GMP/GMP.cmake b/deps/GMP/GMP.cmake
 index 4f2beedb..11d1140c 100644
 --- a/deps/GMP/GMP.cmake
