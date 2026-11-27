@@ -46,10 +46,14 @@ done
 mkdir -p "$SRC/src/console"
 cp "$REPO/native/orca/console/"*.cpp "$REPO/native/orca/console/CMakeLists.txt" "$SRC/src/console/"
 
-# OrcaSlicer's root CMakeLists points OpenCASCADE_DIR at <prefix>/lib/cmake/occt, while OCCT
-# 7.6 installs its config package under lib/cmake/opencascade.
+# OrcaSlicer's CMakeLists points OpenCASCADE_DIR at <prefix>/lib/cmake/occt. OCCT 7.6
+# installs under lib/cmake/opencascade, while OCCT 8.0 installs under lib/cmake/occt; with
+# Android's CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY, find_package(OpenCASCADE) searches
+# <prefix>/lib/cmake/opencascade, so make sure both names resolve.
 if [ -d "$PREFIX/lib/cmake/opencascade" ] && [ ! -e "$PREFIX/lib/cmake/occt" ]; then
   ln -s opencascade "$PREFIX/lib/cmake/occt"
+elif [ -d "$PREFIX/lib/cmake/occt" ] && [ ! -e "$PREFIX/lib/cmake/opencascade" ]; then
+  ln -s occt "$PREFIX/lib/cmake/opencascade"
 fi
 
 # SLIC3R_ENC_CHECK is only auto-disabled when IS_CROSS_COMPILE is set, which the NDK toolchain
@@ -62,7 +66,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_FIND_ROOT_PATH="$PREFIX" \
   -DCMAKE_MODULE_PATH="$REPO/native/orca/cmake-shims" \
   -DSLIC3R_GUI=OFF -DSLIC3R_CAD=ON -DSLIC3R_OPENCV=OFF -DSLIC3R_STATIC=ON \
-  -DSLIC3R_ENC_CHECK=OFF -DBUILD_TESTS=OFF -DORCA_TOOLS=OFF \
+  -DSLIC3R_ENC_CHECK=OFF -DBUILD_TESTS=OFF -DORCA_TOOLS=OFF -DORCA_BUILD_PYTHON_STUBGEN_MODULE=OFF \
   -DBOOST_ROOT="$PREFIX" -DBoost_NO_SYSTEM_PATHS=ON \
   "-DCMAKE_CXX_FLAGS=-isystem $PREFIX/include"
 

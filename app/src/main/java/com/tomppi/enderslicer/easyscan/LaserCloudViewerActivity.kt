@@ -18,8 +18,14 @@ class LaserCloudViewerActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val name = intent.getStringExtra(EXTRA_FILE) ?: run { finish(); return }
-        val file = File(SplatLibrary.directory(this), name)
+        val rawPath = intent.getStringExtra(EXTRA_PATH)
+        val name = intent.getStringExtra(EXTRA_FILE)
+        val file = when {
+            !rawPath.isNullOrBlank() -> File(rawPath).takeIf { SplatLibrary.isInsideAppStorage(this, it) }
+            !name.isNullOrBlank() -> File(SplatLibrary.directory(this), name)
+            else -> null
+        } ?: run { finish(); return }
+        val label = intent.getStringExtra(EXTRA_TITLE) ?: file.name
         val root = FrameLayout(this)
         val view = CloudView(this)
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
@@ -28,7 +34,7 @@ class LaserCloudViewerActivity : Activity() {
             setBackgroundColor(0xCC000000.toInt())
             textSize = 13f
             setPadding(24, 24, 24, 24)
-            text = name + " - loading"
+            text = "$label - loading"
         }
         root.addView(bar, FrameLayout.LayoutParams(-1, -2, android.view.Gravity.TOP))
         setContentView(root)
@@ -36,9 +42,9 @@ class LaserCloudViewerActivity : Activity() {
             val cloud = try { load(file) } catch (ex: Exception) { null }
             runOnUiThread {
                 if (cloud == null) {
-                    bar.text = name + " - could not read"
+                    bar.text = "$label - could not read"
                 } else {
-                    bar.text = name + " - " + cloud.count + " points - double-tap to reframe"
+                    bar.text = "$label - ${cloud.count} points - double-tap to reframe"
                     view.show(cloud)
                 }
             }
@@ -81,6 +87,8 @@ class LaserCloudViewerActivity : Activity() {
 
     companion object {
         const val EXTRA_FILE = "file"
+        const val EXTRA_PATH = "path"
+        const val EXTRA_TITLE = "title"
         private const val MAX_POINTS = 400_000
     }
 }

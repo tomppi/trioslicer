@@ -70,7 +70,23 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         consumeOpenChatIntent(intent)
+        consumeImportStlIntent(intent)
         startKlipperHostIfPrinterAttached(intent)
+    }
+
+    private fun consumeImportStlIntent(intent: Intent?) {
+        val path = intent?.getStringExtra(EXTRA_IMPORT_STL_PATH) ?: return
+        intent.removeExtra(EXTRA_IMPORT_STL_PATH)
+        val file = java.io.File(path)
+        if (!file.isFile || file.length() <= 0L) return
+        // Restrict to files inside this app's own storage so external intents cannot probe arbitrary paths.
+        val filesRoot = filesDir.canonicalPath + java.io.File.separator
+        if (!runCatching { file.canonicalPath.startsWith(filesRoot) }.getOrDefault(false)) return
+        slicerViewModel.importModel(android.net.Uri.fromFile(file))
+    }
+
+    companion object {
+        const val EXTRA_IMPORT_STL_PATH = "com.tomppi.enderslicer.IMPORT_STL_PATH"
     }
 
     /**
@@ -120,6 +136,7 @@ class MainActivity : FragmentActivity() {
         MeshTriangleLimits.initialize(this)
         UiScale.initialize(this)
         Diagnostics.initialize(this)
+        consumeImportStlIntent(intent)
         // A pending question is ViewModel state, so it dies with the process; the question
         // notification is a system object and does not. An app that comes up holding no
         // question must remove the notification rather than advertise something it can no

@@ -18,26 +18,62 @@ The filaSim web build includes its declared permissive or AGPL-compatible depend
 The native TrioSlicer wavefront generator is an independent CuraEngine adaptation of the propagation method documented by `dennisklappe/OrcaSlicer-WaveOverhangs`, itself based on `stmcculloch/PrusaSlicer-WaveOverhangs`. Those projects and CuraEngine are distributed under the GNU AGPL. The adapted source is retained under `native/curaengine/patches/` with attribution headers.
 
 
-## Easy Scanner (EasyScan laser scanner)
+## Easy Scanner (EasyScan 3D scanner workspace)
 
 - Project: RawMechatronicsOrg/EasyScanner - https://github.com/RawMechatronicsOrg/EasyScanner
 - Pinned source: commit 90545c2275c98dc70d99453f9561661e63c5761e (app version 0.3.1)
 - License: Apache License 2.0, Copyright (c) 2026 EasyScanner contributors; the license text ships as
-  easyscanapp/LICENSE.txt
-- Vendored artifact: the app's Kotlin/Java sources, layouts, themes, preferences, SuperPoint context
-  assets and QNN HTP runtime libraries under easyscanapp/src/main/, plus its Rust core
-  (android/core at the pinned commit) prebuilt for arm64-v8a as
-  lib/arm64-v8a/libeasyscanner_core_raw.so. The upstream repository's charuco/ boards and
-  cad/assembly/ parts are not included in the APK; they are linked from the README as the
-  hardware/calibration instructions.
-- Changes for integration (Apache-2.0 section 4(b)): the app is packaged as a library module of
-  TrioSlicer. Its launcher intent filters were removed, because the workspace is started only from
-  TrioSlicer's EasyScan menu; its activities are not exported; the Easy Scanner theme is applied to
-  the two activities that used to inherit the application theme; and the native library file and
-  load name changed from libeasyscanner_core.so to libeasyscanner_core_raw.so so it cannot collide
-  with TrioSlicer's own libeasyscanner_core.so. No scanning, calibration or UI logic was modified.
-- Instructions: the upstream README and docs (hardware, printable ChArUco boards, assembly and
-  calibration steps) remain the reference; provenance is also recorded in easyscanapp/README.md.
+  `easyscanapp/LICENSE.txt`
+- Vendored artifact: the app's Kotlin/Java sources, layouts, themes, preferences, ML/QNN assets
+  under `easyscanapp/src/main/`, plus its Rust core (`easyscan-core/`). The upstream repository's
+  `charuco/` boards and `cad/assembly/` parts are linked from the README as the hardware and
+  calibration reference.
+- Changes made by TrioSlicer (Apache-2.0 section 4(b)): packaged as a library module of TrioSlicer
+  (launcher intent filters removed, activities unexported, theme applied, `libeasyscanner_core_raw.so`
+  rename), and extensively extended with the SuperVINS VIO backend, XFeat/SuperPoint + LighterGlue
+  NPU feature tracking, DBoW3 loop closure and pose-graph drift correction, live Depth Anything 3
+  (DA3) + laser TSDF Marching Cubes meshing (`liblivemesh_jni.so`), separated Splat / Laser / Fused
+  capture modes, splat capture resolution picker, automatic focus-range pause/resume, Samsung
+  Camera2 manual exposure vendor controls, and streamlined calibration import from standalone
+  [tomppi/imucalib](https://github.com/tomppi/imucalib).
+- Instructions: upstream hardware/board/laser docs remain in RawMechatronicsOrg/EasyScanner;
+  provenance is also recorded in `easyscanapp/README.md`.
+
+### SuperVINS / VINS-Fusion (visual-inertial odometry backend)
+
+- Projects: `HKUST-Aerial-Robotics/VINS-Fusion` and `luohongk/SuperVINS`
+- License: GNU General Public License v3.0 (`GPL-3.0`)
+- Copyright: Aerial Robotics Group, Hong Kong University of Science and Technology, and SuperVINS
+  contributors
+- Vendored source: `easyscanapp/src/main/cpp/supervins/`, compiled with TrioSlicer's Android JNI
+  and front-end glue (`supervins_frontend.cpp`, `vio_jni.cpp`, `loop_db_jni.cpp`) into
+  `libsupervins_jni.so`. Combined and distributed with TrioSlicer under `AGPL-3.0-or-later`
+  (AGPLv3 section 13 permits combination with GPLv3), retaining GPL-3.0 notices in source headers.
+
+### DBoW3 (loop-closure bag-of-words)
+
+- Project: `rmsalinas/DBow3` (based on DBoW2 by Dorian Galvez-Lopez)
+- License: BSD-style (Copyright (c) 2016 Rafael Muñoz-Salinas; Copyright (c) 2011 Dorian
+  Galvez-Lopez); full license text ships at `easyscanapp/src/main/cpp/dbow3/LICENSE.txt`.
+- Vendored source: `easyscanapp/src/main/cpp/dbow3/`, compiled into `libsupervins_jni.so` for
+  on-device keyframe loop detection.
+
+### XFeat, LighterGlue and SuperPoint (feature extraction & matching models)
+
+- **XFeat & LighterGlue**: `verlab/accelerated_features` — Apache License 2.0, Copyright VeRLab
+  (Universidade Federal de Minas Gerais) and contributors. Exported to static QNN-HTP-friendly
+  TFLite models (`easyscanapp/src/main/assets/xfeat.tflite`, `lighterglue.tflite`) via
+  `scripts/export_xfeat_lighterglue_tflite.py`.
+- **SuperPoint**: pre-converted TFLite / QNN context assets (`superpoint.tflite`,
+  `superpoint_matmul.tflite`, `sp_context.bin`) carried from the bundled EasyScanner workspace for
+  fallback feature extraction.
+
+### Ceres Solver and Eigen (SuperVINS native dependencies)
+
+- **Ceres Solver 2.0.0** — BSD-3-Clause License, Copyright Google Inc. (`libceres.a` + headers).
+- **Eigen 3.3.7** — Mozilla Public License 2.0 (`MPL-2.0`), Copyright Eigen contributors.
+- Packaged together with `libopencv_vio4.so` and the multi-SoC QNN libraries in the
+  `easyscan-deps-v1` release asset and staged by `scripts/fetch-easyscan-deps-android.sh`.
 
 ## ScanRuler (offline 3D scan measurement) 
 
@@ -81,35 +117,43 @@ family as this app; manifold-3d's Apache-2.0 and occt-wasm's permissive terms ar
   https origin; the renderer draws with WebGL2 and no network is used. Splat models the
   user imports stay in app storage and are never uploaded by the app.
 
-## Gaussian splatting: Brush, Parallax, U2Net and the Qualcomm AI Runtime
+## Gaussian splatting & NPU depth: Cross3DGS, Parallax, U2Net, Depth Anything 3 and QAIRT
 
-TrioSlicer's **More -> Experimental -> Gaussian splatting** workspace runs a capture -> SfM ->
-Brush-training pipeline on the phone. Its two built payloads are published as the
-`splatproto-payload-v1` release asset (staged by `scripts/fetch-splatproto-payload-android.sh`),
-not kept in this repository.
+TrioSlicer's on-device 3D Gaussian Splatting and NPU depth pipelines live in `:splatproto` and
+`:easyscanapp`. Their prebuilt native payloads are published as the `splatproto-payload-v2` release
+asset (staged by `scripts/fetch-splatproto-payload-android.sh`), not kept in this repository.
 
-### Brush (Gaussian splat trainer)
+### Cross3DGS (Vulkan Gaussian splat trainer)
 
-- Project: `ArthurBrussee/brush` - https://github.com/ArthurBrussee/brush
-- Pinned source commit: `1388f74c6fe0236f68ee4915564bf00e9d2e3747`
-- License: Apache License 2.0, Copyright Arthur Brussee and contributors
-- Built artifact: `lib/arm64-v8a/libbrush_jni.so` in the payload package and in the APK.
-- TrioSlicer's JNI crate is `native/splatproto/brush-jni` and the Android changes are
-  `native/splatproto/brush-android.patch` (adds the crate to the workspace, pins one `jni`
-  version, and replaces WGSL subgroup scans with portable scans because the Adreno GPU has no
-  SUBGROUP capability). `scripts/build-splatproto-payload-android.sh --package` builds it;
-  `native/splatproto/README.md` records the toolchain and commands.
+- Project: `unclearness/cross3dgs` - https://github.com/unclearness/cross3dgs
+- Pinned source commit: `d69f79e` (Hiroyuki Sato & Yusuke Takimoto, WACV 2027)
+- License: GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`; commercial
+  dual-licensing is offered separately by the copyright holder, and TrioSlicer uses and distributes
+  it under `AGPL-3.0-or-later`).
+- Built artifact: `lib/arm64-v8a/libcross3dgs_android.so` (~10.9 MB stripped) in
+  `splatproto-payload-v2` and in the APK. Replaces the earlier Brush wgpu trainer. Its AGPL-3.0
+  license text travels in `assets/masker/LICENSES/LICENSE-Cross3DGS-AGPL-3.0.txt`.
 
-### Parallax SfM core
+### Parallax SfM & dense MVS core
 
 - Project: `Foadsf/parallax` - https://github.com/Foadsf/parallax
 - Pinned source commit: `a1bc267fd621ee18227343b103df279acff271ce`
 - License: GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
 - Vendored artifact: the C++ reconstruction core under
   `splatproto/src/main/cpp/parallax/`, built into `libparallaxcore.so` by the `:splatproto`
-  module's CMake build (SPDX headers in every file). TrioSlicer is AGPL-3.0-or-later; the GPLv3
-  core and the AGPLv3 app are combined and distributed under AGPL-3.0-or-later, with the core's
-  own GPLv3 terms retained. The complete corresponding source for the core is in this repository.
+  module's CMake build (SPDX headers in every file). Modified by TrioSlicer in `sfm.cpp`,
+  `dense.cpp`, and `internal.hpp` for VIO camera-pose seeding and dense oriented MVS point-cloud
+  output. TrioSlicer is AGPL-3.0-or-later; the GPLv3 core and the AGPLv3 app are combined and
+  distributed under AGPL-3.0-or-later, with the core's own GPLv3 terms retained. The complete
+  corresponding source for the core is in this repository.
+
+### Depth Anything 3 (DA3 monocular depth model)
+
+- Project: `ByteDance-Seed/Depth-Anything-3` - https://github.com/ByteDance-Seed/Depth-Anything-3
+- License: Apache License 2.0 (`Apache-2.0`)
+- Compiled to `assets/masker/models/da3_depth_fp16.bin` (QAIRT HTP v73 FP16 context binary) and
+  driven by the persistent arm64 QNN worker `assets/masker/bin/da3-worker` (source in
+  `native/splatproto/da3-worker/da3_worker.cpp`, built by `scripts/build-da3-worker-android.sh`).
 
 ### U2Net-Segmentation model
 
@@ -123,9 +167,10 @@ not kept in this repository.
 ### Qualcomm AI Runtime (QAIRT / QNN)
 
 - Runtime: Qualcomm AI Runtime SDK 2.52.0.261104, redistributed as object code inside the
-  application: `bin/qnn-net-run`, `libQnnHtp.so`, `libQnnHtpV73Stub.so`,
-  `libQnnHtpNetRunExtensions.so`, `libQnnSystem.so` and the unsigned HTP skeletons, plus the
-  licence and notice in `assets/masker/LICENSES/`.
+  application: `bin/qnn-net-run`, `libQnnHtp.so`, `libQnnHtpPrepare.so`,
+  `libQnnHtpNetRunExtensions.so`, `libQnnSystem.so`, `libQnnTFLiteDelegate.so`, `libQnnGpu.so`,
+  and multi-SoC Snapdragon HTP stubs and unsigned skeletons (`V68`, `V69`, `V73`, `V75`, `V79`,
+  `V81`), plus the licence and notice in `assets/masker/LICENSES/`.
 - License: Qualcomm AI Stack License (object-code distribution as part of an application only;
   this is not a standalone SDK distribution). The licence and QTI's notice travel with the
   payload package and in the APK. Copyright Qualcomm Technologies, Inc.
@@ -247,14 +292,14 @@ BumpMesh packages the published TypeScript source, generated distribution, metad
 
 ## CuraEngine and Cura resources
 
-CuraEngine is developed by UltiMaker and contributors and is licensed under GNU AGPL-3.0-or-later. The repository pins CuraEngine and matching Cura resources to `5.14.0-alpha.0`.
+CuraEngine is developed by UltiMaker and contributors and is licensed under GNU AGPL-3.0-or-later. The repository pins CuraEngine and matching Cura resources to `5.14.0` (commit `05c5d9b0286d14af7c8b9d4081b245c2e3ab1ef8`).
 
 UltiMaker and Cura are trademarks of their respective owners.
 
 ## PrusaSlicer engine (`libprusa_slicer_exec.so`) and its preset repository
 
 - Project: `prusa3d/PrusaSlicer`
-- Pinned version: `3.0.0-alpha11`
+- Pinned version: `3.0.0-alpha15`
 - License: GNU Affero General Public License v3.0 (`AGPL-3.0`)
 - Copyright: Prusa Research and the PrusaSlicer contributors
 
@@ -275,7 +320,7 @@ upstream sources packaged here.
 ## OrcaSlicer engine (`liborca_console_exec.so`) and its profile tree
 
 - Project: `SoftFever/OrcaSlicer`
-- Pinned version: `v2.4.2`
+- Pinned version: `v2.5.2`
 - License: GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`)
 - Copyright: OrcaSlicer contributors, and the PrusaSlicer, Slic3r and Bambu Studio projects it derives from
 
@@ -574,23 +619,23 @@ taken and recorded.
 ## SolidCraft engine (`libsolidcraft_exec.so`)
 
 - Project: `tangency-labs/solidcraft` (`https://github.com/tangency-labs/solidcraft`)
-- Pinned version: `0.24.0`
-- License: **MIT OR Apache-2.0**, at your option (unchanged in 0.24.0: upstream's LICENSE-MIT,
-  LICENSE-APACHE and NOTICE are identical to 0.22.1's, checked between the two tags)
+- Pinned version: `0.50.0` (commit `eeb366c2ff276987a15c043d63b9072b58274703`)
+- License: **MIT OR Apache-2.0**, at your option (SolidCraft's UI kit, look, theme, and brand
+  assets are separately under `LICENSE-BRAND` and are not built into TrioSlicer's `--no-default-features`
+  headless `solidcraft-cli` binary)
 - Copyright: 2026 SolidCraft contributors
 
-The plate's live CAD document is a SolidCraft document: a pure-Rust parametric CAD engine with its
-own B-rep kernel (the `truck` crates), sketch solver, sheet metal, plastic-feature and assembly
-families. The app packages its console as a native library the way it packages the OCCT console -
-`app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so`, 62.6 MB (65,657,208 bytes) stripped - and
-runs it as a child
-process, speaking its own stdio MCP server. The app never uses the engine's viewport or its GPU
-renderer: the plate is the viewport, and the engine's `screenshot` tool is refused by the bridge.
+The plate's live CAD document is a SolidCraft document: a pure-Rust parametric CAD engine with the
+`solidcore` B-rep kernel, sketch solver, sheet metal, plastic-feature and assembly families. The app
+packages its headless console as a native library the way it packages the OCCT console -
+`app/src/main/jniLibs/arm64-v8a/libsolidcraft_exec.so` - and runs it as a child process, speaking
+its own stdio MCP server. The app never uses the engine's viewport or its GPU renderer: the plate
+is the viewport, and the engine's `screenshot` tool is refused by the bridge.
 
 **Provenance.** `scripts/build-solidcraft-engine-android.sh` cross-compiles the console from the
-pinned upstream tag for `aarch64-linux-android` (cargo, `--release`, stripped). The binary is
-unmodified upstream source - no files are patched - and this repository publishes it as the
-`solidcraft-engine-v0.24.0` release asset, which
+pinned upstream tag for `aarch64-linux-android` (cargo, `--release --no-default-features`,
+stripped). The binary is unmodified upstream source - no files are patched - and this repository
+publishes it as the `solidcraft-engine-v0.50.0` release asset, which
 `scripts/fetch-solidcraft-engine-android.sh` downloads and verifies by SHA-256 before staging.
 The two licence texts and upstream's NOTICE are tracked at
 [`native/solidcraft/licenses/`](native/solidcraft/licenses).
@@ -600,14 +645,18 @@ The two licence texts and upstream's NOTICE are tracked at
 > SolidCraft is Copyright (c) 2026 SolidCraft contributors, licensed under the MIT License or the
 > Apache License, Version 2.0, at your option.
 >
+> **Brand and interface.** SolidCraft's brand and interface are not under MIT OR Apache-2.0. The UI
+> kit (`crates/ui-kit`), the look (`crates/look`), the theme (`crates/theme`), and the SolidCraft
+> name, logo, app icon and brand kit are under the SolidCraft Brand and Interface Licence
+> (`LICENSE-BRAND`). Third-party fonts in those folders keep their own licences.
+>
 > **Third-party material.** Software dependencies are listed in `Cargo.lock`; their licences are in
 > `THIRD-PARTY-LICENSES.txt` (`cargo xtask licences`), which the programs also carry (Help > About >
-> Licences, `solidcraft-cli licences`). The geometry kernel builds on the truck crates
-> (truck-modeling, truck-shapeops, truck-meshalgo, truck-stepio, truck-topology and their
-> dependencies, `https://github.com/ricosjp/truck`), licensed under the Apache License 2.0 and used
-> as libraries. truck-shapeops 0.4.0 is vendored in `vendor/truck-shapeops` with SolidCraft
-> modifications (listed in `vendor/README.md` and marked in the source); its licence is in
-> `vendor/truck-shapeops/LICENSE`. Copyright (c) RICOS Co. Ltd.
+> Licences, `solidcraft-cli licences`). The geometry kernel is `solidcore`, a Rust port of the SMLib
+> and SM_API components of USD BRep (`https://github.com/NVIDIA-Omniverse/usd-brep`), licensed under
+> the Apache License 2.0. `solidcore` is vendored in `solidcore/` together with its history; its own
+> `LICENSE`, `NOTICE` and `ATTRIBUTION.md` are there. Copyright (c) 2026 The solidcore contributors;
+> USD BRep is Copyright (c) 2020-2026 NVIDIA CORPORATION & AFFILIATES.
 >
 > Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which
 > are licensed MIT OR Apache-2.0; `ATTRIBUTION.md` lists the files. The release packaging
@@ -631,5 +680,4 @@ The two licence texts and upstream's NOTICE are tracked at
 
 **Dependency licence texts travel in the binary.** The console carries the same
 `THIRD-PARTY-LICENSES.txt` upstream generates (`cargo xtask licences`), readable without a network or
-a source tree through `solidcraft-cli licences`. The truck kernel alone is Apache-2.0 (RICOS Co.
-Ltd.), and its text is part of that set.
+a source tree through `solidcraft-cli licences`.

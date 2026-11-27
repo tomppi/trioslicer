@@ -80,14 +80,27 @@ app/src/main/assets/cad/lib/
 app/src/main/assets/cad/libexec/
 easyscan-core/target/
 
-# vendored OpenVINS arm64 dependencies (large binaries/headers, restorable from open_vins_mobile)
+# vendored SuperVINS/EasyScan arm64 dependencies (Ceres, Eigen, OpenCV-vio, multi-SoC QNN),
+# published as easyscan-deps-v1 and staged by scripts/fetch-easyscan-deps-android.sh.
 easyscanapp/src/main/cpp/openvins/thirdparty/
+easyscanapp/src/main/jniLibs/arm64-v8a/libopencv_vio4.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libopencv_java4.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libc++_shared.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libboost_*.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnGpu.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV68Skel.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV68Stub.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV69Skel.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV69Stub.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV75Skel.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV75Stub.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV79Skel.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV79Stub.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV81Skel.so
+easyscanapp/src/main/jniLibs/arm64-v8a/libQnnHtpV81Stub.so
 
-
-# Splat Proto's payload (the NPU masker assets and the prebuilt Brush JNI library) is not
-# repository content: 75 MB of Qualcomm AI Runtime object code plus a 158 MB libbrush_jni.so are
-# published as the splatproto-payload release asset and staged by
-# scripts/fetch-splatproto-payload-android.sh. Rebuild it with
-# scripts/build-splatproto-payload-android.sh --package.
+# Splat Proto's payload (Cross3DGS Vulkan library + U2Net/DA3 NPU models + QNN runtime) is not
+# repository content: published as the splatproto-payload release asset and staged by
+# scripts/fetch-splatproto-payload-android.sh.
 splatproto/src/main/jniLibs/
 splatproto/src/main/assets/masker/

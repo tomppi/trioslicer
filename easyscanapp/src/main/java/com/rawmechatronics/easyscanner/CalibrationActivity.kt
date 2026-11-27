@@ -50,50 +50,8 @@ class CalibrationActivity : android.app.Activity() {
         body.setPadding(0, pad, 0, pad)
         col.addView(body)
 
-        val still = Button(this)
-        still.text = "Capture still (30 s) — phone flat, untouched"
-        still.setOnClickListener { launchCapture("still") }
-        col.addView(still)
-
-        val board = Button(this)
-        board.text = "Capture board (30 s) — board visible, slow 3D motion"
-        board.setOnClickListener { launchCapture("board") }
-        col.addView(board)
-
-        val tune = Button(this)
-        tune.text = "Manual VIO tuning — live distance + time offset"
-        tune.setOnClickListener {
-            val i = Intent(this, MainActivity::class.java)
-            i.putExtra("vio_tune", true)
-            i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            startActivity(i)
-        }
-        col.addView(tune)
-
-        val solve = Button(this)
-        solve.text = "Solve & save from latest recording"
-        solve.setOnClickListener {
-            solve.isEnabled = false
-            body.text = "Solving…"
-            Thread {
-                val res = try {
-                    CalibSolver.solve(this)
-                } catch (e: Throwable) {
-                    CalibSolver.Result(false, e.message ?: "solve failed")
-                }
-                runOnUiThread {
-                    val text = StringBuilder()
-                    text.append(if (res.ok) "OK: " else "FAILED: ").append(res.message).append("\n")
-                    for (l in res.lines) text.append(l).append('\n')
-                    body.text = text.toString() + "\n\n" + describe()
-                    solve.isEnabled = true
-                }
-            }.start()
-        }
-        col.addView(solve)
-
         val load = Button(this)
-        load.text = "Load calibrations… (YAML profile)"
+        load.text = "Load calibrations… (YAML / JSON)"
         load.setOnClickListener {
             val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
@@ -145,8 +103,23 @@ class CalibrationActivity : android.app.Activity() {
         Toast.makeText(this, msg.lineSequence().first(), Toast.LENGTH_LONG).show()
     }
 
-    /** Validate a Kalibr camchain-imucam YAML and make it the active VIO profile. */
+    /**
+     * Auto-detect and install any calibration file exported by `imucalib`:
+     * - `live_intrinsics.json` (fresh AprilGrid pinhole-radtan intrinsics),
+     * - `imu.yaml` / `kalibr_imu_chain.yaml` (stationary Allan-deviation IMU noise densities), or
+     * - `kalibr_imucam_chain.yaml` (camera-IMU extrinsics + timeshift).
+     */
     private fun applyLoadedCalibration(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.startsWith("{")) {
+            return applyLoadedIntrinsicsJson(trimmed)
+        }
+        val looksLikeImuOnly = trimmed.contains("accelerometer_noise_density") &&
+            trimmed.contains("gyroscope_noise_density") &&
+            !trimmed.contains("T_cam_imu")
+        if (looksLikeImuOnly) {
+            return applyLoadedImuNoiseYaml(trimmed)
+        }
         val v = VioCalibrationProfile.validate(text)
         if (!v.ok) return "Load failed: " + v.message
         val dir = File(filesDir, "openvins-config")
@@ -173,6 +146,104 @@ class CalibrationActivity : android.app.Activity() {
             sb.toString()
         } catch (e: Exception) {
             "Load failed while writing the profile: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    private fun applyLoadedIntrinsicsJson(text: String): String {
+        val o = try {
+            JSONObject(text)
+        } catch (e: Exception) {
+            return "Load failed: invalid JSON (${e.message})"
+        }
+        val fx = o.optDouble("fx", Double.NaN)
+        val fy = o.optDouble("fy", Double.NaN)
+        val cx = o.optDouble("cx", Double.NaN)
+        val cy = o.optDouble("cy", Double.NaN)
+        val w = o.optInt("width", 0)
+        val h = o.optInt("height", 0)
+        if (!fx.isFinite() || !fy.isFinite() || !cx.isFinite() || !cy.isFinite() ||
+            fx <= 10.0 || fy <= 10.0 || w < 160 || h < 120
+        ) {
+            return "Load failed: live_intrinsics.json is missing valid fx/fy/cx/cy/width/height"
+        }
+        val target = File(filesDir, "live_intrinsics.json")
+        if (target.exists()) {
+            val bak = File(filesDir, "live_intrinsics.json.bak-" +
+                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()))
+            runCatching { target.copyTo(bak, overwrite = true) }
+        }
+        o.put("calibrated", true)
+        return try {
+            target.writeText(o.toString(2))
+            String.format(
+                Locale.US,
+                "Loaded calibrated camera intrinsics (%dx%d, fx=%.2f fy=%.2f cx=%.2f cy=%.2f).\n" +
+                    "  saved to files/live_intrinsics.json\n" +
+                    "  Restart tracking so VIO and the scanner pick up the new camera model.",
+                w, h, fx, fy, cx, cy,
+            )
+        } catch (e: Exception) {
+            "Load failed while writing live_intrinsics.json: " + (e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    private fun applyLoadedImuNoiseYaml(text: String): String {
+        fun grab(key: String): Double? {
+            val m = Regex("(?m)^\\s*$key\\s*:\\s*([+-]?[0-9]*\\.?[0-9]+(?:[eE][+-]?[0-9]+)?)").find(text)
+            return m?.groupValues?.get(1)?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
+        }
+        val accNoise = grab("accelerometer_noise_density")
+            ?: return "Load failed: missing positive accelerometer_noise_density"
+        val accWalk = grab("accelerometer_random_walk")
+            ?: return "Load failed: missing positive accelerometer_random_walk"
+        val gyroNoise = grab("gyroscope_noise_density")
+            ?: return "Load failed: missing positive gyroscope_noise_density"
+        val gyroWalk = grab("gyroscope_random_walk")
+            ?: return "Load failed: missing positive gyroscope_random_walk"
+        val rate = grab("update_rate") ?: 480.0
+
+        val dir = File(filesDir, "openvins-config").apply { mkdirs() }
+        val target = File(dir, "kalibr_imu_chain.yaml")
+        if (target.exists()) {
+            val bak = File(dir, "kalibr_imu_chain.yaml.bak-load-" +
+                SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()))
+            runCatching { target.copyTo(bak, overwrite = true) }
+        }
+        val yaml = String.format(
+            Locale.US,
+            "%YAML:1.0\n\n" +
+                "imu0:\n" +
+                "  T_i_b:\n" +
+                "    - [1.0, 0.0, 0.0, 0.0]\n" +
+                "    - [0.0, 1.0, 0.0, 0.0]\n" +
+                "    - [0.0, 0.0, 1.0, 0.0]\n" +
+                "    - [0.0, 0.0, 0.0, 1.0]\n" +
+                "  accelerometer_noise_density: %.9g\n" +
+                "  accelerometer_random_walk: %.9g\n" +
+                "  gyroscope_noise_density: %.9g\n" +
+                "  gyroscope_random_walk: %.9g\n" +
+                "  rostopic: /imu0\n" +
+                "  time_offset: 0.0\n" +
+                "  update_rate: %.2f\n" +
+                "  model: \"kalibr\"\n" +
+                "  Tw:\n    - [1.0, 0.0, 0.0]\n    - [0.0, 1.0, 0.0]\n    - [0.0, 0.0, 1.0]\n" +
+                "  R_IMUtoGYRO:\n    - [1.0, 0.0, 0.0]\n    - [0.0, 1.0, 0.0]\n    - [0.0, 0.0, 1.0]\n" +
+                "  Ta:\n    - [1.0, 0.0, 0.0]\n    - [0.0, 1.0, 0.0]\n    - [0.0, 0.0, 1.0]\n" +
+                "  R_IMUtoACC:\n    - [1.0, 0.0, 0.0]\n    - [0.0, 1.0, 0.0]\n    - [0.0, 0.0, 1.0]\n" +
+                "  Tg:\n    - [0.0, 0.0, 0.0]\n    - [0.0, 0.0, 0.0]\n    - [0.0, 0.0, 0.0]\n",
+            accNoise, accWalk, gyroNoise, gyroWalk, rate,
+        )
+        return try {
+            target.writeText(yaml)
+            String.format(
+                Locale.US,
+                "Loaded IMU noise profile (%.0f Hz, acc=%.3e / rw=%.3e, gyro=%.3e / rw=%.3e).\n" +
+                    "  saved to files/openvins-config/kalibr_imu_chain.yaml\n" +
+                    "  Restart tracking so VIO reloads the IMU noise parameters.",
+                rate, accNoise, accWalk, gyroNoise, gyroWalk,
+            )
+        } catch (e: Exception) {
+            "Load failed while writing kalibr_imu_chain.yaml: " + (e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -264,38 +335,13 @@ class CalibrationActivity : android.app.Activity() {
     }
 
     private companion object {
-        const val GUIDANCE = """How to calibrate the marker-free tracker
-1. Camera + focus: fix the focus (Camera step) and lock it. The camera model
-   (live_intrinsics.json) must show a board rms, ideally under 0.3 px.
-2. IMU noise: put the phone on a table, do not touch it for 30 s. (Recording
-   step — runs the IMU statistics.)
-3. VIO camera-IMU: stand 30-60 cm from the ChArUco board. Press record, then for
-   20-30 s move the phone in 3D: side to side, up/down, toward/away, and tilt
-   yaw/pitch/roll +-30-45 deg, letting the board reach the image edges. Keep the
-   whole board visible; avoid fast blur.
-4. Scale check (optional, two boards): with boards ~1 m apart on the wall, walk
-   slowly from one to the other and back (20-30 s), keeping a board in view.
-5. Solve: the phone computes R_cam_imu, camera-IMU time offset, gyro bias, IMU
-   noise and the VIO/board scale ratio, writes the kalibr files and shows the
-   residuals (rotation rms in deg, time offset in ms, scale error %).
-   A calibration computed elsewhere (PC/Kalibr, or the separate IMU Calibration
-   app exported to Download/dsh-agent) can be applied with "Load calibrations…":
-   pick the kalibr_imucam_chain.yaml file, it is validated and saved as the
-   active VIO profile (the previous one is kept as a backup).
-6. Verify: record one more board pass; scale error should stay near 0 % and
-   rotation rms under ~0.5 deg. Then scan marker-free with Track VIO.
+        const val GUIDANCE = """Camera-IMU Calibration Profiles
+Capture an AprilGrid + IMU ROS 1 .bag with the imucalib app, solve it offline with Kalibr on your PC, then tap "Load calibrations…" to install any of:
+• *-camchain-imucam.yaml / kalibr_imucam_chain.yaml (camera-IMU extrinsics & timeshift)
+• imu.yaml / kalibr_imu_chain.yaml (stationary Allan-deviation IMU noise parameters)
+• live_intrinsics.json (camera intrinsics)
 
-How to record the calibration data on this phone
-- Scan step has two buttons: "Calib still 30s" (put the phone down, don't touch)
-  and "Calib board 30s" (hold still 1 s, then move in front of the board).
-- For the scale check, enable Track VIO before "Calib board 30s"; the solver then
-  also compares the board path with the VIO path and prints the scale error.
-- Two boards ~1 m apart: first record one board (calibration), then optionally
-  walk from one board to the other and back while recording a second "Calib
-  board 30s" pass to check scale/drift over the longer baseline.
-- Then press "Solve & save from latest recording": the solver reads the newest
-  session with enough board frames, computes R_cam_imu, time offset and IMU
-  noise, writes them to files/openvins-config, and shows the residuals."""
+Each file is auto-detected, validated, and saved as active (backing up the previous profile). Restart EasyScan after loading or resetting so VIO reloads it."""
     }
 
     private fun readJson(f: File): JSONObject? {

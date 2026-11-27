@@ -30,6 +30,19 @@ using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
+CameraImuCoverage Propagator::camera_coverage(const std::shared_ptr<State> &state, double timestamp, bool initialized) {
+  const double offset = state->_calib_dt_CAMtoIMU->value()(0);
+  const double target = timestamp + offset;
+  const double start = initialized
+      ? state->_timestamp + (have_last_prop_time_offset ? last_prop_time_offset : offset)
+      : target;
+  if (initialized && (timestamp <= state->_timestamp || target <= start))
+    return CameraImuCoverage::InvalidTime;
+  std::lock_guard<std::mutex> lck(imu_data_mtx);
+  if (imu_data.empty()) return camera_imu_coverage(start, target, 0, 0.0, 0.0);
+  return camera_imu_coverage(start, target, imu_data.size(), imu_data.front().timestamp, imu_data.back().timestamp);
+}
+
 void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timestamp) {
 
   // If the difference between the current update time and state is zero

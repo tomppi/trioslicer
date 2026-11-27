@@ -1,3 +1,22 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -963,6 +963,7 @@ endforeach()
+ 
+ find_package(NLopt 1.4 REQUIRED)
+ 
++if (SLIC3R_GUI)
+ # Use bundled Python from deps instead of system Python
+ set(_bundled_python_version "3.12.13")
+ set(_bundled_python_abi "312")
+@@ -1041,6 +1042,7 @@ add_library(pybind11_embed INTERFACE)
+ target_link_libraries(pybind11_embed INTERFACE pybind11_headers Python3::Python)
+ target_compile_definitions(pybind11_embed INTERFACE PYBIND11_SIMPLE_GIL_MANAGEMENT)
+ add_library(pybind11::embed ALIAS pybind11_embed)
++endif ()
+ 
+ 
+ if(SLIC3R_STATIC)
 diff --git a/deps/CMakeLists.txt b/deps/CMakeLists.txt
 index 219166c8..dd1afce0 100644
 --- a/deps/CMakeLists.txt
@@ -105,14 +124,18 @@ index 219166c8..dd1afce0 100644
  
  set(_dep_list
      dep_Boost
-@@ -503,6 +561,15 @@ else()
+@@ -503,6 +561,19 @@ else()
      #list(APPEND _dep_list "dep_libigl")
  endif()
  
 +# A console-only build (Android) drops the GUI-only and CAD-only dependencies from
-+# the aggregate, matching the guarded recipes above.
++# the aggregate, matching the guarded recipes above. libslic3r still needs libjpeg,
++# which upstream only pulls in transitively via dep_wxWidgets.
 +if (NOT SLIC3R_GUI)
 +    list(REMOVE_ITEM _dep_list dep_OpenCSG dep_GLFW dep_OpenCV dep_GLEW dep_wxWidgets dep_python3 dep_wxInspector)
++    if (JPEG_PKG)
++        list(APPEND _dep_list ${JPEG_PKG})
++    endif()
 +endif()
 +if (NOT SLIC3R_CAD)
 +    list(REMOVE_ITEM _dep_list dep_OCCT)
@@ -372,18 +395,62 @@ index c8d882f2..e95b8728 100644
  # target_include_directories(OrcaSlicer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/slic3r)
  if (APPLE)
  #    add_compile_options(-stdlib=libc++)
+@@ -310,7 +318,7 @@
+     endif()
+ 
+ else ()
+-    if (NOT APPLE)
++    if (NOT APPLE AND NOT ANDROID)
+         set(output_sos_Release "")
+         set(output_sos_Debug "")
+         add_custom_target(OrcaSlicerSosCopy ALL DEPENDS OrcaSlicer)
 diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
 index 92c739b8..8e330fac 100644
 --- a/src/libslic3r/CMakeLists.txt
 +++ b/src/libslic3r/CMakeLists.txt
-@@ -609,6 +609,10 @@ if (APPLE)
+@@ -609,6 +609,15 @@ if (APPLE)
          )
  endif ()
  
 +if (NOT SLIC3R_OPENCV)
-+    list(REMOVE_ITEM lisbslic3r_sources ObjColorUtils.cpp ObjColorUtils.hpp)
++    list(REMOVE_ITEM lisbslic3r_sources
++        ObjColorUtils.cpp ObjColorUtils.hpp
++        TexturePainting.cpp
++        TextureToColor/TextureToColor.cpp TextureToColor/TextureToColor.hpp
++        TextureToColor/ColorUtils.cpp TextureToColor/ColorUtils.hpp
++    )
 +endif ()
 +
  add_library(libslic3r STATIC ${lisbslic3r_sources}
      "${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h"
      ${OpenVDBUtils_SOURCES})
+@@ -625,7 +634,9 @@ cmake_policy(SET CMP0011 NEW)
+ # can't reach it; the default opts its Boost lookup into BoostConfig (CMP0167).
+ set(CMAKE_POLICY_DEFAULT_CMP0167 NEW)
+ find_package(CGAL 6.2 REQUIRED)
+-find_package(OpenCV REQUIRED core)
++if (SLIC3R_OPENCV)
++    find_package(OpenCV REQUIRED core)
++endif ()
+ find_package(assimp REQUIRED)
+ unset(CMAKE_POLICY_DEFAULT_CMP0167)
+ cmake_policy(POP)
+@@ -768,7 +779,6 @@ target_link_libraries(libslic3r
+         libigl
+         libnest2d
+         miniz
+-        opencv_world
+         assimp::assimp
+     PRIVATE
+         ${CMAKE_DL_LIBS}
+@@ -792,6 +802,9 @@ target_link_libraries(libslic3r
+         ZLIB::ZLIB
+         OpenSSL::Crypto
+     )
++if (SLIC3R_OPENCV)
++    target_link_libraries(libslic3r PUBLIC opencv_world)
++endif ()
+ 
+ if (APPLE)
+     find_library(FOUNDATION Foundation REQUIRED)
+

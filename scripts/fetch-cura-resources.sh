@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$ROOT/app/src/main/assets/cura}"
-CURA_TAG="${CURA_TAG:-5.14.0-alpha.0}"
+CURA_TAG="${CURA_TAG:-5.14.0}"
 WORK="${CURA_WORK:-$ROOT/.build/cura-resources}"
 
 # A blobless sparse checkout fetches the resource directories rather than the whole Cura
@@ -239,7 +239,7 @@ injected = False
 for category, settings in ENGINE_DRIFT_SETTINGS.items():
     children = fdmprinter.setdefault("settings", {}).setdefault(category, {}).setdefault("children", {})
     for name, definition in settings.items():
-        if name not in children:
+        if not contains_key(fdmprinter, name):
             children[name] = definition
             injected = True
 if injected:

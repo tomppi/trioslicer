@@ -2,7 +2,7 @@ package com.tomppi.splatproto
 
 import android.content.Context
 
-/** User-tunable pipeline settings: Parallax SfM options + Brush training options. */
+/** User-tunable pipeline settings: Parallax SfM + U2Net NPU masking + Cross3DGS training. */
 data class PipelineSettings(
     val sfmFeatureSide: Int = 1280,
     val sfmMaxFeatures: Int = 4000,
@@ -17,32 +17,27 @@ data class PipelineSettings(
     /** Experimental: enable optical image stabilisation while capturing. */
     val ois: Boolean = false,
     val sfmMarkerMm: Float = 0f,
+    // Cross3DGS Vulkan trainer parameters.
     val trainSteps: Int = 4_000,
-    val refineEvery: Int = 100,
-    val maxSplats: Int = 500_000,
+    val maxSplats: Int = 300_000,
     val maxResolution: Int = 640,
-    val exportEvery: Int = 1000,
     val shDegree: Int = 3,
-    /** When false, masks in the scan folder are ignored (room/whole-scene scans). */
+    /** When true, U2Net masks composite background pixels to pure black for Cross3DGS. */
     val useMasks: Boolean = true,
-    val lrMean: Float = 0.00002f,
-    val lrCoeffsDc: Float = 0.002f,
-    val lrOpac: Float = 0.012f,
-    val lrScale: Float = 0.005f,
-    /** Brush densification knobs. */
-    val growthGradThreshold: Float = 0.0025f,
-    val growthSelectFraction: Float = 0.25f,
-    val growthStopIter: Int = 15000,
-    /** Mip-Splatting scale floor; larger suppresses needle floaters. */
-    val minScaleFactor: Float = 0.1f,
     val ssimWeight: Float = 0.2f,
-    /** U2Net NPU masking knobs; the defaults are the values tuned on captured scans. */
+    /** Cross3DGS density strategy: "mcmc" or "fixed". */
+    val densityStrategy: String = "mcmc",
+    val mcmcCloneOffset: Float = 0.5f,
+    val mcmcGradientSampling: Float = 1.5f,
+    /** U2Net NPU masking knobs; defaults are tuned on captured scans. */
     val maskTta: Boolean = true,
     val maskTwoPass: Boolean = true,
     val maskCropMargin: Float = 1.35f,
     val maskThreshold: Float = 0.55f,
     val maskGuidedRadius: Int = 8,
     val maskClosePx: Int = 3,
+    /** Target TSDF voxel size (mm) for post-process Laser + Dense MVS STL fusion. */
+    val fusionVoxelMm: Float = 1.0f,
 ) {
     companion object {
         private const val PREFS = "pipeline_settings"
@@ -64,27 +59,21 @@ data class PipelineSettings(
                 ois = p.getBoolean("ois", d.ois),
                 sfmMarkerMm = p.getFloat("sfmMarkerMm", d.sfmMarkerMm),
                 trainSteps = p.getInt("trainSteps", d.trainSteps),
-                refineEvery = p.getInt("refineEvery", d.refineEvery),
                 maxSplats = p.getInt("maxSplats", d.maxSplats),
                 maxResolution = p.getInt("maxResolution", d.maxResolution),
-                exportEvery = p.getInt("exportEvery", d.exportEvery),
                 shDegree = p.getInt("shDegree", d.shDegree),
                 useMasks = p.getBoolean("useMasks", d.useMasks),
-                lrMean = p.getFloat("lrMean", d.lrMean),
-                lrCoeffsDc = p.getFloat("lrCoeffsDc", d.lrCoeffsDc),
-                lrOpac = p.getFloat("lrOpac", d.lrOpac),
-                lrScale = p.getFloat("lrScale", d.lrScale),
-                growthGradThreshold = p.getFloat("growthGradThreshold", d.growthGradThreshold),
-                growthSelectFraction = p.getFloat("growthSelectFraction", d.growthSelectFraction),
-                growthStopIter = p.getInt("growthStopIter", d.growthStopIter),
-                minScaleFactor = p.getFloat("minScaleFactor", d.minScaleFactor),
                 ssimWeight = p.getFloat("ssimWeight", d.ssimWeight),
+                densityStrategy = p.getString("densityStrategy", d.densityStrategy) ?: d.densityStrategy,
+                mcmcCloneOffset = p.getFloat("mcmcCloneOffset", d.mcmcCloneOffset),
+                mcmcGradientSampling = p.getFloat("mcmcGradientSampling", d.mcmcGradientSampling),
                 maskTta = p.getBoolean("maskTta", d.maskTta),
                 maskTwoPass = p.getBoolean("maskTwoPass", d.maskTwoPass),
                 maskCropMargin = p.getFloat("maskCropMargin", d.maskCropMargin),
                 maskThreshold = p.getFloat("maskThreshold", d.maskThreshold),
                 maskGuidedRadius = p.getInt("maskGuidedRadius", d.maskGuidedRadius),
                 maskClosePx = p.getInt("maskClosePx", d.maskClosePx),
+                fusionVoxelMm = p.getFloat("fusionVoxelMm", d.fusionVoxelMm).coerceIn(0.75f, 6.0f),
             )
         }
     }
@@ -104,27 +93,21 @@ data class PipelineSettings(
             .putBoolean("ois", ois)
             .putFloat("sfmMarkerMm", sfmMarkerMm)
             .putInt("trainSteps", trainSteps)
-            .putInt("refineEvery", refineEvery)
             .putInt("maxSplats", maxSplats)
             .putInt("maxResolution", maxResolution)
-            .putInt("exportEvery", exportEvery)
             .putInt("shDegree", shDegree)
             .putBoolean("useMasks", useMasks)
-            .putFloat("lrMean", lrMean)
-            .putFloat("lrCoeffsDc", lrCoeffsDc)
-            .putFloat("lrOpac", lrOpac)
-            .putFloat("lrScale", lrScale)
-            .putFloat("growthGradThreshold", growthGradThreshold)
-            .putFloat("growthSelectFraction", growthSelectFraction)
-            .putInt("growthStopIter", growthStopIter)
-            .putFloat("minScaleFactor", minScaleFactor)
             .putFloat("ssimWeight", ssimWeight)
+            .putString("densityStrategy", densityStrategy)
+            .putFloat("mcmcCloneOffset", mcmcCloneOffset)
+            .putFloat("mcmcGradientSampling", mcmcGradientSampling)
             .putBoolean("maskTta", maskTta)
             .putBoolean("maskTwoPass", maskTwoPass)
             .putFloat("maskCropMargin", maskCropMargin)
             .putFloat("maskThreshold", maskThreshold)
             .putInt("maskGuidedRadius", maskGuidedRadius)
             .putInt("maskClosePx", maskClosePx)
+            .putFloat("fusionVoxelMm", fusionVoxelMm.coerceIn(0.75f, 6.0f))
             .apply()
     }
 }

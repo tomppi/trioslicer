@@ -117,6 +117,10 @@ pub extern "system" fn Java_com_tomppi_splatproto_BrushTrainer_nativeTrain(
                     }
                     Err(error) => {
                         eprintln!("brush training error: {error}");
+                        let _ = std::fs::write(
+                            std::path::Path::new(&output).join("brush_error.txt"),
+                            format!("{error}"),
+                        );
                         return 1i32;
                     }
                 }
@@ -125,7 +129,22 @@ pub extern "system" fn Java_com_tomppi_splatproto_BrushTrainer_nativeTrain(
         })
     }));
 
-    outcome.unwrap_or(1)
+    match outcome {
+        Ok(code) => code,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            let _ = std::fs::write(
+                std::path::Path::new(&output).join("brush_error.txt"),
+                format!("panic: {message}"),
+            );
+            eprintln!("brush panic: {message}");
+            1
+        }
+    }
 }
 
 // ---- Headless splat viewer: copied Brush core (render_splats + Camera), no UI ----

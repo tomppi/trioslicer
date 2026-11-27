@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
+import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -37,8 +38,10 @@ class TrackerRecorder(
     private val recordFrames: Boolean = true,
     /** Session directory prefix under tracker-debug/ ("session-" for dev, "imu-calib-" for calibration). */
     private val dirPrefix: String = "session-",
-    /** Write a JPEG every Nth accepted frame; 1 writes all, 0 or less also writes all. */
+    /** Write a JPEG every Nth accepted frame; 1 writes all, 0 disables JPEG encoding (laser-only). */
     private val imageEveryN: Int = 1,
+    /** When set, record into this existing session directory instead of a new tracker-debug one. */
+    private val targetDir: File? = null,
 ) {
     /** Accepted frames counted before the row index; JPEGs are decimated with imageEveryN. */
     private var captureCount = 0L
@@ -57,6 +60,8 @@ class TrackerRecorder(
     private var cornersWriter: BufferedWriter? = null
     private var imuRunning = false
     private var sensorManager: SensorManager? = null
+    private var laserFilesWritten = 0
+    private var loggedLaserLayer = false
 
     private data class Frame(val nv21: ByteArray, val w: Int, val h: Int, val result: FloatArray, val tsNs: Long, val procMs: Double, val vioPose: DoubleArray?)
 
@@ -64,8 +69,8 @@ class TrackerRecorder(
         override fun onSensorChanged(e: SensorEvent) {
             val w = imuWriter ?: return
             val type = when (e.sensor.type) {
-                Sensor.TYPE_ACCELEROMETER -> "a"
-                Sensor.TYPE_GYROSCOPE -> "g"
+                Sensor.TYPE_ACCELEROMETER_UNCALIBRATED, Sensor.TYPE_ACCELEROMETER -> "a"
+                Sensor.TYPE_GYROSCOPE_UNCALIBRATED, Sensor.TYPE_GYROSCOPE -> "g"
                 else -> return
             }
             synchronized(lock) {
@@ -79,7 +84,7 @@ class TrackerRecorder(
 
     fun start(): File {
         val root = context.getExternalFilesDir(null) ?: context.filesDir
-        val dir = File(root, "tracker-debug/" + dirPrefix + System.currentTimeMillis())
+        val dir = targetDir ?: File(root, "tracker-debug/" + dirPrefix + System.currentTimeMillis())
         dir.mkdirs()
         framesWriter = BufferedWriter(OutputStreamWriter(FileOutputStream(File(dir, "frames.csv")), Charsets.UTF_8))
         framesWriter?.write("frame,ts_ns,scan_on,detected,corners,cam_x,cam_y,cam_z,roll,pitch,yaw,distance,reproj_rms,fx,fy,cx,cy,laser_state,laser_points,proc_ms,laser_cam_count,pose16,vio_pose16,jpeg\n")
@@ -100,13 +105,14 @@ class TrackerRecorder(
 
     private fun startImu() {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
-        val a = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        val a = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED)
+            ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        val g = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)
+            ?: sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         sensorManager = sm
         imuRunning = true
         sm.registerListener(imuListener, a, SensorManager.SENSOR_DELAY_FASTEST)
-        sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
-            sm.registerListener(imuListener, it, SensorManager.SENSOR_DELAY_FASTEST)
-        }
+        g?.let { sm.registerListener(imuListener, it, SensorManager.SENSOR_DELAY_FASTEST) }
     }
 
     private fun stopImu() {
@@ -116,15 +122,17 @@ class TrackerRecorder(
         sensorManager = null
     }
 
+    enum class CaptureStatus { SKIPPED, DROPPED, LASER_ONLY, KEYFRAME }
+
     /** Copy the planes while the Image is valid; encode and write on the IO thread. */
-    fun capture(img: Image, r: FrameResult, procMs: Double, vioPose: DoubleArray? = null) {
-        if (sessionDir == null || savedFrames >= MAX_FRAMES) return
-        if (!recordFrames) return
-        if (r.length <= FrameResult.H.SCAN_ON) return
-        if (gateOnScan && r[FrameResult.H.SCAN_ON] < 0.5f) return
+    fun capture(img: Image, r: FrameResult, procMs: Double, vioPose: DoubleArray? = null): CaptureStatus {
+        if (sessionDir == null || savedFrames >= MAX_FRAMES) return CaptureStatus.SKIPPED
+        if (!recordFrames) return CaptureStatus.SKIPPED
+        if (r.length <= FrameResult.H.SCAN_ON) return CaptureStatus.SKIPPED
+        if (gateOnScan && r[FrameResult.H.SCAN_ON] < 0.5f) return CaptureStatus.SKIPPED
         val w = img.width
         val h = img.height
-        val wantImage = imageEveryN <= 1 || captureCount % imageEveryN == 0L
+        val wantImage = imageEveryN > 0 && (imageEveryN == 1 || captureCount % imageEveryN == 0L)
         captureCount++
         val nv21: ByteArray
         if (wantImage) {
@@ -147,7 +155,11 @@ class TrackerRecorder(
             nv21 = ByteArray(0)
         }
         val frame = Frame(nv21, w, h, r.data.copyOf(r.length), r.timestampNs, procMs, vioPose)
-        if (!queue.offer(frame)) droppedFrames++
+        if (!queue.offer(frame)) {
+            droppedFrames++
+            return CaptureStatus.DROPPED
+        }
+        return if (wantImage) CaptureStatus.KEYFRAME else CaptureStatus.LASER_ONLY
     }
 
     private fun drainLoop() {
@@ -182,10 +194,19 @@ class TrackerRecorder(
                 val count = f.result[li + 2].toInt()
                 val off = li + 3
                 if (kind == FrameResult.Layer.LASER_CAM && stride == 3 && count > 0) {
+                    if (!loggedLaserLayer) {
+                        loggedLaserLayer = true
+                        Log.i(TAG, "laser layer first: count=$count dir=${laserDir.absolutePath} canWrite=${laserDir.canWrite()}")
+                    }
                     val bb = java.nio.ByteBuffer.allocate(count * 3 * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                     for (k in 0 until count * 3) bb.putFloat(f.result[off + k])
-                    File(laserDir, "f%05d.f32".format(idx)).writeBytes(bb.array())
-                    laserCamCount = count
+                    try {
+                        File(laserDir, "f%05d.f32".format(idx)).writeBytes(bb.array())
+                        laserCamCount = count
+                        laserFilesWritten++
+                    } catch (e: Exception) {
+                        Log.w(TAG, "laser file write failed idx=$idx count=$count", e)
+                    }
                 } else if (kind == FrameResult.Layer.POSE && stride == 16) {
                     val sb = StringBuilder(256)
                     for (k in 0 until 16) { if (k > 0) sb.append(' '); sb.append(f.result[off + k]) }
@@ -224,7 +245,7 @@ class TrackerRecorder(
                 .append(g(FrameResult.H.CY)).append(',')
                 .append(g(FrameResult.H.LASER_STATE)).append(',')
                 .append(g(FrameResult.H.LASER_POINTS)).append(',')
-                .append("%.2f".format(f.procMs)).append(',')
+                .append(String.format(Locale.US, "%.2f", f.procMs)).append(',')
                 .append(laserCamCount).append(',')
                 .append(poseStr).append(',')
             val vp = f.vioPose
@@ -264,7 +285,7 @@ class TrackerRecorder(
             imuWriter = null
             cornersWriter = null
         }
-        if (dir != null) Log.i(TAG, "tracker recording stopped: " + dir.absolutePath + " frames=" + savedFrames + " dropped=" + droppedFrames)
+        if (dir != null) Log.i(TAG, "tracker recording stopped: " + dir.absolutePath + " frames=" + savedFrames + " laserFiles=" + laserFilesWritten + " dropped=" + droppedFrames)
     }
 
     companion object {

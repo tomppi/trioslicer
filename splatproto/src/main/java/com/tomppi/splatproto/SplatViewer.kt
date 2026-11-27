@@ -53,6 +53,7 @@ fun SplatViewer(ply: File, modifier: Modifier = Modifier) {
                     settings.domStorageEnabled = true
                     settings.allowFileAccess = true
                     settings.mediaPlaybackRequiresUserGesture = false
+                    settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
                     webViewClient = object : WebViewClient() {
                         override fun shouldInterceptRequest(
                             view: WebView?,

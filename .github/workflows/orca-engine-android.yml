@@ -1,4 +1,4 @@
-name: Build OrcaSlicer 2.4.2 Android
+name: Build OrcaSlicer 2.5.2 Android
 
 on:
   push:
@@ -22,24 +22,26 @@ jobs:
         run: |
           yes | sdkmanager --licenses >/dev/null
           sdkmanager 'ndk;28.2.13676358'
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake curl tar perl python3 m4 make
           echo ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT
       # The clone comes first: restoring the bundle materializes .build/orca-src/deps/... before
       # the guard below can see an empty .build, and a restored (non-git) .build/orca-src then
       # makes the guard skip the clone and fails the checkout.
-      - name: Check out OrcaSlicer 2.4.2
+      - name: Check out OrcaSlicer 2.5.2
         run: |
           mkdir -p .build
-          [ -d .build/orca-src/.git ] || git clone --depth 1 --branch v2.4.2 https://github.com/SoftFever/OrcaSlicer.git .build/orca-src
+          [ -d .build/orca-src/.git ] || git clone --depth 1 --branch v2.5.2 https://github.com/SoftFever/OrcaSlicer.git .build/orca-src
       # The dependency bundle is the expensive half (OCCT alone is ~5000 objects). Its cache key
       # carries the hash of the script that defines it, with no restore-keys fallback: a prefix
       # match would restore exactly the bundle a changed dependency list is meant to invalidate.
       - name: Restore OrcaSlicer deps bundle
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
+        id: orca-deps-cache
         with:
           path: .build/orca-src/deps/build-android
-          key: orca-deps-arm64-v8a-2.4.2-v1-${{ hashFiles('scripts/build-orca-deps-android.sh') }}
+          key: orca-deps-arm64-v8a-2.5.2-v1-${{ hashFiles('scripts/build-orca-deps-android.sh') }}
       - name: Build dependencies
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
@@ -49,6 +51,12 @@ jobs:
           chmod +x scripts/build-orca-deps-android.sh
           set -o pipefail
           scripts/build-orca-deps-android.sh 2>&1 | tee /tmp/orca-deps.log
+      - name: Save OrcaSlicer deps bundle
+        if: steps.orca-deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/orca-src/deps/build-android
+          key: orca-deps-arm64-v8a-2.5.2-v1-${{ hashFiles('scripts/build-orca-deps-android.sh') }}
       - name: Build the headless console
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
@@ -83,7 +91,7 @@ jobs:
       - name: Upload the engine package
         uses: actions/upload-artifact@v4
         with:
-          name: OrcaSlicer-2.4.2-android-arm64-v8a
+          name: OrcaSlicer-2.5.2-android-arm64-v8a
           path: |
             app/src/main/jniLibs/arm64-v8a/liborca_console_exec.so
             app/src/main/assets/orca

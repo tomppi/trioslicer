@@ -157,6 +157,8 @@ pub struct Engine {
     frame_no: u64,
     laser: LaserDetector,
     laser_px: Vec<[f32; 2]>,
+    /// Camera-frame laser points for this frame (mm), for the offline recorder.
+    laser_cam: Vec<[f32; 3]>,
     full_roi: Roi,
     last_wh: (u32, u32),
     focus_max: f64,
@@ -203,6 +205,7 @@ impl Engine {
             frame_no: 0,
             laser: LaserDetector::default(),
             laser_px: Vec::new(),
+            laser_cam: Vec::new(),
             full_roi: Roi::default(),
             last_wh: (0, 0),
             focus_max: 1e-6,
@@ -459,28 +462,37 @@ impl Engine {
         } else {
             self.usable_plane()
         };
+        self.laser_cam.clear();
         let classified = !self.plane_active && plane.is_some() && pose.is_some() && found;
-        if let (true, Some((n, d)), Some(p)) = (classified, plane, pose) {
+        if let (false, Some((n, d))) = (self.plane_active, plane) {
+            let board_pose = if found { pose } else { None };
             let mut inside = vec![false; self.laser_px.len()];
             let mut pushed = false;
             let frame_id = self.frame_no.min(u32::MAX as u64) as u32;
-            let (cloud, frames, px, scan_on) = (&mut self.cloud, &mut self.point_frames, &self.laser_px, self.scan_on);
+            let (cloud, frames, px, scan_on, laser_cam) = (&mut self.cloud, &mut self.point_frames, &self.laser_px, self.scan_on, &mut self.laser_cam);
             stripe::to_laser_plane(px, &k, n, d, |i, x| {
-                let b = p.to_board(x);
-                if vol.contains(&p, b, up) {
-                    inside[i] = true;
-                    if scan_on {
-                        let (u, v) = (px[i][0].round() as usize, px[i][1].round() as usize);
-                        if cloud.push(b, f.rgb_at(u.min(f.width - 1), v.min(f.height - 1))) {
-                            frames.push(frame_id);
+                // Camera-frame metric laser points depend only on calibrated K and laser plane,
+                // so emit them even when the calibration board is out of view (freehand VIO mode).
+                laser_cam.push([x[0] as f32, x[1] as f32, x[2] as f32]);
+                if let Some(p) = board_pose {
+                    let b = p.to_board(x);
+                    if vol.contains(&p, b, up) {
+                        inside[i] = true;
+                        if scan_on {
+                            let (u, v) = (px[i][0].round() as usize, px[i][1].round() as usize);
+                            if cloud.push(b, f.rgb_at(u.min(f.width - 1), v.min(f.height - 1))) {
+                                frames.push(frame_id);
+                            }
+                            pushed = true;
                         }
-                        pushed = true;
                     }
                 }
             });
-            self.cloud_unsaved |= pushed;
-            for (q, ins) in self.laser_px.iter().zip(&inside) {
-                if *ins { self.pts_in.push(*q) } else { self.pts_out.push(*q) }
+            if board_pose.is_some() {
+                self.cloud_unsaved |= pushed;
+                for (q, ins) in self.laser_px.iter().zip(&inside) {
+                    if *ins { self.pts_in.push(*q) } else { self.pts_out.push(*q) }
+                }
             }
         }
         if self.cloud.is_empty() {
@@ -700,6 +712,9 @@ impl Engine {
                 overlay::project_points(k, &p, &self.preview, &mut self.pts);
                 self.out.points(layer::CLOUD, &self.pts);
             }
+        }
+        if !self.laser_cam.is_empty() {
+            self.out.points3(layer::LASER_CAM, &self.laser_cam);
         }
         if classified {
             self.out.points(layer::LASER_OUT, &self.pts_out);

@@ -15,7 +15,7 @@ import android.util.Log
  * locks. Results go to the UI through a [TripleBuffer]: the camera never
  * waits for drawing and drawing never waits for the camera.
  */
-class FrameProcessor(filesDir: String, private val listener: Listener) : ImageReader.OnImageAvailableListener {
+class FrameProcessor(private val filesDir: String, private val listener: Listener) : ImageReader.OnImageAvailableListener {
 
     interface Listener {
         /** A new result is in [results] (called on the processing thread). */
@@ -38,13 +38,52 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     @Volatile var trackerRecorder: TrackerRecorder? = null
     /** Optional per-frame hook for app-specific detectors (imucalib AprilGrid). Runs on the processing thread. */
     @Volatile var frameListener: ((android.media.Image, FrameResult) -> Unit)? = null
+    /** Optional live-mesh hook receiving the frame, engine result, and VIO pose (world->camera, m). */
+    @Volatile var liveMeshListener: ((android.media.Image, FrameResult, DoubleArray?) -> Unit)? = null
+    /** Optional live 3D Fusion coverage preview callback: `(capturedWorldLaser, liveWorldLaser, pose, isKeyframe)`. */
+    @Volatile var fusionPreviewListener: ((FloatArray?, FloatArray?, RigidPose?, Boolean) -> Unit)? = null
     @Volatile var vio: VioRunner? = null
     /** When true the engine takes its camera pose from the VIO instead of the board. */
     @Volatile var useVioPose = false
+    /**
+     * Auto-switch to the VIO pose lane once the board anchor is verified.
+     * Off for board-locked capture: the AR overlay must stay attached to the
+     * physical board. The marker-free lane becomes an explicit Phase 4 mode.
+     */
+    @Volatile var allowAutoArLane = false
     /** true once the board anchor is verified and the engine AR lane is active. */
     @Volatile var arLaneReady = false
     /** frames the engine actually finished (used to gate calibration captures) */
     @Volatile var framesProcessed = 0
+    /** Adjustable working-distance capture gate (enforced on TrackerRecorder and surfaced in the HUD). */
+    private val rangeGate = CaptureRangeGate()
+    @Volatile var rangeGateEnabled = true
+    @Volatile var rangeMinMm = 200.0
+    @Volatile var rangeMaxMm = 550.0
+    /** True while an active Fusion scan is unpaused by the user (manual Pause sets false). */
+    @Volatile var recordingActive = false
+    @Volatile var lastRangeEval: CaptureRangeGate.Eval =
+        CaptureRangeGate.Eval(CaptureRangeGate.Status.UNKNOWN, Double.NaN, true, "none")
+    @Volatile var rangeSkippedFrames = 0
+    @Volatile var laserColor: String = "red"
+    @Volatile var laserRidgeFilterEnabled: Boolean = true
+    /** Latest world->camera 4x4 row-major VIO pose (metres) for high-res Splat stills. */
+    @Volatile var lastVioPose16: DoubleArray? = null
+    /** Optional per-frame hook invoked on the processing thread for motion-triggered Splat stills. */
+    @Volatile var splatAutoCaptureHook: ((RigidPose?) -> Unit)? = null
+
+    fun applyRangeSettings(st: AppSettings, targetFocusMm: Double, laserEnabled: Boolean = true) {
+        val tolMm = st.captureToleranceCm * 10.0
+        rangeGateEnabled = st.captureRangeEnabled && laserEnabled
+        rangeMinMm = (targetFocusMm - tolMm).coerceAtLeast(80.0)
+        rangeMaxMm = (targetFocusMm + tolMm).coerceAtLeast(rangeMinMm + 40.0)
+        laserColor = st.laserColor
+    }
+
+    fun resetRangeGate() {
+        rangeGate.reset()
+        rangeSkippedFrames = 0
+    }
 
     // Instrumentation: rates and per-stage times, logged once a second while frames run.
     private var deliveredFrames = 0L
@@ -58,7 +97,6 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     private var lastVioMs = 0.0
     private var lastRestMs = 0.0
     private var lastArLane = 0
-    private val vioPose = DoubleArray(16)
     private val vioK = DoubleArray(11)
     private var handle = 0L
     private var loggedW = 0
@@ -115,17 +153,21 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             val out = results.writeBuffer()
             val t0 = System.nanoTime()
             var arPose: DoubleArray? = null
-            var vioValid = false
+            var frameVioPose: DoubleArray? = null
             val vr = vio
             if (vr != null && vr.tracking) {
                 try {
-                    val yDup = p[0].buffer.duplicate()
-                    yDup.rewind()
-                    val yBytes = ByteArray(yDup.remaining())
-                    yDup.get(yBytes)
-                    val ts = img.timestamp * 1e-9
-                    val inited = vr.submitFrame(yBytes, p[0].rowStride, img.width, img.height, ts)
-                    if (inited) vioValid = vr.cameraPose(vioPose)
+                    val yDup = p[0].buffer.duplicate().also { it.rewind() }
+                    val yBytes = ByteArray(yDup.remaining()); yDup.get(yBytes)
+                    val uDup = p[1].buffer.duplicate().also { it.rewind() }
+                    val uBytes = ByteArray(uDup.remaining()); uDup.get(uBytes)
+                    val vDup = p[2].buffer.duplicate().also { it.rewind() }
+                    val vBytes = ByteArray(vDup.remaining()); vDup.get(vBytes)
+                    frameVioPose = vr.submitFrame(
+                        yBytes, uBytes, vBytes,
+                        p[0].rowStride, p[1].rowStride, p[1].pixelStride,
+                        img.width, img.height, img.timestamp,
+                    )
                 } catch (e: RuntimeException) {
                     Log.w(TAG, "VIO frame failed", e)
                 }
@@ -142,10 +184,10 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                 anchorGood = 0
             }
             if (arLane) {
-                if (vioValid) {
-                    arPose = buildArPose(vioPose)
-                    vr?.poseApplied = true
-                    vr?.lastPoseAppliedNs = System.nanoTime()
+                arPose = frameVioPose?.let(::buildArPose)
+                if (arPose != null && vr != null) {
+                    vr.poseApplied = true
+                    vr.lastPoseAppliedNs = System.nanoTime()
                 }
                 if (arPose == null) {
                     val now = System.nanoTime()
@@ -179,7 +221,23 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             out.length = n
             out.timestampNs = img.timestamp
             if (n == 0) return
-            updateAnchor(out, vioValid, img.width, img.height)
+            if (laserRidgeFilterEnabled) {
+                LaserStripeFilter.filterInPlace(
+                    out,
+                    LaserStripeFilter.YuvPlanes(
+                        width = img.width,
+                        height = img.height,
+                        y = p[0].buffer,
+                        yStride = p[0].rowStride,
+                        u = p[1].buffer,
+                        v = p[2].buffer,
+                        uvStride = p[1].rowStride,
+                        uvPixelStride = p[1].pixelStride,
+                    ),
+                    laserColor,
+                )
+            }
+            updateAnchor(out, frameVioPose, img.width, img.height)
             vio?.let { v ->
                 val state = out[FrameResult.H.LASER_STATE].toInt()
                 if (state == 2) {
@@ -191,23 +249,27 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             }
             vio?.let { v ->
                 var px: FloatArray? = null
+                var camPts: FloatArray? = null
+                var camCount = 0
                 out.forEachLayer { kind, stride, count, offset ->
                     if (kind == FrameResult.Layer.LASER_RAW && stride == 2 && count > 0) {
                         px = FloatArray(count * 2)
                         System.arraycopy(out.data, offset, px!!, 0, count * 2)
+                    } else if (kind == FrameResult.Layer.LASER_CAM && stride == 3 && count >= 3) {
+                        camPts = FloatArray(count * 3)
+                        System.arraycopy(out.data, offset, camPts!!, 0, count * 3)
+                        camCount = count
                     }
                 }
                 val lp = px
                 if (lp != null) v.setLaserPixels(lp, img.width, img.height)
+                val lc = camPts
+                if (lc != null && camCount >= 3) v.feedLaserPointsCamMm(out.timestampNs, lc, camCount)
             }
             lastBoardMs = out[FrameResult.H.T_BOARD_MS].toDouble()
             lastLaserMs = out[FrameResult.H.T_LASER_MS].toDouble()
             lastEngMs = out.procMs - (if (arPose != null || vio != null) 0.0 else 0.0)
             val ev = out.events()
-            val vioPoseToRecord = if (vio?.initialized == true) {
-                val vp = DoubleArray(16)
-                if (vio?.cameraPose(vp, false) == true) vp else null
-            } else null
             val frameHook = frameListener
             if (frameHook != null) {
                 try {
@@ -216,8 +278,52 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                     Log.w(TAG, "frame listener failed", t)
                 }
             }
+            val meshHook = liveMeshListener
+            if (meshHook != null) {
+                try {
+                    meshHook(img, out, frameVioPose)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "live mesh listener failed", t)
+                }
+            }
+            val rangeEval = rangeGate.evaluate(out, rangeGateEnabled, rangeMinMm, rangeMaxMm)
+            lastRangeEval = rangeEval
             val tSnap0 = System.nanoTime()
-            trackerRecorder?.capture(img, out, out.procMs, vioPoseToRecord)
+            var recordedThisFrame = false
+            var keyframeThisFrame = false
+            val rec = trackerRecorder
+            if (rec != null && recordingActive) {
+                if (!rangeGateEnabled || rangeEval.allowCapture) {
+                    val status = rec.capture(img, out, out.procMs, frameVioPose)
+                    recordedThisFrame = status == TrackerRecorder.CaptureStatus.LASER_ONLY ||
+                        status == TrackerRecorder.CaptureStatus.KEYFRAME
+                    keyframeThisFrame = status == TrackerRecorder.CaptureStatus.KEYFRAME
+                } else {
+                    rangeSkippedFrames++
+                }
+            }
+            if (frameVioPose != null) {
+                lastVioPose16 = frameVioPose.copyOf()
+            }
+            val vioRigid = frameVioPose?.let { RigidPose.fromRowMajor16(it, 1.0) }
+            val splatHook = splatAutoCaptureHook
+            if (splatHook != null) {
+                try {
+                    splatHook(vioRigid)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "splat auto-capture hook failed", t)
+                }
+            }
+            val previewHook = fusionPreviewListener
+            if (previewHook != null && vioRigid != null) {
+                val worldLaser = extractWorldLaserMeters(out, vioRigid)
+                previewHook(
+                    if (recordedThisFrame) worldLaser else null,
+                    worldLaser,
+                    vioRigid,
+                    keyframeThisFrame,
+                )
+            }
             lastSnapMs = (System.nanoTime() - tSnap0) / 1e6
             results.publish()
             framesProcessed++
@@ -250,6 +356,28 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
         }
     }
 
+    private fun extractWorldLaserMeters(r: FrameResult, pose: RigidPose): FloatArray? {
+        var out: FloatArray? = null
+        r.forEachLayer { kind, stride, count, offset ->
+            if (kind == FrameResult.Layer.LASER_CAM && stride == 3 && count > 0) {
+                val pts = FloatArray(count * 3)
+                var w = 0
+                for (i in 0 until count) {
+                    val lx = r.data[offset + i * 3] / 1000.0
+                    val ly = r.data[offset + i * 3 + 1] / 1000.0
+                    val lz = r.data[offset + i * 3 + 2] / 1000.0
+                    if (!lx.isFinite() || !ly.isFinite() || !lz.isFinite() || lz <= 0.04 || lz > 4.0) continue
+                    val wp = pose.cameraToWorld(lx, ly, lz)
+                    pts[w++] = wp[0].toFloat()
+                    pts[w++] = wp[1].toFloat()
+                    pts[w++] = wp[2].toFloat()
+                }
+                if (w >= 3) out = if (w == pts.size) pts else pts.copyOf(w)
+            }
+        }
+        return out
+    }
+
     // ---------------------------------------------------------------- VIO AR lane
     // The engine AR lane wants the pose board-frame -> camera in MILLIMETRES. VIO gives
     // world-frame -> camera in metres. A board detection supplies the one-time anchor
@@ -258,6 +386,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
     private var anchorSet = false
     private val anchor = DoubleArray(16)
     private var anchorGood = 0
+    private var anchorReadyLogged = false
     private val arK = DoubleArray(11)
     private var lastArSkipLogNs = 0L
     private var lastAnchorLogNs = 0L
@@ -273,21 +402,41 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
         }
     }
 
+    private var arDistMtime = -1L
+    private val arDist = DoubleArray(5)
+
+    private fun refreshArDist() {
+        val f = java.io.File(filesDir, "live_intrinsics.json")
+        if (!f.isFile) return
+        val mt = f.lastModified()
+        if (mt == arDistMtime) return
+        arDistMtime = mt
+        arDist.fill(0.0)
+        runCatching {
+            val arr = org.json.JSONObject(f.readText()).optJSONArray("dist") ?: return@runCatching
+            for (i in 0 until minOf(5, arr.length())) {
+                val v = arr.optDouble(i, 0.0)
+                if (v.isFinite()) arDist[i] = v
+            }
+        }
+    }
+
     private fun updateArK(out: FrameResult, w: Int, h: Int) {
         if (!out.flag(FrameResult.H.K_OK)) return
+        refreshArDist()
         arK[0] = out[FrameResult.H.FX].toDouble()
         arK[1] = out[FrameResult.H.FY].toDouble()
         arK[2] = out[FrameResult.H.CX].toDouble()
         arK[3] = out[FrameResult.H.CY].toDouble()
         arK[4] = w.toDouble()
         arK[5] = h.toDouble()
-        for (i in 6..10) arK[i] = 0.0
+        for (i in 0 until 5) arK[6 + i] = arDist[i]
     }
 
-    private fun updateAnchor(out: FrameResult, vioValid: Boolean, w: Int, h: Int) {
+    private fun updateAnchor(out: FrameResult, frameVioPose: DoubleArray?, w: Int, h: Int) {
         updateArK(out, w, h)
         if (arLane) return
-        if (!vioValid || !out.flag(FrameResult.H.DETECTED) || !out.flag(FrameResult.H.PLANE_OK) ||
+        if (frameVioPose == null || !out.flag(FrameResult.H.DETECTED) || !out.flag(FrameResult.H.PLANE_OK) ||
             !out.flag(FrameResult.H.K_OK) || out.flag(FrameResult.H.SCAN_ON)) return
         val roll = Math.toRadians(out[FrameResult.H.ROLL].toDouble())
         val pitch = Math.toRadians(out[FrameResult.H.PITCH].toDouble())
@@ -297,7 +446,7 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
                                out[FrameResult.H.CAM_Z].toDouble())
         val rms = out[FrameResult.H.REPROJ_RMS].toDouble()
         if (!rms.isFinite() || rms > 2.0) return
-        val m = AnchorMath.worldToCamMm(vioPose)
+        val m = AnchorMath.worldToCamMm(frameVioPose)
         if (anchorSet) {
             val err = AnchorMath.anchorError(anchor, m, rbc, cb)
             if (err == null) { anchorGood = 0; return }
@@ -306,11 +455,16 @@ class FrameProcessor(filesDir: String, private val listener: Listener) : ImageRe
             if (posErr < 15.0 && rotErr < 2.0) {
                 anchorGood++
                 if (anchorGood >= 15) {
-                    arLane = true
-                    arLaneReady = true
-                    useVioPose = true
-                    sendArMode(true)
-                    Log.i(TAG, "ANCHOR VERIFIED: pos err %.1f mm, rot err %.2f deg -> AR LANE ENABLED".format(posErr, rotErr))
+                    if (allowAutoArLane) {
+                        arLane = true
+                        arLaneReady = true
+                        useVioPose = true
+                        sendArMode(true)
+                        Log.i(TAG, "ANCHOR VERIFIED: pos err %.1f mm, rot err %.2f deg -> AR LANE ENABLED".format(posErr, rotErr))
+                    } else if (!anchorReadyLogged) {
+                        anchorReadyLogged = true
+                        Log.i(TAG, "ANCHOR VERIFIED: pos err %.1f mm, rot err %.2f deg (board-locked mode, AR lane held off)".format(posErr, rotErr))
+                    }
                 }
             } else {
                 AnchorMath.anchorFromMeasurement(rbc, cb, m, anchor)

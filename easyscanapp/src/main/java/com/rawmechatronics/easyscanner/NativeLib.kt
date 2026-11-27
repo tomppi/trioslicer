@@ -7,22 +7,45 @@ import java.nio.ByteBuffer
  * handle must come from the same thread — [FrameProcessor]'s processing thread.
  */
 internal object NativeLib {
+    val hasSuperVins: Boolean
+
     init {
-        System.loadLibrary("easyscanner_core_raw")
-        System.loadLibrary("openvins_jni")
+        // Load the current Rust core built from easyscan-core (exports both package
+        // prefixes and emits freehand LASER_CAM points without requiring a board).
+        System.loadLibrary("easyscanner_core")
+        // Optional for lightweight tools like :imucalib that exclude VIO/QNN native libs.
+        hasSuperVins = try {
+            System.loadLibrary("supervins_jni")
+            true
+        } catch (_: UnsatisfiedLinkError) {
+            false
+        }
     }
 
     @JvmStatic external fun nativeVioSetCaps(maxTracks: Int, minDist: Float)
     @JvmStatic external fun nativeVioSetReacq(enabled: Int)
+    @JvmStatic external fun nativeVioLightGlueInit(libDir: String, modelPath: String): Int
+    @JvmStatic external fun nativeVioLightGlueReady(): Boolean
+    @JvmStatic external fun nativeVioSetLightGlue(enabled: Int)
+    @JvmStatic external fun nativeVioSetLightGlueThreshold(vio: Float, loop: Float)
+    @JvmStatic external fun nativeVioSetKltFallback(enabled: Int)
+    @JvmStatic external fun nativeVioLightGlueMatch(kp0: FloatArray, d0: FloatArray, kp1: FloatArray, d1: FloatArray): IntArray?
+    @JvmStatic external fun nativeLoopLightGlueInit(libDir: String, modelPath: String): Int
+    @JvmStatic external fun nativeLoopLightGlueReady(): Boolean
+    @JvmStatic external fun nativeLoopLightGlueMatch(kp0: FloatArray, d0: FloatArray, kp1: FloatArray, d1: FloatArray): IntArray?
     @JvmStatic external fun nativeVioSetLaserBand(handle: Long, cx: Double, cy: Double, nx: Double, ny: Double, hw: Double, on: Boolean)
+    @JvmStatic external fun nativeVioFeedLaserPoints(handle: Long, timestampSec: Double, xyzMm: FloatArray, count: Int)
     @JvmStatic external fun nativeVioCreate(configDir: String): Long
     @JvmStatic external fun nativeVioDestroy(handle: Long)
-    @JvmStatic external fun nativeVioSetFeatures(handle: Long, camId: Int, timestampSec: Double, kp: FloatArray, desc: FloatArray, n: Int)
     @JvmStatic external fun nativeVioFeedImu(handle: Long, ax: Float, ay: Float, az: Float, gx: Float, gy: Float, gz: Float, timestampSec: Double)
-    @JvmStatic external fun nativeVioFeedFrame(handle: Long, gray: ByteArray, width: Int, height: Int, timestampSec: Double): Boolean
+    @JvmStatic external fun nativeVioFeedFrame(
+        handle: Long, gray: ByteArray, timestampSec: Double, kp: FloatArray, desc: FloatArray,
+    ): Boolean
     @JvmStatic external fun nativeVioInitialized(handle: Long): Boolean
     @JvmStatic external fun nativeVioInitReadyToMove(handle: Long): Boolean
-    @JvmStatic external fun nativeVioGetPose(handle: Long, position: DoubleArray, quaternion: DoubleArray): Boolean
+    @JvmStatic external fun nativeVioGetPoseAtFrame(
+        handle: Long, timestampSec: Double, position: DoubleArray, quaternion: DoubleArray,
+    ): Boolean
     @JvmStatic external fun nativeVioGetState(handle: Long, pos: DoubleArray, vel: DoubleArray, bg: DoubleArray, ba: DoubleArray, quat: DoubleArray): Boolean
 
     @JvmStatic external fun nativeCreate(filesDir: String): Long

@@ -218,7 +218,7 @@ class CalibSolverTest {
         val yaml = File(configDir, "kalibr_imucam_chain.yaml").readText()
         val dtVal = yaml.lines().first { it.trim().startsWith("timeshift_cam_imu:") }.substringAfter(":").trim().toDouble()
         assertTrue("time offset wrong: " + dtVal, abs(dtVal - dtTrue) < 0.004)
-        assertTrue("intrinsics not preserved", yaml.contains("432.179802389"))
+        assertTrue("intrinsics not preserved", yaml.contains("429.637237996168"))
 
         val rows = yaml.lines().filter { it.trim().startsWith("- [") }.map { it.trim().removePrefix("- [").removeSuffix("]") }
         val rFit = arrayOf(

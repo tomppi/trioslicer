@@ -28,7 +28,7 @@ for d in "${SHIP[@]}"; do
 done
 
 {
-  echo "orcaslicer ${ORCA_TAG:-v2.4.2}"
+  echo "orcaslicer ${ORCA_TAG:-v2.5.2}"
   echo "resources: ${SHIP[*]}"
   git -C "$SRC" rev-parse HEAD 2>/dev/null || true
 } > "$DEST/.source-version"

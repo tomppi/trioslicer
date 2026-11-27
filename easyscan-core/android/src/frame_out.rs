@@ -141,6 +141,15 @@ impl FrameOut {
         self.buf.extend(pts.iter().flatten());
     }
 
+    /// A 3-D point layer (camera frame, mm).
+    pub fn points3(&mut self, kind: f32, pts: &[[f32; 3]]) {
+        if pts.is_empty() {
+            return;
+        }
+        self.buf.extend_from_slice(&[kind, 3.0, pts.len() as f32]);
+        self.buf.extend(pts.iter().flatten());
+    }
+
     pub fn segments(&mut self, kind: f32, segs: &[[f32; 4]]) {
         if segs.is_empty() {
             return;

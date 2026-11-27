@@ -57,11 +57,19 @@ protected:
 
 void setLaserBand(float cx, float cy, float nx, float ny, float half_width, int on);
 
+/// Set the current camera-to-world rotation from the VIO state, in row-major order.
+/// Used to predict where the previous frame's points should project under rotation.
+void setVioCameraRotationPrediction(const double *R_cam_to_world);
+
+/// Predicted pixel positions for SLAM landmarks, keyed by feature id.
+void setVioSlamFeaturePrediction(const std::unordered_map<size_t, cv::Point2f> &preds);
+
 } // namespace ov_core
 
 // Runtime caps for the flood experiment (defaults: 200 tracks, 10 px spacing).
 void setTrackCaps(int maxTracks, float minNewDist);
 void setReacqEnabled(int enabled);
+extern "C" void setKltFallbackEnabled(int enabled);
 
 // Clear all cross-session tracker state (lost-track pool, descriptors, pending frames).
 void superpoint_reset();

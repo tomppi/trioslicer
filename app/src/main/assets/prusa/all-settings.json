@@ -222,7 +222,7 @@
     {"key": "pressure_advance_value", "type": "floats", "default": "0.03", "desc": ""},
     {"key": "printer_model", "type": "string", "default": "MK4", "desc": ""},
     {"key": "printer_notes", "type": "string", "default": "", "desc": ""},
-    {"key": "printer_technology", "type": "string", "default": "FFF", "desc": ""},
+    {"key": "printer_technology", "type": "string", "default": "FFF", "desc": "", "values": ["FFF", "SLA"]},
     {"key": "printer_variant", "type": "string", "default": "", "desc": ""},
     {"key": "printer_vendor", "type": "string", "default": "", "desc": ""},
     {"key": "raft_contact_distance", "type": "float", "default": "0.2", "desc": ""},

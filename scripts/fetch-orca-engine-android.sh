@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Places the OrcaSlicer 2.4.2 ARM64 console and its resources into the app package.
+# Places the OrcaSlicer 2.5.2 ARM64 console and its resources into the app package.
 #
 # The console is published as a release asset, the way the Blender engine is, so a clone and CI
 # can stage it without owning a token and without waiting for an engine workflow run:
 #
-#   https://github.com/<repo>/releases/download/<ORCA_ENGINE_TAG>/orca-engine-arm64-<tag>.zip
+#   https://github.com/<repo>/releases/download/<ORCA_ENGINE_TAG>/orca-engine-arm64-<version>.zip
 #
-#   Default: downloads that asset (ORCA_ENGINE_TAG, default v1.3.0).
+#   Default: downloads that asset (ORCA_ENGINE_TAG, default orca-engine-v2.5.2).
 #   ORCA_ENGINE_DIR:     use a local build instead - a directory holding
 #                        <dir>/liborca_console_exec.so (or orca-console) and <dir>/resources.
 #   ORCA_ENGINE_RUN_ID:  download one specific orca-engine-android workflow run instead, which
@@ -21,13 +21,13 @@ set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-tomppi/trioslicer}"
 WORKFLOW="orca-engine-android.yml"
-ARTIFACT_NAME="OrcaSlicer-2.4.2-android-arm64-v8a"
+ARTIFACT_NAME="OrcaSlicer-2.5.2-android-arm64-v8a"
 APP_JNILIBS="app/src/main/jniLibs/arm64-v8a"
 APP_ASSETS="app/src/main/assets/orca"
 DOWNLOAD_DIR=".build/orca-engine-download"
 # The release asset is unpacked as code into the app package, so its digest is pinned. A
 # deliberate re-pin sets ORCA_ENGINE_SHA256 to the digest of the new asset.
-ORCA_ENGINE_SHA256_PINNED="0e2112257ae4ee052d78a4fdd8d3376bd2e0ed576372f03a352f757e5a7f51cc"
+ORCA_ENGINE_SHA256_PINNED="297db51513caabc51d1b0a1c168e7ef9f523094daf0defff06ca4afe41f3cbab"
 
 sha256_of () {  # $1 = file
   if command -v sha256sum >/dev/null 2>&1; then
@@ -82,8 +82,8 @@ elif [ -n "${ORCA_ENGINE_RUN_ID:-}" ]; then
   echo "Downloading $ARTIFACT_NAME from workflow run $ORCA_ENGINE_RUN_ID"
   download_artifact "$ORCA_ENGINE_RUN_ID"
 else
-  TAG="${ORCA_ENGINE_TAG:-v1.3.0}"
-  ASSET="orca-engine-arm64-${TAG}.zip"
+  TAG="${ORCA_ENGINE_TAG:-orca-engine-v2.5.2}"
+  ASSET="orca-engine-arm64-${TAG#orca-engine-}.zip"
   URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
   mkdir -p "$DOWNLOAD_DIR"
   echo "Downloading $ASSET ($TAG)"

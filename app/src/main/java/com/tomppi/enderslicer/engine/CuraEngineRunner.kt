@@ -105,10 +105,10 @@ class CuraEngineRunner(private val context: Context) {
     fun isAvailable(): Boolean = executable.isFile && executable.length() > 0L
 
     fun status(): String = when {
-        !executable.exists() -> "CuraEngine 5.14.0-alpha.0 ARM64 is not packaged in this APK"
+        !executable.exists() -> "CuraEngine 5.14.0 ARM64 is not packaged in this APK"
         !executable.isFile -> "CuraEngine package path is invalid"
         executable.length() == 0L -> "CuraEngine package is empty"
-        else -> "CuraEngine 5.14.0-alpha.0 ARM64 ready"
+        else -> "CuraEngine 5.14.0 ARM64 ready"
     }
 
     fun releaseArtifact(id: String) = publisher.release(id)
@@ -816,9 +816,9 @@ class CuraEngineRunner(private val context: Context) {
             check(target.length() > 0L) { "Bundled Cura definition is empty: $name" }
         }
         val source = if (closure.machineFile == BUNDLED_MACHINE_DEFINITION) {
-            "bundled Cura 5.14.0-alpha.0 standalone fallback"
+            "bundled Cura 5.14.0 standalone fallback"
         } else {
-            "bundled Cura 5.14.0-alpha.0 machine " + closure.machineFile
+            "bundled Cura 5.14.0 machine " + closure.machineFile
         }
         logDefinitions(log, source, destination)
         return PreparedDefinitions(

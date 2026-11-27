@@ -29,6 +29,7 @@
 #include "utils/sensor_data.h"
 
 #include "utils/NoiseManager.h"
+#include "CameraImuTiming.h"
 
 namespace ov_msckf {
 
@@ -109,6 +110,10 @@ public:
    * @param timestamp Time to propagate to and clone at (CAM clock frame)
    */
   void propagate_and_clone(std::shared_ptr<State> state, double timestamp);
+
+  /// Check the retained IMU window for a camera update without extrapolating. Before init,
+  /// only the candidate frame time is bracketed; the initializer manages its own window.
+  CameraImuCoverage camera_coverage(const std::shared_ptr<State> &state, double timestamp, bool initialized);
 
   /**
    * @brief Gets what the state and its covariance will be at a given timestamp

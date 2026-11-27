@@ -55,7 +55,7 @@ internal fun CuraMachinePicker(
             if (machines.isEmpty()) {
                 "Loading the Cura printer catalogue…"
             } else {
-                machines.size.toString() + " machines from Cura 5.14.0-alpha.0; the engine " +
+                machines.size.toString() + " machines from Cura 5.14.0; the engine " +
                     "resolves the chosen one's definition chain under your settings."
             },
             style = MaterialTheme.typography.bodySmall,

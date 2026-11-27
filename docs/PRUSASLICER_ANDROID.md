@@ -1,6 +1,6 @@
 # PrusaSlicer Android integration
 
-The APK ships the PrusaSlicer 3.0.0-alpha11 console for Android and runs it as a
+The APK ships the PrusaSlicer 3.0.0-alpha15 console for Android and runs it as a
 child process. It is packaged as `libprusa_slicer_exec.so` in the APK's
 `arm64-v8a` jniLibs and executed directly; there is no JNI boundary.
 `PrusaEngineRunner` stages a workspace, `PrusaConfigWriter` renders the

@@ -111,8 +111,21 @@ jobs:
             "ndk;28.2.13676358" \
             "cmake;3.22.1" \
             "cmake;3.31.6"
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
           sudo apt-get update
-          sudo apt-get install -y ninja-build file binutils
+          sudo apt-get install -y ninja-build file binutils libclang-dev
+
+      - name: Point bindgen at libclang
+        run: |
+          set -euo pipefail
+          libclang="$(find /usr/lib -name 'libclang.so*' -o -name 'libclang-*.so*' 2>/dev/null | sort -V | head -n 1)"
+          if [ -z "$libclang" ]; then
+            echo "::error::libclang-dev installed but no libclang shared library was found under /usr/lib" >&2
+            exit 1
+          fi
+          sudo ln -sf "$libclang" /usr/lib/libclang.so
+          echo "LIBCLANG_PATH=/usr/lib" >> "$GITHUB_ENV"
+          ls -l /usr/lib/libclang.so "$libclang"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -122,10 +135,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.conan2/p
-          key: conan-curaengine-5.14-alpha0-android-host-v1-${{ hashFiles('scripts/build-curaengine-android.sh', 'scripts/build-curaengine-host-tests.sh', 'native/curaengine/profiles/android-arm64') }}
+          key: conan-curaengine-5.14.0-android-host-v1-${{ hashFiles('scripts/build-curaengine-android.sh', 'scripts/build-curaengine-host-tests.sh', 'native/curaengine/profiles/android-arm64') }}
           restore-keys: |
+            conan-curaengine-5.14.0-android-host-v1-
             conan-curaengine-5.14-alpha0-android-host-v1-
-            conan-curaengine-5.14-alpha0-android-arm64-v1-
 
       - name: Fetch and validate pinned Cura definitions
         run: |
@@ -155,7 +168,7 @@ jobs:
           # of the rewritten fdmprinter.def.json, which is why the fetch script now
           # writes that file with newline="\n" instead of letting Windows turn it
           # into CRLF and give the same resources a different digest.
-          expected_digest = "244bd62a668727b1e2d4215819d77cc83af7a99fbce92aaa06ed5bc1a9b59e9b"
+          expected_digest = "10d3c5c32171a6e0e3cf0c2d98cb3ba0c7999ed8e370436e6b3f607cb82a988e"
 
           missing = [name for name in names if not (root / (name + ".def.json")).is_file()]
           if missing:
@@ -363,7 +376,7 @@ jobs:
           chmod +x scripts/build-curaengine-android.sh
           set -o pipefail
           scripts/build-curaengine-android.sh 2>&1 | tee curaengine-android-build.log
-          grep -q 'CuraEngine Android artifacts (5.14.0-alpha.0)' curaengine-android-build.log
+          grep -q 'CuraEngine Android artifacts (5.14.0)' curaengine-android-build.log
           grep -q 'EnderSlicer: Cura.*frontend applies the complete affine' .build/CuraEngine/src/communication/CommandLine.cpp
           grep -q 'EnderSlicer: carry the affine translation in the transform' .build/CuraEngine/src/communication/CommandLine.cpp
           grep -q 'EnderSlicer: resolved model values must live on the' .build/CuraEngine/src/communication/CommandLine.cpp
@@ -481,15 +494,25 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
       
-      - name: Fetch the Splat Proto payload (Brush JNI + U2Net masker)
+      - name: Fetch the Splat Proto payload (Cross3DGS Vulkan + U2Net/DA3 NPU)
         run: |
           chmod +x scripts/fetch-splatproto-payload-android.sh
           scripts/fetch-splatproto-payload-android.sh 2>&1 | tee splatproto-payload-fetch.log
-          test -s splatproto/src/main/jniLibs/arm64-v8a/libbrush_jni.so
+          test -s splatproto/src/main/jniLibs/arm64-v8a/libcross3dgs_android.so
           test -s splatproto/src/main/assets/masker/models/u2net.bin
+          test -s splatproto/src/main/assets/masker/models/da3_depth_fp16.bin
           test -s splatproto/src/main/assets/masker/bin/qnn-net-run
-          file splatproto/src/main/jniLibs/arm64-v8a/libbrush_jni.so | tee splatproto-brush.log
-          grep -q 'ARM aarch64' splatproto-brush.log
+          test -s splatproto/src/main/assets/masker/bin/da3-worker
+          file splatproto/src/main/jniLibs/arm64-v8a/libcross3dgs_android.so | tee splatproto-cross3dgs.log
+          grep -q 'ARM aarch64' splatproto-cross3dgs.log
+
+      - name: Fetch the EasyScan SuperVINS & multi-SoC QNN deps
+        run: |
+          chmod +x scripts/fetch-easyscan-deps-android.sh
+          scripts/fetch-easyscan-deps-android.sh 2>&1 | tee easyscan-deps-fetch.log
+          test -s easyscanapp/src/main/cpp/openvins/thirdparty/ceres/lib/libceres.a
+          test -s easyscanapp/src/main/jniLibs/arm64-v8a/libopencv_vio4.so
+          test -s easyscanapp/src/main/jniLibs/arm64-v8a/libQnnGpu.so
 
       - name: Fetch and validate the Klipper host payload
         run: |
@@ -714,10 +737,14 @@ jobs:
           grep -q 'lib/arm64-v8a/libprusa_slicer_exec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libblender_exec.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libfilasim_jni.so' apk-contents.log
-          grep -q 'lib/arm64-v8a/libbrush_jni.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libcross3dgs_android.so' apk-contents.log
           grep -q 'lib/arm64-v8a/libparallaxcore.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/libsupervins_jni.so' apk-contents.log
+          grep -q 'lib/arm64-v8a/liblivemesh_jni.so' apk-contents.log
           grep -q 'assets/masker/models/u2net.bin' apk-contents.log
+          grep -q 'assets/masker/models/da3_depth_fp16.bin' apk-contents.log
           grep -q 'assets/masker/bin/qnn-net-run' apk-contents.log
+          grep -q 'assets/masker/bin/da3-worker' apk-contents.log
           grep -q 'assets/masker/skel/libQnnHtpV73Skel.so' apk-contents.log
           grep -q 'assets/masker/SOURCE.md' apk-contents.log
           grep -q 'assets/masker/LICENSES/LICENSE-Qualcomm-AI-Stack.pdf' apk-contents.log
@@ -828,7 +855,8 @@ jobs:
             filasim-build.log
             filasim-warm-build.log
             splatproto-payload-fetch.log
-            splatproto-brush.log
+            splatproto-cross3dgs.log
+            easyscan-deps-fetch.log
             curaengine-android-build.log
             curaengine-host-build.log
             curaengine-needed.log

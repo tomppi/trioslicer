@@ -40,6 +40,10 @@ class SplatViewerSourceTest {
         )
         assertTrue("orbit, pan and zoom share one control class", js.contains("class OrbitRig"))
         assertTrue(
+            "camera orbit is unlocked 360 degrees with two-finger twist roll",
+            js.contains("qSlerp") && js.contains("roll(dAngle)") && !js.contains("-1.45, 1.45"),
+        )
+        assertTrue(
             "a change asks for redraws and the first frames are warmed up",
             js.contains("requestRedraw") && js.contains("warmupFrames"),
         )
@@ -73,13 +77,13 @@ class SplatViewerSourceTest {
                 manifest.contains("android:hardwareAccelerated=\"true\""),
         )
         val app = file("src/main/java/com/tomppi/enderslicer/ui/EnderSlicerApp.kt").readText()
-        assertTrue("the menu entry is the Gaussian splatting workspace", app.contains("title = " + '"' + "Gaussian splatting" + '"'))
+        assertTrue("the menu entry is Splat/PLY files", app.contains("title = " + '"' + "Splat/PLY files" + '"'))
         assertTrue(app.contains("onClick = onGaussianSplatting"))
         assertTrue(app.contains("GaussianSplattingSheet("))
         val sheet = file("src/main/java/com/tomppi/enderslicer/ui/GaussianSplattingSheet.kt").readText()
-        assertTrue("the viewer is one of its doors", sheet.contains("title = " + '"' + "Splat viewer" + '"'))
+        assertTrue("the viewer is its door", sheet.contains("title = " + '"' + "Splat viewer" + '"'))
         assertTrue(sheet.contains("onClick = onOpenViewer"))
-        assertTrue("capture and training are the other door", sheet.contains("title = " + '"' + "New scan" + '"'))
+        assertTrue("New scan is removed from the Splat/PLY files menu", !sheet.contains("title = " + '"' + "New scan" + '"'))
         assertTrue(app.contains("SplatLibrarySheet("))
         val library = file("src/main/java/com/tomppi/enderslicer/splat/SplatLibrary.kt").readText()
         assertTrue("imports land in app storage", library.contains("File(context.filesDir, \"splats\")"))

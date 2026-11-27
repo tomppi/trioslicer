@@ -10,13 +10,17 @@ import java.io.File
 import kotlin.math.abs
 
 /**
- * Feeds Camera2 YUV frames and IMU samples into the native OpenVINS VIO.
- * SuperPoint (TFLite + QNN delegate) supplies the feature points from the NPU.
+ * Feeds Camera2 YUV frames and IMU samples into the native SuperVINS VIO.
+ * SuperPoint + LightGlue (TFLite + QNN HTP delegate) drive the front-end on the NPU,
+ * feeding the Ceres sliding-window nonlinear optimizer.
  */
 class VioRunner(private val ctx: Context) : SensorEventListener {
-    private var vio = 0L
+    @Volatile private var vio = 0L
     private var sp = 0L
     private var sensors: SensorManager? = null
+    private var imuThread: android.os.HandlerThread? = null
+    private val imuLock = Any()
+    private val interpAccel = FloatArray(3)
     private val accel = FloatArray(3)
     private val gyro = FloatArray(3)
     private val accelPrev = FloatArray(3)
@@ -25,8 +29,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var gyroTs = 0.0
     private var haveAccel = false
     private var haveGyro = false
-    private var lastImuTs = 0.0
+    @Volatile private var lastImuTs = 0.0
     private var lastFrameTs = 0.0
+    private var lastVisualFrameTs = -1.0
     // IMU path diagnostics: a wrong rate/pairing here corrupts every propagation step.
     private var imuAccelEvents = 0L
     private var imuGyroEvents = 0L
@@ -42,7 +47,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     private var gyroSum = 0.0
     private var gyroMax = 0.0
     private var camOffSum = 0.0
-    private var camOffMax = 0.0
+    private var camOffMin = Double.POSITIVE_INFINITY
     private var camOffN = 0L
     private val stPos = DoubleArray(3)
     private val stVel = DoubleArray(3)
@@ -62,6 +67,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     @Volatile var tMaskMs = 0.0
     @Volatile var tFeedMs = 0.0
     @Volatile var lastDetN = 0
+    @Volatile var lastSpeedMps = 0.0
     /** Start feeding VIO without the warm-up banner (calibration captures). */
     fun startTrackingSilent() { tracking = true }
 
@@ -76,6 +82,10 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     @Volatile var lastKp: FloatArray? = null
     /** SuperPoint features submitted this frame (always updated, overlay or not). */
     @Volatile var lastFeatureCount = 0
+    /** Packed [count, kp.xy..., desc...] for the last SuperPoint frame. */
+    @Volatile var lastFeaturePacked: FloatArray? = null
+    /** Sensor timestamp (ns) of [lastFeaturePacked]. */
+    @Volatile var lastFeatureTimestampNs: Long = 0L
     /** true when the engine actually received a VIO pose this frame (real capture, not just init). */
     @Volatile var poseApplied = false
     /** the 5 s warm-up completed; nothing (scan or calibration) starts before this */
@@ -93,7 +103,6 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
     }
     // drawn by the UI thread while the VIO thread appends: must be thread-safe
     private val trajectory = java.util.concurrent.CopyOnWriteArrayList<FloatArray>()
-    private val poseScratch = DoubleArray(16)
     @Volatile private var laserPx = FloatArray(0)
     private var laserW = 0
     private var laserH = 0
@@ -143,58 +152,81 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                 Log.w(TAG, "config copy failed: " + name, e)
             }
         }
+        // Always refresh the app-owned SuperVINS estimator config alongside the Kalibr calibration files.
+        try {
+            val svOut = File(dir, "supervins_config.yaml")
+            ctx.assets.open("supervins/supervins_config.yaml").use { input ->
+                svOut.outputStream().use { input.copyTo(it) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "supervins_config.yaml copy failed", e)
+        }
         syncVioIntrinsics(dir)
         vio = NativeLib.nativeVioCreate(dir.absolutePath)
         if (vio == 0L) {
-            Log.e(TAG, "VIO create failed (config/parse error) - marker-free pose disabled")
+            Log.e(TAG, "SuperVINS create failed (config/parse error) - marker-free pose disabled")
             return
         }
-        // Prefer the int8-quantized SuperPoint (QNN HTP int8 path); fall back to float16/float32.
+        // Load XFeat (64-D descriptors, 640x480 grayscale) on QNN HTP NPU.
         var spHandle = 0L
-        for (name in arrayOf("superpoint_single.tflite", "superpoint.tflite")) {
-            val model = File(ctx.filesDir, name)
-            if (!model.exists() || model.length() < 1000) {
-                try {
-                    ctx.assets.open(name).use { input -> model.outputStream().use { input.copyTo(it) } }
-                } catch (e: Exception) {
-                    Log.w(TAG, "model copy failed: " + name, e)
-                }
-            }
-            if (!model.exists() || model.length() < 1000) continue
+        try {
+            val model = AssetCopy.ensure(ctx, "xfeat.tflite", File(ctx.filesDir, "xfeat.tflite"))
             val h = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
             if (h != 0L && !(h >= -4L && h <= -1L)) {
                 spHandle = h
-                Log.i(TAG, "SuperPoint model: " + name + " (" + model.length() + " bytes)")
-                break
+                Log.i(TAG, "XFeat model: xfeat.tflite (" + model.length() + " bytes)")
+            } else {
+                Log.w(TAG, "XFeat model create failed (" + h + ")")
             }
-            Log.w(TAG, "model create failed: " + name + " (" + h + ")")
+        } catch (e: Exception) {
+            Log.w(TAG, "XFeat model copy/init failed", e)
         }
         sp = spHandle
+        // Extract top 400 XFeat keypoints to feed 400-kp LighterGlue (decoupled from 180 Ceres VIO tracks).
+        SpTflite.setFeatureCap(400)
         // Handles are native pointers (Android tags the top byte, so they can look negative);
         // only 0 and the create error codes -1..-4 mean failure.
         if (sp == 0L || (sp >= -4L && sp <= -1L)) {
-            Log.e(TAG, "SuperPoint engine create failed (" + sp + ") - marker-free pose disabled")
+            Log.e(TAG, "XFeat engine create failed (" + sp + ") - marker-free pose disabled")
             sp = 0L
         }
-        // NPU matmul used by the tracker to re-acquire lost tracks (hybrid tracker)
+        // XFeat LighterGlue NPU matcher: enabled by default unless explicitly disabled ("0") in Settings.
         try {
-            val mm = File(ctx.filesDir, "superpoint_matmul.tflite")
-            if (!mm.exists() || mm.length() < 100) {
-                ctx.assets.open("superpoint_matmul.tflite").use { input -> mm.outputStream().use { input.copyTo(it) } }
+            val flag = File(ctx.filesDir, "lightglue.txt")
+            val on = !flag.exists() || flag.readText().trim() != "0"
+            if (on) {
+                val lg = AssetCopy.ensure(ctx, "lighterglue.tflite", File(ctx.filesDir, "lighterglue.tflite"))
+                val rc = NativeLib.nativeVioLightGlueInit(ctx.applicationInfo.nativeLibraryDir, lg.absolutePath)
+                val qnn = rc == 0 && NativeLib.nativeVioLightGlueReady()
+                NativeLib.nativeVioSetLightGlue(if (qnn) 1 else 0)
+                Log.i(TAG, "LighterGlue init=" + rc + " enabled=" + qnn)
+            } else {
+                NativeLib.nativeVioSetLightGlue(0)
+                Log.i(TAG, "LighterGlue disabled by settings")
             }
-            val ok = SpTflite.matmulInit(ctx.applicationInfo.nativeLibraryDir, mm.absolutePath)
-            Log.i(TAG, "OVMM init=" + ok)
         } catch (e: Exception) {
-            Log.w(TAG, "OVMM init failed", e)
+            NativeLib.nativeVioSetLightGlue(0)
+            Log.w(TAG, "LighterGlue init failed", e)
         }
-        // flood experiment: optional caps from files/flood.txt (max_tracks=, min_dist=, max_features=)
+        // Track-continuity PyrLK bridge for LighterGlue (on by default so single-frame blur
+        // doesn't break 10-frame sliding-window tracks; disable via "0" in Settings -> Development).
+        try {
+            val kf = File(ctx.filesDir, "klt_fallback.txt")
+            val on = !kf.exists() || kf.readText().trim() != "0"
+            NativeLib.nativeVioSetKltFallback(if (on) 1 else 0)
+            Log.i(TAG, "KLT track bridge=" + on)
+        } catch (e: Exception) {
+            Log.w(TAG, "KLT fallback read failed", e)
+        }
+        // Optional SuperVINS front-end tuning overrides from files/flood.txt.
         try {
             val f = java.io.File(ctx.filesDir, "flood.txt")
             if (f.exists()) {
-                var mt = 200
-                var md = 10.0f
-                var mf = 300
-                var rq = 1
+                var mt = 180
+                var md = 8.0f
+                var mf = 400
+                var rq = 0
+                var lt = 0.10f
                 for (line in f.readLines()) {
                     val p = line.split('=')
                     if (p.size == 2) {
@@ -203,106 +235,126 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                             "min_dist" -> md = p[1].trim().toFloatOrNull() ?: md
                             "max_features" -> mf = p[1].trim().toIntOrNull() ?: mf
                             "reacq" -> rq = p[1].trim().toIntOrNull() ?: rq
+                            "lg_threshold" -> lt = p[1].trim().toFloatOrNull()?.coerceIn(0.01f, 0.9f) ?: lt
                         }
                     }
                 }
                 NativeLib.nativeVioSetCaps(mt, md)
                 SpTflite.setFeatureCap(mf)
                 NativeLib.nativeVioSetReacq(rq)
-                Log.i(TAG, "VIO flood caps: tracks=" + mt + " min_dist=" + md + " features=" + mf + " reacq=" + rq)
+                NativeLib.nativeVioSetLightGlueThreshold(lt, 0.20f)
+                Log.i(TAG, "SuperVINS tuning: tracks=" + mt + " min_dist=" + md + " features=" + mf + " reacq=" + rq + " lg=" + lt)
             }
         } catch (e: Exception) {
             Log.w(TAG, "flood.txt read failed", e)
         }
+        // Dedicated high-priority IMU thread so 480 Hz IMU events never stall behind SuperPoint/board processing.
+        val tImu = android.os.HandlerThread("vio-imu", android.os.Process.THREAD_PRIORITY_URGENT_AUDIO).apply { start() }
+        imuThread = tImu
+        val imuHandler = android.os.Handler(tImu.looper)
         sensors = ctx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         sensors?.let { sm ->
-            sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-                ?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler) }
-            sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-                ?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, handler) }
+            // Prefer uncalibrated sensors (raw values[0..2]) so Android's HAL bias filter never step-jumps OpenVINS.
+            val aSensor = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED)
+                ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            val gSensor = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED)
+                ?: sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+            aSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, imuHandler) }
+            gSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, imuHandler) }
+            Log.i(TAG, "IMU sensors: accel=" + (aSensor?.stringType ?: "none") + " gyro=" + (gSensor?.stringType ?: "none"))
         }
         Log.i(TAG, "VIO started vio=" + vio + " sp=" + sp)
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        synchronized(imuLock) {
         val type = event.sensor.type
         val evTs = event.timestamp * 1e-9
-        if (type == Sensor.TYPE_ACCELEROMETER) {
+        if (type == Sensor.TYPE_ACCELEROMETER_UNCALIBRATED || type == Sensor.TYPE_ACCELEROMETER) {
             imuAccelEvents++
+            if (haveAccel && evTs > accelTs) {
+                accelPrev[0] = accel[0]; accelPrev[1] = accel[1]; accelPrev[2] = accel[2]
+                accelPrevTs = accelTs
+            }
             accelTs = evTs
             accel[0] = event.values[0]
             accel[1] = event.values[1]
             accel[2] = event.values[2]
             haveAccel = true
-        } else if (type == Sensor.TYPE_GYROSCOPE) {
-            imuGyroEvents++
-            gyroTs = evTs
-            gyro[0] = event.values[0]
-            gyro[1] = event.values[1]
-            gyro[2] = event.values[2]
-            haveGyro = true
-        } else {
             return
         }
-        // Reference implementation (OpenVINS Android): feed one combined sample at the completing
-        // event's timestamp, then wait for a fresh pair. One sample per sensor event pair.
-        if (vio == 0L || !haveAccel || !haveGyro) return
-        val ts = event.timestamp * 1e-9
+        if (type != Sensor.TYPE_GYROSCOPE_UNCALIBRATED && type != Sensor.TYPE_GYROSCOPE) return
+        imuGyroEvents++
+        gyroTs = evTs
+        gyro[0] = event.values[0]
+        gyro[1] = event.values[1]
+        gyro[2] = event.values[2]
+        haveGyro = true
+        val vHandle = vio
+        if (vHandle == 0L || !haveAccel) return
+        val ts = evTs
         if (!(ts > lastImuTs)) { imuRejected++; return }
-        lastImuTs = ts
-        lastAccelNorm = Math.sqrt((accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]).toDouble())
+        // Linearly interpolate accelerometer onto the exact gyro timestamp (eliminates pairing skew).
+        interpolateAccelToGyro(accelPrev, accelPrevTs, accel, accelTs, ts, interpAccel)
+        lastAccelNorm = Math.sqrt(
+            (interpAccel[0] * interpAccel[0] + interpAccel[1] * interpAccel[1] + interpAccel[2] * interpAccel[2]).toDouble()
+        )
         imuFed++
         val aStale = Math.abs(ts - accelTs)
-        val gStale = Math.abs(ts - gyroTs)
+        val gStale = 0.0
         accelStaleSum += aStale
         gyroStaleSum += gStale
         if (aStale > staleMax) staleMax = aStale
-        if (gStale > staleMax) staleMax = gStale
         if (lastFedTs > 0.0) feedDtSum += (ts - lastFedTs)
         lastFedTs = ts
         statSamples++
-        val gw = Math.sqrt((gyro[0]*gyro[0] + gyro[1]*gyro[1] + gyro[2]*gyro[2]).toDouble())
+        val gw = Math.sqrt((gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2]).toDouble())
         gyroSum += gw
         if (gw > gyroMax) gyroMax = gw
-        NativeLib.nativeVioFeedImu(vio, accel[0], accel[1], accel[2], gyro[0], gyro[1], gyro[2], ts)
-        haveAccel = false
-        haveGyro = false
+        NativeLib.nativeVioFeedImu(vHandle, interpAccel[0], interpAccel[1], interpAccel[2], gyro[0], gyro[1], gyro[2], ts)
+        lastImuTs = ts
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    /** Feed one Camera2 Y plane; returns true once VIO is initialised. */
-    fun submitFrame(y: ByteArray, yStride: Int, width: Int, height: Int, timestampSec: Double): Boolean {
-        if (!tracking) { lastKp = null; return initialized }
-        if (vio == 0L || sp == 0L) return false
-        if (!(timestampSec > lastFrameTs)) return initialized  // drop duplicate/reversed camera frames
+    /** Feed the current Camera2 image and return its world-to-camera pose, or null if unavailable. */
+    fun submitFrame(
+        y: ByteArray, u: ByteArray, v: ByteArray,
+        yStride: Int, uvStride: Int, uvPixelStride: Int,
+        width: Int, height: Int, timestampNs: Long,
+    ): DoubleArray? = synchronized(PROCESS_LOCK) {
+        if (!tracking) { lastKp = null; return@synchronized null }
+        if (vio == 0L || sp == 0L) return@synchronized null
+        val timestampSec = timestampNs * 1e-9
+        if (!(timestampSec > lastFrameTs)) return@synchronized null  // duplicate/reversed camera frames
         lastFrameTs = timestampSec
         tYConvMs = 0.0; tFeatMs = 0.0; tMaskMs = 0.0; tFeedMs = 0.0
+
+        // SuperVINS sliding-window visual rate (~12 Hz, matching upstream 10 Hz design):
+        // 10 window frames span ~0.8-1.0 s for strong SfM parallax and fewer LightGlue hops.
+        // Between visual frames, return exact IMU-propagated poses at 30 Hz once initialized.
+        if (lastVisualFrameTs > 0.0 && (timestampSec - lastVisualFrameTs) < VISUAL_FRAME_MIN_DT_SEC) {
+            return@synchronized if (initialized) cameraPoseAtFrame(timestampSec) else null
+        }
         val tStage0 = System.nanoTime()
-        if (lastImuTs > 0.0) {
-            val off = timestampSec - lastImuTs
-            camOffSum += Math.abs(off)
-            if (Math.abs(off) > camOffMax) camOffMax = Math.abs(off)
-            camOffN++
-        }
-        val gray = ByteArray(GW * GH)
-        for (yy in 0 until GH) {
-            val sy = yy * height / GH
-            val row = sy * yStride
-            for (xx in 0 until GW) {
-                val sx = xx * width / GW
-                gray[yy * GW + xx] = y[row + sx]
-            }
-        }
+
+        val gray = bilinearDownsampleY(y, yStride, width, height, GW, GH)
         tYConvMs = (System.nanoTime() - tStage0) / 1e6
         val tFeat0 = System.nanoTime()
+        // XFeat takes 1-channel grayscale natively — no YUV-to-RGB conversion needed.
         val feat = SpTflite.features(sp, gray)
         tFeatMs = (System.nanoTime() - tFeat0) / 1e6
-        if (feat == null) { if (frameCount % 30 == 0) Log.w(TAG, "features() null sp=" + sp); return false }
-        if (feat.isEmpty()) return false
+        if (feat == null) {
+            if (frameCount % 30 == 0) Log.w(TAG, "features() null sp=" + sp)
+            return@synchronized null
+        }
+        if (feat.isEmpty()) return@synchronized null
+        lastFeaturePacked = feat
+        lastFeatureTimestampNs = timestampNs
         val n = feat[0].toInt()
         lastDetN = n
-        if (n <= 0) return false
+        if (n <= 0) return@synchronized null
         val tMask0 = System.nanoTime()
         // drop features on the laser stripe (they move with the line and corrupt tracks)
         val lw = laserW
@@ -334,34 +386,43 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
         if (nKeep < 20) {
             if (frameCount % 30 == 0) Log.w(TAG, "too few features after stripe mask: " + nKeep)
-            return initialized
+            return@synchronized null
         }
         val kp = FloatArray(nKeep * 2)
-        val desc = FloatArray(nKeep * 256)
+        val desc = FloatArray(nKeep * 64)
         var w = 0
         for (i in 0 until n) {
             if (!keep[i]) continue
             kp[w * 2] = feat[1 + i * 2]
             kp[w * 2 + 1] = feat[2 + i * 2]
-            System.arraycopy(feat, 1 + n * 2 + i * 256, desc, w * 256, 256)
+            System.arraycopy(feat, 1 + n * 2 + i * 64, desc, w * 64, 64)
             w++
         }
-        val nn = w
         tMaskMs = (System.nanoTime() - tMask0) / 1e6
         lastFeatureCount = nKeep
         lastKp = if (spOverlay) kp else null
+        val curImuTs = lastImuTs
+        if (curImuTs > 0.0) {
+            val lead = curImuTs - timestampSec
+            camOffSum += lead
+            camOffMin = minOf(camOffMin, lead)
+            camOffN++
+        }
         val tFeed0 = System.nanoTime()
-        NativeLib.nativeVioSetFeatures(vio, 0, timestampSec, kp, desc, nn)
-        NativeLib.nativeVioFeedFrame(vio, gray, GW, GH, timestampSec)
+        if (!NativeLib.nativeVioFeedFrame(vio, gray, timestampSec, kp, desc)) {
+            tFeedMs = (System.nanoTime() - tFeed0) / 1e6
+            return@synchronized null
+        }
+        lastVisualFrameTs = timestampSec
         val now = NativeLib.nativeVioInitialized(vio)
         if (now != initialized) {
             initialized = now
             Log.i(TAG, "VIO initialized=" + now)
         }
-        // Keep the minimap trajectory live on every frame. The scanner does this in its frame
-        // processor; splatproto previously only sampled the pose when saving a keyframe, so the
-        // minimap stayed empty until the first capture.
-        if (now) cameraPose(poseScratch)
+        val pose = if (now) cameraPoseAtFrame(timestampSec) else null
+        if (pose != null && NativeLib.nativeVioGetState(vio, stPos, stVel, stBg, stBa, stQuat)) {
+            lastSpeedMps = Math.sqrt(stVel[0] * stVel[0] + stVel[1] * stVel[1] + stVel[2] * stVel[2])
+        }
         tFeedMs = (System.nanoTime() - tFeed0) / 1e6
         frameCount++
         if (frameCount % 60 == 0) {
@@ -373,19 +434,19 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
                     Math.sqrt(stVel[0]*stVel[0]+stVel[1]*stVel[1]+stVel[2]*stVel[2]),
                     stBg[0], stBg[1], stBg[2], stBa[0], stBa[1], stBa[2]) +
                 " evA=" + imuAccelEvents + " evG=" + imuGyroEvents + " fed=" + imuFed +
-                " rej=" + imuRejected + " dt=%.2fms aStale=%.2fms gStale=%.2fms staleMax=%.2fms gyro=%.1f/%.1fdeg camOff=%.1f/%.1fms".format(
+                " rej=" + imuRejected + " dt=%.2fms aStale=%.2fms gStale=%.2fms staleMax=%.2fms gyro=%.1f/%.1fdeg imuAheadAtSubmit(mean/min)=%.1f/%.1fms".format(
                     feedDtSum / ns * 1000.0, accelStaleSum / ns * 1000.0, gyroStaleSum / ns * 1000.0, staleMax * 1000.0,
                     Math.toDegrees(gyroSum / ns), Math.toDegrees(gyroMax),
                     if (camOffN > 0) camOffSum / camOffN * 1000.0 else 0.0,
-                    camOffMax * 1000.0))
+                    (if (camOffN > 0) camOffMin * 1000.0 else 0.0)))
             accelStaleSum = 0.0; gyroStaleSum = 0.0; staleMax = 0.0
             feedDtSum = 0.0; lastFedTs = 0.0; statSamples = 0; imuRejected = 0
-            gyroSum = 0.0; gyroMax = 0.0; camOffSum = 0.0; camOffMax = 0.0; camOffN = 0
+            gyroSum = 0.0; gyroMax = 0.0; camOffSum = 0.0; camOffMin = Double.POSITIVE_INFINITY; camOffN = 0
         }
         if (frameCount % 60 == 0) Log.i(TAG, "VIO frames=" + frameCount + " init=" + initialized + " features=" + n +
                 " imu: accelEv=" + imuAccelEvents + " gyroEv=" + imuGyroEvents + " fed=" + imuFed +
                 " reversed=" + imuRejected + " |a|=" + String.format(java.util.Locale.US, "%.2f", lastAccelNorm))
-        return initialized
+        pose
     }
 
     /**
@@ -404,11 +465,16 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             val w = o.optDouble("width", 0.0)
             val h = o.optDouble("height", 0.0)
             if (w <= 1.0 || h <= 1.0) return
-            val s = 640.0 / w
-            val fx = o.optDouble("fx", 0.0) * s
-            val fy = o.optDouble("fy", 0.0) * s
-            val cx = o.optDouble("cx", 0.0) * s
-            val cy = o.optDouble("cy", 0.0) * s
+            val scaled = scaleIntrinsicsForVio(
+                o.optDouble("fx", 0.0), o.optDouble("fy", 0.0),
+                o.optDouble("cx", 0.0), o.optDouble("cy", 0.0),
+                w, h, GW.toDouble(), GH.toDouble(),
+            )
+            val fx = scaled[0]; val fy = scaled[1]; val cx = scaled[2]; val cy = scaled[3]
+            val aspectDiff = abs((w / h) - (GW.toDouble() / GH.toDouble())) / (GW.toDouble() / GH.toDouble())
+            if (aspectDiff > 0.01) {
+                Log.w(TAG, String.format(java.util.Locale.US, "live_intrinsics aspect %.3f differs from 640x480 (%.0fx%.0f)", w / h, w, h))
+            }
             if (!fx.isFinite() || !fy.isFinite() || !cx.isFinite() || !cy.isFinite() || fx <= 0 || fy <= 0) return
             val dist = o.optJSONArray("dist")
             val d = DoubleArray(4)
@@ -437,13 +503,11 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         }
     }
 
-    /** Camera pose as a 4x4 row-major matrix: world (VIO) -> camera, as the engine expects. */
-    fun cameraPose(out: DoubleArray, addTrajectory: Boolean = true): Boolean {
-        if (vio == 0L) return false
+    /** World-to-camera 4x4 matrix for this camera timestamp, not the latest available pose. */
+    private fun cameraPoseAtFrame(timestampSec: Double): DoubleArray? {
         val p = DoubleArray(3)
         val q = DoubleArray(4)
-        if (!NativeLib.nativeVioGetPose(vio, p, q)) return false
-        if (!p.all { it.isFinite() } || !q.all { it.isFinite() }) return false
+        if (!NativeLib.nativeVioGetPoseAtFrame(vio, timestampSec, p, q)) return null
         val w = q[0]
         val x = q[1]
         val y = q[2]
@@ -462,10 +526,9 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
             android.util.Log.i(TAG, "pose log p=(%.3f,%.3f,%.3f) q=(%.3f,%.3f,%.3f,%.3f) traj=%d".format(
                 p[0], p[1], p[2], q[0], q[1], q[2], q[3], trajectory.size))
         }
-        if (addTrajectory) {
-            if (trajectory.size > 4000) trajectory.removeAt(0)
-            trajectory.add(floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat()))
-        }
+        if (trajectory.size > 4000) trajectory.removeAt(0)
+        trajectory.add(floatArrayOf(p[0].toFloat(), p[1].toFloat(), p[2].toFloat()))
+        val out = DoubleArray(16)
         // engine wants world -> camera: transpose
         out[0] = r00
         out[1] = r10
@@ -483,7 +546,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         out[13] = 0.0
         out[14] = 0.0
         out[15] = 1.0
-        return true
+        return out
     }
 
     /** Laser stripe pixels (analysis-frame x,y pairs) from the latest engine frame. */
@@ -491,6 +554,13 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         laserPx = px
         laserW = w
         laserH = h
+    }
+
+    /** Feed calibrated camera-frame 3D laser points (mm) into SuperVINS Ceres for tight metric scale locking. */
+    fun feedLaserPointsCamMm(timestampNs: Long, xyzMm: FloatArray, count: Int) {
+        val vHandle = vio
+        if (vHandle == 0L || count < 3 || !tracking) return
+        NativeLib.nativeVioFeedLaserPoints(vHandle, timestampNs * 1e-9, xyzMm, count)
     }
 
     /**
@@ -580,9 +650,13 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         } catch (_: Exception) {
         }
         sensors = null
-        if (vio != 0L) {
-            NativeLib.nativeVioDestroy(vio)
+        imuThread?.quitSafely()
+        try { imuThread?.join(300) } catch (_: InterruptedException) {}
+        imuThread = null
+        synchronized(imuLock) {
+            val h = vio
             vio = 0L
+            if (h != 0L) NativeLib.nativeVioDestroy(h)
         }
         if (sp != 0L) {
             SpTflite.close(sp)
@@ -591,6 +665,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         initialized = false
         tracking = false
         lastKp = null
+        lastSpeedMps = 0.0
         frameCount = 0
         haveAccel = false
         haveGyro = false
@@ -599,6 +674,7 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         gyroTs = 0.0
         lastImuTs = 0.0
         lastFrameTs = 0.0
+        lastVisualFrameTs = -1.0
         imuAccelEvents = 0L
         imuGyroEvents = 0L
         imuFed = 0L
@@ -608,12 +684,83 @@ class VioRunner(private val ctx: Context) : SensorEventListener {
         if (ACTIVE === this) ACTIVE = null
     }
 
-    private companion object {
+    companion object {
         private val PROCESS_LOCK = Any()
         @Volatile private var ACTIVE: VioRunner? = null
-        const val TAG = "VioRunner"
+        private const val TAG = "VioRunner"
         const val GW = 640
         const val GH = 480
-        val CONFIGS = listOf("estimator_config.yaml", "kalibr_imu_chain.yaml", "kalibr_imucam_chain.yaml")
+        private const val VISUAL_FRAME_MIN_DT_SEC = 0.055
+        private val CONFIGS = listOf("estimator_config.yaml", "kalibr_imu_chain.yaml", "kalibr_imucam_chain.yaml")
+
+        /** Exact pixel-centre intrinsics scaling matching `easyscan-core/algo/src/geom.rs::Intrinsics::for_frame`. */
+        internal fun scaleIntrinsicsForVio(
+            fx: Double, fy: Double, cx: Double, cy: Double,
+            srcW: Double, srcH: Double, dstW: Double = 640.0, dstH: Double = 480.0,
+        ): DoubleArray {
+            val sx = dstW / srcW
+            val sy = dstH / srcH
+            return doubleArrayOf(fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5)
+        }
+
+        /** Pixel-centred bilinear Y downsample avoiding the asymmetric -0.5 px odd-row shift on 960x720 -> 640x480. */
+        internal fun bilinearDownsampleY(
+            y: ByteArray, yStride: Int, srcW: Int, srcH: Int, dstW: Int = GW, dstH: Int = GH,
+        ): ByteArray {
+            val out = ByteArray(dstW * dstH)
+            if (srcW == dstW && srcH == dstH) {
+                for (yy in 0 until dstH) System.arraycopy(y, yy * yStride, out, yy * dstW, dstW)
+                return out
+            }
+            val scaleX = srcW.toDouble() / dstW
+            val scaleY = srcH.toDouble() / dstH
+            val x0Lut = IntArray(dstW)
+            val x1Lut = IntArray(dstW)
+            val wxLut = IntArray(dstW) // fixed-point 0..256
+            for (xx in 0 until dstW) {
+                val fx = ((xx + 0.5) * scaleX - 0.5).coerceIn(0.0, (srcW - 1).toDouble())
+                val x0 = fx.toInt()
+                x0Lut[xx] = x0
+                x1Lut[xx] = (x0 + 1).coerceAtMost(srcW - 1)
+                wxLut[xx] = ((fx - x0) * 256.0).toInt().coerceIn(0, 256)
+            }
+            for (yy in 0 until dstH) {
+                val fy = ((yy + 0.5) * scaleY - 0.5).coerceIn(0.0, (srcH - 1).toDouble())
+                val y0 = fy.toInt()
+                val y1 = (y0 + 1).coerceAtMost(srcH - 1)
+                val wy = ((fy - y0) * 256.0).toInt().coerceIn(0, 256)
+                val iwy = 256 - wy
+                val row0 = y0 * yStride
+                val row1 = y1 * yStride
+                val outRow = yy * dstW
+                for (xx in 0 until dstW) {
+                    val x0 = x0Lut[xx]; val x1 = x1Lut[xx]
+                    val wx = wxLut[xx]; val iwx = 256 - wx
+                    val v00 = y[row0 + x0].toInt() and 0xff
+                    val v10 = y[row0 + x1].toInt() and 0xff
+                    val v01 = y[row1 + x0].toInt() and 0xff
+                    val v11 = y[row1 + x1].toInt() and 0xff
+                    val top = v00 * iwx + v10 * wx
+                    val bot = v01 * iwx + v11 * wx
+                    out[outRow + xx] = ((top * iwy + bot * wy + 32768) ushr 16).toByte()
+                }
+            }
+            return out
+        }
+
+        /** Linearly interpolates accelerometer onto the exact gyro timestamp [ts] with bounded extrapolation. */
+        internal fun interpolateAccelToGyro(
+            aPrev: FloatArray, tPrev: Double, aCur: FloatArray, tCur: Double, ts: Double, out: FloatArray,
+        ) {
+            val dt = tCur - tPrev
+            if (tPrev > 0.0 && dt > 1e-5 && dt < 0.05 && abs(ts - tCur) < 0.01) {
+                val alpha = ((ts - tPrev) / dt).coerceIn(0.0, 1.5).toFloat()
+                out[0] = aPrev[0] + (aCur[0] - aPrev[0]) * alpha
+                out[1] = aPrev[1] + (aCur[1] - aPrev[1]) * alpha
+                out[2] = aPrev[2] + (aCur[2] - aPrev[2]) * alpha
+            } else {
+                out[0] = aCur[0]; out[1] = aCur[1]; out[2] = aCur[2]
+            }
+        }
     }
 }

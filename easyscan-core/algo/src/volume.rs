@@ -183,13 +183,13 @@ mod tests {
         // camera looking straight down at a 288 mm board from 600 mm
         let pose = Pose { r: rodrigues([std::f64::consts::PI, 0.0, 0.0]), t: [-144.0, 144.0, 600.0] };
         let vol = Volume { board_w: 288.0, board_h: 288.0, margin: 20.0, height: 100.0 };
-        let roi = vol.roi(&pose, &k, 640, 480).unwrap();
+        // up is toward the camera: board +Z points away from it here
+        let up = pose.up_sign();
+        let roi = vol.roi(&pose, &k, 640, 480, up).unwrap();
         let centre = k.project(pose.to_cam([144.0, 144.0, 0.0])).unwrap();
         let (cx, cy) = (centre[0] as usize, centre[1] as usize);
         let (a, b) = roi.spans[cy - roi.y0];
         assert!(a as usize <= cx && cx < b as usize);
-        // up is toward the camera: board +Z points away from it here
-        let up = pose.up_sign();
         assert!(vol.contains(&pose, [100.0, 100.0, up * 50.0], up));
         assert!(!vol.contains(&pose, [100.0, 100.0, -up * 50.0], up));
         assert!(!vol.contains(&pose, [100.0, 100.0, up * 1.0], up));

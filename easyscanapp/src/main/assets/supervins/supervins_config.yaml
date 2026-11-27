@@ -1,0 +1,20 @@
+%YAML:1.0
+# SuperVINS sliding-window estimator configuration for EasyScanner.
+# Camera intrinsics, distortion, camera-IMU extrinsics (T_cam_imu -> body_T_cam0),
+# time offset (timeshift_cam_imu), and IMU noise are loaded from the calibrated
+# kalibr_imucam_chain.yaml and kalibr_imu_chain.yaml in files/openvins-config/.
+
+max_cnt: 180
+min_dist: 8
+F_threshold: 1.0
+ransacReprojThreshold: 3.0
+matche_score_threshold: 0.10
+
+max_solver_time: 0.04
+max_num_iterations: 8
+keyframe_parallax: 10.0
+
+estimate_td: 1
+estimate_extrinsic: 0
+g_norm: 9.81
+multiple_thread: 0

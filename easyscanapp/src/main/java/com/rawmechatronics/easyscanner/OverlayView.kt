@@ -27,6 +27,7 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
 
     var source: TripleBuffer<FrameResult>? = null
     @Volatile var vio: VioRunner? = null
+    @Volatile var hideMinimap: Boolean = false
     var sensorOrientation = 90
 
     private val m = Matrix()
@@ -120,7 +121,7 @@ class OverlayView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
                 }
                 canvas.restore()
             }
-            drawMiniMap3D(canvas, vs)
+            if (!hideMinimap) drawMiniMap3D(canvas, vs)
         }
     }
 

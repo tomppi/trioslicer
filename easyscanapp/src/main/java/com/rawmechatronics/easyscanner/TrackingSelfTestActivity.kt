@@ -51,7 +51,7 @@ class TrackingSelfTestActivity : Activity() {
     private var session: CameraCaptureSession? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
-    private var tflite = 0L
+    @Volatile private var tflite = 0L
     private val busy = AtomicBoolean(false)
     private var frames = 0
     private var saved = 0
@@ -70,6 +70,24 @@ class TrackingSelfTestActivity : Activity() {
     private var sensorOrientation = 90
     private var displayRotation = 0
     private var manualRot = 0
+    private var prevFeat: FloatArray? = null
+    private var lgPairs = 0
+    private var lgMs = 0.0
+    private var showLgView = true
+    private var lgPrevY: ByteArray? = null
+    private var lgPrevKp: FloatArray? = null
+    private var lgCurKp: FloatArray? = null
+    private var lgPairData: IntArray? = null
+    private var lastFrameY: ByteArray? = null
+    @Volatile private var lgInitDone = false
+    @Volatile private var lgInitOk = false
+    @Volatile private var lgBackend = "init..."
+    private var cameraRetries = 0
+    private var retryPending = false
+
+    // Native pointers on Android ARM64 have top-byte tags (0xb400...) so valid handles can be negative;
+    // only 0 and error codes -4..-1 indicate failure.
+    private fun isValidTfliteHandle(h: Long): Boolean = h != 0L && (h < -4L || h > 0L)
 
     private val gyro = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent) {
@@ -101,13 +119,17 @@ class TrackingSelfTestActivity : Activity() {
         root.addView(status, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         val bar = LinearLayout(this).apply { gravity = Gravity.CENTER }
         bar.addView(Button(this).apply { text = "ROT"; setOnClickListener { manualRot = (manualRot + 90) % 360 } })
+        bar.addView(Button(this).apply { text = "LG VIEW"; setOnClickListener { showLgView = !showLgView } })
         bar.addView(Button(this).apply { text = "BACK"; setOnClickListener { finish() } })
         root.addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         setContentView(root)
 
         thread = HandlerThread("self-test").apply { start() }
         handler = Handler(thread!!.looper)
-        handler!!.post { startRecording(); initModel() }
+        handler!!.post { startRecording() }
+        // Load SuperPoint then LightGlue sequentially on a dedicated init thread so they never
+        // contend for the Hexagon HTP compiler and the camera preview opens immediately.
+        Thread({ initModel() }, "selftest-init").start()
         sensors = getSystemService(SensorManager::class.java)
         sensors?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let {
             sensors?.registerListener(gyro, it, SensorManager.SENSOR_DELAY_GAME)
@@ -127,7 +149,7 @@ class TrackingSelfTestActivity : Activity() {
 
     override fun onDestroy() {
         try { csv?.flush(); csv?.close() } catch (_: Exception) {}
-        if (tflite != 0L) try { SpTflite.close(tflite) } catch (_: Exception) {}
+        if (isValidTfliteHandle(tflite)) try { SpTflite.close(tflite) } catch (_: Exception) {}
         thread?.quitSafely()
         super.onDestroy()
     }
@@ -138,7 +160,7 @@ class TrackingSelfTestActivity : Activity() {
         dir.mkdirs()
         sessionDir = dir
         csv = FileOutputStream(File(dir, "frames.csv")).also {
-            it.write("frame,ts_ns,infer_ms,match_ms,kp,matches,inliers,rot_deg,gyro_deg,jpeg\n".toByteArray())
+            it.write("frame,ts_ns,infer_ms,match_ms,kp,matches,inliers,rot_deg,gyro_deg,lg_pairs,lg_ms,jpeg\n".toByteArray())
         }
         Log.i(TAG, "self-test recording: " + dir.absolutePath)
     }
@@ -165,30 +187,69 @@ class TrackingSelfTestActivity : Activity() {
     } catch (e: Throwable) { doubleArrayOf(600.0, 600.0, 320.0, 240.0) }
 
     private fun initModel() {
+        runOnUiThread { status.text = "Tracking self-test: loading XFeat on NPU..." }
         try {
-            val model = File(filesDir, "superpoint.tflite")
-            if (!model.exists() || model.length() < 1000) {
-                assets.open("superpoint.tflite").use { input -> FileOutputStream(model).use { input.copyTo(it) } }
-            }
+            val model = AssetCopy.ensure(this, "xfeat.tflite", File(filesDir, "xfeat.tflite"))
             val k = cameraK()
             val t0 = System.currentTimeMillis()
             tflite = SpTflite.create(applicationInfo.nativeLibraryDir, model.absolutePath, k[0], k[1], k[2], k[3])
-            Log.i(TAG, "self-test tflite=" + tflite + " ms=" + (System.currentTimeMillis() - t0))
+            Log.i(TAG, "self-test xfeat tflite=" + tflite + " ms=" + (System.currentTimeMillis() - t0))
         } catch (e: Throwable) {
             Log.e(TAG, "self-test model failed", e)
         }
+        lgBackend = "compiling NPU..."
+        try {
+            val lg = AssetCopy.ensure(this, "lighterglue.tflite", File(filesDir, "lighterglue.tflite"))
+            val t0 = System.currentTimeMillis()
+            SpTflite.setFeatureCap(400)
+            val rc = NativeLib.nativeVioLightGlueInit(applicationInfo.nativeLibraryDir, lg.absolutePath)
+            val qnn = NativeLib.nativeVioLightGlueReady()
+            val ms = System.currentTimeMillis() - t0
+            lgInitOk = (rc == 0)
+            lgBackend = when {
+                rc != 0 -> "ERR rc=" + rc
+                qnn -> "NPU"
+                else -> "CPU"
+            }
+            lgInitDone = true
+            Log.i("LGSELFTEST", "lighterglue init=" + rc + " qnn=" + qnn + " ms=" + ms)
+        } catch (e: Throwable) {
+            lgInitOk = false
+            lgBackend = "ERR " + (e.message ?: e.javaClass.simpleName)
+            lgInitDone = true
+            Log.e("LGSELFTEST", "lighterglue init failed", e)
+        }
+    }
+
+    private fun scheduleCameraRetry(reason: String) {
+        if (retryPending || cameraRetries >= 15) {
+            Log.e(TAG, "self-test camera unavailable after " + cameraRetries + " retries: " + reason)
+            return
+        }
+        retryPending = true
+        cameraRetries++
+        Log.w(TAG, "self-test camera retry " + cameraRetries + ": " + reason)
+        handler?.postDelayed({
+            retryPending = false
+            openCamera()
+        }, 1500)
     }
 
     private fun openCamera() {
         if (device != null) return
         val mgr = getSystemService(CameraManager::class.java)
-        val id = mgr.cameraIdList.firstOrNull { mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK } ?: return
+        val id = mgr.cameraIdList.firstOrNull { mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK }
+        if (id == null) {
+            scheduleCameraRetry("no back camera")
+            return
+        }
         sensorOrientation = mgr.getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         displayRotation = windowManager.defaultDisplay.rotation
         val r = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3)
         reader = r
         r.setOnImageAvailableListener({ ir -> onFrame(ir) }, handler)
         @Suppress("DEPRECATION")
+        try {
         mgr.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(d: CameraDevice) {
                 device = d
@@ -203,7 +264,10 @@ class TrackingSelfTestActivity : Activity() {
                             req.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                             s.setRepeatingRequest(req.build(), null, handler)
                         }
-                        override fun onConfigureFailed(s: CameraCaptureSession) { Log.e(TAG, "self-test configure failed") }
+                        override fun onConfigureFailed(s: CameraCaptureSession) {
+                            Log.e(TAG, "self-test configure failed")
+                            scheduleCameraRetry("configure failed")
+                        }
                     }, handler)
                 } catch (e: Exception) {
                     Log.e(TAG, "self-test session failed", e)
@@ -211,9 +275,22 @@ class TrackingSelfTestActivity : Activity() {
                     device = null
                 }
             }
-            override fun onDisconnected(d: CameraDevice) { d.close(); device = null }
-            override fun onError(d: CameraDevice, error: Int) { Log.e(TAG, "self-test camera error " + error); d.close(); device = null }
+            override fun onDisconnected(d: CameraDevice) {
+                try { d.close() } catch (_: Exception) {}
+                device = null
+                scheduleCameraRetry("camera disconnected")
+            }
+            override fun onError(d: CameraDevice, error: Int) {
+                Log.e(TAG, "self-test camera error " + error)
+                try { d.close() } catch (_: Exception) {}
+                device = null
+                scheduleCameraRetry("camera error " + error)
+            }
         }, handler)
+        } catch (e: Exception) {
+            Log.e(TAG, "self-test openCamera failed", e)
+            scheduleCameraRetry("openCamera exception")
+        }
     }
 
     private fun closeCamera() {
@@ -227,16 +304,57 @@ class TrackingSelfTestActivity : Activity() {
         val img = try { ir.acquireLatestImage() } catch (e: IllegalStateException) { null } ?: return
         if (!busy.compareAndSet(false, true)) { img.close(); return }
         val w = img.width; val h = img.height
+        val planes = img.planes
+        val yp = planes[0]
         val y = ByteArray(w * h)
-        val yp = img.planes[0]
         for (row in 0 until h) { yp.buffer.position(row * yp.rowStride); yp.buffer.get(y, row * w, w) }
+        val up = planes[1].buffer.duplicate().also { it.rewind() }
+        val u = ByteArray(up.remaining()); up.get(u)
+        val vp = planes[2].buffer.duplicate().also { it.rewind() }
+        val v = ByteArray(vp.remaining()); vp.get(v)
+        val uvStride = planes[1].rowStride
+        val uvPixelStride = planes[1].pixelStride
+        val rgb = YuvRgb.toRgb(y, u, v, w, h, w, uvStride, uvPixelStride, 640, 480)
         img.close()
         frames++
         handler?.post {
             try {
                 val g0 = gyroAngle
-                if (tflite == 0L) return@post
-                val res = SpTflite.run(tflite, y) ?: return@post
+                val spHandle = tflite
+                if (!isValidTfliteHandle(spHandle)) {
+                    val bmp = drawPreviewOnly(y, w, h)
+                    runOnUiThread { image.setImageBitmap(bmp) }
+                    return@post
+                }
+                val res = SpTflite.run(spHandle, y) ?: return@post
+                if (lgInitDone && lgInitOk) try {
+                    val feat = SpTflite.features(spHandle, y)
+                    if (feat != null && feat.isNotEmpty()) {
+                        val n = feat[0].toInt()
+                        val curKp = feat.copyOfRange(1, 1 + n * 2)
+                        val curD = feat.copyOfRange(1 + n * 2, 1 + n * 2 + n * 64)
+                        val pf = prevFeat
+                        if (pf != null && pf.isNotEmpty()) {
+                            val pn = pf[0].toInt()
+                            val prevKp = pf.copyOfRange(1, 1 + pn * 2)
+                            val prevD = pf.copyOfRange(1 + pn * 2, 1 + pn * 2 + pn * 64)
+                            val t0 = System.nanoTime()
+                            val pr = NativeLib.nativeVioLightGlueMatch(prevKp, prevD, curKp, curD)
+                            lgMs = (System.nanoTime() - t0) / 1e6
+                            lgPairs = pr?.getOrNull(0) ?: 0
+                            // Keep the pair indices and both keypoint sets for the
+                            // side-by-side LightGlue view.
+                            lgPrevY = lastFrameY?.copyOf()
+                            lgPrevKp = prevKp.copyOf()
+                            lgCurKp = curKp.copyOf()
+                            lgPairData = pr
+                            Log.i("LGSELFTEST", "kp=" + n + " pairs=" + lgPairs + " ms=" + String.format(java.util.Locale.ROOT, "%.1f", lgMs))
+                        }
+                        prevFeat = feat
+                    }
+                } catch (e: Throwable) {
+                    Log.e("LGSELFTEST", "match failed", e)
+                }
                 val kpN = res[2].toInt(); val matchN = res[3].toInt(); val inl = res[4].toInt()
                 val rot = res[5]; val shownM = res[6].toInt()
                 totalInfer += res[0]; totalMatch += res[1]
@@ -247,10 +365,12 @@ class TrackingSelfTestActivity : Activity() {
                 File(sessionDir, name).writeBytes(jpeg)
                 csv?.write((saved.toString() + "," + System.nanoTime() + "," + String.format(java.util.Locale.ROOT, "%.1f", res[0]) + "," +
                     String.format(java.util.Locale.ROOT, "%.1f", res[1]) + "," + kpN + "," + matchN + "," + inl + "," +
-                    String.format(java.util.Locale.ROOT, "%.3f", rot) + "," + String.format(java.util.Locale.ROOT, "%.3f", gyroDeg) + "," + name + "\n").toByteArray())
+                    String.format(java.util.Locale.ROOT, "%.3f", rot) + "," + String.format(java.util.Locale.ROOT, "%.3f", gyroDeg) + "," +
+                    lgPairs + "," + String.format(java.util.Locale.ROOT, "%.1f", lgMs) + "," + name + "\n").toByteArray())
                 if (saved % 10 == 0) csv?.flush()
                 saved++
-                var bmp = drawFrame(y, w, h, res, kpN, shownM)
+                lastFrameY = y.copyOf()
+                var bmp = if (showLgView) drawLgFrame(y, w, h) ?: drawFrame(y, w, h, res, kpN, shownM) else drawFrame(y, w, h, res, kpN, shownM)
         val auto = ((sensorOrientation - displayRotation + 360) % 360 + 360) % 360
         val dispRot = (auto + manualRot) % 360
         if (dispRot != 0) {
@@ -267,6 +387,7 @@ class TrackingSelfTestActivity : Activity() {
                         append("\nkeypoints ").append(kpN).append("   matches ").append(matchN).append("   inliers ").append(inl)
                         append("\ninfer ").append(String.format("%.1f", totalInfer / n)).append(" ms   match ").append(String.format("%.1f", totalMatch / n)).append(" ms")
                         append("   rot ").append(String.format("%.1f", rot)).append(" deg   gyro ").append(String.format("%.1f", gyroDeg)).append(" deg")
+                        append("\nLightGlue [").append(lgBackend).append("]: ").append(lgPairs).append(" pairs   ").append(String.format("%.1f", lgMs)).append(" ms")
                         append("\nrecording: ").append(sessionDir?.name ?: "?")
                     }
                 }
@@ -286,6 +407,61 @@ class TrackingSelfTestActivity : Activity() {
         val bos = ByteArrayOutputStream(128 * 1024)
         YuvImage(nv21, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 85, bos)
         return bos.toByteArray()
+    }
+
+    private fun drawPreviewOnly(y: ByteArray, w: Int, h: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * h)
+        for (i in 0 until w * h) {
+            val v = y[i].toInt() and 0xff
+            px[i] = (0xff shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        bmp.setPixels(px, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    /** Side-by-side previous/current frame with the actual LightGlue pairs drawn across. */
+    private fun drawLgFrame(cur: ByteArray, w: Int, h: Int): Bitmap? {
+        val prev = lgPrevY ?: return null
+        val pk = lgPrevKp ?: return null
+        val ck = lgCurKp ?: return null
+        val pairs = lgPairData ?: return null
+        val count = pairs.getOrNull(0) ?: 0
+        if (count <= 0) return null
+
+        val bmp = Bitmap.createBitmap(w * 2, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * 2 * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val lv = prev[y * w + x].toInt() and 0xff
+                px[y * w * 2 + x] = (0xff shl 24) or (lv shl 16) or (lv shl 8) or lv
+                val rv = cur[y * w + x].toInt() and 0xff
+                px[y * w * 2 + w + x] = (0xff shl 24) or (rv shl 16) or (rv shl 8) or rv
+            }
+        }
+        bmp.setPixels(px, 0, w * 2, 0, 0, w * 2, h)
+        val c = Canvas(bmp)
+        val green = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(80, 255, 140); style = Paint.Style.STROKE; strokeWidth = 2f }
+        val yellow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 220, 60); style = Paint.Style.STROKE; strokeWidth = 2f }
+        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textSize = 22f; style = Paint.Style.FILL
+            setShadowLayer(3f, 1f, 1f, Color.BLACK)
+        }
+        c.drawLine(w.toFloat(), 0f, w.toFloat(), h.toFloat(), green)
+        c.drawText("previous", 12f, 26f, label)
+        c.drawText("current  pairs=" + count, w + 12f, 26f, label)
+        for (i in 0 until count) {
+            val a = pairs[1 + i * 2]
+            val b = pairs[2 + i * 2]
+            if (a < 0 || b < 0) continue
+            if (a * 2 + 1 >= pk.size || b * 2 + 1 >= ck.size) continue
+            val x0 = pk[a * 2]; val y0 = pk[a * 2 + 1]
+            val x1 = ck[b * 2]; val y1 = ck[b * 2 + 1]
+            c.drawCircle(x0, y0, 3f, green)
+            c.drawCircle(w + x1, y1, 3f, green)
+            c.drawLine(x0, y0, w + x1, y1, yellow)
+        }
+        return bmp
     }
 
     private fun drawFrame(y: ByteArray, w: Int, h: Int, res: FloatArray, kpN: Int, shownM: Int): Bitmap {

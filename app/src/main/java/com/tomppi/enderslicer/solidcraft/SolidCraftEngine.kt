@@ -33,7 +33,7 @@ object SolidCraftEngine {
     private const val TAG = "SolidCraftEngine"
 
     /** The release this app is pinned to; the fetch script stages the matching binary. */
-    const val VERSION = "0.24.0"
+    const val VERSION = "0.50.0"
 
     /** The existing engines hold 9876 and 9877; this one is the third. */
     const val DEFAULT_PORT = com.tomppi.enderslicer.agent.engine.EngineMcpServer.DEFAULT_PORT

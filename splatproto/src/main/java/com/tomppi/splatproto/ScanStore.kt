@@ -8,6 +8,22 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Capture modality of a scan on disk; drives which post-processing actions are offered. */
+enum class ScanKind(val wire: String, val badge: String) {
+    SPLAT_ONLY("splat_only", "Splat"),
+    FUSED("fused", "Fusion"),
+    LASER_ONLY("laser_only", "Laser");
+
+    companion object {
+        fun fromWire(value: String?): ScanKind? = when (value?.lowercase(Locale.ROOT)) {
+            "splat_only", "splat" -> SPLAT_ONLY
+            "fused", "fusion", "hybrid" -> FUSED
+            "laser_only", "laser" -> LASER_ONLY
+            else -> null
+        }
+    }
+}
+
 /** A camera of one scan; [index] is the id the native core sees. */
 data class ScanCamera(
     val index: Int, val label: String, val cameraId: String, val physicalId: String?,
@@ -43,6 +59,41 @@ class Scan(val dir: File) {
     val bestCloud: File? get() = dense.takeIf { it.length() > 300 } ?: sparse.takeIf { it.exists() }
 
     fun imageCount(): Int = imagesDir.list()?.count { it.endsWith(".jpg") } ?: 0
+
+    /** True when the scan actually holds recorded laser sweep data on disk. */
+    fun hasLaserData(): Boolean {
+        val laserDir = File(dir, "hybrid/laser")
+        if (laserDir.isDirectory &&
+            laserDir.listFiles { f -> f.isFile && f.name.endsWith(".f32") && f.length() >= 12L }?.isNotEmpty() == true
+        ) {
+            return true
+        }
+        val exportsDir = File(dir, "exports")
+        return File(exportsDir, "laser-only.ply").let { it.isFile && it.length() > 0L } ||
+            File(exportsDir, "laser-ba-refined.ply").let { it.isFile && it.length() > 0L }
+    }
+
+    /**
+     * Resolves the capture modality of this scan so the UI only shows buttons valid for what
+     * was actually captured: Splat-only, Fused (Laser + Photos), or Laser-only.
+     */
+    fun kind(): ScanKind {
+        val explicit = runCatching {
+            if (meta.isFile) ScanKind.fromWire(JSONObject(meta.readText()).optString("mode", "")) else null
+        }.getOrNull()
+        val hasLaser = hasLaserData()
+        val hasImages = imageCount() > 0
+        return when (explicit) {
+            ScanKind.SPLAT_ONLY -> ScanKind.SPLAT_ONLY
+            ScanKind.LASER_ONLY -> ScanKind.LASER_ONLY
+            ScanKind.FUSED -> if (hasLaser) ScanKind.FUSED else ScanKind.SPLAT_ONLY
+            null -> when {
+                hasLaser && hasImages -> ScanKind.FUSED
+                hasLaser -> ScanKind.LASER_ONLY
+                else -> ScanKind.SPLAT_ONLY
+            }
+        }
+    }
 
     /** The user's name for the scan (scan.json "title"), or the folder's timestamp. */
     val title: String

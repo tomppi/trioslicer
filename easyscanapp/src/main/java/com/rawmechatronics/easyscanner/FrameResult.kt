@@ -31,6 +31,32 @@ class FrameResult(capacity: Int = 32 * 1024) {
         }
     }
 
+    /** Strips all laser layers in-place and resets laser header fields (used when ridge verification rejects false positives). */
+    fun clearLaserLayers() {
+        var read = H.LEN
+        var write = H.LEN
+        while (read + 3 <= length) {
+            val kind = data[read].toInt()
+            val stride = data[read + 1].toInt()
+            val count = data[read + 2].toInt()
+            val total = 3 + stride * count
+            val isLaser = kind == Layer.LASER_RAW || kind == Layer.LASER_IN ||
+                kind == Layer.LASER_OUT || kind == Layer.LASER_FIT || kind == Layer.LASER_CAM
+            if (!isLaser) {
+                if (write != read) System.arraycopy(data, read, data, write, total)
+                write += total
+            }
+            read += total
+        }
+        length = write
+        if (data.size >= H.LEN) {
+            data[H.LASER_STATE] = 0f
+            data[H.LASER_POINTS] = 0f
+            data[H.LASER_PEAK] = 0f
+            data[H.LASER_LENGTH] = 0f
+        }
+    }
+
     /** Header slots, mirroring `frame_out::h`. */
     object H {
         const val FRAME_W = 0
@@ -88,7 +114,9 @@ class FrameResult(capacity: Int = 32 * 1024) {
         const val K_OK = 52
         const val PLANE_STALE = 53
         const val N_MARKERS = 54
-        const val LEN = 55
+        /** Frame counter appended by the current native core (matches the app copy). */
+        const val FRAME_NO = 55
+        const val LEN = 56
     }
 
     /** Event bits in [H.EVENTS], mirroring `frame_out::ev`. */

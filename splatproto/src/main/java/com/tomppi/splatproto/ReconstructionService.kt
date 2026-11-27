@@ -76,8 +76,16 @@ class ReconstructionService : Service() {
         } else {
             startForeground(NOTIFICATION, n)
         }
-        val processing = DeviceProbe.processing(this)
-        val markerMm = Settings.markerSizeMm(this)
+        val ps = PipelineSettings.load(this)
+        val processing = Processing(
+            name = "settings",
+            featureMaxSide = ps.sfmFeatureSide,
+            maxFeatures = ps.sfmMaxFeatures,
+            denseMaxSide = ps.sfmDenseMaxSide,
+            maxDenseImages = ps.sfmDenseMaxImages,
+            dense = ps.sfmDense,
+        )
+        val markerMm = if (ps.sfmMarkerMm > 0f) ps.sfmMarkerMm.toInt() else Settings.markerSizeMm(this)
         thread(name = "parallax-reconstruction") {
             val result = Reconstruction.run(scan, processing, markerMm) { stage, f ->
                 _state.value = Job.Running(scan, stage, f, cancel)

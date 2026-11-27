@@ -43,7 +43,7 @@ class PrusaPresetCatalogSnapshotTest {
         assertEquals("MK4", mk4.model)
 
         val coreOne = catalog.printer("c1")!!
-        assertEquals("Prusa CORE One 0.4", coreOne.label)
+        assertEquals("Prusa CORE One & One+ 0.4", coreOne.label)
 
         val xl = catalog.printer("xl-2t")!!
         assertEquals(2, xl.toolCount)
@@ -57,7 +57,7 @@ class PrusaPresetCatalogSnapshotTest {
             document.condition?.let(conditions::add)
             collect(document.variants, conditions)
         }
-        assertEquals(138, conditions.size)
+        assertEquals(149, conditions.size)
         for (condition in conditions) {
             PrusaPresetCondition.parse(condition)
         }
@@ -80,9 +80,9 @@ class PrusaPresetCatalogSnapshotTest {
             // machine is Prusament PLA, which is what the picker preselects.
             filamentValues = catalog.resolveFilament(printer, "Generic PLA"),
         )
-        assertMatchesSnapshot("printer_settings", buckets.printer, 24)
-        assertMatchesSnapshot("print_settings", buckets.print, 95)
-        assertMatchesSnapshot("filament_settings", buckets.filament, 39)
+        assertMatchesSnapshot("printer_settings", buckets.printer, expectedCompared = 24, expectedResolved = 25)
+        assertMatchesSnapshot("print_settings", buckets.print, expectedCompared = 95, expectedResolved = 95)
+        assertMatchesSnapshot("filament_settings", buckets.filament, expectedCompared = 39, expectedResolved = 39)
     }
 
     /**
@@ -157,7 +157,7 @@ class PrusaPresetCatalogSnapshotTest {
         assertTrue(mk4sPrints.contains("0.20mm SPEED @MK4S 0.4HF"))
         // Every tree is still fully listed where it is not competing with a matching sibling.
         assertEquals(5, catalog.prints(catalog.printer("mk4")!!).size)
-        assertEquals(3, catalog.prints(catalog.printer("xl-1t")!!).size)
+        assertEquals(4, catalog.prints(catalog.printer("xl-1t")!!).size)
         assertEquals(4, catalog.prints(catalog.printer("c1indx-4t")!!).size)
     }
 
@@ -214,7 +214,12 @@ class PrusaPresetCatalogSnapshotTest {
         assertTrue(catalog.hasFilament(mk4, catalog.defaultFilament(mk4)!!))
     }
 
-    private fun assertMatchesSnapshot(bucket: String, mapped: JSONObject, expected: Int) {
+    private fun assertMatchesSnapshot(
+        bucket: String,
+        mapped: JSONObject,
+        expectedCompared: Int,
+        expectedResolved: Int = expectedCompared,
+    ) {
         val known = JSONObject(baseConfig).getJSONObject("configuration").getJSONObject(bucket)
         var compared = 0
         val mismatches = mutableListOf<String>()
@@ -230,8 +235,8 @@ class PrusaPresetCatalogSnapshotTest {
         assertEquals("values differing from the snapshot in " + bucket, emptyList<String>(), mismatches)
         // Pinned, not a lower bound: the repository is fetched from a pinned tag, so a change in
         // how much of it reaches the configuration has to show up here.
-        assertEquals("keys of " + bucket + " covered by the snapshot", expected, compared)
-        assertEquals("resolved keys in " + bucket, expected, mapped.length())
+        assertEquals("keys of " + bucket + " covered by the snapshot", expectedCompared, compared)
+        assertEquals("resolved keys in " + bucket, expectedResolved, mapped.length())
     }
 
     private fun collect(variants: List<PrusaPresetRepository.Variant>, into: MutableSet<String>) {

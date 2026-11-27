@@ -237,6 +237,14 @@ class CameraController(
     private var settings: AppSettings? = null
     private var analysisSize: Size? = null
 
+    /** When true (Splat-only mode), temporarily uses continuous autofocus without changing saved laser focus. */
+    @Volatile var forceAutofocus: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            handler.post { session?.let { repeat(it) } }
+        }
+
     /** Lens focus of the last frame (diopters), for locking it where autofocus settled. */
     @Volatile var focusDiopters: Float? = null
         private set
@@ -444,7 +452,7 @@ class CameraController(
             if (inf.hasDistortionOff) {
                 b.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
             }
-            if (st.manualFocus && inf.manualFocus) {
+            if (!forceAutofocus && st.manualFocus && inf.manualFocus) {
                 b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
                 b.set(CaptureRequest.LENS_FOCUS_DISTANCE, st.focusDiopters.coerceIn(0f, inf.maxDiopters))
             } else {
@@ -515,5 +523,25 @@ class CameraController(
             ranges.filter { it.upper == fps }.maxByOrNull { it.lower }
                 ?: ranges.filter { it.upper >= fps }.minWithOrNull(compareBy({ it.upper }, { -it.lower }))
                 ?: ranges.maxByOrNull { it.upper }
+
+        /**
+         * Crisp high-resolution JPEG still sizes for Splat-only capture.
+         * When [preferredKey] is `"WxH"`, starts at that exact supported size (with smaller sizes
+         * as fallback if the HAL refuses it alongside the analysis stream); otherwise defaults to
+         * the largest size within [maxLongSide].
+         */
+        fun pickSplatStillSizes(
+            inf: CameraInfo,
+            maxLongSide: Int = 2048,
+            preferredKey: String? = null,
+        ): List<Size> {
+            val all = inf.stillSizes.distinctBy { it.width to it.height }
+            if (!preferredKey.isNullOrBlank() && preferredKey != "auto") {
+                val idx = all.indexOfFirst { "${it.width}x${it.height}" == preferredKey }
+                if (idx >= 0) return all.drop(idx)
+            }
+            val capped = all.filter { maxOf(it.width, it.height) <= maxLongSide }
+            return capped.ifEmpty { all.takeLast(2) }
+        }
     }
 }

@@ -38,6 +38,9 @@ data class AppSettings(
     val trackerDebug: Boolean,
     /** [board] as last confirmed in the guided Board step, or null. */
     val boardConfirmed: String?,
+    /** Pause laser & keyframe recording automatically outside calibrated focus ± [captureToleranceCm]. */
+    val captureRangeEnabled: Boolean,
+    val captureToleranceCm: Int,
 ) {
     data class Board(val squaresX: Int, val squaresY: Int, val squareMm: Double, val markerMm: Double, val dict: Int) {
         /** Identifies the board, so changing any number un-confirms it. */
@@ -121,6 +124,20 @@ data class AppSettings(
     companion object {
         fun load(ctx: Context): AppSettings {
             val p = PreferenceManager.getDefaultSharedPreferences(ctx)
+            // Upgrade laser defaults to sensitive values (20 / 60): the full-frame perpendicular
+            // narrow-ridge filter rejects room false positives without restricting laser position.
+            if (!p.getBoolean("laser_filter_v3_migrated", false)) {
+                val ed = p.edit().putBoolean("laser_filter_v3_migrated", true)
+                val curT = p.getInt("laser_thresh", DEFAULT_LASER_THRESH)
+                val curS = p.getInt("laser_min_sat", DEFAULT_LASER_MIN_SAT)
+                if (!p.contains("laser_thresh") || curT == 12 || curT == 45) {
+                    ed.putInt("laser_thresh", DEFAULT_LASER_THRESH)
+                }
+                if (!p.contains("laser_min_sat") || curS == 40 || curS == 110) {
+                    ed.putInt("laser_min_sat", DEFAULT_LASER_MIN_SAT)
+                }
+                ed.apply()
+            }
             fun str(k: String, d: String) = p.getString(k, d) ?: d
             fun int(k: String, d: Int) = str(k, d.toString()).trim().toIntOrNull() ?: d
             fun dbl(k: String, d: Double) = str(k, d.toString()).trim().replace(',', '.').toDoubleOrNull() ?: d
@@ -144,8 +161,8 @@ data class AppSettings(
                 ),
                 laserEnabled = p.getBoolean("laser_enabled", true),
                 laserColor = str("laser_color", "red"),
-                laserThresh = p.getInt("laser_thresh", 12),
-                laserMinSat = p.getInt("laser_min_sat", 40),
+                laserThresh = p.getInt("laser_thresh", DEFAULT_LASER_THRESH),
+                laserMinSat = p.getInt("laser_min_sat", DEFAULT_LASER_MIN_SAT),
                 laserWithoutBoard = p.getBoolean("laser_without_board", true),
                 volumeHeightMm = dbl("volume_height_mm", 0.0),
                 volumeMarginMm = dbl("volume_margin_mm", 20.0),
@@ -172,7 +189,19 @@ data class AppSettings(
                 expertMode = p.getBoolean("expert_mode", false),
                 trackerDebug = p.getBoolean("tracker_debug", false),
                 boardConfirmed = p.getString("board_confirmed", null),
+                captureRangeEnabled = p.getBoolean("capture_range_enabled", true),
+                captureToleranceCm = p.getInt("capture_tolerance_cm", 12).coerceIn(4, 40),
             )
+        }
+
+        const val DEFAULT_LASER_THRESH = 20
+        const val DEFAULT_LASER_MIN_SAT = 60
+
+        fun saveCaptureRange(ctx: Context, enabled: Boolean, toleranceCm: Int) {
+            PreferenceManager.getDefaultSharedPreferences(ctx).edit()
+                .putBoolean("capture_range_enabled", enabled)
+                .putInt("capture_tolerance_cm", toleranceCm.coerceIn(4, 40))
+                .apply()
         }
 
         val BOARD_PRESETS = listOf(

@@ -7,8 +7,8 @@ the packaged binary with a bounded timeout. There is no JNI boundary.
 
 ## Pin
 
-- CuraEngine: `5.14.0-alpha.0`
-- Cura project compatibility target: Cura `5.14.0-alpha.0`, setting version `27`
+- CuraEngine: `5.14.0`
+- Cura project compatibility target: Cura `5.14.0`, setting version `27`
 - Android ABI: `arm64-v8a`
 - NDK: `28.2.13676358`
 - C++ standard: C++20
@@ -16,7 +16,7 @@ the packaged binary with a bounded timeout. There is no JNI boundary.
 ## Machine catalogue
 
 The APK ships Cura's own definition tree rather than one hand-picked chain: 1250 files from
-`resources/definitions` and `resources/extruders` of Cura `5.14.0-alpha.0`, staged flat in
+`resources/definitions` and `resources/extruders` of Cura `5.14.0`, staged flat in
 `assets/cura/definitions/` because a machine names its extruder train by bare file name.
 `scripts/fetch-cura-resources.sh` fetches it from the pinned tag and validates it: every
 `inherits` target and every `metadata.machine_extruder_trains` entry has to resolve, and the

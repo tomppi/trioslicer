@@ -35,7 +35,7 @@ object NpuMasker {
     private const val TAG = "NpuMasker"
 
     /** Payload version: bumping it restages the assets both in app storage and under /data/local/tmp. */
-    private const val PKG_VERSION = "splatproto-masker-v1"
+    private const val PKG_VERSION = "splatproto-masker-v3"
     private const val ASSET_ROOT = "masker"
     private const val DEVICE_PKG = "/data/local/tmp/splatproto-masker"
 
@@ -333,6 +333,17 @@ object NpuMasker {
     }
 
     // ---------------------------------------------------------------- NPU plumbing
+
+    /** Stages the QNN runtime and every model in assets/masker (U2Net and DA3). */
+    fun stageNpu(context: Context): File? = runCatching {
+        stageAssets(context).also { ensureDevicePkg(it) }
+    }.onFailure { Log.e(TAG, "npu staging failed", it) }.getOrNull()
+
+    /** Runs qnn-net-run with the staged runtime; [contextPath] is relative to the package root. */
+    fun runQnn(context: Context, contextPath: String, inputList: File, outputDir: File): Int {
+        val pkg = stageNpu(context) ?: return -1
+        return qnnRun(pkg, contextPath, inputList, outputDir, nativeInputs = true, nativeOutputs = true).code
+    }
 
     private fun qnnRun(
         pkg: File,

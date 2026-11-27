@@ -47,20 +47,16 @@ letting Gradle find the problem minutes in.
 definition tree fetched by `scripts/fetch-cura-resources.sh`. Notes: [CURAENGINE_ANDROID.md](CURAENGINE_ANDROID.md).
 
 **OrcaSlicer** needs no token: `scripts/fetch-orca-engine-android.sh` stages the console from the
-`orca-engine-arm64-v1.3.0.zip` release asset. `ORCA_ENGINE_DIR` packages a local build instead, and
-`ORCA_ENGINE_RUN_ID` (with `GITHUB_TOKEN`) pulls one specific
-[orca-engine-android](../.github/workflows/orca-engine-android.yml) run. That workflow uploads a build
-artifact, not the release asset: the zip on the release page is attached by hand from a run's output.
-Notes: [ORCAENGINE_ANDROID.md](ORCAENGINE_ANDROID.md).
+pinned `orca-engine-v2.5.2` release asset (`orca-engine-arm64-v2.5.2.zip`). `ORCA_ENGINE_DIR` packages
+a local build instead, and `ORCA_ENGINE_RUN_ID` (with `GITHUB_TOKEN`) pulls one specific
+[orca-engine-android](../.github/workflows/orca-engine-android.yml) run. Notes:
+[ORCAENGINE_ANDROID.md](ORCAENGINE_ANDROID.md).
 
-**PrusaSlicer** is the one engine that needs a token. `scripts/fetch-prusa-engine-android.sh`
-downloads the newest successful `PrusaSlicer-3.0.0-alpha11-android-arm64-v8a` artifact of the
-[`prusa-engine-3`](../.github/workflows/prusa-engine-3.yml) workflow on any branch, which
-cross-compiles the alpha11 console from source, and prints the branch and head SHA the engine came
-from so the provenance is in the log. No release asset carries this engine, so the workflow artifact is
-the only source: the script wants a `GITHUB_TOKEN` with `actions:read`. Pin one specific run with
-`PRUSA_ENGINE_RUN_ID`, or set `PRUSA_ENGINE_DIR` to a directory holding `prusa-slicer` and
-`resources` to package a local build. Notes: [PRUSASLICER_ANDROID.md](PRUSASLICER_ANDROID.md).
+**PrusaSlicer** needs no token either: `scripts/fetch-prusa-engine-android.sh` stages the console
+from the pinned `prusa-engine-v3.0.0-alpha15` release asset (`prusa-engine-arm64-v3.0.0-alpha15.zip`),
+falling back to the newest successful `PrusaSlicer-3.0.0-alpha15-android-arm64-v8a` artifact of
+[`prusa-engine-3`](../.github/workflows/prusa-engine-3.yml) when `PRUSA_ENGINE_RUN_ID` or a token is
+given, or `PRUSA_ENGINE_DIR` for a local build. Notes: [PRUSASLICER_ANDROID.md](PRUSASLICER_ANDROID.md).
 
 **Blender** (the `libblender_exec.so` wrapper around Blender 3.6) is not in this repository.
 `app/src/main/jniLibs/arm64-v8a/` and `app/src/main/assets/blender/` are gitignored: they hold the

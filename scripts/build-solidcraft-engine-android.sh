@@ -27,9 +27,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOLIDCRAFT_VERSION="0.24.0"
-# The commit the 0.24.0 artifacts were cut from: a checkout of a newer main is not this engine.
-SOLIDCRAFT_COMMIT="5965439a15fdf7329d14569f7f4312b1f14a3b33"
+SOLIDCRAFT_VERSION="0.50.0"
+# The commit the 0.50.0 artifacts were cut from: a checkout of a newer main is not this engine.
+SOLIDCRAFT_COMMIT="eeb366c2ff276987a15c043d63b9072b58274703"
 SOLIDCRAFT_REPO="https://github.com/tangency-labs/solidcraft.git"
 
 NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-/opt/android-sdk/ndk/28.2.13676358}}"
@@ -38,8 +38,10 @@ TARGET=aarch64-linux-android
 TARGET_API=24
 TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
 CLANG="${TOOLCHAIN}/bin/${TARGET}${TARGET_API}-clang"
+CLANGXX="${TOOLCHAIN}/bin/${TARGET}${TARGET_API}-clang++"
+AR_BIN="${TOOLCHAIN}/bin/llvm-ar"
 STRIP="${TOOLCHAIN}/bin/llvm-strip"
-SRC="${SOLIDCRAFT_SRC:-/tmp/solidcraft-probe}"
+SRC="${SOLIDCRAFT_SRC:-${REPO_ROOT}/.build/solidcraft-${SOLIDCRAFT_VERSION}}"
 OUT="${REPO_ROOT}/app/src/main/jniLibs/${TARGET_ABI}/libsolidcraft_exec.so"
 PACKAGE_DIR="${REPO_ROOT}/.build/solidcraft-engine"
 PACKAGE="${PACKAGE_DIR}/solidcraft-engine-arm64-v${SOLIDCRAFT_VERSION}.tar.gz"
@@ -90,6 +92,9 @@ echo "== cargo build (release, ${TARGET})"
 (
     cd "${SRC}"
     CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CLANG}" \
+    CC_aarch64_linux_android="${CLANG}" \
+    CXX_aarch64_linux_android="${CLANGXX}" \
+    AR_aarch64_linux_android="${AR_BIN}" \
         cargo build --release -p solidcraft-cli --no-default-features --target "${TARGET}"
 )
 

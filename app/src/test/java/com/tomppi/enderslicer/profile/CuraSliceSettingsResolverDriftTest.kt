@@ -169,19 +169,25 @@ class CuraSliceSettingsResolverDriftTest {
 
     private fun stripEngineDriftSettings(fdmprinter: String): String {
         val root = JSONObject(fdmprinter)
-        val settings = root.getJSONObject("settings")
-        settings.getJSONObject("shell").getJSONObject("children").apply {
-            remove("wall_x_inset")
+        val keysToStrip = setOf(
+            "wall_x_inset",
+            "support_base_inside_width",
+            "support_base_outside_width",
+            "support_outer_brim_enable",
+            "support_inside_base_curve_magnitude",
+            "support_inside_base_height",
+            "support_outside_base_curve_magnitude",
+            "support_outside_base_height",
+        )
+        fun prune(obj: JSONObject) {
+            keysToStrip.forEach { obj.remove(it) }
+            val names = obj.names() ?: return
+            for (i in 0 until names.length()) {
+                val child = obj.optJSONObject(names.getString(i))
+                if (child != null) prune(child)
+            }
         }
-        settings.getJSONObject("support").getJSONObject("children").apply {
-            remove("support_base_inside_width")
-            remove("support_base_outside_width")
-            remove("support_outer_brim_enable")
-            remove("support_inside_base_curve_magnitude")
-            remove("support_inside_base_height")
-            remove("support_outside_base_curve_magnitude")
-            remove("support_outside_base_height")
-        }
+        prune(root.getJSONObject("settings"))
         return root.toString()
     }
 }

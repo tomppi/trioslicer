@@ -219,8 +219,8 @@ public:
     }
 
     /// VIO poses are already in one metric world frame, so no incremental bootstrap is needed:
-    /// seed every camera with its VIO pose, triangulate the matched tracks and keep the cameras
-    /// fixed (the VIO is the pose source); the structure is what the photometric data refines.
+    /// seed every camera with its SuperVINS pose, triangulate the matched tracks, and run
+    /// metric-scale-preserving bundle adjustment to reach sub-pixel accuracy for 3DGS.
     bool reconstructFromVio() {
         order_.clear();
         for (size_t i = 0; i < s_.images.size(); ++i) {
@@ -241,16 +241,65 @@ public:
         filterPoints(true);
         int valid = 0;
         for (const auto& p : s_.points) valid += p.valid;
-        if (valid < 300) {
+        if (valid < 100) {
             log_ += "VIO poses seeded too few points (";
             log_ += std::to_string(valid);
             log_ += "); falling back to image SfM\n";
             return false;
         }
-        // Refine the structure only: bundleAdjust needs at least one variable camera, so a
-        // point-only pass is not available; the dense stage starts from these points.
-        rms_ = 0.0;
-        log_ += "VIO poses used for all cameras; structure triangulated without photo-BA\n";
+        auto medianBaseline = [&]() -> double {
+            std::vector<double> dists;
+            for (size_t a = 0; a < order_.size(); ++a) {
+                for (size_t b = a + 1; b < order_.size(); ++b) {
+                    const double d = cv::norm(s_.images[order_[a]].centre() - s_.images[order_[b]].centre());
+                    if (std::isfinite(d) && d > 1e-4) dists.push_back(d);
+                }
+            }
+            if (dists.empty()) return 0.0;
+            std::nth_element(dists.begin(), dists.begin() + dists.size() / 2, dists.end());
+            return dists[dists.size() / 2];
+        };
+        const double vioBaseline = medianBaseline();
+
+        // Snapshot raw SuperVINS poses & structure so BA can roll back if it ever degrades.
+        std::vector<cv::Matx33d> rawR(s_.images.size());
+        std::vector<cv::Vec3d> rawT(s_.images.size());
+        for (size_t i = 0; i < s_.images.size(); ++i) { rawR[i] = s_.images[i].R; rawT[i] = s_.images[i].t; }
+        const auto rawCams = s_.cameras;
+        const auto rawPoints = s_.points;
+
+        globalBA(false, 12);
+        filterPoints(true);
+        for (size_t k = 0; k < s_.tracks.size(); ++k) triangulateTrack(s_, int(k));
+        estimateMotion();
+        const double baRms = globalBA(registered() >= 8, 15);
+        filterPoints(true);
+        int validAfter = 0;
+        for (const auto& p : s_.points) validAfter += p.valid;
+
+        if (validAfter >= 100 && std::isfinite(baRms) && baRms > 0.0 && baRms < 6.0) {
+            const double baBaseline = medianBaseline();
+            double restoreScale = 1.0;
+            if (vioBaseline > 1e-4 && baBaseline > 1e-4) {
+                const double ratio = vioBaseline / baBaseline;
+                if (ratio > 0.2 && ratio < 5.0) {
+                    restoreScale = ratio;
+                    for (auto& im : s_.images) if (im.registered) im.t *= restoreScale;
+                    for (auto& p : s_.points) if (p.valid) p.X *= restoreScale;
+                }
+            }
+            rms_ = baRms;
+            std::ostringstream ss;
+            ss << "SuperVINS poses seeded + BA refined: valid=" << validAfter
+               << " (from " << valid << ") rms=" << baRms << "px scale_restore=" << restoreScale << "\n";
+            log_ += ss.str();
+        } else {
+            for (size_t i = 0; i < s_.images.size(); ++i) { s_.images[i].R = rawR[i]; s_.images[i].t = rawT[i]; }
+            s_.cameras = rawCams;
+            s_.points = rawPoints;
+            rms_ = 0.0;
+            log_ += "SuperVINS poses kept directly (BA skipped/reverted)\n";
+        }
         return registered() >= 2;
     }
 
@@ -707,9 +756,12 @@ Result Reconstructor::run(const std::string& outputDir, const std::string& image
             ss << "rig scale differs from marker scale by " << 100.0 * (rigScale / markerScale - 1.0) << " %\n";
             log += ss.str();
         }
+        const bool vioMetric = pipe.usedVio();
         res.metresPerUnit = scale;
+        if (vioMetric && res.metresPerUnit <= 0) res.metresPerUnit = 1.0;
         if (scale <= 0) {
-            // Unknown scale: normalise so the median camera-to-centre distance is one unit.
+            // VIO poses are already metric; only an image-only reconstruction has
+            // unknown scale and needs the median camera-to-centre normalisation.
             scale = 1.0;
         }
         cv::Vec3d up(0, 0, 0);
@@ -739,7 +791,7 @@ Result Reconstructor::run(const std::string& outputDir, const std::string& image
             return v[v.size() / 2];
         };
         const cv::Vec3d centre(median(xs), median(ys), median(zs));
-        if (res.metresPerUnit <= 0) {
+        if (!vioMetric && res.metresPerUnit <= 0) {
             std::vector<double> d;
             for (const auto& im : s.images) if (im.registered) d.push_back(cv::norm(im.centre() - centre));
             const double md = median(d);
@@ -757,7 +809,7 @@ Result Reconstructor::run(const std::string& outputDir, const std::string& image
         pipe.report("Dense matching", 0.72f);
 
         if (opt_.dense) {
-            auto dense = denseReconstruct(s, progress, 0.72f, 0.98f);
+            auto dense = denseReconstruct(s, progress, 0.72f, 0.98f, outputDir);
             res.densePoints = int(dense.size());
             writePly(outputDir + "/dense.ply", dense);
         }

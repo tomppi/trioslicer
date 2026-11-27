@@ -6,10 +6,9 @@ ENGINE_ROOT="${ENGINE_ROOT:-$ROOT/.build/CuraEngine}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT/.build/curaengine-android}"
 PROFILE="$ROOT/native/curaengine/profiles/android-arm64"
 NDK_PATH="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-CURA_ENGINE_TAG="5.14.0-alpha.0"
-# 5.14.0-alpha.0 has no release tag yet; pin the exact main-branch commit so the
-# Android ARM64 build stays reproducible until a stable tag is cut.
-CURA_ENGINE_COMMIT="e5b844b3b851caf282f2dc5d49cf66058bd8059e"
+CURA_ENGINE_TAG="5.14.0"
+# Pinned CuraEngine 5.14.0 release tag commit so Android ARM64 builds stay reproducible.
+CURA_ENGINE_COMMIT="05c5d9b0286d14af7c8b9d4081b245c2e3ab1ef8"
 
 if [[ -z "$NDK_PATH" ]]; then
   echo "ANDROID_NDK_HOME or ANDROID_NDK_ROOT must point to Android NDK 28.2.13676358" >&2
@@ -169,18 +168,26 @@ replace(
 # stack as parent, so settable_per_mesh values (infill_mesh, magic_mesh_type,
 # support_interface_enable, ...) never reach the slicer per mesh. Copy the
 # model's values onto the loaded Mesh right after loading - still required on
-# the 5.14.0-alpha.0 e5b844b3 pin.
+# the 5.14.0 release pin.
 command_line_cpp = root / "src" / "communication" / "CommandLine.cpp"
 replace(
     command_line_cpp,
-    '''                        if (! loadMeshIntoMeshGroup(&slice->scene.mesh_groups[mesh_group_index], model_name.c_str(), transformation, slice->scene.extruders[extruder_nr].settings_))
+    '''                        if (! loadMeshIntoMeshGroup(
+                                &slice->scene.mesh_groups[mesh_group_index],
+                                settings_folder / model_name,
+                                transformation,
+                                slice->scene.extruders[extruder_nr].settings_))
                         {
-                            spdlog::error("Failed to load model: {}. (error number {})", model_name, errno);
+                            spdlog::error("Failed to load model: {} (error number {})", model_name, errno);
                             exit(1);
                         }''',
-    '''                        if (! loadMeshIntoMeshGroup(&slice->scene.mesh_groups[mesh_group_index], model_name.c_str(), transformation, slice->scene.extruders[extruder_nr].settings_))
+    '''                        if (! loadMeshIntoMeshGroup(
+                                &slice->scene.mesh_groups[mesh_group_index],
+                                settings_folder / model_name,
+                                transformation,
+                                slice->scene.extruders[extruder_nr].settings_))
                         {
-                            spdlog::error("Failed to load model: {}. (error number {})", model_name, errno);
+                            spdlog::error("Failed to load model: {} (error number {})", model_name, errno);
                             exit(1);
                         }
 
@@ -310,23 +317,26 @@ replace(
     const bool end_infill_close_to_seam
         = infill_before_walls && mesh.settings.get<InfillStartEndPreference>("infill_start_end_preference") == InfillStartEndPreference::END_CLOSE_TO_SEAM;
 
+    const OverrideAreas overhang_areas = makeLayerMasks(storage, gcode_layer, mesh, mesh_config, part);
+
     // Pre-process the insets without actually adding them, so that we know where they are going to start printing
-    InsetsPreprocessResult insets_preprocess_result = preProcessInsets(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, end_infill_close_to_seam);
+    std::optional<InsetsPreprocessResult> insets_preprocess_result = preProcessInsets(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, end_infill_close_to_seam);
     bool infill_added = false;
 
     if (infill_before_walls)
     {
         std::optional<Point2LL> near_end_location;
-        if (end_infill_close_to_seam && insets_preprocess_result.walls_optimizer)
+        if (end_infill_close_to_seam && insets_preprocess_result.has_value() && insets_preprocess_result->walls_optimizer)
         {
-            near_end_location = insets_preprocess_result.walls_optimizer->getStartPosition();
+            near_end_location = insets_preprocess_result->walls_optimizer->getStartPosition();
         }
 
         infill_added = processInfill(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, near_end_location);
         added_something = added_something | infill_added;
     }
 
-    added_something |= endProcessInsets(insets_preprocess_result, storage, gcode_layer, mesh, extruder_nr, mesh_config, part, infill_added);''',
+    added_something |= insets_preprocess_result.has_value()
+                    && endProcessInsets(*insets_preprocess_result, overhang_areas, storage, gcode_layer, mesh, extruder_nr, mesh_config, part, infill_added);''',
     '''static bool emitOverhangFillForSkinPart(
     const SliceDataStorage& storage,
     LayerPlan& gcode_layer,
@@ -468,8 +478,10 @@ void FffGcodeWriter::addMeshPartToGCode(
     const bool end_infill_close_to_seam
         = infill_before_walls && mesh.settings.get<InfillStartEndPreference>("infill_start_end_preference") == InfillStartEndPreference::END_CLOSE_TO_SEAM;
 
+    const OverrideAreas overhang_areas = makeLayerMasks(storage, gcode_layer, mesh, mesh_config, part);
+
     // Pre-process the insets without actually adding them, so that we know where they are going to start printing
-    InsetsPreprocessResult insets_preprocess_result = preProcessInsets(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, end_infill_close_to_seam);
+    std::optional<InsetsPreprocessResult> insets_preprocess_result = preProcessInsets(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, end_infill_close_to_seam);
     bool infill_added = false;
 
     // EnderSlicer: emit overhang fill before the walls. A step-out wall must
@@ -495,16 +507,17 @@ void FffGcodeWriter::addMeshPartToGCode(
     if (infill_before_walls)
     {
         std::optional<Point2LL> near_end_location;
-        if (end_infill_close_to_seam && insets_preprocess_result.walls_optimizer)
+        if (end_infill_close_to_seam && insets_preprocess_result.has_value() && insets_preprocess_result->walls_optimizer)
         {
-            near_end_location = insets_preprocess_result.walls_optimizer->getStartPosition();
+            near_end_location = insets_preprocess_result->walls_optimizer->getStartPosition();
         }
 
         infill_added = processInfill(storage, gcode_layer, mesh, extruder_nr, mesh_config, part, near_end_location);
         added_something = added_something | infill_added;
     }
 
-    added_something |= endProcessInsets(insets_preprocess_result, storage, gcode_layer, mesh, extruder_nr, mesh_config, part, infill_added);''',
+    added_something |= insets_preprocess_result.has_value()
+                    && endProcessInsets(*insets_preprocess_result, overhang_areas, storage, gcode_layer, mesh, extruder_nr, mesh_config, part, infill_added);''',
 )
 # Install the native brick-wall overhang source and register it with CuraEngine.
 (root / "include" / "BrickWalls.h").write_text((arc_patch_root / "include" / "BrickWalls.h").read_text())
@@ -603,7 +616,10 @@ replace(
         // a bead per layer, so every bead rests on the shoulder of the bead
         // beneath instead of stacking flat (Lego style). Cura's wall emission
         // is replaced for the layer; layer 0 prints straight.
-        insets_preprocess_result.walls_optimizer.reset();
+        if (insets_preprocess_result.has_value())
+        {
+            insets_preprocess_result->walls_optimizer.reset();
+        }
         part.wall_toolpaths.clear();
 
         BeadAngleParameters wall_parameters;

@@ -1,7 +1,7 @@
 # SolidCraft: the live CAD engine
 
 TrioSlicer's main plate can show a **CAD document** instead of a mesh. The document is a
-SolidCraft 0.24.0 design held by a SolidCraft engine process; the agent editing it is the author,
+SolidCraft 0.50.0 design held by a SolidCraft engine process; the agent editing it is the author,
 and the plate is a live view of the engine's document. The human keeps every plate function he
 had - move, rotate, scale, lay flat, split, snap fit, paint, Slice, Export, the layer and path
 views - because those act on a **derived mesh**, not on the document.

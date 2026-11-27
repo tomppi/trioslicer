@@ -1,4 +1,4 @@
-name: Build PrusaSlicer 3.0.0-alpha11 Android
+name: Build PrusaSlicer 3.0.0-alpha15 Android
 
 on:
   push:
@@ -29,6 +29,7 @@ jobs:
         run: |
           yes | sdkmanager --licenses >/dev/null
           sdkmanager 'ndk;28.2.13676358'
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake curl tar perl python3 autoconf automake libtool m4 make ccache
           echo ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT
@@ -55,8 +56,10 @@ jobs:
             prusa3-build/build/deps/destdir
             prusa3-build/build/deps/builds
             prusa3-build/build/deps/dep_*
-          key: prusa3-deps-${{ matrix.abi }}-alpha11-v2-${{ hashFiles('scripts/build-prusa-engine-android-3.sh') }}
-      - name: Build PrusaSlicer 3.0.0-alpha11 console for ${{ matrix.abi }}
+          key: prusa3-deps-${{ matrix.abi }}-alpha15-v1-${{ hashFiles('scripts/build-prusa-engine-android-3.sh') }}
+          restore-keys: |
+            prusa3-deps-${{ matrix.abi }}-alpha15-v1-
+      - name: Build PrusaSlicer 3.0.0-alpha15 console for ${{ matrix.abi }}
         env:
           ANDROID_ABI: ${{ matrix.abi }}
           CCACHE_DIR: /home/runner/.ccache
@@ -83,12 +86,12 @@ jobs:
             prusa3-build/build/deps/destdir
             prusa3-build/build/deps/builds
             prusa3-build/build/deps/dep_*
-          key: prusa3-deps-${{ matrix.abi }}-alpha11-v2-${{ hashFiles('scripts/build-prusa-engine-android-3.sh') }}
-      - name: Upload PrusaSlicer 3.0.0-alpha11 Android artifacts
+          key: prusa3-deps-${{ matrix.abi }}-alpha15-v1-${{ hashFiles('scripts/build-prusa-engine-android-3.sh') }}
+      - name: Upload PrusaSlicer 3.0.0-alpha15 Android artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: PrusaSlicer-3.0.0-alpha11-android-${{ matrix.abi }}
+          name: PrusaSlicer-3.0.0-alpha15-android-${{ matrix.abi }}
           if-no-files-found: ignore
           path: |
             prusa3-build/out/**

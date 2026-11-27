@@ -1,6 +1,48 @@
 ## [Unreleased]
 
-## [1.22.0] - 2026-11-20
+## [2.0.0] - 2026-11-27
+
+### Added
+
+- **Upgraded all bundled slicer and CAD engines.**
+  - **CuraEngine 5.14.0** (stable release, up from `5.14.0-alpha.0`) with matching Cura 5.14.0
+    machine definitions and patched Arc/Wave/Brick overhang generators.
+  - **PrusaSlicer 3.0.0-alpha15** (up from `3.0.0-alpha11`) with updated preset catalogue.
+  - **OrcaSlicer 2.5.2** (up from `2.4.2`) with forward-ported Android headless patches and updated
+    profile tree and settings catalogue.
+  - **SolidCraft 0.50.0** (up from `0.24.0`), moving to the `solidcore` B-rep kernel.
+- **SuperVINS VIO & live TSDF/DA3 3D scanning in EasyScan.**
+  - Replaced OpenVINS MSCKF with **SuperVINS** (XFeat/SuperPoint + LighterGlue on Snapdragon QNN
+    NPU + Ceres 2.0.0 sliding-window visual-inertial estimator + DBoW3 loop closure and pose-graph
+    drift correction).
+  - Added multi-SoC Snapdragon QNN runtime support (HTP V68, V69, V73, V75, V79, V81 + Adreno QNN
+    GPU fallback) and Samsung Camera2 manual exposure vendor controls.
+  - Added persistent on-device **Depth Anything 3 (DA3)** NPU depth (`da3-worker` +
+    `da3_depth_fp16.bin`) and live native off-heap **TSDF** Marching Cubes meshing (`liblivemesh_jni.so`).
+  - Added separated **Splat**, **Laser**, and **Fused** capture workflows (each showing only the
+    actions relevant to that capture type), a splat capture **resolution selector**, automatic
+    focus-range **pause and auto-resume**, and a streamlined Calibration screen for importing
+    calibration bundles from the standalone [imucalib](https://github.com/tomppi/imucalib) app.
+- **Cross3DGS Vulkan 3D Gaussian Splatting & Splat/PLY → STL mesh converter.**
+  - Replaced the 158 MB Brush wgpu trainer with **Cross3DGS** (`libcross3dgs_android.so`, 11 MB
+    Vulkan trainer) and VIO-seeded **Parallax SfM + dense MVS** reconstruction.
+  - Renamed the Gaussian splatting menu to **Splat/PLY files**, populated it with all EasyScan
+    splats and laser point clouds, and unified viewing so every splat and point cloud opens in the
+    offline **Aholo** WebGL2 viewer.
+  - Added **Convert to mesh (STL)** in **Splat/PLY files** to turn trained splats (automatically
+    using the dense metric MVS surface cloud when present) or standalone point clouds into gravity-aligned
+    Z-up STL meshes directly on the build plate.
+
+### Changed
+
+- **Reproducible payload architecture.** Published `splatproto-payload-v2` (Cross3DGS Vulkan +
+  U2Net/DA3 NPU) and `easyscan-deps-v1` (Ceres + Eigen + OpenCV-vio + multi-SoC QNN) alongside
+  the updated engine payloads so GitHub Actions and local clones build the exact same APK.
+- **Separated standalone `imucalib`.** Removed the embedded `:imucalib`, `:imucalibcore`, and
+  `:vinsprobe` modules from TrioSlicer; camera-IMU calibration now lives in its own repository at
+  https://github.com/tomppi/imucalib.
+
+## [1.20.0] - 2026-11-17
 
 ### Added
 
@@ -14,7 +56,7 @@
   in that repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the exact source pin,
   license and the small integration changes.
 
-## [1.21.0] - 2026-11-15
+### Included from internal 1.20–1.21 work (merged into 2.0.0)
 
 ### Changed
 

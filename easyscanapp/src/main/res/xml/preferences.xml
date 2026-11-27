@@ -10,6 +10,22 @@
             android:defaultValue="false" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Capture range">
+        <SwitchPreferenceCompat
+            android:key="capture_range_enabled"
+            android:title="Enforce focus distance range"
+            android:summary="Automatically pause recording when the object moves outside calibrated focus ± tolerance"
+            android:defaultValue="true" />
+        <SeekBarPreference
+            android:key="capture_tolerance_cm"
+            android:title="Focus distance tolerance (± cm)"
+            android:dependency="capture_range_enabled"
+            android:defaultValue="12"
+            android:max="40"
+            app:min="4"
+            app:showSeekBarValue="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Performance">
         <ListPreference
             android:key="target_fps"
@@ -132,15 +148,15 @@
         <SeekBarPreference
             android:key="laser_thresh"
             android:title="Response floor (lower = more sensitive)"
-            android:defaultValue="12"
-            android:max="80"
+            android:defaultValue="20"
+            android:max="180"
             app:min="1"
             app:showSeekBarValue="true" />
         <SeekBarPreference
             android:key="laser_min_sat"
             android:title="Minimum saturation"
-            android:defaultValue="40"
-            android:max="200"
+            android:defaultValue="60"
+            android:max="220"
             app:min="0"
             app:showSeekBarValue="true" />
         <SwitchPreferenceCompat
@@ -233,12 +249,28 @@
         <SwitchPreferenceCompat android:key="draw_volume" android:title="Draw the working volume" android:defaultValue="true" />
         <SwitchPreferenceCompat android:key="draw_cloud" android:title="Draw the scan cloud" android:defaultValue="true" />
     </PreferenceCategory>
+    <PreferenceCategory android:title="VIO tuning (SuperVINS)">
+        <EditTextPreference android:key="vio_max_features" android:title="SuperPoint features" android:summary="NMS-4 SuperPoint keypoints fed into LightGlue (default 100)" android:defaultValue="100" />
+        <EditTextPreference android:key="vio_min_dist" android:title="Feature spacing (px)" android:summary="Minimum distance when adding new tracked points (default 4)" android:defaultValue="4" />
+        <EditTextPreference android:key="vio_max_tracks" android:title="Maximum tracks" android:summary="Cap on tracked points carried between frames (LightGlue NPU budget 100)" android:defaultValue="100" />
+        <EditTextPreference android:key="vio_lg_threshold" android:title="LightGlue VIO threshold" android:summary="Lower accepts more matches (default 0.05; loop matcher stays 0.20)" android:defaultValue="0.05" />
+    </PreferenceCategory>
     <PreferenceCategory android:title="Development">
         <SwitchPreferenceCompat
             android:key="tracker_debug"
             android:title="Record tracker debug data"
             android:summary="Writes grayscale frames, IMU samples and board poses to Android/data/.../files/tracker-debug while a scan runs; pull the folder over adb"
             android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="lightglue_tracker"
+            android:title="Use LightGlue tracker"
+            android:summary="SuperPoint + LightGlue on the NPU (100 keypoints, SuperVINS 3D prediction gated + F-RANSAC). On by default; restart the scan after changing."
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="klt_fallback"
+            android:title="Keep KLT track bridge"
+            android:summary="When LightGlue is active, bridge tracks temporarily missing from SuperPoint top-100 with F-RANSAC verified pyramidal KLT so tracks survive across the 10-frame window. On by default; restart the scan after changing."
+            android:defaultValue="true" />
         <Preference
             android:key="tracking_selftest"
             android:title="Tracking self-test"

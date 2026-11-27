@@ -109,14 +109,14 @@ class OrcaProfileImporterTest {
                 .put("print_settings_id", "p")
                 .put("layer_height", "0.24")
                 .put("machine_start_gcode", "G28")
-                .put("initial_layer_infill_speed", "not-a-number")
+                .put("ironing_speed", "not-a-number")
                 .toString(),
         )
 
         // machine_start_gcode is the app's own to write; the speed is a value the
         // engine would refuse; layer_height is applied and so appears in neither list.
         assertEquals(listOf("machine_start_gcode"), result.managedKeys)
-        assertEquals(listOf("initial_layer_infill_speed"), result.refusedKeys)
+        assertEquals(listOf("ironing_speed"), result.refusedKeys)
         assertEquals(0.24, result.applyTo(OrcaSliceSettings()).layerHeightMm, 1e-9)
     }
 
@@ -125,11 +125,11 @@ class OrcaProfileImporterTest {
         val result = parse(
             JSONObject()
                 .put("print_settings_id", "p")
-                .put("initial_layer_infill_speed", "not-a-number")
+                .put("ironing_speed", "not-a-number")
                 .put("top_surface_pattern", "monotonicline")
                 .toString(),
         )
-        assertEquals(listOf("initial_layer_infill_speed"), result.refusedKeys)
+        assertEquals(listOf("ironing_speed"), result.refusedKeys)
         assertEquals("monotonicline", result.extraKeys["top_surface_pattern"])
     }
 

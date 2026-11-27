@@ -255,3 +255,107 @@ pub extern "system" fn Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeProc
         Ok(n)
     })
 }
+
+// ---------------------------------------------------------------------------
+// JNI aliases for the bundled EasyScan library, whose Java package is
+// com.rawmechatronics.easyscanner. The same core is also used by the
+// com.tomppi.enderslicer.easyscan copy; both Java classes load the library,
+// so both symbol families must exist in the one .so.
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeCreate<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    files_dir: JString<'l>,
+) -> jlong {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeCreate(env, cls, files_dir)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeDestroy<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+) {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeDestroy(env, cls, handle)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeConfigure<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+    json: JString<'l>,
+) {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeConfigure(env, cls, handle, json)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeCommand<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+    code: jint,
+    arg: JString<'l>,
+) -> jstring {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeCommand(env, cls, handle, code, arg)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeMessages<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+) -> jstring {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeMessages(env, cls, handle)
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeProcessAr<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+    y: JByteBuffer<'l>,
+    y_stride: jint,
+    u: JByteBuffer<'l>,
+    v: JByteBuffer<'l>,
+    uv_stride: jint,
+    uv_pixel_stride: jint,
+    width: jint,
+    height: jint,
+    timestamp_ns: jlong,
+    pose: JDoubleArray<'l>,
+    intrinsics: JDoubleArray<'l>,
+    up_sign: jdouble,
+    out: JFloatArray<'l>,
+) -> jint {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeProcessAr(
+        env, cls, handle, y, y_stride, u, v, uv_stride, uv_pixel_stride, width, height,
+        timestamp_ns, pose, intrinsics, up_sign, out,
+    )
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_rawmechatronics_easyscanner_NativeLib_nativeProcess<'l>(
+    env: JNIEnv<'l>,
+    cls: JClass<'l>,
+    handle: jlong,
+    y: JByteBuffer<'l>,
+    y_stride: jint,
+    u: JByteBuffer<'l>,
+    v: JByteBuffer<'l>,
+    uv_stride: jint,
+    uv_pixel_stride: jint,
+    width: jint,
+    height: jint,
+    timestamp_ns: jlong,
+    out: JFloatArray<'l>,
+) -> jint {
+    Java_com_tomppi_enderslicer_easyscan_NativeLib_nativeProcess(
+        env, cls, handle, y, y_stride, u, v, uv_stride, uv_pixel_stride, width, height,
+        timestamp_ns, out,
+    )
+}

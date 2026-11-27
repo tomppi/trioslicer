@@ -3,6 +3,7 @@ package com.tomppi.splatproto
 import com.rawmechatronics.easyscanner.VioRunner
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -81,6 +82,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -123,6 +125,7 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
@@ -136,11 +139,11 @@ import androidx.compose.runtime.setValue
 import kotlin.coroutines.resume
 
 /**
- * Scan -> SfM -> train, in one app.
+ * Scan -> SfM -> Cross3DGS Vulkan train, in one workflow.
  *
- * Capture is Camera2 via CameraX (no ARCore). The vendored Parallax core reconstructs
- * cameras + points from the frames (COLMAP project in the scan folder), then Brush's
- * trainer consumes that project directly.
+ * Capture is Camera2 + SuperVINS VIO (no ARCore). The vendored Parallax core reconstructs
+ * metric cameras + points from the frames (COLMAP project in the scan folder), then Cross3DGS
+ * trains the 3D Gaussian Splat on the phone's Vulkan GPU.
  */
 data class TrackTrail(val fromX: Float, val fromY: Float, val toX: Float, val toY: Float)
 
@@ -149,6 +152,7 @@ class PipelineActivity : ComponentActivity() {
 
     private data class State(
         val phase: String = "idle", // idle | capturing | reconstructing | ready | training | done | error
+        val scanKind: ScanKind = ScanKind.SPLAT_ONLY,
         val status: String = "Scan the object, then train it on the phone",
         val frames: Int = 0,
         val progress: Float = 0f,
@@ -165,7 +169,16 @@ class PipelineActivity : ComponentActivity() {
         val analysisRotation: Int = 0,
         val trackProgress: Float = 0f,
         val ply: String? = null,
+        val hasMasks: Boolean = false,
+        val fusedStl: String? = null,
+        val fusedCloudSplat: String? = null,
+        val laserOnlyPly: String? = null,
     )
+
+    private fun scanHasMasks(dir: File?): Boolean =
+        dir != null && File(dir, "masks").listFiles { f -> f.isFile && f.name.endsWith(".png", true) }?.isNotEmpty() == true
+
+    private var launchedFromEasyScanner = false
 
     private val state = MutableStateFlow(State())
     private val trailFlow = MutableStateFlow<List<TrackTrail>>(emptyList())
@@ -184,7 +197,7 @@ class PipelineActivity : ComponentActivity() {
     private val vioBanner = MutableStateFlow<String?>(null)
     private var lastVioUiAt = 0L
 
-    /** Snapshot for the minimap: OpenVINS is the only thing that knows whether the pose is usable. */
+    /** Snapshot for the minimap: SuperVINS is the only thing that knows whether the pose is usable. */
     private fun refreshVioUi(force: Boolean = false) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (!force && now - lastVioUiAt < 150L) return
@@ -246,7 +259,7 @@ class PipelineActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var scanDir: File? = null
     private var controller: CaptureController? = null
-    /** VIO pose source: the same OpenVINS + SuperPoint runner the scanner uses. */
+    /** VIO pose source: the same SuperVINS (SuperPoint + LightGlue + Ceres) runner the scanner uses. */
     private var vio: VioRunner? = null
     private var warmupActive = false
     private var warmupTicker: Runnable? = null
@@ -319,6 +332,29 @@ class PipelineActivity : ComponentActivity() {
         }.getOrNull() ?: "?"
         verifyNativeLibraries()
 
+        val incomingSession = intent?.getStringExtra(EXTRA_EASYSCAN_SESSION)
+            ?.let { File(it) }
+            ?.takeIf {
+                it.isDirectory && (
+                    File(it, "splat_session.json").isFile ||
+                        File(it, "frames.csv").isFile ||
+                        File(it, "session.json").isFile
+                    )
+            }
+        val incomingSplatOnly = intent?.getBooleanExtra(EXTRA_SPLAT_ONLY, false) == true ||
+            (incomingSession != null && File(incomingSession, "splat_session.json").isFile)
+        launchedFromEasyScanner = incomingSession != null
+        if (incomingSession != null) {
+            state.value = state.value.copy(
+                phase = "reconstructing",
+                scanKind = if (incomingSplatOnly) ScanKind.SPLAT_ONLY else ScanKind.FUSED,
+                progress = 0f,
+                status = if (incomingSplatOnly) "Importing high-res Splat session…" else "Importing EasyScanner fusion session…",
+                detail = incomingSession.name,
+            )
+            importEasyScannerSessionDir(incomingSession, autoOpen = true)
+        }
+
         setContent {
             val s by state.collectAsState()
             val vioState by vioUi.collectAsState()
@@ -342,12 +378,24 @@ class PipelineActivity : ComponentActivity() {
                         dbg("reconstruction done frames=" + job.scan.imageCount() +
                             " poseSource=" + poseSource + " points=" + sparse)
                         scanDir = job.scan.dir
+                        lastScan = job.scan
+                        val kind = job.scan.kind()
                         ReconstructionService.acknowledge()
+                        val actionHint = when (kind) {
+                            ScanKind.FUSED -> "Ready to fuse Laser + MVS (STL)"
+                            ScanKind.LASER_ONLY -> "Laser scan ready"
+                            ScanKind.SPLAT_ONLY -> "Ready to train Cross3DGS"
+                        }
                         state.value = state.value.copy(
-                            phase = "ready", progress = 1f,
+                            phase = "ready",
+                            scanKind = kind,
+                            progress = 1f,
                             status = "Reconstructed · pose " + poseSource,
-                            detail = "Ready to train · " + registered + "/" + total +
-                                " images, " + sparse + " sparse points",
+                            detail = "$actionHint · $registered/$total images, $sparse sparse points",
+                            ply = null,
+                            fusedStl = null,
+                            fusedCloudSplat = null,
+                            laserOnlyPly = null,
                         )
                     }
                     is com.tomppi.splatproto.Job.Failed -> {
@@ -445,7 +493,10 @@ class PipelineActivity : ComponentActivity() {
                         }
                     }
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         if (s.phase == "idle" || s.phase == "capturing") {
@@ -457,14 +508,60 @@ class PipelineActivity : ComponentActivity() {
                             "capturing" -> Button(onClick = ::stopAndReconstruct) {
                                 Text("Stop & reconstruct")
                             }
-                            "ready" -> Button(onClick = { train() }) { Text("Train") }
+                            "ready" -> {
+                                when (s.scanKind) {
+                                    ScanKind.SPLAT_ONLY -> {
+                                        Button(onClick = { train() }) { Text("Train Splat") }
+                                        s.ply?.let { plyPath ->
+                                            Button(onClick = {
+                                                state.value = state.value.copy(
+                                                    phase = "done",
+                                                    progress = 1f,
+                                                    status = "Trained",
+                                                    ply = plyPath,
+                                                    hasMasks = scanHasMasks(scanDir),
+                                                )
+                                            }) { Text("View Splat") }
+                                        }
+                                    }
+                                    ScanKind.FUSED -> {
+                                        Button(onClick = { lastScan?.let { fuseAndMesh(it) } }) { Text("Fuse & Mesh (STL)") }
+                                        s.fusedStl?.let { stlPath ->
+                                            Button(onClick = { sendStlToPlate(stlPath) }) { Text("Send to Plate") }
+                                        }
+                                        s.fusedCloudSplat?.let { splatName ->
+                                            Button(onClick = { openCloudView(splatName) }) { Text("View Cloud") }
+                                        }
+                                        s.laserOnlyPly?.let { laserPlyPath ->
+                                            Button(onClick = { openLaserOnlyCloud(File(laserPlyPath)) }) { Text("Laser only") }
+                                        }
+                                    }
+                                    ScanKind.LASER_ONLY -> {
+                                        s.fusedStl?.let { stlPath ->
+                                            Button(onClick = { sendStlToPlate(stlPath) }) { Text("Send to Plate") }
+                                        }
+                                        s.laserOnlyPly?.let { laserPlyPath ->
+                                            Button(onClick = { openLaserOnlyCloud(File(laserPlyPath)) }) { Text("View Cloud") }
+                                        }
+                                    }
+                                }
+                                if (launchedFromEasyScanner) {
+                                    Button(onClick = { finish() }) { Text("Back to Scanner") }
+                                }
+                            }
                             "done" -> {
-                                Button(onClick = {
-                                    state.value = State()
-                                    openViewfinder()
-                                }) { Text("New scan") }
-                                Button(onClick = { train(false) }) { Text("Retrain unmasked") }
+                                if (launchedFromEasyScanner) {
+                                    Button(onClick = { finish() }) { Text("Back to Scanner") }
+                                } else {
+                                    Button(onClick = {
+                                        state.value = State()
+                                        openViewfinder()
+                                    }) { Text("New scan") }
+                                }
                                 Button(onClick = { train(null, true) }) { Text("Refine splat") }
+                                if (s.hasMasks) {
+                                    Button(onClick = { train(false) }) { Text("Retrain unmasked") }
+                                }
                             }
                             "maskPrompt" -> {
                                 Button(
@@ -478,9 +575,23 @@ class PipelineActivity : ComponentActivity() {
                                     maskPreview.value = null
                                 }) { Text("Clear mask") }
                                 Button(onClick = ::skipMasking) { Text("Skip masks") }
+                                if (launchedFromEasyScanner) {
+                                    Button(onClick = { finish() }) { Text("Back") }
+                                }
                             }
                             "masking", "reconstructing", "training" -> Button(onClick = {}, enabled = false) {
                                 Text("Working...")
+                            }
+                            "error" -> {
+                                if (launchedFromEasyScanner) {
+                                    val retryScan = lastScan?.takeIf { it.kind() != ScanKind.LASER_ONLY }
+                                    if (retryScan != null) {
+                                        Button(onClick = { resumeScan(retryScan) }) { Text("Retry") }
+                                    }
+                                    Button(onClick = { finish() }) { Text("Back to Scanner") }
+                                } else {
+                                    Button(onClick = ::startCapture) { Text("Start scan") }
+                                }
                             }
                             else -> {
                                 Button(onClick = ::startCapture) { Text("Start scan") }
@@ -489,7 +600,8 @@ class PipelineActivity : ComponentActivity() {
                         if (s.phase == "idle" || s.phase == "capturing") {
                             Button(onClick = ::cycleTorch) { Text(torchLabel()) }
                         }
-                        if (s.phase == "idle" || s.phase == "capturing" || s.phase == "ready" || s.phase == "error") {
+                        if (s.phase == "idle" || s.phase == "capturing" || s.phase == "ready" ||
+                            s.phase == "error" || s.phase == "done") {
                             Button(onClick = { loadScans(); showScans.value = true }) { Text("Scans") }
                         }
                         Button(onClick = { showSettings.value = true }) { Text("Settings") }
@@ -508,18 +620,30 @@ class PipelineActivity : ComponentActivity() {
                             showScans.value = false
                             openScanForTrain(item.scan)
                         },
+                        onFuse = { item ->
+                            showScans.value = false
+                            fuseAndMesh(item.scan)
+                        },
                         onView = { item ->
                             showScans.value = false
-                            val ply = item.splat ?: return@ScansDialog
-                            closeCamera()
-                            state.value = state.value.copy(
-                                phase = "done", progress = 1f, status = "Trained",
-                                detail = "Exported " + ply.name, ply = ply.absolutePath,
-                            )
+                            viewScanItem(item)
+                        },
+                        onSendToPlate = { stl ->
+                            showScans.value = false
+                            sendStlToPlate(stl.absolutePath)
+                        },
+                        onViewCloud = { splatName ->
+                            showScans.value = false
+                            openCloudView(splatName)
                         },
                         onDelete = { item ->
                             item.scan.dir.deleteRecursively()
                             loadScans()
+                        },
+                        onImport = { importEasyScannerSession() },
+                        onLaserPreview = { item ->
+                            showScans.value = false
+                            previewLaser(item)
                         },
                         onDismiss = { showScans.value = false },
                     )
@@ -527,6 +651,7 @@ class PipelineActivity : ComponentActivity() {
                 if (showSettings.value) {
                     SettingsDialog(
                         current = settings,
+                        activeKind = if (s.phase == "idle") null else s.scanKind,
                         onSave = { updated ->
                             settings = updated
                             updated.save(this@PipelineActivity)
@@ -538,12 +663,14 @@ class PipelineActivity : ComponentActivity() {
             }
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        } else {
-            openViewfinder()
+        if (incomingSession == null) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                permissionLauncher.launch(Manifest.permission.CAMERA)
+            } else {
+                openViewfinder()
+            }
         }
     }
 
@@ -553,8 +680,8 @@ class PipelineActivity : ComponentActivity() {
         logNetworkDiagnostics()
         try {
             NativeCore.buildInfo()
-            BrushTrainer
-            Log.i("Pipeline", "parallaxcore + brush_jni loaded")
+            val caps = org.unclearness.cross3dgs.NativeBridge.queryDeviceCaps()
+            Log.i("Pipeline", "parallaxcore + cross3dgs_android loaded caps=" + caps.take(180))
         } catch (error: Throwable) {
             Log.e("Pipeline", "native library load failed", error)
         }
@@ -704,7 +831,8 @@ class PipelineActivity : ComponentActivity() {
     // ---------------------------------------------------------------- capture
 
     private fun openViewfinder() {
-        if (state.value.phase == "capturing") return
+        val phase = state.value.phase
+        if (phase != "idle" && phase.isNotEmpty()) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -745,30 +873,33 @@ class PipelineActivity : ComponentActivity() {
             if (vio == null || vio?.released == true) {
                 runCatching {
                     val v = VioRunner(this)
-                    // OpenVINS is fed from the camera thread; the scanner does the same. Running
-                    // its IMU callbacks on the main looper creates a cross-thread race in the
-                    // filter (seen as a diverging velocity and nonsense poses).
                     v.start(controller?.cameraHandler ?: android.os.Handler(android.os.Looper.getMainLooper()))
-                    v.startTrackingSilent()
                     vio = v
                 }.onFailure { dbg("VIO start failed: " + it.message) }
             }
             controller?.vio = vio
             controller?.torchMode = torchMode
             vioBanner.value = null
-            state.value = state.value.copy(
-                phase = "idle",
-                status = "VIO is stopped",
-                detail = "Press Start VIO, hold still, then move gently to initialise tracking",
-                hint = "The minimap appears when tracking starts",
-            )
+            if (vio != null) {
+                vio?.startTrackingSilent()
+                startWarmup()
+            } else {
+                state.value = state.value.copy(
+                    phase = "idle",
+                    status = "SuperVINS unavailable",
+                    detail = "Capturing without VIO poses - reconstruction will use image-only SfM",
+                    hint = "Fill about half the frame, then press Start scan",
+                )
+            }
             refreshVioUi(true)
         }
-        state.value = state.value.copy(
-            phase = "idle",
-            status = "Walk slowly around the object",
-            hint = "Fill about half the frame, then press Start scan",
-        )
+        if (vio == null) {
+            state.value = state.value.copy(
+                phase = "idle",
+                status = "Walk slowly around the object",
+                hint = "Fill about half the frame, then press Start scan",
+            )
+        }
     }
 
     /** OFF -> AUTO -> ON -> OFF. Default is OFF so the flashlight is never enabled implicitly. */
@@ -780,7 +911,7 @@ class PipelineActivity : ComponentActivity() {
 
     private fun torchLabel(): String = if (torchMode == TorchMode.ON) "Torch: on" else "Torch: off"
 
-    /** Scanner-equivalent VIO control: Start VIO begins tracking + warm-up, Stop VIO tears it down. */
+    /** Scanner-equivalent VIO control: Start VIO begins SuperVINS tracking + warm-up, Stop VIO pauses it. */
     private fun toggleVio() {
         val v = vio ?: return
         if (v.tracking) {
@@ -791,7 +922,7 @@ class PipelineActivity : ComponentActivity() {
             state.value = state.value.copy(
                 phase = "idle",
                 status = "VIO stopped",
-                detail = "Start VIO to record OpenVINS poses with the scan",
+                detail = "Start VIO to record SuperVINS poses with the scan",
                 hint = "Image-only SfM is used without VIO poses",
             )
         } else {
@@ -810,16 +941,16 @@ class PipelineActivity : ComponentActivity() {
             return
         }
         if (controller == null) openViewfinder()
-        // The pose source is OpenVINS: it must finish its static initialisation
-        // (still, then a gentle move) before captured keyframes have usable poses.
-        if (vio != null && vio?.warmupDone != true) {
+        // SuperVINS needs its 10-frame sliding window + smooth sideways translation
+        // before captured keyframes have metric VIO poses.
+        if (vio != null && vio?.tracking == true && vio?.warmupDone != true) {
             pendingCaptureStart = true
             startWarmup()
             state.value = state.value.copy(
                 phase = "idle",
-                status = "Warm up first",
-                detail = "Hold the phone still, then move it gently until tracking starts",
-                hint = "The scan starts by itself once VIO is tracking",
+                status = "Initialising SuperVINS",
+                detail = "Move the phone smoothly sideways (~20 cm) until tracking starts",
+                hint = "The scan starts by itself once SuperVINS is tracking",
             )
             return
         }
@@ -832,7 +963,7 @@ class PipelineActivity : ComponentActivity() {
         state.value = State(phase = "capturing", status = "Walk slowly around the object")
     }
 
-    /** OpenVINS static initialisation: hold still, then move gently. */
+    /** SuperVINS sliding-window initialisation: fill buffer briefly, then translate smoothly sideways. */
     private fun startWarmup() {
         val v = vio ?: return
         if (v.initialized) {
@@ -848,7 +979,7 @@ class PipelineActivity : ComponentActivity() {
         warmupStartMs = System.currentTimeMillis()
         v.warmupDone = false
         if (!v.tracking) v.startTrackingSilent()
-        vioBanner.value = "VIO INIT\nhold still for a moment"
+        vioBanner.value = "SUPERVINS INIT\nmove smoothly sideways (~20 cm)"
         val tick = object : Runnable {
             override fun run() {
                 if (!warmupActive) return
@@ -856,23 +987,23 @@ class PipelineActivity : ComponentActivity() {
                 val init = vv.initialized
                 val ready = vv.initReadyToMove()
                 val line = when {
-                    init -> "VIO TRACKING"
-                    ready -> "Move gently to initialise tracking"
-                    else -> "Hold still for a moment"
+                    init -> "SUPERVINS TRACKING"
+                    ready -> "Move smoothly sideways (~20 cm) to initialise"
+                    else -> "Filling SuperVINS window..."
                 }
                 val now = System.currentTimeMillis()
                 if (init) {
                     vv.warmupDone = true
                     warmupActive = false
-                    vioBanner.value = "VIO TRACKING\nminimap movement is the tracking indicator"
+                    vioBanner.value = "SUPERVINS TRACKING\nminimap movement confirms metric tracking"
                     mainHandler.postDelayed({
                         if (!warmupActive && vio?.tracking == true) vioBanner.value = null
                     }, 3000L)
                     state.value = state.value.copy(
                         phase = "idle",
-                        status = "VIO tracking ready",
-                        detail = "Move slowly around the object, then press Start scan",
-                        hint = "Keyframes now carry an OpenVINS pose",
+                        status = "SuperVINS tracking ready",
+                        detail = "Orbit slowly around the object, then press Start scan",
+                        hint = "Keyframes now carry metric SuperVINS poses",
                     )
                     if (pendingCaptureStart) {
                         pendingCaptureStart = false
@@ -883,14 +1014,14 @@ class PipelineActivity : ComponentActivity() {
                 if (now - warmupStartMs > 25_000L) {
                     warmupActive = false
                     vv.warmupDone = true
-                    vioBanner.value = "VIO NOT TRACKING\ncapturing without VIO poses"
+                    vioBanner.value = "SUPERVINS NOT READY\ncapturing without VIO poses"
                     mainHandler.postDelayed({
                         if (!warmupActive) vioBanner.value = null
                     }, 4000L)
                     state.value = state.value.copy(
                         phase = "idle",
-                        status = "VIO did not initialise",
-                        detail = "Capturing without VIO poses - use a textured scene and move slowly",
+                        status = "SuperVINS did not initialise",
+                        detail = "Capturing without VIO poses - use a textured scene and move smoothly",
                         hint = "Reconstruction will fall back to image-only SfM",
                     )
                     if (pendingCaptureStart) {
@@ -899,12 +1030,13 @@ class PipelineActivity : ComponentActivity() {
                     }
                     return
                 }
-                vioBanner.value = "VIO INIT\n" + line.lowercase()
+                vioBanner.value = "SUPERVINS INIT\n" + line.lowercase()
                 state.value = state.value.copy(
                     phase = "idle",
                     status = line,
-                    detail = "OpenVINS initialisation - hold still, then move gently",
-                    hint = "Tracking starts automatically; the scan begins after it",
+                    detail = "SuperVINS initialisation - move smoothly sideways with parallax",
+                    hint = if (pendingCaptureStart) "The scan begins automatically once tracking starts"
+                           else "Press Start scan once tracking is green",
                 )
                 mainHandler.postDelayed(this, 100L)
             }
@@ -928,6 +1060,9 @@ class PipelineActivity : ComponentActivity() {
                 )
             } else {
                 dbg("scan finished keyframes=" + scan.imageCount())
+                // Capture is done: release Camera2 + SuperVINS/QNN immediately before
+                // U2Net masking, Parallax reconstruction, and Cross3DGS training.
+                closeCamera()
                 lastScan = scan
                 scanDir = scan.dir
                 maskPromptPoint = null
@@ -935,10 +1070,15 @@ class PipelineActivity : ComponentActivity() {
                 maskPoints.value = emptyList(); maskNegatives.value = emptyList()
                 state.value = state.value.copy(
                     phase = "maskPrompt",
+                    scanKind = scan.kind(),
                     progress = 0f,
                     status = "Auto mask the object, then tap parts to adjust",
                     detail = "Auto mask segments the first keyframe on the NPU; taps toggle the " +
                         "parts it kept. For a whole room press Skip masks",
+                    ply = null,
+                    fusedStl = null,
+                    fusedCloudSplat = null,
+                    laserOnlyPly = null,
                 )
                 scope.launch(Dispatchers.IO) {
                     val file = firstKeyframe(scan)
@@ -1172,10 +1312,16 @@ class PipelineActivity : ComponentActivity() {
 
     private data class ScanItem(
         val scan: Scan,
+        val kind: ScanKind,
         val frames: Int,
         val masks: Int,
         val reconstructed: Boolean,
         val splat: File?,
+        val fusedStl: File?,
+        val fusedCloudSplat: File?,
+        val laserOnlyPly: File?,
+        val hybrid: Boolean,
+        val hasVioPoses: Boolean,
         val bytes: Long,
         val modified: Long,
     )
@@ -1187,16 +1333,44 @@ class PipelineActivity : ComponentActivity() {
             val dir = File(filesDir, "scans")
             val items = (dir.listFiles()?.filter { it.isDirectory } ?: emptyList())
                 .mapNotNull { d ->
+                    val scan = Scan(d)
                     val frames = File(d, "images").listFiles { f -> f.isFile && f.name.endsWith(".jpg", true) }?.size ?: 0
-                    if (frames == 0) return@mapNotNull null
+                    val hasLaser = scan.hasLaserData()
+                    if (frames == 0 && !hasLaser) return@mapNotNull null
+                    val kind = scan.kind()
                     val masks = File(d, "masks").listFiles { f -> f.isFile && f.name.endsWith(".png", true) }?.size ?: 0
-                    val report = File(d, "report.json").isFile
-                    val splat = File(d, "exports").listFiles { f -> f.isFile && f.extension == "ply" }
-                        ?.maxByOrNull { it.lastModified() }
+                    val reconstructed = File(d, "sparse/0/images.txt").isFile
+                    val hasVio = scan.load()?.images?.any { vp ->
+                        vp.vioPose != null && Da3Dense.parsePose16(vp.vioPose) != null
+                    } == true
+                    // View is the trained Gaussian splat; exclude laser/fused point clouds & meshes.
+                    val exportsDir = File(d, "exports")
+                    val splat = File(exportsDir, "splat.ply").takeIf { it.isFile && it.length() > 0L }
+                        ?: exportsDir.listFiles { f ->
+                            f.isFile && f.extension == "ply" &&
+                                !f.name.startsWith("laser-") && !f.name.startsWith("fused-")
+                        }?.maxByOrNull { it.lastModified() }
+                    val fusedStl = File(exportsDir, "fused-mesh.stl").takeIf { it.isFile && it.length() > 84L }
+                        ?: File(exportsDir, "laser-only.stl").takeIf { it.isFile && it.length() > 84L }
+                    val fusedCloudSplat = File(filesDir, "splats/fused-${d.name}.splat")
+                        .takeIf { it.isFile && it.length() > 0L }
+                    val laserOnlyPly = File(exportsDir, "laser-ba-refined.ply")
+                        .takeIf { it.isFile && it.length() > 0L }
+                        ?: File(exportsDir, "laser-only.ply").takeIf { it.isFile && it.length() > 0L }
                     ScanItem(
-                        Scan(d), frames, masks, report, splat,
-                        d.walkTopDown().filter { it.isFile }.sumOf { it.length() },
-                        d.lastModified(),
+                        scan = scan,
+                        kind = kind,
+                        frames = frames,
+                        masks = masks,
+                        reconstructed = reconstructed,
+                        splat = splat,
+                        fusedStl = fusedStl,
+                        fusedCloudSplat = fusedCloudSplat,
+                        laserOnlyPly = laserOnlyPly,
+                        hybrid = hasLaser && File(d, "hybrid/hybrid.json").isFile,
+                        hasVioPoses = hasVio,
+                        bytes = d.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+                        modified = d.lastModified(),
                     )
                 }
                 .sortedByDescending { it.modified }
@@ -1223,8 +1397,13 @@ class PipelineActivity : ComponentActivity() {
         scan
     }.getOrNull()
 
-    /** Reopens the newest scan on disk at the masking step (e.g. after the app was killed). */
+    /** Reopens a scan at the masking step (or straight to laser exports for laser-only scans). */
     private fun resumeScan(scan: Scan) {
+        val kind = scan.kind()
+        if (kind == ScanKind.LASER_ONLY) {
+            openScanForTrain(scan)
+            return
+        }
         closeCamera()
         lastScan = scan
         scanDir = scan.dir
@@ -1233,9 +1412,14 @@ class PipelineActivity : ComponentActivity() {
         maskPoints.value = emptyList(); maskNegatives.value = emptyList()
         state.value = state.value.copy(
             phase = "maskPrompt",
+            scanKind = kind,
             progress = 0f,
             status = "Auto mask the object, then tap parts to adjust",
-            detail = "Resuming scan " + scan.name + " - press Auto mask to segment the object",
+            detail = "Resuming ${kind.badge.lowercase()} scan ${scan.name} - press Auto mask or Skip masks",
+            ply = null,
+            fusedStl = null,
+            fusedCloudSplat = null,
+            laserOnlyPly = null,
         )
         scope.launch(Dispatchers.IO) {
             val file = firstKeyframe(scan)
@@ -1270,115 +1454,102 @@ class PipelineActivity : ComponentActivity() {
         val dir = scanDir ?: return
         closeCamera()
         val exports = File(dir, "exports").apply { mkdirs() }
-        val masksDir = File(dir, "masks")
-        val masksOff = File(dir, "masks.disabled")
         val useMasks = useMasksOverride ?: settings.useMasks
-        val hideMasks = !useMasks && masksDir.isDirectory
-        if (hideMasks) {
-            masksOff.deleteRecursively()
-            masksDir.renameTo(masksOff)
-        }
-        val restoreMasks = {
-            if (hideMasks) {
-                masksDir.deleteRecursively()
-                masksOff.renameTo(masksDir)
-                Unit
-            }
-        }
         val steps = settings.trainSteps
         state.value = state.value.copy(
             phase = "training",
             progress = 0f,
-            status = "Training",
-            detail = "Loading Brush...",
+            status = "Training (Cross3DGS)",
+            detail = "Preparing Cross3DGS initialization…",
         )
-        val initTarget = File(dir, "init.ply")
-        if (warmStart) {
-            val source = state.value.ply?.let { File(it) }?.takeIf { it.isFile }
-                ?: File(filesDir, "splats").listFiles { f -> f.isFile && f.extension == "ply" }
-                ?.maxByOrNull { it.lastModified() }
-                ?: exports.listFiles { f -> f.extension == "ply" }?.maxByOrNull { it.lastModified() }
-            if (source != null) {
-                runCatching { source.copyTo(initTarget, overwrite = true) }
-                dbg("train init=warm start " + source.name + " " + source.length() + " bytes")
-            } else {
-                dbg("train init=warm start requested but no splat found")
-            }
-        } else {
-            val denseInit = File(dir, "dense.ply")
-            // Brush picks init.ply first and a 258-byte empty PLY makes it fail with exit 1.
-            // Only use a dense file that actually contains points; otherwise leave the
-            // COLMAP points / sparse.ply as the initial cloud.
-            if (denseInit.isFile && denseInit.length() > 1024) {
-                runCatching { denseInit.copyTo(initTarget, overwrite = true) }
-                dbg("train init=dense.ply " + denseInit.length() + " bytes")
-            } else {
-                if (initTarget.exists()) initTarget.delete()
-                dbg("train init=dataset default (dense.ply=" + denseInit.length() + " bytes)")
-            }
-        }
-        dbg("train steps=" + steps + " res=" + settings.maxResolution + " useMasks=" + useMasks + " hidden=" + hideMasks)
-        runCatching {
-            val scan = Scan(dir)
-            val loaded = scan.load()
-            Log.i("Pipeline", "train dir=" + dir + " images=" + (loaded?.images?.size ?: -1) +
-                " vioPoses=" + (loaded?.images?.count { it.vioPose != null } ?: -1))
-            Log.i("Pipeline", "report=" + scan.reportJson())
-            for (name in listOf("scan.json", "dense.ply", "sparse.ply", "init.ply",
-                    "sparse/0/cameras.txt", "sparse/0/images.txt", "sparse/0/points3D.txt")) {
-                val f = File(dir, name)
-                Log.i("Pipeline", "dataset " + name + " exists=" + f.isFile + " bytes=" + f.length())
-            }
-        }.onFailure { Log.w("Pipeline", "train diagnostics failed", it) }
         scope.launch(Dispatchers.Default) {
-            val exit = BrushTrainer.nativeTrain(
-                datasetPath = dir.absolutePath,
-                totalSteps = steps,
-                refineEvery = settings.refineEvery,
-                maxResolution = settings.maxResolution,
-                exportEvery = settings.exportEvery,
-                maxSplats = settings.maxSplats,
-                shDegree = settings.shDegree,
-                lrMean = settings.lrMean.toDouble(),
-                lrCoeffsDc = settings.lrCoeffsDc.toDouble(),
-                lrOpac = settings.lrOpac.toDouble(),
-                lrScale = settings.lrScale.toDouble(),
-                growthGradThreshold = settings.growthGradThreshold,
-                growthSelectFraction = settings.growthSelectFraction,
-                minScaleFactor = settings.minScaleFactor,
-                ssimWeight = settings.ssimWeight,
-                growthStopIter = settings.growthStopIter,
-                outputPath = exports.absolutePath,
-                progress = object : BrushProgress {
-                    override fun onProgress(stage: Int, iter: Int): Boolean {
-                        if (iter % 500 == 0) Log.i("Pipeline", "train: stage=" + stage + " iter=" + iter)
-                        val fraction = (iter.toFloat() / steps).coerceIn(0f, 1f)
-                        state.value = state.value.copy(
-                            progress = fraction,
-                            detail = when (stage) {
-                                0 -> "Starting Brush"
-                                2 -> "Finishing and exporting"
-                                else -> "Training: " + iter + " / " + steps
-                            },
-                        )
-                        return true
+            val initTarget = File(dir, "init.ply")
+            var cross3dgsInit = ""
+            if (warmStart) {
+                val nativeChk = File(exports, "checkpoint.d3gs").takeIf { it.isFile && Cross3dgsCheckpoint.readCount(it) > 0 }
+                if (nativeChk != null) {
+                    cross3dgsInit = nativeChk.absolutePath
+                    dbg("train init=warm start native checkpoint " + nativeChk.length() + " bytes")
+                } else {
+                    val source = state.value.ply?.let { File(it) }?.takeIf {
+                        it.isFile && !it.name.startsWith("laser-") && !it.name.startsWith("fused-")
                     }
-                },
-            )
-            Log.i("Pipeline", "train finished: exit=" + exit)
-            if (exit != 0) {
-                restoreMasks()
+                        ?: exports.listFiles { f ->
+                            f.isFile && f.extension == "ply" &&
+                                !f.name.startsWith("laser-") && !f.name.startsWith("fused-")
+                        }?.maxByOrNull { it.lastModified() }
+                        ?: File(filesDir, "splats").listFiles { f ->
+                            f.isFile && f.extension == "ply" &&
+                                !f.name.startsWith("laser-") && !f.name.startsWith("fused-")
+                        }?.maxByOrNull { it.lastModified() }
+                    val warmChk = File(dir, "warm_init.d3gs")
+                    if (source != null && Cross3dgsCheckpoint.fromPly(source, warmChk)) {
+                        cross3dgsInit = warmChk.absolutePath
+                        dbg("train init=warm start from " + source.name + " -> " + warmChk.length() + " bytes")
+                    } else {
+                        dbg("train init=warm start requested but no valid splat found; using COLMAP sparse points")
+                    }
+                }
+            } else {
+                val scanForInit = Scan(dir)
+                val poseSource = scanForInit.reportJson()?.optString("poseSource", "") ?: ""
+                val laserPly = LaserInit.build(scanForInit, initTarget)
+                val checkpoint = File(dir, "laser_init.chk")
+                val laserUsed = laserPly && Cross3dgsCheckpoint.fromPly(initTarget, checkpoint)
+                Log.i("Pipeline", "cross3dgs init laserPly=" + laserPly + " converted=" + laserUsed +
+                    " checkpoint=" + checkpoint.absolutePath + " bytes=" + checkpoint.length())
+                if (laserUsed) {
+                    cross3dgsInit = checkpoint.absolutePath
+                    dbg("train init=laser checkpoint " + checkpoint.length() + " bytes (poseSource=" + poseSource + ")")
+                } else {
+                    dbg("train init=COLMAP sparse points (poseSource=" + poseSource + ")")
+                }
+            }
+            dbg("train steps=" + steps + " res=" + settings.maxResolution + " useMasks=" + useMasks +
+                " sh=" + settings.shDegree + " strategy=" + settings.densityStrategy)
+            runCatching {
+                val scan = Scan(dir)
+                val loaded = scan.load()
+                Log.i("Pipeline", "train dir=" + dir + " images=" + (loaded?.images?.size ?: -1) +
+                    " vioPoses=" + (loaded?.images?.count { it.vioPose != null } ?: -1))
+                Log.i("Pipeline", "report=" + scan.reportJson())
+                for (name in listOf("scan.json", "dense.ply", "sparse.ply", "init.ply",
+                        "sparse/0/cameras.txt", "sparse/0/images.txt", "sparse/0/points3D.txt")) {
+                    val f = File(dir, name)
+                    Log.i("Pipeline", "dataset " + name + " exists=" + f.isFile + " bytes=" + f.length())
+                }
+            }.onFailure { Log.w("Pipeline", "train diagnostics failed", it) }
+            Log.i("Pipeline", "cross3dgs init string='" + cross3dgsInit + "'")
+            val result = Cross3dgsTrainer.train(
+                dir, exports, cross3dgsInit, settings, useMasks,
+            ) { iter, total, loss, elapsedSec ->
+                if (iter % 100 == 0 || iter == total) {
+                    Log.i("Pipeline", String.format(java.util.Locale.US, "cross3dgs iter=%d/%d l1=%.4f t=%.1fs", iter, total, loss, elapsedSec))
+                }
+                val fraction = (iter.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+                state.value = state.value.copy(
+                    progress = fraction,
+                    detail = String.format(java.util.Locale.US, "Cross3DGS: %d / %d · L1 %.4f (%.0fs)", iter, total, loss, elapsedSec),
+                )
+                true
+            }
+            Log.i("Pipeline", "train finished: exit=" + result.exitCode + " " + result.message)
+            if (result.exitCode != 0) {
                 state.value = state.value.copy(
                     phase = "error",
-                    status = "Training failed (code " + exit + ")",
+                    status = "Training failed (code " + result.exitCode + ")",
+                    detail = result.message,
                 )
                 return@launch
             }
-            val ply = exports.listFiles { f -> f.extension == "ply" }
-                ?.sortedBy { it.lastModified() }
-                ?.lastOrNull()
+            val ply = File(exports, "splat.ply").takeIf { it.isFile }
+                ?: exports.listFiles { f ->
+                    f.isFile && f.extension == "ply" &&
+                        !f.name.startsWith("laser-") && !f.name.startsWith("fused-")
+                }
+                    ?.sortedBy { it.lastModified() }
+                    ?.lastOrNull()
             if (ply == null) {
-                restoreMasks()
                 state.value = state.value.copy(
                     phase = "error",
                     status = "Training finished without a PLY",
@@ -1391,37 +1562,427 @@ class PipelineActivity : ComponentActivity() {
             // "trained.ply" on every run.
             val target = File(splatsDir, dir.name + "-splat.ply")
             ply.copyTo(target, overwrite = true)
-            restoreMasks()
             state.value = state.value.copy(
                 phase = "done",
                 progress = 1f,
-                status = "Trained",
-                detail = "Exported " + ply.name,
+                status = "Trained (Cross3DGS)",
+                detail = "Exported " + target.name,
                 ply = target.absolutePath,
+                hasMasks = useMasks && scanHasMasks(dir),
             )
         }
     }
 
     private fun mb(bytes: Long): String = String.format("%.0f MB", bytes / 1048576.0)
 
-    private fun scanSummary(item: ScanItem): String {
-        val parts = ArrayList<String>(5)
-        parts.add(item.frames.toString() + " frames")
-        parts.add(item.masks.toString() + " masks")
-        parts.add(if (item.reconstructed) "reconstructed" else "not reconstructed")
-        parts.add(mb(item.bytes))
-        return parts.joinToString(" - ")
+    /** A laser-preview PLY belongs in CloudView; a trained Gaussian PLY belongs in Aholo. */
+    private fun viewScanItem(item: ScanItem) {
+        val ply = item.splat ?: return
+        closeCamera()
+        if (ply.name.startsWith("laser-preview")) {
+            val name = "laser-preview-" + item.scan.name + ".splat"
+            val dir = File(filesDir, "splats").apply { mkdirs() }
+            val target = File(dir, name)
+            if (!target.isFile) {
+                val n = runCatching {
+                    com.rawmechatronics.easyscanner.SplatExporter.convert(ply, target)
+                }.getOrDefault(0)
+                if (n <= 0) {
+                    state.value = state.value.copy(
+                        status = "Laser preview failed",
+                        detail = "Could not convert " + ply.name + " for CloudView",
+                    )
+                    return
+                }
+            }
+            val intent = Intent().setClassName(
+                packageName, "com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity",
+            ).putExtra("file", name)
+            runCatching { startActivity(intent) }.onFailure { e ->
+                state.value = state.value.copy(
+                    status = "Laser preview failed",
+                    detail = "Could not open CloudView: " + (e.message ?: e.javaClass.simpleName),
+                )
+            }
+            return
+        }
+        lastScan = item.scan
+        scanDir = item.scan.dir
+        state.value = state.value.copy(
+            phase = "done",
+            scanKind = item.kind,
+            progress = 1f,
+            status = "Trained",
+            detail = "Exported " + ply.name,
+            ply = ply.absolutePath,
+            hasMasks = item.masks > 0,
+        )
     }
 
-    /** Loads an existing scan into the ready-to-train state. */
+    /** Coarse depth pass: DA3 on the Hexagon HTP, placed by recorded VIO pose and scaled with laser. */
+    private fun runDa3(item: ScanItem, firstOnly: Boolean = false) {
+        closeCamera()
+        state.value = state.value.copy(
+            phase = "training",
+            progress = 0f,
+            status = if (firstOnly) "DA3 1-frame patch (NPU)" else "DA3 depth (NPU)",
+            detail = "Preparing " + (if (firstOnly) "1 frame" else item.frames.toString() + " keyframes"),
+        )
+        Thread {
+            val result = runCatching {
+                Da3Dense.densifyDetailed(
+                    this@PipelineActivity,
+                    item.scan,
+                    { progress, detail ->
+                        runOnUiThread {
+                            state.value = state.value.copy(progress = progress, detail = detail)
+                        }
+                    },
+                    { message -> Log.i("Pipeline", "da3: " + message) },
+                    maxFrames = if (firstOnly) 1 else 0,
+                    preferVio = true,
+                    preferBoard = false,
+                )
+            }
+            runOnUiThread {
+                result.onSuccess { res ->
+                    val ply = if (firstOnly && res.overlayFile != null && res.overlayFile.isFile) res.overlayFile
+                    else res.outFile
+                    val name = (if (firstOnly) "da3-first-" else "da3-") + item.scan.name + ".splat"
+                    val target = File(File(filesDir, "splats").apply { mkdirs() }, name)
+                    val converted = runCatching {
+                        com.rawmechatronics.easyscanner.SplatExporter.convert(ply, target, 0f)
+                    }.getOrDefault(0)
+                    val pm = res.placement
+                    val detailParts = ArrayList<String>(6)
+                    detailParts.add(res.poseSource.name)
+                    detailParts.add(res.points.toString() + " pts")
+                    if (pm != null && pm.meshFaces > 0) detailParts.add(pm.meshFaces.toString() + " tris")
+                    if (pm != null && pm.refinedBlocks > 0) detailParts.add(pm.refinedBlocks.toString() + " fine")
+                    if (pm != null && pm.preRefineMedianErrMm.isFinite()) {
+                        detailParts.add(String.format(java.util.Locale.US, "laser %.1fmm", pm.preRefineMedianErrMm))
+                    }
+                    if (res.motionMode.mode != "unknown") detailParts.add(res.motionMode.mode)
+                    if (converted > 0) detailParts.add("opening CloudView")
+                    state.value = state.value.copy(
+                        phase = "ready",
+                        progress = 1f,
+                        status = "DA3 depth ready (" + res.poseSource.wire + ")",
+                        detail = detailParts.joinToString(" · "),
+                    )
+                    if (converted > 0) {
+                        val intent = Intent().setClassName(
+                            packageName, "com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity",
+                        ).putExtra("file", name)
+                        runCatching { startActivity(intent) }.onFailure { e ->
+                            state.value = state.value.copy(
+                                status = "DA3 depth ready",
+                                detail = "Could not open CloudView: " + (e.message ?: e.javaClass.simpleName),
+                            )
+                        }
+                    }
+                }.onFailure { error ->
+                    Log.e("Pipeline", "da3 failed", error)
+                    state.value = state.value.copy(
+                        phase = "ready",
+                        status = "DA3 depth failed",
+                        detail = error.message ?: error.javaClass.simpleName,
+                    )
+                }
+            }
+        }.start()
+    }
+
+    /** Phase 2 preview: colour the imported laser points from the keyframes and show them as splats. */
+    private fun previewLaser(item: ScanItem) {
+        closeCamera()
+        state.value = state.value.copy(
+            status = "Building laser preview…",
+            detail = "Colouring laser points from " + item.frames + " keyframes",
+        )
+        Thread {
+            val name = "laser-preview-" + item.scan.name + ".splat"
+            val dir = File(filesDir, "splats").apply { mkdirs() }
+            val splat = runCatching { HybridPreview.build(item.scan, File(dir, name)) }.getOrNull()
+            runOnUiThread {
+                if (splat == null) {
+                    state.value = state.value.copy(
+                        status = "Laser preview failed",
+                        detail = "No laser points in this scan's hybrid sidecar",
+                    )
+                    return@runOnUiThread
+                }
+                // Open the app's own EasyScanner CloudView directly. It is the same
+                // activity the Splat Library uses for .splat files; no Aholo fallback.
+                val intent = Intent().setClassName(
+                    packageName, "com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity",
+                ).putExtra("file", name)
+                runCatching { startActivity(intent) }.onFailure { e ->
+                    state.value = state.value.copy(
+                        status = "Laser preview failed",
+                        detail = "Could not open CloudView: " + (e.message ?: e.javaClass.simpleName),
+                    )
+                }
+            }
+        }.start()
+    }
+
+    /** Bring the newest EasyScanner photo session into the splat scan library. */
+    private fun importEasyScannerSession() {
+        val root = java.io.File(getExternalFilesDir(null), "sessions")
+        val src = root.listFiles { f ->
+            f.isDirectory && (
+                java.io.File(f, "splat_session.json").exists() ||
+                    java.io.File(f, "frames.csv").exists() ||
+                    java.io.File(f, "session.json").exists()
+                )
+        }?.maxByOrNull { it.lastModified() }
+        if (src == null) {
+            state.value = state.value.copy(status = "No EasyScanner session to import")
+            return
+        }
+        importEasyScannerSessionDir(src, autoOpen = false)
+    }
+
+    private fun importEasyScannerSessionDir(src: File, autoOpen: Boolean) {
+        Thread {
+            val r = runCatching { EasyScanImport.import(this, src) }
+            runOnUiThread {
+                r.onSuccess {
+                    loadScans()
+                    if (autoOpen) {
+                        when (it.kind) {
+                            ScanKind.SPLAT_ONLY -> {
+                                resumeScan(it.scan)
+                                val resTag = if (it.imageWidth > 0 && it.imageHeight > 0) " · ${it.imageWidth}×${it.imageHeight}" else ""
+                                state.value = state.value.copy(
+                                    scanKind = ScanKind.SPLAT_ONLY,
+                                    status = "High-res Splat ready (${it.images} photos$resTag)",
+                                    detail = "Auto mask object or press Skip masks to reconstruct & train Cross3DGS",
+                                )
+                            }
+                            ScanKind.FUSED -> {
+                                resumeScan(it.scan)
+                                state.value = state.value.copy(
+                                    scanKind = ScanKind.FUSED,
+                                    status = "Fusion session ready (${it.images} frames, ${it.laserFrames} laser)",
+                                    detail = "Auto mask object or press Skip masks to run BA + Dense MVS + Laser Fusion",
+                                )
+                            }
+                            ScanKind.LASER_ONLY -> {
+                                openScanForTrain(it.scan)
+                                state.value = state.value.copy(
+                                    scanKind = ScanKind.LASER_ONLY,
+                                    status = "Laser-only scan ready (${it.laserFrames} sweeps)",
+                                    detail = "View laser cloud or send STL mesh to the build plate",
+                                )
+                            }
+                        }
+                    } else {
+                        val kind = when (it.kind) {
+                            ScanKind.SPLAT_ONLY -> "high-res Splat"
+                            ScanKind.FUSED -> "${it.laserFrames} laser frames"
+                            ScanKind.LASER_ONLY -> "laser-only (${it.laserFrames} sweeps)"
+                        }
+                        state.value = state.value.copy(
+                            status = "Imported ${it.scan.name} (${it.images} photos, $kind)",
+                        )
+                    }
+                }.onFailure {
+                    state.value = state.value.copy(
+                        phase = if (autoOpen) "error" else state.value.phase,
+                        status = "Import failed: " + (it.message ?: it.javaClass.simpleName),
+                    )
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * Post-processing step: tightens laser frames with BA poses, locks metric scale from the
+     * laser plane, filters dense MVS by U2Net masks, fuses both in the native C++ TSDF, and
+     * exports a metric binary STL ready for TrioSlicer's build plate + a CloudView preview.
+     */
+    private fun fuseAndMesh(scan: Scan) {
+        if (scan.kind() != ScanKind.FUSED) {
+            state.value = state.value.copy(
+                phase = "ready",
+                scanKind = scan.kind(),
+                status = "Fusion unavailable for ${scan.kind().badge} scan",
+                detail = "No laser sweep data was captured in ${scan.name}",
+            )
+            return
+        }
+        closeCamera()
+        lastScan = scan
+        scanDir = scan.dir
+        state.value = state.value.copy(
+            phase = "training",
+            scanKind = ScanKind.FUSED,
+            progress = 0f,
+            status = "Fusing Laser + Dense MVS…",
+            detail = "Preparing bundle-adjusted fusion for ${scan.name}",
+            fusedStl = null,
+            fusedCloudSplat = null,
+        )
+        scope.launch(Dispatchers.Default) {
+            val res = runCatching {
+                LaserMvsFusion.fuse(
+                    scan = scan,
+                    splatsDir = File(filesDir, "splats"),
+                    preferredVoxelMm = settings.fusionVoxelMm,
+                ) { fraction, msg ->
+                    state.value = state.value.copy(progress = fraction, detail = msg)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                res.onSuccess { out ->
+                    val parts = ArrayList<String>(7)
+                    if (out.triangles > 0) parts += "${out.triangles} tris (${String.format(java.util.Locale.US, "%.2g", out.voxelMm)} mm)"
+                    if (out.laserPoints > 0) parts += "${out.laserPoints} laser pts"
+                    if (out.vioAnchoredFrames > 0) parts += "${out.vioAnchoredFrames} VIO-anchored"
+                    parts += "${out.mvsPoints} MVS pts"
+                    if (out.laserPoints > 0) {
+                        parts += String.format(java.util.Locale.US, "scale %.3fx", out.laserScale)
+                    }
+                    if (out.maskFiltered) parts += "masked"
+                    val stlPath = out.stlFile.takeIf { it.isFile && it.length() > 84L && out.triangles > 0 }?.absolutePath
+                    val splatName = out.previewSplatFile?.takeIf { it.isFile }?.name
+                    val laserPlyPath = out.laserRefinedPlyFile?.takeIf { it.isFile && it.length() > 0L }?.absolutePath
+                    state.value = state.value.copy(
+                        phase = "ready",
+                        progress = 1f,
+                        status = if (stlPath != null) "Fused STL mesh ready" else "Fused cloud ready",
+                        detail = parts.joinToString(" · "),
+                        fusedStl = stlPath,
+                        fusedCloudSplat = splatName,
+                        laserOnlyPly = laserPlyPath,
+                    )
+                    loadScans()
+                }.onFailure { err ->
+                    Log.e("Pipeline", "Laser+MVS fusion failed", err)
+                    state.value = state.value.copy(
+                        phase = "ready",
+                        progress = 0f,
+                        status = "Fusion failed",
+                        detail = err.message ?: err.javaClass.simpleName,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun sendStlToPlate(stlPath: String) {
+        val intent = Intent().setClassName(packageName, "com.tomppi.enderslicer.MainActivity")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_IMPORT_STL_PATH, stlPath)
+        runCatching {
+            startActivity(intent)
+            finish()
+        }.onFailure { e ->
+            state.value = state.value.copy(
+                status = "Could not open plate",
+                detail = e.message ?: e.javaClass.simpleName,
+            )
+        }
+    }
+
+    private fun openCloudView(splatName: String) {
+        val intent = Intent().setClassName(
+            packageName, "com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity",
+        ).putExtra("file", splatName)
+        runCatching { startActivity(intent) }.onFailure { e ->
+            state.value = state.value.copy(
+                status = "Could not open CloudView",
+                detail = e.message ?: e.javaClass.simpleName,
+            )
+        }
+    }
+
+    /** Converts (if needed) and opens the BA-tightened laser-only point cloud in CloudView. */
+    private fun openLaserOnlyCloud(laserPly: File) {
+        if (!laserPly.isFile || laserPly.length() <= 0L) return
+        val scanName = laserPly.parentFile?.parentFile?.name ?: "scan"
+        val splatsDir = File(filesDir, "splats").apply { mkdirs() }
+        val splatFile = File(splatsDir, "laser-ba-$scanName.splat")
+        if (splatFile.isFile && splatFile.length() > 0L && splatFile.lastModified() >= laserPly.lastModified()) {
+            openCloudView(splatFile.name)
+            return
+        }
+        state.value = state.value.copy(detail = "Preparing laser-only cloud…")
+        scope.launch(Dispatchers.IO) {
+            val count = runCatching {
+                com.rawmechatronics.easyscanner.SplatExporter.convert(laserPly, splatFile, voxelMm = 0f)
+            }.getOrDefault(0)
+            withContext(Dispatchers.Main) {
+                if (count > 0) {
+                    openCloudView(splatFile.name)
+                } else {
+                    state.value = state.value.copy(
+                        status = "Laser cloud view failed",
+                        detail = "Could not convert ${laserPly.name}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun scanSummary(item: ScanItem): String {
+        val parts = ArrayList<String>(6)
+        parts.add("[${item.kind.badge}]")
+        if (item.frames > 0) parts.add("${item.frames} frames")
+        if (item.masks > 0) parts.add("${item.masks} masks")
+        if (item.hasVioPoses) parts.add("VIO")
+        if (item.kind != ScanKind.LASER_ONLY) {
+            parts.add(if (item.reconstructed) "reconstructed" else "not reconstructed")
+        }
+        parts.add(mb(item.bytes))
+        return parts.joinToString(" · ")
+    }
+
+    /** Loads an existing scan into the ready state with only its mode-relevant outputs. */
     private fun openScanForTrain(scan: Scan) {
         closeCamera()
         lastScan = scan
         scanDir = scan.dir
         maskPromptPoint = null
+        val kind = scan.kind()
+        val pose = scan.reportJson()?.optString("poseSource", "")?.takeIf { it.isNotBlank() }
+        val exportsDir = File(scan.dir, "exports")
+        val existingSplat = if (kind == ScanKind.SPLAT_ONLY) {
+            File(exportsDir, "splat.ply").takeIf { it.isFile && it.length() > 0L }?.absolutePath
+                ?: File(filesDir, "splats/${scan.name}-splat.ply").takeIf { it.isFile && it.length() > 0L }?.absolutePath
+        } else null
+        val existingStl = if (kind != ScanKind.SPLAT_ONLY) {
+            File(exportsDir, "fused-mesh.stl").takeIf { it.isFile && it.length() > 84L }?.absolutePath
+                ?: File(exportsDir, "laser-only.stl").takeIf { it.isFile && it.length() > 84L }?.absolutePath
+        } else null
+        val existingCloud = if (kind == ScanKind.FUSED) {
+            File(filesDir, "splats/fused-${scan.name}.splat").takeIf { it.isFile && it.length() > 0L }?.name
+        } else null
+        val existingLaser = if (kind != ScanKind.SPLAT_ONLY) {
+            File(exportsDir, "laser-ba-refined.ply").takeIf { it.isFile && it.length() > 0L }?.absolutePath
+                ?: File(exportsDir, "laser-only.ply").takeIf { it.isFile && it.length() > 0L }?.absolutePath
+        } else null
+        val readyStatus = when (kind) {
+            ScanKind.LASER_ONLY -> "Laser-only scan"
+            else -> if (pose != null) "Reconstructed · pose $pose" else "Reconstructed"
+        }
+        val readyDetail = when (kind) {
+            ScanKind.SPLAT_ONLY -> "Ready to train Cross3DGS on ${scan.name}"
+            ScanKind.FUSED -> "Ready to fuse Laser + MVS (STL) on ${scan.name}"
+            ScanKind.LASER_ONLY -> "Laser cloud / STL exports for ${scan.name}"
+        }
         state.value = state.value.copy(
-            phase = "ready", progress = 1f, status = "Reconstructed",
-            detail = "Ready to train " + scan.name,
+            phase = "ready",
+            scanKind = kind,
+            progress = 1f,
+            status = readyStatus,
+            detail = readyDetail,
+            ply = existingSplat,
+            fusedStl = existingStl,
+            fusedCloudSplat = existingCloud,
+            laserOnlyPly = existingLaser,
         )
     }
 
@@ -1432,8 +1993,13 @@ class PipelineActivity : ComponentActivity() {
         freeBytes: Long,
         onOpen: (ScanItem) -> Unit,
         onTrain: (ScanItem) -> Unit,
+        onFuse: (ScanItem) -> Unit,
         onView: (ScanItem) -> Unit,
+        onSendToPlate: (File) -> Unit,
+        onViewCloud: (String) -> Unit,
         onDelete: (ScanItem) -> Unit,
+        onImport: () -> Unit,
+        onLaserPreview: (ScanItem) -> Unit,
         onDismiss: () -> Unit,
     ) {
         var pendingDelete by remember { mutableStateOf<ScanItem?>(null) }
@@ -1468,18 +2034,59 @@ class PipelineActivity : ComponentActivity() {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text("Loading...", style = MaterialTheme.typography.bodySmall)
                     }
+                    TextButton(onClick = onImport) { Text("Import EasyScanner scan") }
                     LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
                         items(items) { item ->
                             Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                                 Text(item.scan.name)
                                 Text(scanSummary(item), style = MaterialTheme.typography.bodySmall)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    TextButton(onClick = { onOpen(item) }) { Text("Open") }
-                                    if (item.reconstructed) {
-                                        TextButton(onClick = { onTrain(item) }) { Text("Train") }
-                                    }
-                                    if (item.splat != null) {
-                                        TextButton(onClick = { onView(item) }) { Text("View") }
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    when (item.kind) {
+                                        ScanKind.SPLAT_ONLY -> {
+                                            TextButton(onClick = { onOpen(item) }) { Text("Open") }
+                                            if (item.reconstructed) {
+                                                TextButton(onClick = { onTrain(item) }) { Text("Train Splat") }
+                                            }
+                                            if (item.splat != null) {
+                                                TextButton(onClick = { onView(item) }) { Text("View Splat") }
+                                            }
+                                        }
+                                        ScanKind.FUSED -> {
+                                            TextButton(onClick = { onOpen(item) }) { Text("Open") }
+                                            if (item.reconstructed) {
+                                                TextButton(onClick = { onFuse(item) }) { Text("Fuse & Mesh") }
+                                            }
+                                            item.fusedStl?.let { stl ->
+                                                TextButton(onClick = { onSendToPlate(stl) }) { Text("Send to Plate") }
+                                            }
+                                            item.fusedCloudSplat?.let { cloud ->
+                                                TextButton(onClick = { onViewCloud(cloud.name) }) { Text("View Cloud") }
+                                            }
+                                            if (item.laserOnlyPly != null) {
+                                                TextButton(onClick = {
+                                                    onDismiss()
+                                                    openLaserOnlyCloud(item.laserOnlyPly)
+                                                }) { Text("Laser only") }
+                                            } else if (item.hybrid) {
+                                                TextButton(onClick = { onLaserPreview(item) }) { Text("Laser preview") }
+                                            }
+                                        }
+                                        ScanKind.LASER_ONLY -> {
+                                            item.fusedStl?.let { stl ->
+                                                TextButton(onClick = { onSendToPlate(stl) }) { Text("Send to Plate") }
+                                            }
+                                            if (item.laserOnlyPly != null) {
+                                                TextButton(onClick = {
+                                                    onDismiss()
+                                                    openLaserOnlyCloud(item.laserOnlyPly)
+                                                }) { Text("View Cloud") }
+                                            } else if (item.hybrid) {
+                                                TextButton(onClick = { onLaserPreview(item) }) { Text("Laser preview") }
+                                            }
+                                        }
                                     }
                                     TextButton(onClick = { pendingDelete = item }) { Text("Delete") }
                                 }
@@ -1495,10 +2102,13 @@ class PipelineActivity : ComponentActivity() {
     @Composable
     private fun SettingsDialog(
         current: PipelineSettings,
+        activeKind: ScanKind?,
         onSave: (PipelineSettings) -> Unit,
         onDismiss: () -> Unit,
     ) {
         var s by remember { mutableStateOf(current) }
+        val showFusion = activeKind == null || activeKind == ScanKind.FUSED
+        val showSplat = activeKind == null || activeKind == ScanKind.SPLAT_ONLY
         AlertDialog(
             onDismissRequest = onDismiss,
             title = { Text("Settings") },
@@ -1508,85 +2118,104 @@ class PipelineActivity : ComponentActivity() {
                         .heightIn(max = 520.dp)
                         .verticalScroll(rememberScrollState()),
                 ) {
-                    Text("Masking (U2Net NPU)", style = MaterialTheme.typography.titleSmall)
-                    SettingsToggle("Flip TTA", s.maskTta) { v -> s = s.copy(maskTta = v) }
-                    SettingsToggle("Two-pass crop", s.maskTwoPass) { v -> s = s.copy(maskTwoPass = v) }
-                    SettingsNumber("Crop margin", s.maskCropMargin) { v ->
-                        s = s.copy(maskCropMargin = v.coerceIn(1f, 3f))
+                    if (activeKind != ScanKind.LASER_ONLY) {
+                        Text("Masking (U2Net NPU)", style = MaterialTheme.typography.titleSmall)
+                        SettingsToggle("Flip TTA", s.maskTta) { v -> s = s.copy(maskTta = v) }
+                        SettingsToggle("Two-pass crop", s.maskTwoPass) { v -> s = s.copy(maskTwoPass = v) }
+                        SettingsNumber("Crop margin", s.maskCropMargin) { v ->
+                            s = s.copy(maskCropMargin = v.coerceIn(1f, 3f))
+                        }
+                        SettingsNumber("Mask threshold", s.maskThreshold) { v ->
+                            s = s.copy(maskThreshold = v.coerceIn(0.2f, 0.9f))
+                        }
+                        SettingsNumber("Guided radius", s.maskGuidedRadius.toFloat()) { v ->
+                            s = s.copy(maskGuidedRadius = v.toInt().coerceIn(1, 20))
+                        }
+                        SettingsNumber("Close px", s.maskClosePx.toFloat()) { v ->
+                            s = s.copy(maskClosePx = v.toInt().coerceIn(0, 9))
+                        }
+                        Text("SfM (Parallax)", style = MaterialTheme.typography.titleSmall)
+                        SettingsNumber("Feature side", s.sfmFeatureSide.toFloat()) { v ->
+                            s = s.copy(sfmFeatureSide = v.toInt().coerceAtLeast(256))
+                        }
+                        SettingsNumber("Max features", s.sfmMaxFeatures.toFloat()) { v ->
+                            s = s.copy(sfmMaxFeatures = v.toInt().coerceAtLeast(100))
+                        }
+                        SettingsNumber("Match window", s.sfmMatchWindow.toFloat()) { v ->
+                            s = s.copy(sfmMatchWindow = v.toInt().coerceIn(1, 50))
+                        }
+                        SettingsNumber("Ratio test", s.sfmRatio) { v -> s = s.copy(sfmRatio = v) }
+                        SettingsNumber("Max reproj (px)", s.sfmMaxReproj) { v -> s = s.copy(sfmMaxReproj = v) }
+                        SettingsNumber("Min tri angle", s.sfmMinTriAngle) { v -> s = s.copy(sfmMinTriAngle = v) }
+                        SettingsToggle("Dense stereo", s.sfmDense) { v -> s = s.copy(sfmDense = v) }
+                        SettingsNumber("Dense side", s.sfmDenseMaxSide.toFloat()) { v ->
+                            s = s.copy(sfmDenseMaxSide = v.toInt().coerceAtLeast(256))
+                        }
+                        SettingsNumber("Dense images", s.sfmDenseMaxImages.toFloat()) { v ->
+                            s = s.copy(sfmDenseMaxImages = v.toInt().coerceIn(1, 200))
+                        }
+                        SettingsToggle("Rolling shutter", s.sfmRollingShutter) { v ->
+                            s = s.copy(sfmRollingShutter = v)
+                        }
+                        SettingsNumber("Marker (mm)", s.sfmMarkerMm) { v -> s = s.copy(sfmMarkerMm = v) }
                     }
-                    SettingsNumber("Mask threshold", s.maskThreshold) { v ->
-                        s = s.copy(maskThreshold = v.coerceIn(0.2f, 0.9f))
-                    }
-                    SettingsNumber("Guided radius", s.maskGuidedRadius.toFloat()) { v ->
-                        s = s.copy(maskGuidedRadius = v.toInt().coerceIn(1, 20))
-                    }
-                    SettingsNumber("Close px", s.maskClosePx.toFloat()) { v ->
-                        s = s.copy(maskClosePx = v.toInt().coerceIn(0, 9))
-                    }
-                    Text("SfM (Parallax)", style = MaterialTheme.typography.titleSmall)
-                    SettingsNumber("Feature side", s.sfmFeatureSide.toFloat()) { v ->
-                        s = s.copy(sfmFeatureSide = v.toInt().coerceAtLeast(256))
-                    }
-                    SettingsNumber("Max features", s.sfmMaxFeatures.toFloat()) { v ->
-                        s = s.copy(sfmMaxFeatures = v.toInt().coerceAtLeast(100))
-                    }
-                    SettingsNumber("Match window", s.sfmMatchWindow.toFloat()) { v ->
-                        s = s.copy(sfmMatchWindow = v.toInt().coerceIn(1, 50))
-                    }
-                    SettingsNumber("Ratio test", s.sfmRatio) { v -> s = s.copy(sfmRatio = v) }
-                    SettingsNumber("Max reproj (px)", s.sfmMaxReproj) { v -> s = s.copy(sfmMaxReproj = v) }
-                    SettingsNumber("Min tri angle", s.sfmMinTriAngle) { v -> s = s.copy(sfmMinTriAngle = v) }
-                    SettingsToggle("Dense stereo", s.sfmDense) { v -> s = s.copy(sfmDense = v) }
-                    SettingsNumber("Dense side", s.sfmDenseMaxSide.toFloat()) { v ->
-                        s = s.copy(sfmDenseMaxSide = v.toInt().coerceAtLeast(256))
-                    }
-                    SettingsNumber("Dense images", s.sfmDenseMaxImages.toFloat()) { v ->
-                        s = s.copy(sfmDenseMaxImages = v.toInt().coerceIn(1, 200))
-                    }
-                    SettingsToggle("Rolling shutter", s.sfmRollingShutter) { v ->
-                        s = s.copy(sfmRollingShutter = v)
-                    }
-                    SettingsNumber("Marker (mm)", s.sfmMarkerMm) { v -> s = s.copy(sfmMarkerMm = v) }
 
-                    Text("Brush training", style = MaterialTheme.typography.titleSmall)
-                    SettingsNumber("Steps", s.trainSteps.toFloat()) { v ->
-                        s = s.copy(trainSteps = v.toInt().coerceIn(100, 100000))
+                    if (showFusion) {
+                        Text("Laser + MVS Fusion (STL)", style = MaterialTheme.typography.titleSmall)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            for (preset in listOf(1.0f, 1.5f, 2.0f)) {
+                                val selected = kotlin.math.abs(s.fusionVoxelMm - preset) < 0.05f
+                                if (selected) {
+                                    Button(
+                                        onClick = { s = s.copy(fusionVoxelMm = preset) },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("${preset}mm") }
+                                } else {
+                                    TextButton(
+                                        onClick = { s = s.copy(fusionVoxelMm = preset) },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("${preset}mm") }
+                                }
+                            }
+                        }
+                        SettingsNumber("Fusion voxel (mm)", s.fusionVoxelMm) { v ->
+                            s = s.copy(fusionVoxelMm = v.coerceIn(0.75f, 6.0f))
+                        }
                     }
-                    SettingsNumber("Refine every", s.refineEvery.toFloat()) { v ->
-                        s = s.copy(refineEvery = v.toInt().coerceIn(1, 5000))
+
+                    if (showSplat) {
+                        Text("Cross3DGS training (Vulkan)", style = MaterialTheme.typography.titleSmall)
+                        SettingsNumber("Steps", s.trainSteps.toFloat()) { v ->
+                            s = s.copy(trainSteps = v.toInt().coerceIn(100, 100000))
+                        }
+                        SettingsNumber("Max splats", s.maxSplats.toFloat()) { v ->
+                            s = s.copy(maxSplats = v.toInt().coerceIn(1000, 2_000_000))
+                        }
+                        SettingsNumber("Max resolution", s.maxResolution.toFloat()) { v ->
+                            s = s.copy(maxResolution = v.toInt().coerceIn(128, 2048))
+                        }
+                        SettingsNumber("SH degree (0-3)", s.shDegree.toFloat()) { v ->
+                            s = s.copy(shDegree = v.toInt().coerceIn(0, 3))
+                        }
+                        SettingsToggle("Use U2Net masks (black bg)", s.useMasks) { v ->
+                            s = s.copy(useMasks = v)
+                        }
+                        SettingsToggle("MCMC densification", s.densityStrategy != "fixed") { v ->
+                            s = s.copy(densityStrategy = if (v) "mcmc" else "fixed")
+                        }
+                        SettingsNumber("SSIM weight", s.ssimWeight) { v ->
+                            s = s.copy(ssimWeight = v.coerceIn(0f, 1f))
+                        }
+                        SettingsNumber("MCMC clone offset", s.mcmcCloneOffset) { v ->
+                            s = s.copy(mcmcCloneOffset = v.coerceIn(0.05f, 2f))
+                        }
+                        SettingsNumber("MCMC grad sampling", s.mcmcGradientSampling) { v ->
+                            s = s.copy(mcmcGradientSampling = v.coerceIn(0.1f, 5f))
+                        }
                     }
-                    SettingsNumber("Max splats", s.maxSplats.toFloat()) { v ->
-                        s = s.copy(maxSplats = v.toInt().coerceIn(1000, 10_000_000))
-                    }
-                    SettingsNumber("Max resolution", s.maxResolution.toFloat()) { v ->
-                        s = s.copy(maxResolution = v.toInt().coerceIn(128, 4096))
-                    }
-                    SettingsNumber("Export every", s.exportEvery.toFloat()) { v ->
-                        s = s.copy(exportEvery = v.toInt().coerceIn(100, 100000))
-                    }
-                    SettingsNumber("SH degree", s.shDegree.toFloat()) { v ->
-                        s = s.copy(shDegree = v.toInt().coerceIn(0, 4))
-                    }
-                    SettingsToggle("Use masks when training", s.useMasks) { v ->
-                        s = s.copy(useMasks = v)
-                    }
-                    SettingsNumber("LR mean", s.lrMean) { v -> s = s.copy(lrMean = v) }
-                    SettingsNumber("LR color", s.lrCoeffsDc) { v -> s = s.copy(lrCoeffsDc = v) }
-                    SettingsNumber("LR opacity", s.lrOpac) { v -> s = s.copy(lrOpac = v) }
-                    SettingsNumber("LR scale", s.lrScale) { v -> s = s.copy(lrScale = v) }
-                    SettingsNumber("Growth threshold", s.growthGradThreshold) { v ->
-                        s = s.copy(growthGradThreshold = v)
-                    }
-                    SettingsNumber("Growth fraction", s.growthSelectFraction) { v ->
-                        s = s.copy(growthSelectFraction = v)
-                    }
-                    SettingsNumber("Growth stop iter", s.growthStopIter.toFloat()) { v ->
-                        s = s.copy(growthStopIter = v.toInt().coerceIn(100, 100000))
-                    }
-                    SettingsNumber("Mip scale floor", s.minScaleFactor) { v ->
-                        s = s.copy(minScaleFactor = v)
-                    }
-                    SettingsNumber("SSIM weight", s.ssimWeight) { v -> s = s.copy(ssimWeight = v) }
                 }
             },
             confirmButton = { TextButton(onClick = { onSave(s) }) { Text("Save") } },
@@ -1684,7 +2313,7 @@ class PipelineActivity : ComponentActivity() {
     /** Tracks feature points with pyramidal Lucas-Kanade and draws trails back to the last keyframe. */
     /**
      * Masking step: shows the first keyframe and lets the user tap the object to keep.
-     * Everything except the resulting mask is ignored by Brush training.
+     * Everything outside the mask is composited to black for Cross3DGS training.
      */
     @Composable
     private fun MaskPromptScreen(
@@ -1798,10 +2427,13 @@ class PipelineActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val MAX_FRAMES = 150
-        const val CAPTURE_INTERVAL_MS = 700L
-        const val TRAIN_STEPS = 10_000
-        const val REFINE_EVERY = 100
+    companion object {
+        const val EXTRA_EASYSCAN_SESSION = "com.tomppi.splatproto.EASYSCAN_SESSION"
+        const val EXTRA_SPLAT_ONLY = "com.tomppi.splatproto.SPLAT_ONLY"
+        const val EXTRA_IMPORT_STL_PATH = "com.tomppi.enderslicer.IMPORT_STL_PATH"
+        private const val MAX_FRAMES = 150
+        private const val CAPTURE_INTERVAL_MS = 700L
+        private const val TRAIN_STEPS = 10_000
+        private const val REFINE_EVERY = 100
     }
 }

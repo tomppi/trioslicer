@@ -36,18 +36,43 @@ object SamsungCameraVendor {
     private val sensitivity = key("samsung.android.sensor.sensitivityInternal", Int::class.javaObjectType)
     private val targetPictureSize = key("samsung.android.scaler.targetPictureSize", Size::class.java)
 
+    @Volatile private var exposureTimeUnsupported = false
+    @Volatile private var gainUnsupported = false
+    @Volatile private var sensitivityUnsupported = false
+    @Volatile private var targetPictureSizeUnsupported = false
+
     val available: Boolean
         get() = exposureTime != null && gain != null && sensitivity != null
 
+    private fun <T> safeSet(
+        builder: CaptureRequest.Builder,
+        key: CaptureRequest.Key<T>?,
+        value: T,
+        unsupported: Boolean,
+        markUnsupported: () -> Unit,
+    ) {
+        if (key == null || unsupported) return
+        try {
+            builder.set(key, value)
+        } catch (_: IllegalArgumentException) {
+            markUnsupported()
+            Log.i(TAG, "HAL does not advertise vendor key ${key.name}; skipping")
+        }
+    }
+
     /** Apply the vendor manual exposure beside the standard keys. */
     fun applyExposure(builder: CaptureRequest.Builder, exposureNs: Long, iso: Int) {
-        exposureTime?.let { builder.set(it, exposureNs) }
-        gain?.let { builder.set(it, iso) }
-        sensitivity?.let { builder.set(it, iso) }
+        safeSet(builder, exposureTime, exposureNs, exposureTimeUnsupported) { exposureTimeUnsupported = true }
+        safeSet(builder, gain, iso, gainUnsupported) { gainUnsupported = true }
+        safeSet(builder, sensitivity, iso, sensitivityUnsupported) { sensitivityUnsupported = true }
     }
 
     /** Tell the HAL the exact JPEG size for a still request. */
     fun applyTargetSize(builder: CaptureRequest.Builder, size: Size?) {
-        if (size != null) targetPictureSize?.let { builder.set(it, size) }
+        if (size != null) {
+            safeSet(builder, targetPictureSize, size, targetPictureSizeUnsupported) {
+                targetPictureSizeUnsupported = true
+            }
+        }
     }
 }

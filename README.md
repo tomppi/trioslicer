@@ -6,11 +6,12 @@
 
 TrioSlicer is an Android-first front end for **CuraEngine, PrusaSlicer and OrcaSlicer** - importing,
 preparing, slicing, previewing and sending 3D prints from a phone or foldable, through **OctoPrint**
-or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), and modelling in
-an embedded **Blender 3.6** or in **parametric CAD**. It runs on Android 10+ on **ARM64** and nothing else - the engines are
-built for `arm64-v8a` alone - with all three cross-compiled for the phone together with their own
-upstream profile systems: CuraEngine **5.14.0-alpha.0**, PrusaSlicer **3.0.0-alpha11** and
-OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2.
+or either **Klipper** host (**Phone Klipper**, or **PC Klipper** over Moonraker), modelling in
+an embedded **Blender 3.6**, **SolidCraft**, or **build123d/OpenCASCADE CAD**, and scanning real-world
+objects on-device with **EasyScan** and **3D Gaussian Splatting**. It runs on Android 10+ on **ARM64**
+and nothing else - the engines are built for `arm64-v8a` alone - with all three slicers cross-compiled
+for the phone together with their own upstream profile systems: CuraEngine **5.14.0**, PrusaSlicer
+**3.0.0-alpha15** and OrcaSlicer **2.5.2**. Its most-tested baseline is a modified Creality Ender 3 V2.
 
 > This is development software, not a complete Cura or PrusaSlicer replacement. Inspect every model, setting and generated G-code before printing.
 
@@ -24,11 +25,21 @@ OrcaSlicer **2.4.2**. Its most-tested baseline is a modified Creality Ender 3 V2
   filament` sheet can only ever change the settings the running engine reads.
 - **Takes the setup you already have.** Cura `.3mf` projects and `.curaprofile` files, PrusaSlicer
   `.ini` config bundles, OrcaSlicer presets and bundles, and models as STL, 3MF, STEP or IGES.
-- **A handheld laser scanner in the app.** The **EasyScan** menu opens the full
-  [Easy Scanner](https://github.com/RawMechatronicsOrg/EasyScanner) workspace bundled with TrioSlicer:
-  ChArUco camera and laser-plane calibration, live laser-line scanning to a point cloud, posed
-  full-resolution photos for photogrammetry, a scan library and its own settings. The upstream
-  repository carries the hardware assembly, printable boards and step-by-step instructions.
+- **Handheld 3D scanner & live mesh in the app.** The **EasyScan** menu opens TrioSlicer's
+  expanded [Easy Scanner](https://github.com/RawMechatronicsOrg/EasyScanner) workspace with an
+  on-device **SuperVINS** visual-inertial odometry backend (XFeat/SuperPoint + LighterGlue on
+  Snapdragon QNN NPU + Ceres sliding-window estimator + DBoW3 loop closure), live **Depth Anything 3**
+  NPU depth and laser-line **TSDF** meshing, separate **Splat**, **Laser**, and **Fused** capture
+  modes, focus-range auto-pause/auto-resume, a capture resolution selector, and manual Samsung
+  Camera2 exposure controls. Camera-IMU calibration profiles are imported from the standalone
+  [imucalib](https://github.com/tomppi/imucalib) companion app.
+- **On-device 3D Gaussian Splatting & Splat/PLY files.** Capture posed frames in EasyScan,
+  optionally mask objects on-device with **U2Net** on the Snapdragon NPU, reconstruct dense metric
+  surface clouds with **Parallax SfM/MVS**, and train 3D Gaussian splats directly on the phone GPU
+  with **Cross3DGS** (Vulkan). **More → Experimental → Splat/PLY files** lists all trained splats,
+  laser clouds, and imported `.ply`/`.sog`/`.spz` files, opens all of them in the offline **Aholo**
+  WebGL2 viewer, and includes **Convert to mesh (STL)** to turn splats or point clouds into flat
+  Z-up STL meshes ready for the build plate.
 - **Plate, viewer and preview.** Several models on the plate, packed by the app's own arranger
   (Auto arrange or Manual) or one at a time with a clearance check; move, rotate, scale, centre,
   lay flat and drop to bed the selected part; build-volume
@@ -147,7 +158,7 @@ OrcaSlicer presets and bundles import from the Orca settings sheet. Models impor
 
 Imported values become a persistent baseline: they stay in effect until you override them in the app,
 and your overrides are tracked separately. Formula resolution is verified against the pinned
-CuraEngine 5.14.0-alpha.0 resources, so projects from other Cura versions usually import - check the
+CuraEngine 5.14.0 resources, so projects from other Cura versions usually import - check the
 resolved settings before a critical print.
 
 ## Current limitations
@@ -159,8 +170,12 @@ resolved settings before a critical print.
 - High-density models and fine FEA grids may exceed the Android heap; thermal FEA lacks transient conduction and creep
 - Non-planar slicing and conical slicing buffer the full transformed G-code in memory, so very large or very dense prints can exhaust the Android heap and fail with an out-of-memory error
 - Cura previews estimate bead widths from the extrusion delta (Cura G-code carries no width markers), so a previewed width can differ slightly from what the engine planned
-- The APK is about 500 MB, most of it the embedded Blender and CAD engines, so it is a large
+- The APK is about 790 MB, carrying the embedded slicers, Blender, SolidCraft, OpenCASCADE/CAD,
+  Cross3DGS Vulkan, and Snapdragon multi-SoC QNN NPU runtimes and ML models, so it is a large
   download and a large install
+- On-device U2Net object masking and DA3 HTP depth run unsigned QNN HTP skeletons via `su` (root
+  required); without root, scans still reconstruct and train unmasked, and multi-SoC QNN HTP/GPU
+  delegates (Snapdragon V68–V81 + Adreno QNN GPU) accelerate SuperVINS front-end inference
 - The AI assistant is a client to a DeepSeek harness you run yourself, and photo-to-3D additionally needs a GPU box; neither is bundled, and replies are read from a polling projection rather than streamed
 - Snap-fit joints are verified in the app and in the geometry, not yet in plastic: no printed pair has
   been clicked together, so treat the clearances as something to tune rather than a finished fit. That
@@ -215,9 +230,11 @@ settings the tool paths should be identical rather than merely similar. They are
 
 | engine | supports off | supports on |
 |---|---|---|
-| CuraEngine 5.14.0-alpha.0 | walls, skin and infill **exact** | exact, except **tree support** |
-| PrusaSlicer 3.0.0-alpha11 | **0.9992** | **0.9696** - path length within 0.0002 % |
-| OrcaSlicer 2.4.2 | **0.9776** | 0.9776 |
+| CuraEngine 5.14.0 | walls, skin and infill **exact** | exact, except **tree support** |
+| PrusaSlicer 3.0.0-alpha15 | **0.9992** | **0.9696** - path length within 0.0002 % |
+| OrcaSlicer 2.5.2 | **0.9776** | 0.9776 |
+
+*(Similarity ratios above were measured on the prior 5.14.0-alpha.0 / 3.0.0-alpha11 / 2.4.2 baseline.)*
 
 Every figure is measured against a control run of the reference against itself, because CuraEngine does
 not reproduce its own output at the thread count it is given: two runs with identical arguments agree on
@@ -228,29 +245,37 @@ segment stays identical - so support is not a correctness signal for any slicer.
 [docs/gcode-correctness/](docs/gcode-correctness/) has the models, presets, settings and every
 difference; `scripts/compare-gcode.py` is the comparator.
 
-## EasyScan laser scanner
+## EasyScan 3D scanner & Gaussian splatting
 
-The **EasyScan** menu starts **Easy Scanner**, the complete handheld laser-line scanner app from
-[RawMechatronicsOrg/EasyScanner](https://github.com/RawMechatronicsOrg/EasyScanner), bundled at
-version 0.3.1 (Apache-2.0, source commit 90545c2). It keeps its own UI, camera controller and Rust
-engine, and its layout: guided steps or expert mode, board pose viewing, camera calibration,
-laser-plane calibration, live scanning, posed photo sessions, a scan library and settings.
+The **EasyScan** menu starts TrioSlicer's expanded **Easy Scanner** workspace, built on
+[RawMechatronicsOrg/EasyScanner](https://github.com/RawMechatronicsOrg/EasyScanner) v0.3.1
+(Apache-2.0, source commit `90545c2`). TrioSlicer extends the upstream laser scanner with:
 
-Its instructions are upstream, not here:
+- **SuperVINS VIO backend**: XFeat/SuperPoint + LighterGlue feature front-end accelerated via
+  Qualcomm QNN (multi-SoC HTP V68–V81 + Adreno GPU fallback), Ceres sliding-window visual-inertial
+  estimator, and DBoW3 loop closure with pose-graph drift correction.
+- **Live TSDF mesh & Depth Anything 3 (DA3) NPU**: Real-time laser + DA3 depth fusion with live
+  3D mesh preview and focus-range auto-pause/auto-resume.
+- **Separated Splat / Laser / Fused capture modes**: Dedicated workflows for pure 3D Gaussian
+  Splatting (with selectable capture resolution), pure laser-line scanning, or fused laser + splat
+  reconstruction, handing off directly to **SplatProto** (Parallax SfM/MVS + U2Net NPU masking +
+  **Cross3DGS** Vulkan trainer).
+- **Camera-IMU calibration**: Load Kalibr/Allan-variance calibration bundles exported by the
+  standalone [tomppi/imucalib](https://github.com/tomppi/imucalib) app from the EasyScan
+  Calibration screen.
 
-- [README](https://github.com/RawMechatronicsOrg/EasyScanner#readme) - what the pieces are and how a
-  first scan goes
+Upstream hardware and laser-clamp documentation remains in RawMechatronicsOrg/EasyScanner:
+
+- [README](https://github.com/RawMechatronicsOrg/EasyScanner#readme) - hardware overview and laser setup
 - [printable ChArUco boards](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/charuco) and
   the [assembly](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/cad/assembly) with the
   parts list, including the laser clamp
-- [releases](https://github.com/RawMechatronicsOrg/EasyScanner/releases) and its
-  [docs](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/docs) for the phone, laser and
+- [docs](https://github.com/RawMechatronicsOrg/EasyScanner/tree/main/docs) for laser-plane and
   board calibration details
 
-TrioSlicer only bundles and launches it: the sources live in [easyscanapp/](easyscanapp/) with their
-Apache-2.0 license and provenance, and their application logic is unchanged (the integration changes are
-listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Its SuperPoint/QNN assets and Rust core are
-carried in the same APK.
+The sources live in [easyscanapp/](easyscanapp/) and [splatproto/](splatproto/), with full
+third-party attribution and Apache-2.0 §4(b) modification notices in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

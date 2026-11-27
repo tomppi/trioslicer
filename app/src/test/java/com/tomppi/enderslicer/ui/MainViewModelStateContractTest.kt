@@ -163,7 +163,7 @@ class MainViewModelStateContractTest {
      */
     private fun launchFingerprint(): String = WorkspaceStateStore.fingerprint(
         "Built-in current Cura settings",
-        "Cura 5.14.0-alpha.0 / setting version 27 reference",
+        "Cura 5.14.0 / setting version 27 reference",
         null,
         "27",
         SlicerSettings().copy(overriddenSettingKeys = emptySet()).withRecomputedDerived(),

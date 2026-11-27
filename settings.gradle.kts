@@ -21,7 +21,5 @@ dependencyResolutionManagement {
 rootProject.name = "EnderSlicer"
 include(":app")
 include(":easyscanapp")
-include(":imucalibcore")
-include(":imucalib")
-// Splat Proto's capture -> SfM -> Brush training engine, embedded as a library.
+// On-device Gaussian splatting & DA3 depth module (Cross3DGS Vulkan, Parallax SfM, U2Net/DA3 NPU).
 include(":splatproto")

@@ -149,6 +149,10 @@ class CaptureController(
     private var scanStartMs = 0L
     private val previews = arrayOfNulls<Bitmap>(3)
     private var previewIndex = 0
+    // Reused YUV scratch buffers for VioRunner.submitFrame so 30 fps capture avoids ~70 MB/s GC churn.
+    private var vioY = ByteArray(0)
+    private var vioU = ByteArray(0)
+    private var vioV = ByteArray(0)
 
     // Sensors (main thread writes, camera thread reads).
     @Volatile private var gravity = FloatArray(3)
@@ -174,20 +178,24 @@ class CaptureController(
     fun close() {
         sensors.unregisterListener(this)
         val h = handler ?: return
+        val t = thread
+        thread = null
+        handler = null
         h.post {
             if (scanning) finishScan()
+            runCatching { session?.stopRepeating() }
+            runCatching { session?.abortCaptures() }
             runCatching { session?.close() }
             runCatching { device?.close() }
             recentSecondary.forEach { it.close() }
             recentSecondary.clear()
             pendingSecondary = null
-            writer.shutdown()
+            if (!writer.isShutdown) writer.shutdown()
             primaryReader?.close(); secondaryReader?.close()
             session = null; device = null; primaryReader = null; secondaryReader = null
+            // Give Camera2 binder callbacks a brief window to drain before quitting the looper.
+            h.postDelayed({ t?.quitSafely() }, 150L)
         }
-        thread?.quitSafely()
-        thread = null
-        handler = null
     }
 
     /** Starts a new scan. */
@@ -239,8 +247,9 @@ class CaptureController(
         rig = secondary != null
         size = if (secondary != null) CameraProbe.chooseSize(m.primary, secondary) else CameraProbe.chooseSize(m.primary)
         cameras.clear()
+        val primaryIntr = calibratedIntrinsics(size) ?: CameraProbe.intrinsics(m.primary, size)
         cameras += ScanCamera(0, m.label, m.primary.openId, m.primary.physicalId, m.primary.sensorOrientation,
-            CameraProbe.intrinsics(m.primary, size), m.primary.position)
+            primaryIntr, m.primary.position)
         if (secondary != null) cameras += ScanCamera(1, m.label, secondary.openId, secondary.physicalId,
             secondary.sensorOrientation, CameraProbe.intrinsics(secondary, size), secondary.position)
         primaryReader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 4).apply {
@@ -441,12 +450,21 @@ class CaptureController(
             previewIndex = (previewIndex + 1) % previews.size
             val n = NativeCore.trackFrame(p[0].buffer, p[1].buffer, p[2].buffer, img.width, img.height,
                 p[0].rowStride, p[1].rowStride, p[1].pixelStride, bmp, rot, true, out, pts)
-            vio?.let { vr ->
-                if (vr.tracking) {
-                    val yb = ByteArray(p[0].buffer.remaining())
-                    p[0].buffer.duplicate().also { it.rewind() }.get(yb)
-                    vr.submitFrame(yb, p[0].rowStride, img.width, img.height, img.timestamp * 1e-9)
-                }
+            val frameVioPose = vio?.takeIf { it.tracking }?.let { vr ->
+                val yLen = p[0].buffer.remaining()
+                val uLen = p[1].buffer.remaining()
+                val vLen = p[2].buffer.remaining()
+                if (vioY.size != yLen) vioY = ByteArray(yLen)
+                if (vioU.size != uLen) vioU = ByteArray(uLen)
+                if (vioV.size != vLen) vioV = ByteArray(vLen)
+                p[0].buffer.duplicate().also { it.rewind() }.get(vioY)
+                p[1].buffer.duplicate().also { it.rewind() }.get(vioU)
+                p[2].buffer.duplicate().also { it.rewind() }.get(vioV)
+                vr.submitFrame(
+                    vioY, vioU, vioV,
+                    p[0].rowStride, p[1].rowStride, p[1].pixelStride,
+                    img.width, img.height, img.timestamp,
+                )
             }
             main.post { onPreview(bmp) }
             lastProgress = out[0]
@@ -471,7 +489,7 @@ class CaptureController(
                 }
                 expirePendingSecondary(now)
                 if (focused && out[5] > 0.5f && steady && now - lastKeyframeMs > 350) {
-                    saveKeyframe(img)
+                    saveKeyframe(img, frameVioPose)
                     lastKeyframeMs = now
                 }
             } else {
@@ -504,7 +522,7 @@ class CaptureController(
         fun saveJpeg(f: File) = NativeCore.saveJpeg(y, u, v, width, height, yStride, uvStride, uvPixelStride, f.absolutePath, 95)
     }
 
-    private fun saveKeyframe(primary: Image) {
+    private fun saveKeyframe(primary: Image, vioPose: DoubleArray?) {
         val s = scan ?: return
         val up = upInCamera(cameras[0].sensorOrientation)
         val group = keyframes
@@ -512,7 +530,6 @@ class CaptureController(
         val name = "p_%04d.jpg".format(group)
         val copy = YuvCopy(primary)
         writer.execute { copy.saveJpeg(File(s.imagesDir, name)) }
-        val vioPose = DoubleArray(16).takeIf { vio?.initialized == true && vio?.cameraPose(it) == true }
         images += ScanImage(name, 0, if (rig) group else -1, up, primary.timestamp,
             exposureNs, iso, focusDiopters, torchOn, rsSkewNs,
             toCamera(cameras[0].sensorOrientation, w), vioPose)
@@ -586,6 +603,36 @@ class CaptureController(
         val s = sin(th).toFloat()
         return floatArrayOf(c * v[0] - s * v[1], -s * v[0] - c * v[1], -v[2])
     }
+
+    /** Loads EasyScanner's calibrated live_intrinsics.json scaled pixel-center-accurately to [target]. */
+    private fun calibratedIntrinsics(target: Size): Intrinsics? = runCatching {
+        val f = File(context.filesDir, "live_intrinsics.json")
+        if (!f.isFile || f.length() < 20L) return null
+        val o = org.json.JSONObject(f.readText())
+        if (!o.optBoolean("calibrated", false)) return null
+        val w = o.optDouble("width", 0.0)
+        val h = o.optDouble("height", 0.0)
+        if (w <= 1.0 || h <= 1.0) return null
+        val srcAspect = w / h
+        val dstAspect = target.width.toDouble() / target.height.toDouble()
+        if (abs(srcAspect - dstAspect) / dstAspect > 0.02) return null
+        val fx = o.optDouble("fx", 0.0)
+        val fy = o.optDouble("fy", 0.0)
+        val cx = o.optDouble("cx", 0.0)
+        val cy = o.optDouble("cy", 0.0)
+        if (!fx.isFinite() || !fy.isFinite() || fx <= 1.0 || fy <= 1.0) return null
+        val sx = target.width.toDouble() / w
+        val sy = target.height.toDouble() / h
+        val dist = o.optJSONArray("dist")
+        fun d(i: Int) = if (dist != null && i < dist.length()) dist.optDouble(i, 0.0) else 0.0
+        Intrinsics(
+            width = target.width, height = target.height,
+            fx = fx * sx, fy = fy * sy,
+            cx = (cx + 0.5) * sx - 0.5, cy = (cy + 0.5) * sy - 0.5,
+            k1 = d(0), k2 = d(1), p1 = d(2), p2 = d(3), k3 = d(4),
+            calibrated = true,
+        )
+    }.getOrNull()
 
     private fun publish(newHint: String?) {
         val heading = rotation?.let { Coverage.bin(it, azimuth0) } ?: -1

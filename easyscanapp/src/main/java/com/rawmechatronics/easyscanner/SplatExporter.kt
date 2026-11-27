@@ -12,7 +12,7 @@ import java.nio.ByteOrder
  * point spacing, colours keep their RGB and the cloud is Y-up, centred.
  */
 object SplatExporter {
-    fun convert(ply: File, out: File): Int {
+    fun convert(ply: File, out: File, voxelMm: Float = 3f): Int {
         if (!ply.exists()) return -1
         val data = ply.readBytes()
         val headerEnd = indexOf(data, "end_header\n".toByteArray())
@@ -36,12 +36,14 @@ object SplatExporter {
         }
         val cx = (minx + maxx) / 2f; val cy = (miny + maxy) / 2f; val cz = (minz + maxz) / 2f
         val vol = ((maxx - minx) * (maxy - miny) * (maxz - minz)).coerceAtLeast(1f)
-        // voxel-downsample so viewers stay responsive (3 mm, 4 mm for big clouds)
-        val voxel = if (n > 150000) 4.0f else 3.0f
+        // Voxel-downsample so viewers stay responsive. The hybrid preview passes 0
+        // to keep every laser point; CloudView already caps its own display set.
+        val voxel = if (voxelMm > 0f) voxelMm else if (n > 150000) 4.0f else 3.0f
         val scaleOut = voxel * 0.8f
         val seen = HashSet<Int>()
         val sel = ArrayList<Int>(Math.min(n, 80000))
         for (i in 0 until n) {
+            if (voxelMm <= 0f) { sel.add(i); continue }
             val o = start + i * stride
             val kx = Math.floor((bb.getFloat(o) / voxel).toDouble()).toInt() + 512
             val ky = Math.floor((bb.getFloat(o + 4) / voxel).toDouble()).toInt() + 512

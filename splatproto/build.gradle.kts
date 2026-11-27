@@ -1,9 +1,9 @@
-// Splat Proto's capture -> SfM -> Brush training engine, embedded in TrioSlicer.
+// Splat Proto's capture -> SfM -> Cross3DGS Vulkan training engine, embedded in TrioSlicer.
 //
 // This is a library module: it has no launcher of its own, and the app enters it through
-// More -> Gaussian splatting. The UI (PipelineActivity) is the phone workflow: Camera2
-// capture, the NPU object mask, Parallax reconstruction and Brush training, with the trained
-// .ply written into the app's SplatLibrary folder so the existing splat viewer lists it.
+// More -> Gaussian splatting. The UI (PipelineActivity) is the phone workflow: Camera2 +
+// SuperVINS capture, the NPU object mask, Parallax reconstruction and Cross3DGS training, with
+// the trained .ply written into the app's SplatLibrary folder so the existing splat viewer lists it.
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -16,7 +16,7 @@ android {
     defaultConfig {
         minSdk = 29
         ndk {
-            // Same ABI as the app's engines; the vendored Parallax core and libbrush_jni
+            // Same ABI as the app's engines; the vendored Parallax core and libcross3dgs_android
             // are arm64-only.
             abiFilters += "arm64-v8a"
         }
@@ -77,12 +77,10 @@ android {
     }
 }
 
-// The payload is staged, not committed: the Brush JNI library and the NPU masker are 233 MB of
-// built engine content, published as the splatproto-payload release asset. Fail here, naming the
-// command, instead of packaging an APK whose Gaussian splatting menu opens and cannot load either
-// half of the pipeline.
+// Verify the Cross3DGS Vulkan JNI library and the U2Net NPU masker assets are staged before
+// packaging an APK whose Gaussian splatting menu opens.
 val splatProtoPayloadFiles = listOf(
-    "src/main/jniLibs/arm64-v8a/libbrush_jni.so",
+    "src/main/jniLibs/arm64-v8a/libcross3dgs_android.so",
     "src/main/assets/masker/bin/qnn-net-run",
     "src/main/assets/masker/models/u2net.bin",
     "src/main/assets/masker/models/htp_ext.json",
@@ -117,8 +115,8 @@ kotlin {
 }
 
 dependencies {
-    // The scanner module owns the VIO front-end (OpenVINS + SuperPoint) and its calibration
-    // profile; the splat capture reuses the same pose source instead of a second copy.
+    // The scanner module owns the VIO front-end (SuperVINS: SuperPoint + LightGlue + VINS-Fusion)
+    // and its calibration profile; the splat capture reuses the same pose source.
     implementation(project(":easyscanapp"))
     // Vendored Parallax SfM core links against OpenCV's Prefab package.
     implementation("org.opencv:opencv:4.14.0")
@@ -138,4 +136,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.webkit:webkit:1.16.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

@@ -117,7 +117,8 @@ struct DensePoint {
     cv::Vec3f X, n;
     cv::Vec3b rgb;
 };
-std::vector<DensePoint> denseReconstruct(const State& s, const ProgressFn& progress, float p0, float p1);
+std::vector<DensePoint> denseReconstruct(const State& s, const ProgressFn& progress, float p0, float p1,
+                                         const std::string& outputDir = {});
 
 // io.cpp
 bool writePly(const std::string& path, const std::vector<DensePoint>& pts);

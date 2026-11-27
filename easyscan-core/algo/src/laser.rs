@@ -440,7 +440,111 @@ impl LaserDetector {
         }
         let step = if pts.len() > p.max_points { pts.len() / p.max_points + 1 } else { 1 };
         out.extend(pts.iter().step_by(step));
+        let steger_sigma = (1.25 * (w.max(h) as f32 / 1280.0).sqrt()).clamp(1.0, 2.0);
+        refine_steger_hessian(&self.resp, w, h, out, steger_sigma);
         true
+    }
+}
+
+/// Steger's curvilinear 2-D Hessian ridge sub-pixel refinement on the laser response field.
+///
+/// For each detected chain centre `(x, y)`, evaluates local Gaussian first and second
+/// partial derivatives `(rx, ry, rxx, rxy, ryy)`, extracts the unit normal `(nx, ny)`
+/// perpendicular to the laser line (eigenvector of the most negative Hessian eigenvalue),
+/// and moves the point to the zero-crossing of the directional first derivative along
+/// `(nx, ny)`. Eliminates oblique 1-D scanline bias on angled stripes and curved surfaces
+/// while automatically keeping the windowed centroid on flat-top saturated peaks.
+fn refine_steger_hessian(resp: &[u8], w: usize, h: usize, pts: &mut [[f32; 2]], sigma: f32) {
+    let s = sigma.clamp(0.9, 2.5);
+    let rad = ((2.5 * s).ceil() as usize).clamp(2, 5);
+    let klen = 2 * rad + 1;
+    let inv2s2 = 1.0f32 / (2.0 * s * s);
+    let inv_s2 = 1.0f32 / (s * s);
+    let inv_s4 = inv_s2 * inv_s2;
+
+    let mut g0 = [0.0f32; 11];
+    let mut g1 = [0.0f32; 11];
+    let mut g2 = [0.0f32; 11];
+    let mut sum0 = 0.0f32;
+    for i in 0..klen {
+        let x = i as f32 - rad as f32;
+        let v = (-x * x * inv2s2).exp();
+        g0[i] = v;
+        sum0 += v;
+    }
+    let norm = 1.0f32 / sum0.max(1e-6);
+    for i in 0..klen {
+        let x = i as f32 - rad as f32;
+        g0[i] *= norm;
+        // Correlation with +x*g0/s^2 gives df/dx (positive when resp[ix+1] > resp[ix-1]).
+        g1[i] = x * inv_s2 * g0[i];
+        g2[i] = (x * x - s * s) * inv_s4 * g0[i];
+    }
+
+    let rad_i = rad as isize;
+    let w_i = w as isize;
+    let h_i = h as isize;
+    for pt in pts.iter_mut() {
+        let ix = pt[0].round() as isize;
+        let iy = pt[1].round() as isize;
+        if ix < rad_i || iy < rad_i || ix + rad_i >= w_i || iy + rad_i >= h_i {
+            continue;
+        }
+        let mut rx = 0.0f32;
+        let mut ry = 0.0f32;
+        let mut rxx = 0.0f32;
+        let mut rxy = 0.0f32;
+        let mut ryy = 0.0f32;
+        for dy in 0..klen {
+            let row = (iy + dy as isize - rad_i) as usize * w;
+            let x0 = (ix - rad_i) as usize;
+            let mut s0 = 0.0f32;
+            let mut s1 = 0.0f32;
+            let mut s2 = 0.0f32;
+            for dx in 0..klen {
+                let v = resp[row + x0 + dx] as f32;
+                s0 += v * g0[dx];
+                s1 += v * g1[dx];
+                s2 += v * g2[dx];
+            }
+            rx += s1 * g0[dy];
+            ry += s0 * g1[dy];
+            rxx += s2 * g0[dy];
+            rxy += s1 * g1[dy];
+            ryy += s0 * g2[dy];
+        }
+        // Most negative eigenvalue of [[rxx, rxy], [rxy, ryy]] = curvature across the stripe.
+        let tr = rxx + ryy;
+        let diff = rxx - ryy;
+        let disc = (diff * diff + 4.0 * rxy * rxy).sqrt();
+        let lambda_min = 0.5 * (tr - disc);
+        let lambda_max = 0.5 * (tr + disc);
+        if lambda_min >= -2.0 || lambda_min.abs() <= 2.0 * lambda_max.abs() {
+            continue;
+        }
+        let (vx, vy) = if diff >= 0.0 {
+            (-rxy, 0.5 * (diff + disc))
+        } else {
+            (0.5 * (-diff + disc), -rxy)
+        };
+        let vlen = (vx * vx + vy * vy).sqrt();
+        if vlen < 1e-6 {
+            continue;
+        }
+        let nx = vx / vlen;
+        let ny = vy / vlen;
+        let num = rx * nx + ry * ny;
+        let den = rxx * nx * nx + 2.0 * rxy * nx * ny + ryy * ny * ny;
+        if den >= -1e-4 {
+            continue;
+        }
+        let t = -num / den;
+        let dx = t * nx;
+        let dy = t * ny;
+        if dx.abs() <= 0.65 && dy.abs() <= 0.65 {
+            pt[0] = ix as f32 + dx;
+            pt[1] = iy as f32 + dy;
+        }
     }
 }
 
@@ -625,5 +729,57 @@ mod tests {
         assert!(det.detect(&nv12, &Roi::full(256, 128), &LaserParams::default(), &mut b));
         assert_eq!(a, b);
         assert_eq!(img.frame().rgb_at(10, 10), nv12.rgb_at(10, 10));
+    }
+
+    #[test]
+    fn steger_refines_diagonal_and_curved_stripes_subpixel() {
+        // 45-degree diagonal stripe: 1-D scanline slicing is oblique, while Steger measures
+        // strictly along the perpendicular Hessian normal.
+        let diag = TestImage::new(400, 400, |x, y| {
+            let perp = ((y as f64) - (x as f64 + 12.35)).abs() * std::f64::consts::FRAC_1_SQRT_2;
+            let k = (-perp * perp / (2.0 * 1.4 * 1.4)).exp();
+            let bg = [80.0, 82.0, 80.0];
+            let laser = [255.0, 25.0, 35.0];
+            [0, 1, 2].map(|i| (bg[i] * (1.0 - k) + laser[i] * k).round() as u8)
+        });
+        let mut det = LaserDetector::default();
+        let mut out = Vec::new();
+        assert!(det.detect(&diag.frame(), &Roi::full(400, 400), &LaserParams::default(), &mut out));
+        assert!(out.len() >= 150, "only {} points", out.len());
+        let mut perp_errs: Vec<f64> = out
+            .iter()
+            .filter(|p| p[0] > 30.0 && p[0] < 350.0 && p[1] > 30.0 && p[1] < 350.0)
+            .map(|p| ((p[1] as f64) - (p[0] as f64 + 12.35)).abs() * std::f64::consts::FRAC_1_SQRT_2)
+            .collect();
+        perp_errs.sort_by(|a, b| a.total_cmp(b));
+        let p95 = perp_errs[(perp_errs.len() as f64 * 0.95) as usize];
+        assert!(p95 < 0.25, "diagonal Steger p95 perpendicular error {p95:.3} px");
+
+        // Curved sinusoidal stripe across wide angles.
+        let curved = TestImage::new(480, 320, |x, y| {
+            let cx = x as f64;
+            let cy = 160.0 + 48.0 * (cx * 0.025).sin();
+            let slope = 48.0 * 0.025 * (cx * 0.025).cos();
+            let perp = (y as f64 - cy).abs() / (1.0 + slope * slope).sqrt();
+            let k = (-perp * perp / (2.0 * 1.3 * 1.3)).exp();
+            let bg = [85.0, 88.0, 85.0];
+            let laser = [255.0, 20.0, 30.0];
+            [0, 1, 2].map(|i| (bg[i] * (1.0 - k) + laser[i] * k).round() as u8)
+        });
+        assert!(det.detect(&curved.frame(), &Roi::full(480, 320), &LaserParams::default(), &mut out));
+        assert!(out.len() >= 200, "only {} curved points", out.len());
+        let mut curve_errs: Vec<f64> = out
+            .iter()
+            .filter(|p| p[0] > 30.0 && p[0] < 450.0)
+            .map(|p| {
+                let cx = p[0] as f64;
+                let cy = 160.0 + 48.0 * (cx * 0.025).sin();
+                let slope = 48.0 * 0.025 * (cx * 0.025).cos();
+                (p[1] as f64 - cy).abs() / (1.0 + slope * slope).sqrt()
+            })
+            .collect();
+        curve_errs.sort_by(|a, b| a.total_cmp(b));
+        let cp95 = curve_errs[(curve_errs.len() as f64 * 0.95) as usize];
+        assert!(cp95 < 0.30, "curved Steger p95 perpendicular error {cp95:.3} px");
     }
 }

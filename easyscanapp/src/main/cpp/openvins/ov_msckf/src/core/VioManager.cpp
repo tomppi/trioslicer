@@ -28,6 +28,8 @@
 #include "track/TrackDescriptor.h"
 #include "track/TrackKLT.h"
 #include "track/TrackSIM.h"
+#include "superpoint_track.h"
+#include "utils/quat_ops.h"
 #include "types/Landmark.h"
 #include "types/LandmarkRepresentation.h"
 #include "utils/opencv_lambda_body.h"
@@ -277,6 +279,49 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
     message.images.at(i) = img_temp;
     cv::pyrDown(mask, mask_temp, cv::Size(mask.cols / 2.0, mask.rows / 2.0));
     message.masks.at(i) = mask_temp;
+  }
+
+  // Publish the current camera-to-world rotation so the tracker can gate
+  // matches with a rotation-only VIO prediction (translation is ignored here).
+  if (is_initialized_vio && state && state->_imu) {
+    auto it_cam = state->_calib_IMUtoCAM.find(0);
+    auto it_intr = state->_cam_intrinsics_cameras.find(0);
+    if (it_cam != state->_calib_IMUtoCAM.end()) {
+      // Propagate IMU state forward to this camera frame (read-only) so predictions are not 1 frame stale.
+      Eigen::Vector4d q_GtoI = state->_imu->quat();
+      Eigen::Vector3d p_IinG = state->_imu->pos();
+      if (propagator != nullptr && message.timestamp > state->_timestamp) {
+        Eigen::Matrix<double, 13, 1> state_plus;
+        Eigen::Matrix<double, 12, 12> cov_plus;
+        if (propagator->fast_state_propagate(state, message.timestamp, state_plus, cov_plus)) {
+          q_GtoI = state_plus.block(0, 0, 4, 1);
+          p_IinG = state_plus.block(4, 0, 3, 1);
+        }
+      }
+      Eigen::Matrix3d R_GtoI = ov_core::quat_2_Rot(q_GtoI);
+      Eigen::Matrix3d R_ItoC = ov_core::quat_2_Rot(it_cam->second->quat());
+      Eigen::Matrix3d R_CtoG = (R_ItoC * R_GtoI).transpose();
+      Eigen::Matrix<double, 3, 3, Eigen::RowMajor> R_row = R_CtoG;
+      ov_core::setVioCameraRotationPrediction(R_row.data());
+
+      // Project SLAM landmarks into this camera using the IMU-propagated frame N pose.
+      // Note: CamBase::distort_d already returns raw pixels (fx*x_d+cx, fy*y_d+cy) — do NOT multiply by K again.
+      std::unordered_map<size_t, cv::Point2f> slam_pred;
+      if (it_intr != state->_cam_intrinsics_cameras.end()) {
+        Eigen::Vector3d p_IinC = it_cam->second->pos();
+        Eigen::Vector3d p_CinG = p_IinG - R_CtoG * p_IinC;
+        for (auto &kv : state->_features_SLAM) {
+          if (!kv.second) continue;
+          Eigen::Vector3d p_FinG = kv.second->get_xyz(false);
+          Eigen::Vector3d p_FinC = R_CtoG.transpose() * (p_FinG - p_CinG);
+          if (!p_FinC.allFinite() || p_FinC.z() <= 0.05) continue;
+          Eigen::Vector2d uv_n = p_FinC.head<2>() / p_FinC.z();
+          Eigen::Vector2d px = it_intr->second->distort_d(uv_n);
+          if (px.allFinite()) slam_pred[kv.first] = cv::Point2f((float)px.x(), (float)px.y());
+        }
+      }
+      ov_core::setVioSlamFeaturePrediction(slam_pred);
+    }
   }
 
   // Perform our feature tracking!

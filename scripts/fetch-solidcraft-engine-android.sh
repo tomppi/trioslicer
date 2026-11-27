@@ -29,7 +29,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${GITHUB_REPOSITORY:-tomppi/trioslicer}"
-VERSION="${SOLIDCRAFT_ENGINE_VERSION:-v0.24.0}"
+VERSION="${SOLIDCRAFT_ENGINE_VERSION:-v0.50.0}"
 TAG="${SOLIDCRAFT_ENGINE_TAG:-solidcraft-engine-${VERSION}}"
 ASSET="solidcraft-engine-arm64-${VERSION}.tar.gz"
 APP_JNILIBS="${APP_JNILIBS:-$ROOT/app/src/main/jniLibs/arm64-v8a}"
@@ -37,7 +37,7 @@ DOWNLOAD_DIR="$ROOT/.build/solidcraft-engine-download"
 
 # The engine is executed by the app, so its digest is pinned: a deliberate re-pin sets
 # SOLIDCRAFT_ENGINE_SHA256 to the digest of the new asset.
-SOLIDCRAFT_ENGINE_SHA256_PINNED="82039615e5af8dd4c62cd95217d3baa500306439e70815230545f5c816699120"
+SOLIDCRAFT_ENGINE_SHA256_PINNED="03af5de17e005c99eef74f3ad2513c9bd5462d9309a62bd2b9f91e25a5c9ea46"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1

@@ -69,10 +69,10 @@ private val datadir = File(context.filesDir, "prusa/datadir")
     fun isAvailable(): Boolean = executable.isFile && executable.length() > 0L
 
     fun status(): String = when {
-        !executable.exists() -> "PrusaSlicer 3.0.0-alpha11 is not packaged in this APK"
+        !executable.exists() -> "PrusaSlicer 3.0.0-alpha15 is not packaged in this APK"
         !executable.isFile -> "PrusaSlicer package path is invalid"
         executable.length() == 0L -> "PrusaSlicer package is empty"
-        else -> "PrusaSlicer 3.0.0-alpha11 ready"
+        else -> "PrusaSlicer 3.0.0-alpha15 ready"
     }
 
     fun releaseArtifact(id: String) = publisher.release(id)
@@ -490,7 +490,7 @@ private val datadir = File(context.filesDir, "prusa/datadir")
         }
 
         const val ENGINE_LIBRARY_NAME = "libprusa_slicer_exec.so"
-        private const val RESOURCES_VERSION = "prusaslicer-3.0.0-alpha11-resources-v1"
+        private const val RESOURCES_VERSION = "prusaslicer-3.0.0-alpha15-resources-v1"
         private const val SLICE_TIMEOUT_MINUTES = 60L
         private const val STALE_WORKSPACE_AGE_MILLIS = 24L * 60 * 60 * 1000
         private const val MINIMUM_GCODE_BYTES = 256L

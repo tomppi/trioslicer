@@ -71,20 +71,76 @@ function boundsOfPly(buffer) {
     let offset = headerEnd + 'end_header'.length;
     while (offset < bytes.length && (bytes[offset] === 13 || bytes[offset] === 10)) offset++;
     const view = new DataView(buffer);
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (let i = 0; i < count; i++) {
+    const maxSamples = 20000;
+    const step = Math.max(1, Math.floor(count / maxSamples));
+    const xs = [];
+    const ys = [];
+    const zs = [];
+    for (let i = 0; i < count; i += step) {
         const base = offset + i * stride;
         if (base + stride > buffer.byteLength) break;
         const x = view.getFloat32(base + ix * 4, true);
         const y = view.getFloat32(base + iy * 4, true);
         const z = view.getFloat32(base + iz * 4, true);
         if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-        minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+        xs.push(x); ys.push(y); zs.push(z);
     }
-    if (!isFinite(minX) || !isFinite(maxX)) return null;
+    const n = xs.length;
+    if (n === 0) return null;
+    xs.sort((a, b) => a - b);
+    ys.sort((a, b) => a - b);
+    zs.sort((a, b) => a - b);
+    // Use 5th–95th percentile bounds so sparse background/floater splats do not
+    // inflate the framing radius and block close-up zoom.
+    const lo = Math.floor(n * 0.05);
+    const hi = Math.min(n - 1, Math.ceil(n * 0.95));
+    let minX = xs[lo], maxX = xs[hi];
+    let minY = ys[lo], maxY = ys[hi];
+    let minZ = zs[lo], maxZ = zs[hi];
+    if (maxX - minX < 1e-5 && maxY - minY < 1e-5 && maxZ - minZ < 1e-5) {
+        minX = xs[0]; maxX = xs[n - 1];
+        minY = ys[0]; maxY = ys[n - 1];
+        minZ = zs[0]; maxZ = zs[n - 1];
+    }
+    return {
+        cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, cz: (minZ + maxZ) / 2,
+        radius: Math.max(1e-4, Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2),
+    };
+}
+
+/** Bounds of a standard 32-byte-per-splat .splat buffer (x,y,z float32 at byte 0..11). */
+function boundsOfSplat(buffer) {
+    const count = Math.floor(buffer.byteLength / 32);
+    if (count <= 0) return null;
+    const view = new DataView(buffer);
+    const maxSamples = 20000;
+    const step = Math.max(1, Math.floor(count / maxSamples));
+    const xs = [];
+    const ys = [];
+    const zs = [];
+    for (let i = 0; i < count; i += step) {
+        const base = i * 32;
+        const x = view.getFloat32(base, true);
+        const y = view.getFloat32(base + 4, true);
+        const z = view.getFloat32(base + 8, true);
+        if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+        xs.push(x); ys.push(y); zs.push(z);
+    }
+    const n = xs.length;
+    if (n === 0) return null;
+    xs.sort((a, b) => a - b);
+    ys.sort((a, b) => a - b);
+    zs.sort((a, b) => a - b);
+    const lo = Math.floor(n * 0.05);
+    const hi = Math.min(n - 1, Math.ceil(n * 0.95));
+    let minX = xs[lo], maxX = xs[hi];
+    let minY = ys[lo], maxY = ys[hi];
+    let minZ = zs[lo], maxZ = zs[hi];
+    if (maxX - minX < 1e-5 && maxY - minY < 1e-5 && maxZ - minZ < 1e-5) {
+        minX = xs[0]; maxX = xs[n - 1];
+        minY = ys[0]; maxY = ys[n - 1];
+        minZ = zs[0]; maxZ = zs[n - 1];
+    }
     return {
         cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, cz: (minZ + maxZ) / 2,
         radius: Math.max(1e-4, Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2),
@@ -162,6 +218,7 @@ const CONTROL_DEFAULTS = {
     orbitSensitivity: 1,
     zoomSensitivity: 1,
     panSensitivity: 1,
+    rollSensitivity: 1,
     damping: 0.2,
     autoRotate: false,
     autoRotateSpeed: 0.25,
@@ -232,28 +289,26 @@ function applyRenderSettings(viewer) {
 // ---------------------------------------------------------------- controls ---
 
 /**
- * Orbit controls for a splat scene.
+ * Unlocked 360° quaternion orbit controls for a splat scene.
  *
- * One finger orbits, two fingers pan and pinch-zoom, a wheel zooms on desktop, double-tap
+ * One finger orbits freely in any direction (no pitch lock or pole flip), two fingers
+ * pinch-zoom, pan, and twist to roll the camera, a wheel zooms on desktop, and double-tap
  * returns to the framing the model was loaded with. All axes ease toward their target with a
- * damping factor, so a flick keeps moving for a moment instead of stopping dead.
+ * damping factor.
  */
 class OrbitRig {
     constructor(camera, container, initial) {
         this.camera = camera;
         this.container = container;
         this.initial = initial;
+        this.initialQ = orientationFromYawPitch(initial.yaw, initial.pitch, camera.up);
         this.target = initial.target.clone();
-        this.wantedTarget = initial.target.clone();
+        this.q = this.initialQ.slice();
         this.distance = initial.distance;
+        this.wantedTarget = initial.target.clone();
+        this.wantedQ = this.initialQ.slice();
         this.wantedDistance = initial.distance;
         this.radius = initial.radius;
-        this.dirty = true;
-        const cp = Math.cos(initial.pitch);
-        this.offset = new Vector3(
-            Math.sin(initial.yaw) * cp, Math.sin(initial.pitch), Math.cos(initial.yaw) * cp,
-        ).normalize();
-        this.up = new Vector3(0, -1, 0);
         this.pointers = new Map();
         this.gesture = null;
         this.lastTap = { time: 0, x: 0, y: 0 };
@@ -262,29 +317,25 @@ class OrbitRig {
 
     reset() {
         this.wantedTarget.copy(this.initial.target);
-        const cp = Math.cos(this.initial.pitch);
-        this.offset.set(
-            Math.sin(this.initial.yaw) * cp,
-            Math.sin(this.initial.pitch),
-            Math.cos(this.initial.yaw) * cp,
-        ).normalize();
-        this.up.set(0, -1, 0);
+        this.wantedQ = this.initialQ.slice();
         this.wantedDistance = this.initial.distance;
-        this.dirty = true;
     }
 
     /** The camera basis for pan math: right and up in world space. */
     basis() {
-        const forward = this.offset.clone().multiplyScalar(-1);
-        const right = new Vector3().crossVectors(forward, this.up).normalize();
-        const up = new Vector3().crossVectors(right, forward).normalize();
-        return { right, up };
+        const r = qRotateVec(this.q, 1, 0, 0);
+        const u = qRotateVec(this.q, 0, 1, 0);
+        return {
+            right: new Vector3(r[0], r[1], r[2]),
+            up: new Vector3(u[0], u[1], u[2]),
+        };
     }
 
-    /** True when the camera has nothing left to ease towards. */
+    /** True when the eased camera has reached the values it was asked for. */
     settled() {
         const targetDelta = this.wantedTarget.clone().sub(this.target);
         return !controlSettings.autoRotate &&
+            qAngleBetween(this.wantedQ, this.q) < 1e-4 &&
             Math.abs(this.wantedDistance - this.distance) < 1e-4 &&
             targetDelta.x * targetDelta.x + targetDelta.y * targetDelta.y + targetDelta.z * targetDelta.z < 1e-8;
     }
@@ -293,61 +344,38 @@ class OrbitRig {
         const damping = Math.min(0.95, Math.max(0.02, controlSettings.damping));
         const alpha = 1 - Math.pow(1 - damping, dt * 60);
         if (controlSettings.autoRotate && this.pointers.size === 0) {
-            // Spin around the camera's own up axis, like a turntable.
-            const spinAxis = this.up.clone().normalize();
-            rotateAround(this.offset, spinAxis, -controlSettings.autoRotateSpeed * dt);
-            rotateAround(this.up, spinAxis, -controlSettings.autoRotateSpeed * dt);
-            this.dirty = true;
+            const spin = qFromAxisAngle(0, 1, 0, -controlSettings.autoRotateSpeed * dt);
+            this.wantedQ = qNormalize(qMul(this.wantedQ, spin));
         }
+        this.q = qSlerp(this.q, this.wantedQ, alpha);
         this.distance += (this.wantedDistance - this.distance) * alpha;
         this.target.addScaledVector(this.wantedTarget.clone().sub(this.target), alpha);
 
+        const up = qRotateVec(this.q, 0, 1, 0);
+        const back = qRotateVec(this.q, 0, 0, 1);
         this.camera.position.set(
-            this.target.x + this.offset.x * this.distance,
-            this.target.y + this.offset.y * this.distance,
-            this.target.z + this.offset.z * this.distance,
+            this.target.x + back[0] * this.distance,
+            this.target.y + back[1] * this.distance,
+            this.target.z + back[2] * this.distance,
         );
-        this.camera.up.copy(this.up.normalize());
+        this.camera.up.set(up[0], up[1], up[2]);
         this.camera.lookAt(this.target);
     }
 
-    /**
-     * Turntable orbit in the camera's own frame: horizontal drag rotates around the camera's up
-     * axis, vertical drag around its right axis. Both axes move with the camera, so "up" stays up
-     * and "left" stays left no matter how far the view has been turned.
-     */
     orbit(dx, dy) {
         const speed = 0.005 * controlSettings.orbitSensitivity;
-        this.rotateView(this.currentUp(), -dx * speed);
-        // Vertical drag follows the finger: dragging up tilts the view up.
-        this.rotateView(this.currentRight(), -dy * speed);
-        this.dirty = true;
+        // Free trackball orbit around the camera's current local up/right axes:
+        // dragging right turns the model right, dragging down tilts over the top
+        // with no pitch lock or pole flip.
+        const qYaw = qFromAxisAngle(0, 1, 0, -dx * speed);
+        const qPitch = qFromAxisAngle(1, 0, 0, -dy * speed);
+        this.wantedQ = qNormalize(qMul(this.wantedQ, qMul(qYaw, qPitch)));
     }
 
-    currentUp() {
-        return this.up.clone().normalize();
-    }
-
-    currentRight() {
-        const forward = this.offset.clone().multiplyScalar(-1);
-        return new Vector3().crossVectors(forward, this.up).normalize();
-    }
-
-    /** Roll the view: rotate the screen-up axis around the view direction. */
-    rollView(angle) {
-        if (!Number.isFinite(angle) || angle === 0) return;
-        const viewAxis = this.offset.clone().normalize();
-        rotateAround(this.up, viewAxis, angle);
-        orthonormalize(this.up, this.offset);
-        this.dirty = true;
-    }
-
-    rotateView(axis, angle) {
-        if (!Number.isFinite(angle) || angle === 0) return;
-        rotateAround(this.offset, axis, angle);
-        rotateAround(this.up, axis, angle);
-        this.offset.normalize();
-        orthonormalize(this.up, this.offset);
+    roll(dAngle) {
+        if (!dAngle || controlSettings.rollSensitivity <= 0) return;
+        const qRoll = qFromAxisAngle(0, 0, 1, dAngle * controlSettings.rollSensitivity);
+        this.wantedQ = qNormalize(qMul(this.wantedQ, qRoll));
     }
 
     pan(dx, dy) {
@@ -357,17 +385,14 @@ class OrbitRig {
         const scale = perPixel * controlSettings.panSensitivity;
         this.wantedTarget.addScaledVector(right, -dx * scale);
         this.wantedTarget.addScaledVector(up, dy * scale);
-        this.dirty = true;
     }
 
     zoomBy(factor) {
-        this.wantedDistance = clamp(
-            this.wantedDistance * factor,
-            this.radius * 0.15,
-            this.radius * 40,
-        );
-        this.dirty = true;
+        const minDist = Math.max(0.005, this.radius * 0.005);
+        const maxDist = Math.max(100, this.radius * 80);
+        this.wantedDistance = clamp(this.wantedDistance * factor, minDist, maxDist);
     }
+
     bind() {
         const el = this.container;
         el.addEventListener('pointerdown', (event) => {
@@ -378,8 +403,8 @@ class OrbitRig {
                 this.gesture = {
                     kind: 'pinch',
                     distance: Math.hypot(a.x - b.x, a.y - b.y),
-                    midpoint: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
                     angle: Math.atan2(b.y - a.y, b.x - a.x),
+                    midpoint: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
                 };
             }
         });
@@ -396,18 +421,16 @@ class OrbitRig {
             if (this.pointers.size !== 2 || !this.gesture) return;
             const [a, b] = [...this.pointers.values()];
             const distance = Math.hypot(a.x - b.x, a.y - b.y);
+            const angle = Math.atan2(b.y - a.y, b.x - a.x);
             const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
             if (this.gesture.distance > 0 && distance > 0) {
-                this.zoomBy(this.gesture.distance / distance);
+                const ratio = this.gesture.distance / distance;
+                this.zoomBy(Math.pow(ratio, controlSettings.zoomSensitivity));
             }
-            const angle = Math.atan2(b.y - a.y, b.x - a.x);
-            if (Number.isFinite(this.gesture.angle)) {
-                // Twist with two fingers to roll the view around the view axis.
-                this.rollView(angleDelta(angle, this.gesture.angle));
-            }
-            this.gesture.angle = angle;
+            this.roll(angleDelta(angle, this.gesture.angle));
             this.pan(midpoint.x - this.gesture.midpoint.x, midpoint.y - this.gesture.midpoint.y);
             this.gesture.distance = distance;
+            this.gesture.angle = angle;
             this.gesture.midpoint = midpoint;
         });
         const release = (event) => {
@@ -434,44 +457,122 @@ class OrbitRig {
     }
 }
 
-const WORLD_UP = new Vector3(0, -1, 0);
-
-/** Rotate v in place around a unit axis by angle (Rodrigues, plain component math). */
-function rotateAround(v, axis, angle) {
-    const c = Math.cos(angle);
-    const s = Math.sin(angle);
-    const dot = v.x * axis.x + v.y * axis.y + v.z * axis.z;
-    const cx = axis.y * v.z - axis.z * v.y;
-    const cy = axis.z * v.x - axis.x * v.z;
-    const cz = axis.x * v.y - axis.y * v.x;
-    v.x = v.x * c + cx * s + axis.x * dot * (1 - c);
-    v.y = v.y * c + cy * s + axis.y * dot * (1 - c);
-    v.z = v.z * c + cz * s + axis.z * dot * (1 - c);
-    return v;
-}
-
-/** Make up perpendicular to offset (keeps the camera from rolling unintentionally). */
-function orthonormalize(up, offset) {
-    const dot = up.x * offset.x + up.y * offset.y + up.z * offset.z;
-    up.x -= offset.x * dot;
-    up.y -= offset.y * dot;
-    up.z -= offset.z * dot;
-    return up.normalize();
-}
-
-function squaredDistance(a, b) {
-    const dx = a.x - b.x;
-    const dy = a.y - b.y;
-    const dz = a.z - b.z;
-    return dx * dx + dy * dy + dz * dz;
-}
-
 function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
 function angleDelta(wanted, current) {
     let delta = (wanted - current) % (Math.PI * 2);
     if (delta > Math.PI) delta -= Math.PI * 2;
     if (delta < -Math.PI) delta += Math.PI * 2;
     return delta;
+}
+
+function qNormalize(q) {
+    const len = Math.hypot(q[0], q[1], q[2], q[3]);
+    if (len < 1e-12) return [0, 0, 0, 1];
+    return [q[0] / len, q[1] / len, q[2] / len, q[3] / len];
+}
+
+function qFromAxisAngle(ax, ay, az, angle) {
+    const half = angle * 0.5;
+    const s = Math.sin(half);
+    return [ax * s, ay * s, az * s, Math.cos(half)];
+}
+
+function qMul(a, b) {
+    const [ax, ay, az, aw] = a;
+    const [bx, by, bz, bw] = b;
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ];
+}
+
+function qRotateVec(q, vx, vy, vz) {
+    const [qx, qy, qz, qw] = q;
+    const tx = 2 * (qy * vz - qz * vy);
+    const ty = 2 * (qz * vx - qx * vz);
+    const tz = 2 * (qx * vy - qy * vx);
+    return [
+        vx + qw * tx + (qy * tz - qz * ty),
+        vy + qw * ty + (qz * tx - qx * tz),
+        vz + qw * tz + (qx * ty - qy * tx),
+    ];
+}
+
+function qAngleBetween(a, b) {
+    const dot = clamp(Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]), 0, 1);
+    return 2 * Math.acos(dot);
+}
+
+function qSlerp(a, b, t) {
+    let bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    let dot = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw;
+    if (dot < 0) {
+        dot = -dot;
+        bx = -bx; by = -by; bz = -bz; bw = -bw;
+    }
+    if (dot > 0.9995) {
+        return qNormalize([
+            a[0] + (bx - a[0]) * t,
+            a[1] + (by - a[1]) * t,
+            a[2] + (bz - a[2]) * t,
+            a[3] + (bw - a[3]) * t,
+        ]);
+    }
+    const theta = Math.acos(clamp(dot, -1, 1));
+    const sinTheta = Math.sin(theta);
+    const w0 = Math.sin((1 - t) * theta) / sinTheta;
+    const w1 = Math.sin(t * theta) / sinTheta;
+    return [
+        a[0] * w0 + bx * w1,
+        a[1] * w0 + by * w1,
+        a[2] * w0 + bz * w1,
+        a[3] * w0 + bw * w1,
+    ];
+}
+
+function qFromBasis(r, u, b) {
+    const m00 = r.x, m01 = u.x, m02 = b.x;
+    const m10 = r.y, m11 = u.y, m12 = b.y;
+    const m20 = r.z, m21 = u.z, m22 = b.z;
+    const trace = m00 + m11 + m22;
+    let x, y, z, w;
+    if (trace > 0) {
+        const s = 2 * Math.sqrt(trace + 1);
+        w = 0.25 * s;
+        x = (m21 - m12) / s;
+        y = (m02 - m20) / s;
+        z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const s = 2 * Math.sqrt(1 + m00 - m11 - m22);
+        w = (m21 - m12) / s;
+        x = 0.25 * s;
+        y = (m01 + m10) / s;
+        z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const s = 2 * Math.sqrt(1 + m11 - m00 - m22);
+        w = (m02 - m20) / s;
+        x = (m01 + m10) / s;
+        y = 0.25 * s;
+        z = (m12 + m21) / s;
+    } else {
+        const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
+        w = (m10 - m01) / s;
+        x = (m02 + m20) / s;
+        y = (m12 + m21) / s;
+        z = 0.25 * s;
+    }
+    return qNormalize([x, y, z, w]);
+}
+
+function orientationFromYawPitch(yaw, pitch, worldUp) {
+    const cp = Math.cos(pitch);
+    const back = new Vector3(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp).normalize();
+    const forward = back.clone().multiplyScalar(-1);
+    const right = new Vector3().crossVectors(forward, worldUp).normalize();
+    const up = new Vector3().crossVectors(right, forward).normalize();
+    return qFromBasis(right, up, back);
 }
 
 // ------------------------------------------------------------ settings UI ---
@@ -577,29 +678,9 @@ function buildSettingsPanel(viewer, rig) {
 
     const controls = group(panelBody, 'Controls');
     slider(controls, 'Orbit speed', controlSettings, 'orbitSensitivity', 0.2, 2.5, 0.1, () => {});
-    {
-        const row = document.createElement('div');
-        row.className = 'row';
-        const label = document.createElement('span');
-        label.textContent = 'Roll view';
-        const input = document.createElement('input');
-        input.type = 'range';
-        input.min = '-180';
-        input.max = '180';
-        input.step = '1';
-        input.value = '0';
-        let previous = 0;
-        input.addEventListener('input', () => {
-            const value = Number(input.value);
-            if (rig) rig.rollView((value - previous) * Math.PI / 180);
-            previous = value;
-        });
-        row.appendChild(label);
-        row.appendChild(input);
-        controls.appendChild(row);
-    }
     slider(controls, 'Zoom speed', controlSettings, 'zoomSensitivity', 0.2, 2.5, 0.1, () => {});
     slider(controls, 'Pan speed', controlSettings, 'panSensitivity', 0.2, 2.5, 0.1, () => {});
+    slider(controls, 'Twist speed', controlSettings, 'rollSensitivity', 0, 2.5, 0.1, () => {});
     slider(controls, 'Damping', controlSettings, 'damping', 0.02, 0.6, 0.02, () => {});
     checkbox(controls, 'Auto-rotate', controlSettings, 'autoRotate', () => {});
     slider(controls, 'Rotate speed', controlSettings, 'autoRotateSpeed', 0.05, 1, 0.05, () => {});
@@ -635,7 +716,13 @@ async function main() {
     const response = await fetch(splatUrl);
     if (!response.ok) { fail('Could not read the splat (' + response.status + ').'); return; }
     const buffer = await response.arrayBuffer();
-    const bounds = ext === 'ply' ? boundsOfPly(buffer) : ext === 'sog' ? await boundsOfSog(buffer) : null;
+    const bounds = ext === 'ply'
+        ? boundsOfPly(buffer)
+        : ext === 'sog'
+            ? await boundsOfSog(buffer)
+            : ext === 'splat'
+                ? boundsOfSplat(buffer)
+                : null;
     report('bounds of ' + ext + ': ' + JSON.stringify(bounds));
 
     const data = await SplatLoader.parseSplatData(type, new Uint8Array(buffer));
@@ -695,8 +782,7 @@ async function main() {
             const dt = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 0.016;
             lastFrame = now;
             rig.update(dt);
-            const settled = rig.settled() && !rig.dirty;
-            rig.dirty = false;
+            const settled = rig.settled();
             // A few extra frames after a change let the async splat sort and the GPU
             // present the frame that was just prepared; without them a single render can
             // be the only frame drawn and the canvas stays empty.

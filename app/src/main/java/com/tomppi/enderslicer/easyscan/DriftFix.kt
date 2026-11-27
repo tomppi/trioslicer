@@ -2,6 +2,10 @@ package com.tomppi.enderslicer.easyscan
 
 import android.content.Context
 import android.util.Log
+import com.rawmechatronics.easyscanner.AssetCopy
+import com.rawmechatronics.easyscanner.LoopDb
+import com.rawmechatronics.easyscanner.LoopMatcher
+import com.rawmechatronics.easyscanner.SpTflite
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -48,12 +52,25 @@ object DriftFix {
         onProgress("fix drift: " + kfs.size + " keyframes, extracting features...")
 
         val feats = arrayOfNulls<Feat>(kfs.size)
-        for (k in kfs.indices) {
-            feats[k] = features(ctx, kfs[k].file)
-            if (k % 4 == 0) onProgress("fix drift: features " + (k + 1) + "/" + kfs.size)
+        var xfeatHandle = 0L
+        try {
+            val model = AssetCopy.ensure(ctx, "xfeat.tflite", File(ctx.filesDir, "xfeat.tflite"))
+            xfeatHandle = SpTflite.create(ctx.applicationInfo.nativeLibraryDir, model.absolutePath, 0.0, 0.0, 0.0, 0.0)
+            SpTflite.setFeatureCap(400)
+            if (xfeatHandle != 0L && !(xfeatHandle in -4L..-1L)) {
+                for (k in kfs.indices) {
+                    feats[k] = features(xfeatHandle, kfs[k].file)
+                    if (k % 4 == 0) onProgress("fix drift: features " + (k + 1) + "/" + kfs.size)
+                }
+            }
+        } finally {
+            if (xfeatHandle != 0L && !(xfeatHandle in -4L..-1L)) {
+                try { SpTflite.close(xfeatHandle) } catch (_: Exception) { }
+            }
         }
         val valid = kfs.indices.filter { feats[it] != null && feats[it]!!.n >= 40 }
         if (valid.size < 4) { onProgress("fix drift: too few usable keyframes"); return null }
+        try { LoopMatcher.init(ctx) } catch (_: Exception) { }
         onProgress("fix drift: matching loop candidates...")
 
         val edges = ArrayList<Edge>()
@@ -66,18 +83,71 @@ object DriftFix {
             edges.add(Edge(a, b, arcRot, normalize3(arcT), s, ODOM_W, ODOM_W))
         }
         var loops = 0
-        for (u in valid.indices) {
-            for (gap in intArrayOf(12, 26)) {
-                val v = u + gap
-                if (v >= valid.size) continue
-                val a = valid[u]; val b = valid[v]
-                val arcRot = mul3T(kfs[b].W, kfs[a].W)
-                val arcT = mulVec3(transpose3(kfs[a].W), sub3(kfs[b].C, kfs[a].C))
-                val s = len3(arcT)
-                if (s < 5.0) continue
-                val m = visual(kfs[a], kfs[b], feats[a]!!, feats[b]!!, arcRot, normalize3(arcT)) ?: continue
-                edges.add(Edge(a, b, m.first, m.second, s, LOOP_W, LOOP_W))
-                loops++
+        // XFeat 64-D local-descriptor MNN loop search.
+        var dbLoaded = false
+        try {
+            dbLoaded = LoopDb.load("xfeat64")
+        } catch (ex: Exception) {
+            onProgress("fix drift: LoopDb unavailable: " + ex.message)
+        }
+        if (dbLoaded) {
+            LoopDb.clear()
+            val dbToValid = HashMap<Int, Int>()
+            for (u in valid.indices) {
+                val f = feats[valid[u]]!!
+                val got = LoopDb.add(kfs[valid[u]].frame, f.desc, f.n)
+                if (got >= 0) dbToValid[got] = u
+            }
+            for (u in valid.indices) {
+                val f = feats[valid[u]]!!
+                val candidates = LoopDb.query(f.desc, f.n, 8)
+                for ((dbId, score) in candidates) {
+                    val v = dbToValid[dbId] ?: continue
+                    if (v <= u + 4) continue
+                    val a = valid[u]; val b = valid[v]
+                    val arcRot = mul3T(kfs[b].W, kfs[a].W)
+                    val arcT = mulVec3(transpose3(kfs[a].W), sub3(kfs[b].C, kfs[a].C))
+                    val s = len3(arcT)
+                    if (s < 5.0) continue
+                    val m = visual(kfs[a], kfs[b], feats[a]!!, feats[b]!!, arcRot, normalize3(arcT)) ?: continue
+                    edges.add(Edge(a, b, m.first, m.second, s, LOOP_W, LOOP_W))
+                    loops++
+                }
+            }
+            onProgress("fix drift: DBoW3 candidates -> " + loops + " verified loops")
+            if (loops == 0) {
+                // A vocabulary trained on a different environment may not find
+                // the loop; keep the old nearby-keyframe verification as a
+                // last resort instead of failing the whole correction.
+                for (u in valid.indices) {
+                    for (gap in intArrayOf(12, 26)) {
+                        val v = u + gap
+                        if (v >= valid.size) continue
+                        val a = valid[u]; val b = valid[v]
+                        val arcRot = mul3T(kfs[b].W, kfs[a].W)
+                        val arcT = mulVec3(transpose3(kfs[a].W), sub3(kfs[b].C, kfs[a].C))
+                        val s = len3(arcT)
+                        if (s < 5.0) continue
+                        val m = visual(kfs[a], kfs[b], feats[a]!!, feats[b]!!, arcRot, normalize3(arcT)) ?: continue
+                        edges.add(Edge(a, b, m.first, m.second, s, LOOP_W, LOOP_W))
+                        loops++
+                    }
+                }
+            }
+        } else {
+            for (u in valid.indices) {
+                for (gap in intArrayOf(12, 26)) {
+                    val v = u + gap
+                    if (v >= valid.size) continue
+                    val a = valid[u]; val b = valid[v]
+                    val arcRot = mul3T(kfs[b].W, kfs[a].W)
+                    val arcT = mulVec3(transpose3(kfs[a].W), sub3(kfs[b].C, kfs[a].C))
+                    val s = len3(arcT)
+                    if (s < 5.0) continue
+                    val m = visual(kfs[a], kfs[b], feats[a]!!, feats[b]!!, arcRot, normalize3(arcT)) ?: continue
+                    edges.add(Edge(a, b, m.first, m.second, s, LOOP_W, LOOP_W))
+                    loops++
+                }
             }
         }
         if (loops < 2) {
@@ -170,7 +240,7 @@ object DriftFix {
             ob.putFloat(o, (q[0] + centre[0] + v[0]).toFloat())
             ob.putFloat(o + 4, (q[1] + centre[1] + v[1]).toFloat())
             ob.putFloat(o + 8, (q[2] + centre[2] + v[2]).toFloat())
-            if (samples % 64 == 0) {
+            if (i % 64 == 0) {
                 sumRot += Math.toDegrees(rotAngle(rot))
                 sumTrans += Math.hypot(v[0], Math.hypot(v[1], v[2]))
                 samples++
@@ -211,74 +281,65 @@ object DriftFix {
         return out.sortedBy { it.frame }
     }
 
-    private fun features(ctx: Context, jpeg: File): Feat? {
-        val log = SuperPointRunner.runOnJpeg(ctx, jpeg)
-        if (!log.contains("rc=0")) return null
-        val dir = File(ctx.filesDir, "sp/out")
-        val sf = find(dir, "scores") ?: return null
-        val df = find(dir, "descriptors") ?: return null
-        val scores = readHalf(sf)
-        if (scores.size < 640 * 480) return null
-        val cand = ArrayList<Int>()
-        for (idx in 0 until 640 * 480) if (scores[idx] > 0.002f) cand.add(idx)
-        if (cand.size < 40) return null
-        cand.sortByDescending { scores[it] }
-        val descAll = readHalf(df)
-        val cells = 60 * 80
-        if (descAll.size < 256 * cells) return null
-        val kp = FloatArray(MAX_KP * 2)
-        val desc = FloatArray(MAX_KP * 256)
-        var n = 0
-        val taken = BooleanArray(640 * 480)
-        for (idx in cand) {
-            if (n >= MAX_KP) break
-            val x = idx % 640; val y = idx / 640
-            var ok = true
-            var dy = -2
-            while (dy <= 2 && ok) {
-                var dx = -2
-                while (dx <= 2 && ok) {
-                    val xx = x + dx; val yy = y + dy
-                    if (xx in 0 until 640 && yy in 0 until 480) {
-                        if (taken[yy * 640 + xx] || scores[yy * 640 + xx] > scores[idx]) ok = false
-                    }
-                    dx++
-                }
-                dy++
-            }
-            if (!ok) continue
-            taken[idx] = true
-            kp[n * 2] = x.toFloat(); kp[n * 2 + 1] = y.toFloat()
-            val cx = (x / 8).coerceIn(0, 79)
-            val cy = (y / 8).coerceIn(0, 59)
-            for (c in 0 until 256) desc[n * 256 + c] = descAll[c * cells + cy * 80 + cx]
-            n++
+    private fun features(xfeatHandle: Long, jpeg: File): Feat? {
+        val src = android.graphics.BitmapFactory.decodeFile(jpeg.absolutePath) ?: return null
+        val bmp = android.graphics.Bitmap.createScaledBitmap(src, 640, 480, true)
+        val pixels = IntArray(640 * 480)
+        bmp.getPixels(pixels, 0, 640, 0, 0, 640, 480)
+        if (bmp !== src) bmp.recycle()
+        src.recycle()
+        val gray = ByteArray(640 * 480)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r = (p ushr 16) and 0xff
+            val g = (p ushr 8) and 0xff
+            val b = p and 0xff
+            gray[i] = ((r * 77 + g * 150 + b * 29) ushr 8).toByte()
         }
-        if (n < 40) return null
-        return Feat(kp.copyOf(n * 2), desc.copyOf(n * 256), n)
+        val packed = SpTflite.features(xfeatHandle, gray) ?: return null
+        if (packed.isEmpty()) return null
+        val n = packed[0].toInt()
+        if (n < 40 || packed.size < 1 + n * 2 + n * 64) return null
+        val kp = packed.copyOfRange(1, 1 + n * 2)
+        val desc = packed.copyOfRange(1 + n * 2, 1 + n * 2 + n * 64)
+        return Feat(kp, desc, n)
     }
 
     /** Visual loop measurement: rotation chosen against ARCore, translation direction signed by it. */
     private fun visual(a: Kf, b: Kf, fa: Feat, fb: Feat, arcRot: DoubleArray, arcDir: DoubleArray): Pair<DoubleArray, DoubleArray>? {
         val p1 = ArrayList<Double>(); val p2 = ArrayList<Double>()
-        for (i in 0 until fa.n) {
-            var best = -1; var bs = -2f; var second = -2f
-            val oa = i * 256
-            for (j in 0 until fb.n) {
-                var s = 0f
-                val ob = j * 256
-                for (c in 0 until 256) s += fa.desc[oa + c] * fb.desc[ob + c]
-                if (s > bs) { second = bs; bs = s; best = j } else if (s > second) second = s
+        val lg = try { LoopMatcher.match(fa.kp, fa.desc, fb.kp, fb.desc) } catch (_: Exception) { null }
+        // nativeVioLightGlueMatch returns [pairCount, a0, b0, a1, b1, ...].
+        val lgCount = if (lg != null && lg.isNotEmpty()) minOf(lg[0], (lg.size - 1) / 2) else 0
+        if (lg != null && lgCount >= 4) {
+            for (k in 0 until lgCount) {
+                val ia = lg[1 + k * 2]; val ib = lg[2 + k * 2]
+                if (ia in 0 until fa.n && ib in 0 until fb.n) {
+                    p1.add((fa.kp[ia * 2] - a.K[2]) / a.K[0]); p1.add((fa.kp[ia * 2 + 1] - a.K[3]) / a.K[1])
+                    p2.add((fb.kp[ib * 2] - b.K[2]) / b.K[0]); p2.add((fb.kp[ib * 2 + 1] - b.K[3]) / b.K[1])
+                }
             }
-            if (best >= 0 && bs > 0.6f && second < bs - 0.05f) {
-                p1.add((fa.kp[i * 2] - a.K[2]) / a.K[0]); p1.add((fa.kp[i * 2 + 1] - a.K[3]) / a.K[1])
-                p2.add((fb.kp[best * 2] - b.K[2]) / b.K[0]); p2.add((fb.kp[best * 2 + 1] - b.K[3]) / b.K[1])
+        } else {
+            for (i in 0 until fa.n) {
+                var best = -1; var bs = -2f; var second = -2f
+                val oa = i * 64
+                for (j in 0 until fb.n) {
+                    var s = 0f
+                    val ob = j * 64
+                    for (c in 0 until 64) s += fa.desc[oa + c] * fb.desc[ob + c]
+                    if (s > bs) { second = bs; bs = s; best = j } else if (s > second) second = s
+                }
+                if (best >= 0 && bs > 0.72f && second < bs - 0.05f) {
+                    p1.add((fa.kp[i * 2] - a.K[2]) / a.K[0]); p1.add((fa.kp[i * 2 + 1] - a.K[3]) / a.K[1])
+                    p2.add((fb.kp[best * 2] - b.K[2]) / b.K[0]); p2.add((fb.kp[best * 2 + 1] - b.K[3]) / b.K[1])
+                }
             }
         }
         val n = p1.size / 2
         if (n < 30) return null
         return try {
             if (!org.opencv.android.OpenCVLoader.initLocal()) return null
+            if (pnpInliers(p1, p2, a, b) < 8) return null
             val m1 = org.opencv.core.MatOfPoint2f()
             val m2 = org.opencv.core.MatOfPoint2f()
             val l1 = ArrayList<org.opencv.core.Point>(); val l2 = ArrayList<org.opencv.core.Point>()
@@ -302,6 +363,63 @@ object DriftFix {
             }
         } catch (ex: Exception) {
             null
+        }
+    }
+
+    /**
+     * PnP RANSAC verification of a candidate loop. The two keyframe poses give
+     * a prior for triangulating the matched pixels; solvePnPRansac then checks
+     * that the current keyframe's 2D points are consistent with those 3D points.
+     * This is the SuperVINS loop-verification step, with normalized image
+     * coordinates so the camera matrix is identity.
+     */
+    private fun pnpInliers(p1: ArrayList<Double>, p2: ArrayList<Double>, a: Kf, b: Kf): Int {
+        val n = p1.size / 2
+        if (n < 8) return 0
+        try {
+            fun projection(W: DoubleArray, C: DoubleArray): org.opencv.core.Mat {
+                // W is camera->world; projection matrix needs world->camera R = W^T and t = -R * C.
+                val R = transpose3(W)
+                val m = org.opencv.core.Mat(3, 4, org.opencv.core.CvType.CV_64F)
+                val t = mulVec3(R, C)
+                m.put(0, 0, R[0], R[1], R[2], -t[0],
+                                R[3], R[4], R[5], -t[1],
+                                R[6], R[7], R[8], -t[2])
+                return m
+            }
+            val pa = projection(a.W, a.C)
+            val pb = projection(b.W, b.C)
+            val qa = org.opencv.core.MatOfPoint2f()
+            val qb = org.opencv.core.MatOfPoint2f()
+            val la = ArrayList<org.opencv.core.Point>()
+            val lb = ArrayList<org.opencv.core.Point>()
+            for (i in 0 until n) {
+                la.add(org.opencv.core.Point(p1[i * 2], p1[i * 2 + 1]))
+                lb.add(org.opencv.core.Point(p2[i * 2], p2[i * 2 + 1]))
+            }
+            qa.fromList(la); qb.fromList(lb)
+            val x4 = org.opencv.core.Mat()
+            org.opencv.calib3d.Calib3d.triangulatePoints(pa, pb, qa, qb, x4)
+            val raw = DoubleArray(4 * n)
+            x4.get(0, 0, raw)
+            val obj = org.opencv.core.MatOfPoint3f()
+            val p3 = Array(n) { i ->
+                val w = raw[3 * n + i]
+                if (kotlin.math.abs(w) < 1e-9) org.opencv.core.Point3(0.0, 0.0, 0.0)
+                else org.opencv.core.Point3(raw[i] / w, raw[n + i] / w, raw[2 * n + i] / w)
+            }
+            obj.fromArray(*p3)
+            val k = org.opencv.core.Mat.eye(3, 3, org.opencv.core.CvType.CV_64F)
+            val dist = org.opencv.core.MatOfDouble()
+            val rvec = org.opencv.core.Mat()
+            val tvec = org.opencv.core.Mat()
+            val inl = org.opencv.core.Mat()
+            val ok = org.opencv.calib3d.Calib3d.solvePnPRansac(
+                obj, qb, k, dist, rvec, tvec, false, 100, 0.01f, 0.99, inl,
+            )
+            return if (ok) inl.rows() else 0
+        } catch (_: Exception) {
+            return 0
         }
     }
 

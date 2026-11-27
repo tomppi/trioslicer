@@ -1,5 +1,0 @@
-cmake_minimum_required(VERSION 3.22)
-project(gpu_pixel CXX)
-add_library(gpu_pixel SHARED gpu_pixel.cpp)
-target_compile_options(gpu_pixel PRIVATE -O2 -std=c++17)
-target_link_libraries(gpu_pixel android log EGL GLESv3 dl)

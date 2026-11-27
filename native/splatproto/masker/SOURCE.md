@@ -70,8 +70,10 @@ restaging stamp.
 | `libQnnHtpNetRunExtensions.so` | backend extensions loaded by the ext JSON above |
 | `libQnnSystem.so` | QNN system library |
 | `models/u2net.bin` | the compiled U2Net context binary |
+| `models/da3_depth_fp16.bin` | compiled Depth Anything 3 FP16 HTP v73 context binary (`ByteDance-Seed/Depth-Anything-3`, Apache-2.0) |
+| `bin/da3-worker` | persistent arm64 QNN HTP DA3 worker (`native/splatproto/da3-worker/da3_worker.cpp`, built by `scripts/build-da3-worker-android.sh`) |
 | `models/htp_config.json`, `models/htp_ext.json` | HTP config the runner loads |
 
-All of these are Qualcomm AI Runtime object code except `u2net.bin`, which is the compiled
-model. Their licence is the Qualcomm AI Stack licence in `LICENSES/`; the app ships that
+All of these are Qualcomm AI Runtime object code except `u2net.bin`, `da3_depth_fp16.bin`, and
+`da3-worker`. Their licence is the Qualcomm AI Stack licence in `LICENSES/`; the app ships that
 directory and the source notice with the binary.

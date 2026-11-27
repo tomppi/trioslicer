@@ -66,11 +66,11 @@ class OrcaEngineRunner(private val context: Context) {
     fun isAvailable(): Boolean = executable.isFile && executable.length() > 0L
 
     fun status(): String = when {
-        !executable.exists() -> "OrcaSlicer 2.4.2 is not packaged in this APK"
+        !executable.exists() -> "OrcaSlicer 2.5.2 is not packaged in this APK"
         !executable.isFile -> "OrcaSlicer package path is invalid"
         executable.length() == 0L -> "OrcaSlicer package is empty"
         !File(datadir, "profiles").isDirectory -> "OrcaSlicer profiles are not installed yet"
-        else -> "OrcaSlicer 2.4.2 ready"
+        else -> "OrcaSlicer 2.5.2 ready"
     }
 
     fun releaseArtifact(id: String) = publisher.release(id)
@@ -405,7 +405,7 @@ class OrcaEngineRunner(private val context: Context) {
         }
 
         const val ENGINE_LIBRARY_NAME = "liborca_console_exec.so"
-        private const val RESOURCES_VERSION = "orcaslicer-2.4.2-resources-v1"
+        private const val RESOURCES_VERSION = "orcaslicer-2.5.2-resources-v1"
         private const val SLICE_TIMEOUT_MINUTES = 60L
         private const val STALE_WORKSPACE_AGE_MILLIS = 24L * 60 * 60 * 1000
         private const val MINIMUM_GCODE_BYTES = 256L

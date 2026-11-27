@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Cross-compile PrusaSlicer 3.0.0-alpha11 console (slic3r-app-launcher) for Android.
+# Cross-compile PrusaSlicer 3.0.0-alpha15 console (slic3r-app-launcher) for Android.
 # Builds the full dependency chain through the upstream deps/ ExternalProject
 # system, then the console-only PrusaSlicer. ANDROID_ABI selects the target.
 set -euo pipefail
 trap 'rc=$?; echo "::error::prusa3 engine build failed (exit $rc)"; if [ -f /tmp/prusa3-ninja.log ]; then echo "::error::--- ninja errors ---"; grep -E "fatal error|error generated|FAILED:|undefined reference|ld: error" /tmp/prusa3-ninja.log | head -60 | sed "s/^/::error::/"; echo "::error::--- ninja tail ---"; tail -25 /tmp/prusa3-ninja.log | sed "s/^/::error::/"; fi; if [ -f /tmp/prusa3-depbuild.log ]; then echo "::error::--- deps tail ---"; tail -20 /tmp/prusa3-depbuild.log | sed "s/^/::error::/"; fi; exit $rc' ERR
 
 ABI="${ANDROID_ABI:-arm64-v8a}"
-TAG="version_3.0.0-alpha11"
-VER="3.0.0-alpha11"
+TAG="version_3.0.0-alpha15"
+VER="3.0.0-alpha15"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 NDK="${ANDROID_NDK_HOME:-$SDK/ndk/28.2.13676358}"
 TC=$NDK/build/cmake/android.toolchain.cmake
@@ -126,9 +126,9 @@ rep(root / 'deps/+cpptrace/cpptrace.cmake',
     'PATCH_COMMAND ${PATCH_CMD} ${CMAKE_CURRENT_LIST_DIR}/cpptrace.patch && python3 ${CMAKE_CURRENT_LIST_DIR}/strip_config_installs.py',
     'cpptrace: drop own config install (shims win)')
 rep(root / 'deps/+OpenSSL/OpenSSL.cmake',
-    '    BUILD_COMMAND make depend && make "-j${NPROC}"',
-    '    BUILD_COMMAND make depend && make "-j${NPROC}" build_libs',
-    'openssl: capture make log')
+    'set(_bld_cmd make depend && make "-j${NPROC}")',
+    'set(_bld_cmd make depend && make "-j${NPROC}" build_libs)',
+    'openssl: build_libs only')
 rep(root / 'deps/+Boost/Boost.cmake',
     'set(_excluded_libs contract|fiber|numpy|stacktrace|wave|test|log)',
     'set(_excluded_libs contract|fiber|numpy|stacktrace|wave|test|log|process)',
@@ -183,15 +183,7 @@ rep(root / 'src/slic3r-shared/src/Slic3r/Biz/RemovableDrive/RemovableDriveServic
     '    return true;\n}\n} // namespace',
     '    return true;\n}\n#endif // __ANDROID__\n} // namespace',
     'removable drive: close the Android guard')
-# The monitor's worker blocks in wait_for on m_thread_stop_condition, but the
-# members are declared before m_thread, so the condition variable and its mutex
-# are destroyed while the worker is still waking up: bionic then aborts with
-# "pthread_mutex_lock called on a destroyed mutex" as the process exits. Join
-# while every member is still alive.
-rep(root / 'src/slic3r-shared/src/Slic3r/Biz/RemovableDrive/RemovableDriveMonitorLinux.hpp',
-    '        if (m_thread.joinable()) {\n            m_thread.request_stop();\n            m_thread_stop_condition.notify_all();\n        }',
-    '        if (m_thread.joinable()) {\n            m_thread.request_stop();\n            m_thread_stop_condition.notify_all();\n            // The worker waits in wait_for on the condition variable, and the members\n            // above it are destroyed first: join before that happens.\n            m_thread.join();\n        }',
-    'removable drive: join the monitor worker on teardown')
+# PrusaSlicer 3.0.0-alpha15 joins m_thread in ~RemovableDriveMonitorLinux() upstream.
 # PrusaSlicer 3.0 builds its CLI only when SLIC3R_GUI is on (slic3r-app-cli links
 # the ImGui/Plater slic3r-shared library). Build a headless console instead that
 # links the GUI-free engine layers; the platform layer is GUI-free apart from the
@@ -241,6 +233,54 @@ rep(root / 'deps/+LibAssert/LibAssert.cmake',
     '            -DLIBASSERT_USE_EXTERNAL_CPPTRACE=ON',
     '            -DLIBASSERT_USE_EXTERNAL_CPPTRACE=OFF',
     'libassert: bundled cpptrace (no find_package)')
+
+# NDK r28 (libc++ 19) removed the non-standard std::char_traits<unsigned char>
+# specialization used by paho.mqtt.cpp 1.3.13 (std::basic_string<unsigned char>
+# in ssl_options.h). Force-include a minimal specialization for dep_Pahocpp.
+(root / 'deps/+Pahocpp' / 'uchar_traits.h').write_text('''#pragma once
+#ifdef __cplusplus
+#include <string>
+#include <cstring>
+#include <cstdio>
+#include <ios>
+namespace std {
+template <>
+struct char_traits<unsigned char> {
+    using char_type  = unsigned char;
+    using int_type   = int;
+    using off_type   = streamoff;
+    using pos_type   = streampos;
+    using state_type = mbstate_t;
+    static void assign(char_type& c1, const char_type& c2) noexcept { c1 = c2; }
+    static constexpr bool eq(char_type c1, char_type c2) noexcept { return c1 == c2; }
+    static constexpr bool lt(char_type c1, char_type c2) noexcept { return c1 < c2; }
+    static int compare(const char_type* s1, const char_type* s2, size_t n) noexcept { return std::memcmp(s1, s2, n); }
+    static size_t length(const char_type* s) noexcept { return std::strlen(reinterpret_cast<const char*>(s)); }
+    static const char_type* find(const char_type* s, size_t n, const char_type& a) noexcept {
+        return static_cast<const char_type*>(std::memchr(s, a, n));
+    }
+    static char_type* move(char_type* s1, const char_type* s2, size_t n) noexcept {
+        return static_cast<char_type*>(std::memmove(s1, s2, n));
+    }
+    static char_type* copy(char_type* s1, const char_type* s2, size_t n) noexcept {
+        return static_cast<char_type*>(std::memcpy(s1, s2, n));
+    }
+    static char_type* assign(char_type* s, size_t n, char_type a) noexcept {
+        return static_cast<char_type*>(std::memset(s, a, n));
+    }
+    static constexpr int_type not_eof(int_type c) noexcept { return eq_int_type(c, eof()) ? 0 : c; }
+    static constexpr char_type to_char_type(int_type c) noexcept { return static_cast<char_type>(c); }
+    static constexpr int_type to_int_type(char_type c) noexcept { return static_cast<int_type>(c); }
+    static constexpr bool eq_int_type(int_type c1, int_type c2) noexcept { return c1 == c2; }
+    static constexpr int_type eof() noexcept { return EOF; }
+};
+}
+#endif
+''', encoding='utf-8')
+rep(root / 'deps/+Pahocpp/Pahocpp.cmake',
+    '        -DCMAKE_PREFIX_PATH=${${PROJECT_NAME}_DEP_INSTALL_PREFIX}',
+    '        -DCMAKE_PREFIX_PATH=${${PROJECT_NAME}_DEP_INSTALL_PREFIX}\n        -DCMAKE_CXX_FLAGS=-include\\ ${CMAKE_CURRENT_LIST_DIR}/uchar_traits.h',
+    'pahocpp: libc++19 char_traits<unsigned char> shim')
 
 # cpptrace installs its own <pkg>-config.cmake which demands find_dependency(libdwarf);
 # our shims provide the config, so neutralize cpptrace's config/version/targets
@@ -796,6 +836,11 @@ public:
         return dir;
     }
 
+    std::string last_used_physical_printer() const override { return {}; }
+    void set_last_used_physical_printer(const std::string&) override {}
+    std::string last_used_export_destination() const override { return {}; }
+    void set_last_used_export_destination(const std::string&) override {}
+
     bool get_show_step_import_parameters() const override { return true; }
     void set_show_step_import_parameters(bool) override {}
     double get_step_linear_precision() const override { return 0.005; }
@@ -895,8 +940,10 @@ foreach(_package nlohmann_json magic_enum pugixml cereal expat CURL PNG JPEG TBB
     find_package(${_package} QUIET)
 endforeach()
 
-# yoga ships a config package only (used by the Yoga UI headers).
+# yoga and PahoMqttCpp ship config packages (used by shared/network headers).
 find_package(yoga CONFIG QUIET)
+find_package(PahoMqttCpp CONFIG QUIET)
+find_package(OpenSSL QUIET)
 
 # libassert (through slic3r-base) links cpptrace, which resolves DWARF symbols
 # from libdwarf. Both provide config packages; ask for them here so the imported
@@ -917,6 +964,15 @@ if (EXISTS "${_imgui_root}/imgui/imgui.h" AND NOT TARGET imgui)
 endif ()
 
 add_executable(slic3r-console-headless ${_headless_sources})
+
+# MqttSubscriber.cpp includes paho.mqtt.cpp's ssl_options.h, which instantiates
+# std::basic_string<unsigned char> (removed in NDK r28 / libc++ 19). Force-include
+# our char_traits<unsigned char> shim on that TU alone so ccache stays warm for
+# the rest of the build.
+set_source_files_properties(
+    "${CMAKE_SOURCE_DIR}/src/slic3r-shared/src/Slic3r/Biz/Network/MqttSubscriber.cpp"
+    PROPERTIES COMPILE_OPTIONS "-include;${CMAKE_SOURCE_DIR}/deps/+Pahocpp/uchar_traits.h"
+)
 
 target_include_directories(slic3r-console-headless PRIVATE
     "${CMAKE_SOURCE_DIR}/bundled_deps/imgui/imgui"
@@ -1004,6 +1060,9 @@ _headless_link(
     PNG::PNG
     JPEG::JPEG
     CURL::libcurl
+    PahoMqttCpp::paho-mqttpp3-static
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Boost::filesystem
     Boost::thread
 )

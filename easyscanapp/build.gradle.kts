@@ -11,6 +11,7 @@ android {
     packaging {
         jniLibs {
             pickFirsts += listOf("**/libc++_shared.so")
+            keepDebugSymbols += listOf("**/libQnnHtpV*Skel.so")
             if (!usePrebuiltVio) excludes += listOf("**/libopencv_java4.so")
         }
     }

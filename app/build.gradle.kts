@@ -65,8 +65,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 153
-        versionName = "1.22.0"
+        versionCode = 154
+        versionName = "2.0.0"
 
         // Every engine in this app ships an arm64-v8a binary (the slicer engines, the CAD
         // Python tree, Blender, and now the splat trainer). Pinning the ABI stops dependencies
@@ -124,6 +124,18 @@ android {
             // defaults rather than throwing is what lets a test exercise real code that
             // logs - the klippy client, for instance, against a klippy that is running.
             isReturnDefaultValues = true
+
+            // Robolectric downloads its android-all-instrumented jar itself, outside
+            // Gradle's repositories. repo1.maven.org rate-limits GitHub runners (HTTP
+            // 429), which failed every Robolectric class before a test could run. The
+            // Google mirror serves the same artifact without that limit.
+            all { test ->
+                test.systemProperty(
+                    "robolectric.dependency.repo.url",
+                    "https://maven-central.storage-download.googleapis.com/maven2",
+                )
+                test.systemProperty("robolectric.dependency.repo.id", "central")
+            }
         }
     }
 
@@ -159,6 +171,8 @@ android {
             pickFirsts += setOf("**/libc++_shared.so")
             keepDebugSymbols += setOf(
                 "**/libblender_exec.so",
+                // Hexagon DSP ELF skeletons (v68..v81) must not be processed by aarch64 llvm-strip.
+                "**/libQnnHtpV*Skel.so",
                 // The C++ runtime must not be stripped. AGP strips prebuilt .so files, and
                 // stripping this one removed 145 dynamic symbols - among them the vtable for
                 // std::ostringstream, which OCP needs. The release build then failed every CAD
@@ -337,7 +351,7 @@ fun checkPrusaSlicerPackaged(apk: File, label: String) {
         check(entry != null && entry.size > 0L) {
             "$label APK does not contain the ARM64 PrusaSlicer executable"
         }
-            // The shipped engine is 3.0.0-alpha11, whose resources live under
+            // The shipped engine is 3.0.0-alpha15, whose resources live under
             // presets/ - the profiles/Anker.ini this used to look for belongs to the
             // 2.9.6 engine that is no longer packaged. Nothing caught that while this
             // task was unreachable.
@@ -689,11 +703,15 @@ fun checkSplatProtoPackaged(apk: File, label: String) {
     check(apk.isFile && apk.length() > 0L) { "$label APK was not created" }
     ZipFile(apk).use { zip ->
         for (entry in listOf(
-            "lib/arm64-v8a/libbrush_jni.so",
+            "lib/arm64-v8a/libcross3dgs_android.so",
             "lib/arm64-v8a/libparallaxcore.so",
             "lib/arm64-v8a/libopencv_java4.so",
+            "lib/arm64-v8a/libsupervins_jni.so",
+            "lib/arm64-v8a/liblivemesh_jni.so",
             "assets/masker/models/u2net.bin",
+            "assets/masker/models/da3_depth_fp16.bin",
             "assets/masker/bin/qnn-net-run",
+            "assets/masker/bin/da3-worker",
             "assets/masker/skel/libQnnHtpV73Skel.so",
             "assets/masker/SOURCE.md",
             "assets/masker/SHA256SUMS",

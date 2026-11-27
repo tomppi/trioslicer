@@ -1,33 +1,30 @@
 #!/usr/bin/env bash
-# Places the PrusaSlicer 3.0.0-alpha11 ARM64 engine (console + resources) into the app package.
+# Places the PrusaSlicer 3.0.0-alpha15 ARM64 engine (console + resources) into the app package.
 #
-#   CI:    downloads the newest successful "PrusaSlicer-3.0.0-alpha11-android-arm64-v8a"
-#          artifact of the prusa-engine-3 workflow, on any branch (main once the
-#          engine work is merged; the workflow also runs on
-#          feature/prusa-engine-android), and prints the branch and head SHA the
-#          artifact came from. Set PRUSA_ENGINE_RUN_ID to pin one run instead of
-#          the newest. Requires a GITHUB_TOKEN with actions:read for the
-#          repository.
-#   Local: set PRUSA_ENGINE_DIR to a directory that contains the console and the
-#          resources:  <dir>/prusa-slicer  and  <dir>/resources
-#
-# The artifact is an engine binary that is unpacked as code into the app package, so the
-# downloaded zip is verified against the sha256 digest the artifacts API reports for it.
-# Set PRUSA_ENGINE_SHA256 to add an independent pinned expectation (usable together with
-# PRUSA_ENGINE_RUN_ID); it is verified as well.
+#   Default: downloads the pinned release asset (PRUSA_ENGINE_TAG, default
+#            prusa-engine-v3.0.0-alpha15) without requiring a GITHUB_TOKEN, and verifies its
+#            pinned SHA-256 digest before unpacking.
+#   PRUSA_ENGINE_DIR:    use a local build instead (<dir>/prusa-slicer and <dir>/resources).
+#   PRUSA_ENGINE_RUN_ID: download one specific prusa-engine-3 workflow run instead (needs
+#                        GITHUB_TOKEN with actions:read).
+#   PRUSA_ENGINE_SHA256: expected digest of the release asset (for a deliberate re-pin).
 #
 # Outputs:
 #   app/src/main/jniLibs/arm64-v8a/libprusa_slicer_exec.so  (stripped)
 #   app/src/main/assets/prusa/resources/...
+#   app/src/main/assets/prusa-presets.json
 #   app/src/main/assets/prusa/all-settings.json  (derived all-settings catalogue)
 set -euo pipefail
 
 REPO="${GITHUB_REPOSITORY:-tomppi/trioslicer}"
 WORKFLOW="prusa-engine-3.yml"
-ARTIFACT_NAME="PrusaSlicer-3.0.0-alpha11-android-arm64-v8a"
+ARTIFACT_NAME="PrusaSlicer-3.0.0-alpha15-android-arm64-v8a"
 APP_JNILIBS="app/src/main/jniLibs/arm64-v8a"
 APP_ASSETS="app/src/main/assets/prusa"
 DOWNLOAD_DIR=".build/prusa-engine-download"
+# The release asset is unpacked as code into the app package, so its digest is pinned. A
+# deliberate re-pin sets PRUSA_ENGINE_SHA256 to the digest of the new asset.
+PRUSA_ENGINE_SHA256_PINNED="a32e5a1165f6a3f5d7acfcbb8bd470d9f117ce8e35e375dd6be401fbfe3a7613"
 
 sha256_of () {  # $1 = file
   if command -v sha256sum >/dev/null 2>&1; then
@@ -42,14 +39,9 @@ api () {
     -H "Authorization: Bearer ${GITHUB_TOKEN:?GITHUB_TOKEN is required to download the engine artifact}" "$@"
 }
 
-if [ -n "${PRUSA_ENGINE_DIR:-}" ]; then
-  echo "Using local Prusa engine directory: $PRUSA_ENGINE_DIR"
-  SRC_DIR="$PRUSA_ENGINE_DIR"
-else
-  if [ -n "${PRUSA_ENGINE_RUN_ID:-}" ]; then
-    echo "Using pinned $WORKFLOW run $PRUSA_ENGINE_RUN_ID"
-    RUN_ID="$PRUSA_ENGINE_RUN_ID"
-  else
+download_workflow_artifact () {  # $1 = run id (empty => newest successful)
+  local RUN_ID="$1"
+  if [ -z "$RUN_ID" ]; then
     echo "Fetching the newest successful $ARTIFACT_NAME artifact of $WORKFLOW"
     RUN_ID=$(api "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW/runs?status=success&per_page=1" \
       | python3 -c 'import json,sys; runs=json.load(sys.stdin)["workflow_runs"]; print(runs[0]["id"] if runs else "")')
@@ -57,10 +49,11 @@ else
       echo "::error::no successful $WORKFLOW run found"
       exit 1
     fi
+  else
+    echo "Using pinned $WORKFLOW run $RUN_ID"
   fi
 
-  # An artifact carries no provenance of its own, and the default picks whatever
-  # run succeeded last, so record the branch and commit it was built from.
+  local RUN_JSON RUN_BRANCH RUN_SHA ARTIFACT_ID ARTIFACT_DIGEST
   if ! RUN_JSON=$(api "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID"); then
     echo "::error::no $WORKFLOW run with id $RUN_ID in $REPO"
     exit 1
@@ -68,8 +61,6 @@ else
   read -r RUN_BRANCH RUN_SHA <<<"$(printf '%s' "$RUN_JSON" | python3 -c 'import json,sys; run=json.load(sys.stdin); print(run["head_branch"], run["head_sha"])')"
   echo "Engine source: $WORKFLOW run $RUN_ID on branch $RUN_BRANCH at $RUN_SHA"
 
-  # The name is passed as an argument: an env assignment on the left of a pipe
-  # only applies to that command, so the reader would not see it.
   read -r ARTIFACT_ID ARTIFACT_DIGEST <<<"$(api "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/artifacts" \
     | python3 -c 'import json,sys; want=sys.argv[1]; matches=[a for a in json.load(sys.stdin)["artifacts"] if a["name"]==want]; print(matches[0]["id"], matches[0].get("digest") or "") if matches else None' "$ARTIFACT_NAME")"
   if [ -z "$ARTIFACT_ID" ]; then
@@ -82,11 +73,7 @@ else
   mkdir -p "$DOWNLOAD_DIR/unpacked"
   api -o "$DOWNLOAD_DIR/engine.zip" "https://api.github.com/repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip"
 
-  # This artifact is a mutable build output - the next run of the workflow produces a
-  # different zip - so its pin cannot be a constant the way a release asset's is. The
-  # artifacts API reports the digest of exactly the archive being downloaded, and that is
-  # the expectation. PRUSA_ENGINE_SHA256 pins one more expectation independently of the
-  # API. Nothing is unpacked until both checks pass.
+  local ACTUAL_SHA ARTIFACT_SHA VERIFY_FAILED
   ACTUAL_SHA="$(sha256_of "$DOWNLOAD_DIR/engine.zip")"
   echo "Artifact $ARTIFACT_NAME of $WORKFLOW run $RUN_ID on branch $RUN_BRANCH at $RUN_SHA has sha256 $ACTUAL_SHA"
   ARTIFACT_SHA="${ARTIFACT_DIGEST#sha256:}"
@@ -116,18 +103,61 @@ else
   fi
 
   unzip -q -o "$DOWNLOAD_DIR/engine.zip" -d "$DOWNLOAD_DIR/unpacked"
-
   SRC_DIR="$DOWNLOAD_DIR/unpacked/prusa3-build/out"
-  if [ ! -f "$SRC_DIR/prusa-slicer" ]; then
-    echo "::error::artifact $ARTIFACT_NAME does not contain prusa3-build/out/prusa-slicer"
-    find "$DOWNLOAD_DIR/unpacked" -maxdepth 3 | head -40
+}
+
+if [ -n "${PRUSA_ENGINE_DIR:-}" ]; then
+  echo "Using local Prusa engine directory: $PRUSA_ENGINE_DIR"
+  SRC_DIR="$PRUSA_ENGINE_DIR"
+elif [ -n "${PRUSA_ENGINE_RUN_ID:-}" ]; then
+  download_workflow_artifact "$PRUSA_ENGINE_RUN_ID"
+else
+  TAG="${PRUSA_ENGINE_TAG:-prusa-engine-v3.0.0-alpha15}"
+  ASSET="prusa-engine-arm64-${TAG#prusa-engine-}.zip"
+  URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+  rm -rf "$DOWNLOAD_DIR"
+  mkdir -p "$DOWNLOAD_DIR/unpacked"
+  echo "Downloading $ASSET ($TAG)"
+  if curl -fL --progress-bar "$URL" -o "$DOWNLOAD_DIR/engine.zip"; then
+    EXPECTED="${PRUSA_ENGINE_SHA256:-$PRUSA_ENGINE_SHA256_PINNED}"
+    ACTUAL="$(sha256_of "$DOWNLOAD_DIR/engine.zip")"
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+      echo "FATAL: $ASSET sha256 mismatch" >&2
+      echo "  expected $EXPECTED" >&2
+      echo "  actual   $ACTUAL" >&2
+      exit 1
+    fi
+    unzip -q -o "$DOWNLOAD_DIR/engine.zip" -d "$DOWNLOAD_DIR/unpacked"
+    SRC_DIR="$DOWNLOAD_DIR/unpacked/prusa3-build/out"
+  elif [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "No $ASSET on $TAG; falling back to the newest successful $WORKFLOW run"
+    download_workflow_artifact ""
+  else
+    cat >&2 <<EOF
+
+Could not download $URL
+
+The console is published as a release asset so that a clone can build without
+owning a GITHUB_TOKEN. Either the tag has no asset (check the release page), or
+you are offline - in which case build it locally with
+scripts/build-prusa-engine-android-3.sh and run this script with
+PRUSA_ENGINE_DIR pointing at prusa3-build/out.
+EOF
     exit 1
   fi
-  echo "Engine published files at: $SRC_DIR"
 fi
 
+if [ ! -f "$SRC_DIR/prusa-slicer" ]; then
+  echo "::error::engine directory does not contain prusa-slicer: $SRC_DIR"
+  find "$SRC_DIR" -maxdepth 3 2>/dev/null | head -40 || true
+  exit 1
+fi
+echo "Engine published files at: $SRC_DIR"
+
 mkdir -p "$APP_JNILIBS" "$APP_ASSETS"
+rm -f "$APP_JNILIBS/libprusa_slicer_exec.so"
 cp "$SRC_DIR/prusa-slicer" "$APP_JNILIBS/libprusa_slicer_exec.so"
+chmod +x "$APP_JNILIBS/libprusa_slicer_exec.so"
 
 # Strip with the NDK when available (CI installs it; local builds skip if missing).
 for CAND in \

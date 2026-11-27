@@ -9,11 +9,11 @@ max_cameras: 1 # how many cameras we have 1 = mono, 2 = stereo, >2 = binocular (
 
 calib_cam_extrinsics: false  # if the transform between camera and IMU should be optimized R_ItoC, p_CinI
 calib_cam_intrinsics: false  # if camera intrinsics should be optimized (focal, center, distortion)
-calib_cam_timeoffset: true  # if timeoffset between camera and IMU should be optimized
+calib_cam_timeoffset: true  # online camera-IMU time offset via clone covariance augmentation
 calib_imu_intrinsics: false # if imu intrinsics should be calibrated (rotation and skew-scale matrix)
 calib_imu_g_sensitivity: false # if gyroscope gravity sensitivity (Tg) should be calibrated
 
-max_clones: 11 # how many clones in the sliding window
+max_clones: 20 # wider ~0.7-0.9s sliding window so slow handheld scanning triangulates reliably
 max_slam: 30 # number of features in our state vector
 max_slam_in_update: 25 # update can be split into sequential updates of batches, how many in a batch
 max_msckf_in_update: 25 # how many MSCKF features to use in the update
@@ -27,9 +27,9 @@ feat_rep_aruco: "ANCHORED_MSCKF_INVERSE_DEPTH"
 
 # zero velocity update parameters we can use
 # we support either IMU-based or disparity detection.
-try_zupt: true
+try_zupt: false
 zupt_chi2_multipler: 5  # set to 0 for only disp-based
-zupt_max_velocity: 0.1
+zupt_max_velocity: 0.5
 zupt_noise_multiplier: 50
 zupt_max_disparity: 1.5  # set to 0 for only imu-based
 zupt_only_at_beginning: false
@@ -44,7 +44,7 @@ init_dyn_mle_max_iter: 50 # how many iterations the MLE refinement should use (z
 init_dyn_mle_max_time: 0.05 # how many seconds the MLE should be completed in
 init_dyn_mle_max_threads: 6 # how many threads the MLE should use
 init_dyn_num_pose: 6 # number of poses to use within our window time (evenly spaced)
-init_dyn_min_deg: 10.0 # orientation change needed to try to init
+init_dyn_min_deg: 8.0 # orientation change needed to try to init
 
 init_dyn_inflation_ori: 10 # what to inflate the recovered q_GtoI covariance by
 init_dyn_inflation_vel: 100 # what to inflate the recovered v_IinG covariance by
@@ -91,10 +91,11 @@ use_aruco: false
 num_aruco: 1024
 downsize_aruco: true
 
-# try to allow more features, not sure why we have issues triangulating (poor calibration?)
-# fi_max_dist: 10.0
-# fi_max_baseline: 200
-# fi_max_cond_number: 25000
+# Allow close-range handheld scanning (0.2-1.5m) with slow movement to triangulate reliably
+fi_min_dist: 0.10
+fi_max_dist: 15.0
+fi_max_baseline: 200
+fi_max_cond_number: 25000
 
 # ==================================================================
 # ==================================================================

@@ -22,6 +22,7 @@
 #include "UpdaterZeroVelocity.h"
 
 #include "UpdaterHelper.h"
+#include "ZeroVelocityGate.h"
 
 #include "feat/FeatureDatabase.h"
 #include "feat/FeatureHelper.h"
@@ -110,7 +111,6 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
   // Also if we should still inflate the bias based on their random walk noises
   bool integrated_accel_constraint = false; // untested
   bool model_time_varying_bias = true;
-  bool override_with_disparity_check = true;
   bool explicitly_enforce_zero_motion = false;
 
   // Order of our Jacobian
@@ -215,43 +215,36 @@ bool UpdaterZeroVelocity::try_update(std::shared_ptr<State> state, double timest
     PRINT_WARNING(YELLOW "[ZUPT]: chi2_check over the residual limit - %d\n" RESET, (int)res.rows());
   }
 
-  // Check if the image disparity
-  bool disparity_passed = false;
-  if (override_with_disparity_check) {
-
-    // Get the disparity statistics from this image to the previous
-    double time0_cam = state->_timestamp;
-    double time1_cam = timestamp;
-    int num_features = 0;
-    double disp_avg = 0.0;
+  // A shared track contributes only if it is observed at both camera timestamps.
+  int num_features = 0;
+  double disp_avg = -1.0;
+  if (std::isfinite(_zupt_max_disparity) && _zupt_max_disparity > 0.0) {
     double disp_var = 0.0;
-    FeatureHelper::compute_disparity(_db, time0_cam, time1_cam, disp_avg, disp_var, num_features);
-
-    // Check if this disparity is enough to be classified as moving
-    disparity_passed = (disp_avg < _zupt_max_disparity && num_features > 20);
-    if (disparity_passed) {
-      PRINT_INFO(CYAN "[ZUPT]: passed disparity (%.3f < %.3f, %d features)\n" RESET, disp_avg, _zupt_max_disparity, (int)num_features);
-    } else {
-      PRINT_INFO(YELLOW "[ZUPT]: failed disparity (%.3f > %.3f, %d features)\n" RESET, disp_avg, _zupt_max_disparity, (int)num_features);
-    }
+    FeatureHelper::compute_disparity(_db, state->_timestamp, timestamp, disp_avg, disp_var, num_features);
   }
 
-  // Check if we are currently zero velocity
-  // We need to pass the chi2 and not be above our velocity threshold
-  const bool vel_ok = state->_imu->vel().norm() <= _zupt_max_velocity;
-  const bool chi2_ok = chi2 <= _options.chi2_multipler * chi2_check;
-  // Documented semantics: zupt_max_velocity is "max velocity we will consider to try to do a
-  // zupt (i.e. if above this, don't do zupt)" so it applies whether or not disparity passed.
-  // The chi2 gate is the inertial detector and is needed when disparity does not confirm stillness.
-  if (!vel_ok || (!disparity_passed && !chi2_ok)) {
+  const double speed = state->_imu->vel().norm();
+  const double chi2_limit = _options.chi2_multipler * chi2_check;
+  const auto decision = zero_velocity_decision(speed, _zupt_max_velocity, chi2, chi2_limit,
+                                               disp_avg, _zupt_max_disparity, num_features);
+  const char *reason = "unknown";
+  switch (decision) {
+  case ZeroVelocityDecision::SpeedLimit: reason = "speed_limit"; break;
+  case ZeroVelocityDecision::VisualMotion: reason = "visual_motion"; break;
+  case ZeroVelocityDecision::InvalidInertialResidual: reason = "invalid_inertial_residual"; break;
+  case ZeroVelocityDecision::NoStillness: reason = "no_stillness_evidence"; break;
+  case ZeroVelocityDecision::VisualStillness: reason = "visual_stillness"; break;
+  case ZeroVelocityDecision::ImuStillness: reason = "imu_stillness"; break;
+  }
+  const bool accepted = zero_velocity_accepted(decision);
+  PRINT_INFO("[ZUPT]: %s reason=%s speed=%.3f m/s (limit %.3f) disparity=%.3f px (limit %.3f, %d tracks) chi2=%.3f (limit %.3f)\n",
+             accepted ? "accepted" : "rejected", reason, speed, _zupt_max_velocity, disp_avg, _zupt_max_disparity,
+             num_features, chi2, chi2_limit);
+  if (!accepted) {
     last_zupt_state_timestamp = 0.0;
     last_zupt_count = 0;
-    PRINT_INFO(YELLOW "[ZUPT]: rejected |v_IinG| = %.3f (chi2 %.3f > %.3f)\n" RESET, state->_imu->vel().norm(), chi2,
-                _options.chi2_multipler * chi2_check);
     return false;
   }
-  PRINT_INFO(CYAN "[ZUPT]: accepted |v_IinG| = %.3f (chi2 %.3f < %.3f)\n" RESET, state->_imu->vel().norm(), chi2,
-             _options.chi2_multipler * chi2_check);
 
   // Do our update, only do this update if we have previously detected
   // If we have succeeded, then we should remove the current timestamp feature tracks

@@ -3332,7 +3332,7 @@ fun EnderSlicerApp(
                         onBumpMeshStudio = viewModel::openBumpMeshStudio,
                         onMeshToStep = viewModel::openMeshToStep,
                         onSplatViewer = { splatLibraryOpen = true },
-                        onGaussianSplatting = { gaussianSplattingOpen = true },
+                        onGaussianSplatting = { splatLibraryOpen = true },
                         onEasyScan = {
                             if (easyScanPrefs.getBoolean("intro_ack", false)) startEasyScan()
                             else easyScanIntroOpen = true
@@ -3439,7 +3439,13 @@ fun EnderSlicerApp(
 
     if (splatLibraryOpen) {
         AppBottomSheet(onDismissRequest = { splatLibraryOpen = false }) {
-            SplatLibrarySheet(onDismiss = { splatLibraryOpen = false })
+            SplatLibrarySheet(
+                onDismiss = { splatLibraryOpen = false },
+                onSendToPlate = { stlFile ->
+                    splatLibraryOpen = false
+                    viewModel.importModel(Uri.fromFile(stlFile))
+                },
+            )
         }
     }
 
@@ -3486,20 +3492,6 @@ fun EnderSlicerApp(
         AppBottomSheet(onDismissRequest = { gaussianSplattingOpen = false }) {
             GaussianSplattingSheet(
                 onDismiss = { gaussianSplattingOpen = false },
-                onNewScan = {
-                    gaussianSplattingOpen = false
-                    // The capture screen is a full-screen workflow of its own (camera, masking,
-                    // reconstruction, training); it returns here when the user leaves it.
-                    runCatching { context.startActivity(Intent(context, PipelineActivity::class.java)) }
-                        .onFailure { error ->
-                            Toast.makeText(
-                                context,
-                                "The scan screen could not be opened: " +
-                                    (error.message ?: "unknown error"),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
-                },
                 onOpenViewer = {
                     gaussianSplattingOpen = false
                     splatLibraryOpen = true
@@ -4544,9 +4536,9 @@ private fun MoreScreen(
             // slicer: a splat is a visual reconstruction, not a sliceable mesh.
             MoreRow(
                 icon = AppIcons.Cube,
-                title = "Gaussian splatting",
-                subtitle = "Capture an object, train a splat on the phone and view it - " +
-                    "the capture and the model never leave it",
+                title = "Splat/PLY files",
+                subtitle = "View trained Gaussian splats and EasyScanner PLY point clouds - " +
+                    "everything stays offline on the phone",
                 enabled = !state.isBusy,
                 badge = "EXP",
                 onClick = onGaussianSplatting,
