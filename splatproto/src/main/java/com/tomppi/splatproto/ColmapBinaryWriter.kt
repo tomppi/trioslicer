@@ -24,10 +24,20 @@ object ColmapBinaryWriter {
         "RAD_TAN_THIN_PRISM_FISHEYE" to 11,
     )
 
-    fun ensureBinary(sparseDir: File): Boolean = ensureBinaryWithCount(sparseDir) >= 0
+    fun ensureBinary(sparseDir: File, preserveCameraModel: Boolean = false): Boolean =
+        ensureBinaryWithCount(sparseDir, preserveCameraModel) >= 0
 
-    /** Converts text COLMAP files to binary and returns the sparse 3D point count, or -1 on error. */
-    fun ensureBinaryWithCount(sparseDir: File): Int {
+    /**
+     * Converts text COLMAP files to binary and returns the sparse 3D point count, or -1 on error.
+     * When [preserveCameraModel] is false (default, for Cross3DGS on undistorted images), OPENCV
+     * cameras are converted to PINHOLE. When true (for PC COLMAP exports with original photos),
+     * the exact camera model and distortion parameters from `cameras.txt` are preserved.
+     */
+    fun ensureBinaryWithCount(
+        sparseDir: File,
+        preserveCameraModel: Boolean = false,
+        outDir: File = sparseDir,
+    ): Int {
         if (!sparseDir.isDirectory) return -1
         val camerasTxt = File(sparseDir, "cameras.txt")
         val imagesTxt = File(sparseDir, "images.txt")
@@ -37,9 +47,10 @@ object ColmapBinaryWriter {
         if (cameras.isEmpty() || images.isEmpty()) return -1
         val pointsTxt = File(sparseDir, "points3D.txt")
         val points = if (pointsTxt.isFile) readPoints(pointsTxt) else emptyList()
-        writeCameras(File(sparseDir, "cameras.bin"), cameras)
-        writeImages(File(sparseDir, "images.bin"), images)
-        writePoints(File(sparseDir, "points3D.bin"), points)
+        outDir.mkdirs()
+        writeCameras(File(outDir, "cameras.bin"), cameras, preserveCameraModel)
+        writeImages(File(outDir, "images.bin"), images)
+        writePoints(File(outDir, "points3D.bin"), points)
         return points.size
     }
 
@@ -122,16 +133,17 @@ object ColmapBinaryWriter {
         return out
     }
 
-    private fun writeCameras(file: File, list: List<Cam>) {
+    private fun writeCameras(file: File, list: List<Cam>, preserveCameraModel: Boolean) {
         val head = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(list.size.toLong()).array()
         BufferedOutputStream(FileOutputStream(file)).use { out ->
             out.write(head)
             val fixed = ByteBuffer.allocate(4 + 4 + 8 + 8).order(ByteOrder.LITTLE_ENDIAN)
             for (c in list) {
-                // Cross3DGS trains on undistorted pinhole images in cross3dgs/images.
-                // Convert OPENCV (4) / FULL_OPENCV (6) to PINHOLE (1) keeping [fx, fy, cx, cy].
-                val model = if (c.model == 4 || c.model == 6) 1 else c.model
-                val params = if (c.model == 4 || c.model == 6) c.params.take(4) else c.params.toList()
+                // Cross3DGS trains on undistorted pinhole images in cross3dgs/images, so when
+                // preserveCameraModel is false, convert OPENCV (4) / FULL_OPENCV (6) to PINHOLE (1).
+                val stripDistortion = !preserveCameraModel && (c.model == 4 || c.model == 6)
+                val model = if (stripDistortion) 1 else c.model
+                val params = if (stripDistortion) c.params.take(4) else c.params.toList()
                 fixed.clear()
                 fixed.putInt(c.id); fixed.putInt(model); fixed.putLong(c.width); fixed.putLong(c.height)
                 out.write(fixed.array())

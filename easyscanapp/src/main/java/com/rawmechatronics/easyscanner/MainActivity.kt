@@ -1789,7 +1789,7 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                     },
                     if (kFocus.isNaN()) null else Act(getString(R.string.act_focus_calibrated)) { lockFocus(kFocus) },
                     if (st.manualFocus) Act(getString(R.string.act_focus_auto)) { unlockFocus() } else null,
-                    null,
+                    Act(getString(R.string.act_board_change)) { chooseBoard() },
                 )
             }
             Step.CAMERA -> {
@@ -1811,9 +1811,19 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             }
             Step.LASER -> {
                 title = R.string.title_laser
+                val board = st.board
+                val boardName = AppSettings.BOARD_PRESETS.firstOrNull { it.board == board }?.label
+                    ?: "${board.squaresX}×${board.squaresY} · ${board.squareMm} / ${board.markerMm} mm · dict ${board.dict}"
+                val corners = f(H.N_CORNERS).let { if (it.isNaN()) 0 else it.toInt() }
+                val markers = f(H.N_MARKERS).let { if (it.isNaN()) 0 else it.toInt() }
+                val boardLine = when {
+                    r?.flag(H.DETECTED) == true -> "✓ Board ($boardName): $corners corners"
+                    markers >= 2 -> "⚠ $markers markers seen, 0 corners — tap Change board ($boardName)"
+                    else -> "Board: $boardName · no board in view"
+                }
                 val rms = f(H.PLANE_RMS)
                 val stale = if (r?.flag(H.PLANE_STALE) == true && !planeActive) "\n" + getString(R.string.laser_stale) else ""
-                body = getString(R.string.body_laser) + stale + "\n\n" +
+                body = getString(R.string.body_laser) + stale + "\n" + boardLine + "\n" +
                     getString(R.string.laser_live, f(H.PLANE_LINES).toInt(), f(H.PLANE_TARGET).toInt(), f(H.PLANE_SPREAD),
                         if (rms.isNaN()) "-" else "%.2f mm".format(rms)) + msg("plane")
                 acts = listOf(
@@ -1826,7 +1836,8 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                     Act(getString(R.string.act_force), enabled = planeActive && f(H.PLANE_LINES) >= 3f) {
                         processor.command(Cmd.PLANE_FORCE)
                     },
-                    null, null,
+                    Act(getString(R.string.act_board_change)) { chooseBoard() },
+                    null,
                 )
             }
             Step.FUSION, Step.LASER_ONLY -> {
@@ -1923,8 +1934,9 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
                         val dir = splatFinishedDir
                         acts = listOf(
                             dir?.let { Act("Train Splat") { postProcessSession(it, splatOnly = true) } },
+                            dir?.let { Act("Export to PC") { exportSplatSessionToPc(it) } },
                             Act(getString(R.string.act_new_scan)) { newScan() },
-                            null, null,
+                            null,
                         )
                     }
                     Step.LASER_ONLY -> {
@@ -2254,6 +2266,26 @@ class MainActivity : AppCompatActivity(), FrameProcessor.Listener {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun exportSplatSessionToPc(dir: File) {
+        copyNote = "Copying high-res photos to Download/EasyScanner/${dir.name}…"
+        renderWizard()
+        Thread {
+            val res = runCatching { SessionExport.copyToDownloads(this, dir) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                res.onSuccess { c ->
+                    copyNote = "Exported ${c.files} files to Download/${c.relativeDir}/.\n" +
+                        "Connect over USB to import splat_photos/ into Postshot, COLMAP, Brush, Nerfstudio, or RealityCapture."
+                    Toast.makeText(this, "Saved to Download/${c.relativeDir}", Toast.LENGTH_LONG).show()
+                }.onFailure { err ->
+                    copyNote = "Export to Download failed (${err.message}). Photos stay in ${dir.absolutePath}."
+                    Toast.makeText(this, copyNote, Toast.LENGTH_LONG).show()
+                }
+                renderWizard()
+            }
+        }.start()
     }
 
     private fun sendStlToPlate(stlPath: String) {

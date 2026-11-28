@@ -545,6 +545,9 @@ class PipelineActivity : ComponentActivity() {
                                         }
                                     }
                                 }
+                                lastScan?.let { scan ->
+                                    Button(onClick = { exportScanForPc(scan) }) { Text("Export PC (COLMAP)") }
+                                }
                                 if (launchedFromEasyScanner) {
                                     Button(onClick = { finish() }) { Text("Back to Scanner") }
                                 }
@@ -557,6 +560,9 @@ class PipelineActivity : ComponentActivity() {
                                         state.value = State()
                                         openViewfinder()
                                     }) { Text("New scan") }
+                                }
+                                lastScan?.let { scan ->
+                                    Button(onClick = { exportScanForPc(scan) }) { Text("Export PC (COLMAP)") }
                                 }
                                 Button(onClick = { train(null, true) }) { Text("Refine splat") }
                                 if (s.hasMasks) {
@@ -635,6 +641,10 @@ class PipelineActivity : ComponentActivity() {
                         onViewCloud = { splatName ->
                             showScans.value = false
                             openCloudView(splatName)
+                        },
+                        onExportPc = { item ->
+                            showScans.value = false
+                            exportScanForPc(item.scan)
                         },
                         onDelete = { item ->
                             item.scan.dir.deleteRecursively()
@@ -1887,6 +1897,54 @@ class PipelineActivity : ComponentActivity() {
         }
     }
 
+    /** Packages this scan's images, masks, COLMAP sparse/0, and clouds into a ZIP in Download/EasyScanner/. */
+    private fun exportScanForPc(scan: Scan) {
+        val prevPhase = state.value.phase
+        state.value = state.value.copy(
+            status = "Exporting PC dataset…",
+            detail = "Packing ${scan.name} for COLMAP / Postshot / CloudCompare",
+            progress = 0.05f,
+        )
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                PcDatasetExporter.exportZipToDownloads(this@PipelineActivity, scan) { frac, msg ->
+                    runOnUiThread {
+                        state.value = state.value.copy(progress = frac, detail = msg)
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                res.onSuccess { out ->
+                    val s = out.stats
+                    val parts = ArrayList<String>(4)
+                    if (s.images > 0) parts += "${s.images} images"
+                    if (s.hasColmap) parts += "COLMAP sparse/0"
+                    if (s.masks > 0) parts += "${s.masks} masks"
+                    if (s.hasDensePly) parts += "dense.ply"
+                    val summary = parts.joinToString(" · ")
+                    state.value = state.value.copy(
+                        phase = prevPhase,
+                        progress = 1f,
+                        status = "Saved Download/${out.relativePath}",
+                        detail = "${mb(out.bytes)} ($summary)",
+                    )
+                    val send = Intent(Intent.ACTION_SEND)
+                        .setType("application/zip")
+                        .putExtra(Intent.EXTRA_STREAM, out.uri)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    runCatching { startActivity(Intent.createChooser(send, "Share PC COLMAP Dataset")) }
+                }.onFailure { err ->
+                    Log.e("Pipeline", "PC dataset export failed", err)
+                    state.value = state.value.copy(
+                        phase = prevPhase,
+                        status = "PC export failed",
+                        detail = err.message ?: err.javaClass.simpleName,
+                    )
+                }
+            }
+        }
+    }
+
     private fun openCloudView(splatName: String) {
         val intent = Intent().setClassName(
             packageName, "com.tomppi.enderslicer.easyscan.LaserCloudViewerActivity",
@@ -1997,6 +2055,7 @@ class PipelineActivity : ComponentActivity() {
         onView: (ScanItem) -> Unit,
         onSendToPlate: (File) -> Unit,
         onViewCloud: (String) -> Unit,
+        onExportPc: (ScanItem) -> Unit,
         onDelete: (ScanItem) -> Unit,
         onImport: () -> Unit,
         onLaserPreview: (ScanItem) -> Unit,
@@ -2088,6 +2147,7 @@ class PipelineActivity : ComponentActivity() {
                                             }
                                         }
                                     }
+                                    TextButton(onClick = { onExportPc(item) }) { Text("Export PC") }
                                     TextButton(onClick = { pendingDelete = item }) { Text("Delete") }
                                 }
                             }
