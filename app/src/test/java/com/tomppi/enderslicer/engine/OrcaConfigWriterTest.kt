@@ -97,7 +97,7 @@ class OrcaConfigWriterTest {
 
     @Test
     fun arcsStayOffForTheAppsLinearMovePipeline() {
-        assertTrue(rendered().print.contains("enable_arc_fitting = 0\n"))
+        assertTrue(rendered().print.contains("enable_arc_fitting = disabled\n"))
     }
 
     @Test

@@ -104,7 +104,7 @@ data class OrcaSliceSettings(
          */
         const val DEFAULT_PRINTER_PRESET = "Creality Ender-3 V2 0.4 nozzle"
         const val DEFAULT_PROCESS_PRESET = "0.20mm Standard @Creality Ender3V2"
-        const val DEFAULT_FILAMENT_PRESET = "Creality Generic PLA"
+        const val DEFAULT_FILAMENT_PRESET = "CR-PLA @Ender-3 V2-all"
 
         /** `sparse_infill_pattern` values the writer accepts (from the engine's own enum). */
         val INFILL_PATTERNS = listOf(

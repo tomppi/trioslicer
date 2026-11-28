@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.AssetManager
 import com.tomppi.enderslicer.data.KampPreference
 import com.tomppi.enderslicer.engine.gcode.GcodeRoute
+import com.tomppi.enderslicer.model.OrcaPresetCatalog
 import com.tomppi.enderslicer.model.OrcaSliceSettings
 import com.tomppi.enderslicer.model.PrinterDefinition
 import com.tomppi.enderslicer.model.SlicerSettings
@@ -40,6 +41,8 @@ class OrcaEngineRunner(private val context: Context) {
         val estimatedPrintSeconds: Int?,
         val layerPreview: GcodeLayerPreview?,
         val layerEvents: List<LayerEvent>,
+        val resolvedPresets: OrcaPresetCatalog.ResolvedPresets? = null,
+        val presetFallbackNotice: String? = null,
     )
 
     class SliceException(
@@ -148,6 +151,17 @@ class OrcaEngineRunner(private val context: Context) {
         try {
             writeInitialLog(log, workspace.id, modelFile, effectivePrinter, settings, startGcode, endGcode)
 
+            val resolvedPresets = OrcaPresetCatalog.resolveAvailablePresets(
+                profilesDir = File(datadir, "profiles"),
+                printerPreset = settings.printerPreset,
+                processPreset = settings.processPreset,
+                filamentPreset = settings.filamentPreset,
+            )
+            val fallbackNotice = resolvedPresets.notice()
+            if (fallbackNotice != null) {
+                appendLog(log, "\nPreset fallback: $fallbackNotice\n")
+            }
+
             modelFile.copyTo(workspace.model, overwrite = false)
             val configs = OrcaConfigWriter.write(
                 directory = workspace.directory,
@@ -160,9 +174,9 @@ class OrcaEngineRunner(private val context: Context) {
             val command = listOf(
                 executable.absolutePath,
                 "--datadir", datadir.absolutePath,
-                "--printer-preset", settings.printerPreset,
-                "--print-preset", settings.processPreset,
-                "--filament-preset", settings.filamentPreset,
+                "--printer-preset", resolvedPresets.printerPreset,
+                "--print-preset", resolvedPresets.processPreset,
+                "--filament-preset", resolvedPresets.filamentPreset,
                 "--printer-config", configs.printer.absolutePath,
                 "--print-config", configs.print.absolutePath,
                 "--filament-config", configs.filament.absolutePath,
@@ -241,6 +255,8 @@ class OrcaEngineRunner(private val context: Context) {
                 estimatedPrintSeconds = estimateSeconds,
                 layerPreview = preview,
                 layerEvents = emptyList(),
+                resolvedPresets = resolvedPresets,
+                presetFallbackNotice = fallbackNotice,
             )
         } catch (error: InterruptedException) {
             appendLog(log, "\n--- EnderSlicer cancellation ---\nFinished: " + Instant.now() + "\nThe OrcaSlicer request was cancelled and reaped.\n")

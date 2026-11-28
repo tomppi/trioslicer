@@ -80,8 +80,9 @@ object OrcaConfigWriter {
         print["internal_solid_infill_speed"] = number(settings.internalSolidInfillSpeedMmPerSecond)
         print["travel_speed"] = number(settings.travelSpeedMmPerSecond)
         // The app's G-code pipeline models linear moves only, so arcs stay off whatever the
-        // selected process profile asks for.
-        print["enable_arc_fitting"] = "0"
+        // selected process profile asks for. OrcaSlicer 2.5.2 turned enable_arc_fitting into an
+        // enum (disabled / enabled / sparse_infill).
+        print["enable_arc_fitting"] = "disabled"
         settings.extraKeys.toSortedMap().forEach { (key, value) ->
             if (!ExtraSettingValidation.isValidKey(key)) return@forEach
             ExtraSettingValidation.requireValid(key, value)

@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-28
+
+### Fixed
+
+- **OrcaSlicer 2.5.2 preset defaults & stale-preset fallback notice.**
+  - Updated `OrcaSliceSettings.DEFAULT_FILAMENT_PRESET` from the removed 2.4.2 `"Creality Generic PLA"`
+    to OrcaSlicer 2.5.2's `"CR-PLA @Ender-3 V2-all"` so fresh installs slice immediately.
+  - Added preset verification before slicing in `OrcaEngineRunner`: when a saved printer, process,
+    or filament preset from an older OrcaSlicer version no longer exists in 2.5.2, TrioSlicer falls
+    back to the machine's bundled 2.5.2 default, updates the saved preset selection, logs the
+    change, and displays a clear warning notice naming both the missing preset and the replacement.
+  - Updated `OrcaConfigWriter` to emit `enable_arc_fitting = disabled` (OrcaSlicer 2.5.2's new enum
+    spelling) and updated `OrcaProfileImporter` to recognize `enabled` and `sparse_infill`.
+
 ## [2.0.0] - 2026-11-27
 
 ### Added

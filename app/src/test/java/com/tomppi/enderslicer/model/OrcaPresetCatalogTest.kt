@@ -136,6 +136,64 @@ class OrcaPresetCatalogTest {
         assertNull(base)
     }
 
+    @Test
+    fun bundledDefaultsExistInTheShippedTreeWithoutFallback() {
+        val resolved = OrcaPresetCatalog.resolveAvailablePresets(
+            read = ::assetText,
+            vendorIds = vendorIds(),
+            printerPreset = OrcaSliceSettings.DEFAULT_PRINTER_PRESET,
+            processPreset = OrcaSliceSettings.DEFAULT_PROCESS_PRESET,
+            filamentPreset = OrcaSliceSettings.DEFAULT_FILAMENT_PRESET,
+        )
+
+        assertEquals(OrcaSliceSettings.DEFAULT_PRINTER_PRESET, resolved.printerPreset)
+        assertEquals(OrcaSliceSettings.DEFAULT_PROCESS_PRESET, resolved.processPreset)
+        assertEquals(OrcaSliceSettings.DEFAULT_FILAMENT_PRESET, resolved.filamentPreset)
+        assertTrue("defaults should not trigger fallback: ${resolved.fallbacks}", resolved.fallbacks.isEmpty())
+        assertNull(resolved.notice())
+    }
+
+    @Test
+    fun staleFilamentPresetFrom242FallsBackAndNamesBothPresets() {
+        val resolved = OrcaPresetCatalog.resolveAvailablePresets(
+            read = ::assetText,
+            vendorIds = vendorIds(),
+            printerPreset = OrcaSliceSettings.DEFAULT_PRINTER_PRESET,
+            processPreset = OrcaSliceSettings.DEFAULT_PROCESS_PRESET,
+            filamentPreset = "Creality Generic PLA",
+        )
+
+        assertEquals(OrcaSliceSettings.DEFAULT_PRINTER_PRESET, resolved.printerPreset)
+        assertEquals(OrcaSliceSettings.DEFAULT_PROCESS_PRESET, resolved.processPreset)
+        assertEquals("CR-PLA @Ender-3 V2-all", resolved.filamentPreset)
+        assertEquals(1, resolved.fallbacks.size)
+        val notice = resolved.notice()
+        assertNotNull(notice)
+        assertTrue(notice!!, notice.contains("Creality Generic PLA"))
+        assertTrue(notice, notice.contains("CR-PLA @Ender-3 V2-all"))
+    }
+
+    @Test
+    fun unknownPrinterPresetFallsBackToBundledDefaultAndNamesReplacement() {
+        val resolved = OrcaPresetCatalog.resolveAvailablePresets(
+            read = ::assetText,
+            vendorIds = vendorIds(),
+            printerPreset = "Removed Printer 0.4 nozzle",
+            processPreset = "Removed Process @Old",
+            filamentPreset = "Creality Generic PLA",
+        )
+
+        assertEquals(OrcaSliceSettings.DEFAULT_PRINTER_PRESET, resolved.printerPreset)
+        assertEquals(OrcaSliceSettings.DEFAULT_PROCESS_PRESET, resolved.processPreset)
+        assertEquals(OrcaSliceSettings.DEFAULT_FILAMENT_PRESET, resolved.filamentPreset)
+        assertEquals(3, resolved.fallbacks.size)
+        val notice = resolved.notice()!!
+        assertTrue(notice, notice.contains("Removed Printer 0.4 nozzle"))
+        assertTrue(notice, notice.contains(OrcaSliceSettings.DEFAULT_PRINTER_PRESET))
+        assertTrue(notice, notice.contains("Removed Process @Old"))
+        assertTrue(notice, notice.contains("Creality Generic PLA"))
+    }
+
     private fun vendorIds(): List<String> = File(assets, "orca/resources/profiles")
         .listFiles { file -> file.extension == "json" }
         ?.map { it.nameWithoutExtension }

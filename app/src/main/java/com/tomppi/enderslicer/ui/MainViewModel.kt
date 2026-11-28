@@ -7675,6 +7675,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             var strategyMessage: String? = null
+            var orcaFallbackPresets: OrcaPresetCatalog.ResolvedPresets? = null
             runCatching {
                 withContext(Dispatchers.IO) {
                     val stagingRoot = File(app.cacheDir, "model-placement").apply {
@@ -7830,6 +7831,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 },
                             )
+                            orcaResult.presetFallbackNotice?.let { notice ->
+                                strategyMessage = "⚠ $notice"
+                                orcaFallbackPresets = orcaResult.resolvedPresets
+                                Diagnostics.warning("slice", notice)
+                            }
                             EngineSliceOutcome(
                                 artifactId = orcaResult.artifactId,
                                 gcodeFile = orcaResult.gcodeFile,
@@ -7902,9 +7908,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onSuccess { result ->
                 val previousArtifactId = _uiState.value.gcodePath?.let(::File)?.parentFile?.name
+                var updatedOrcaSettings: OrcaSliceSettings? = null
                 _uiState.update { current ->
                     val printTime = result.estimatedPrintSeconds?.let(::formatPrintTime)
+                    val nextOrcaSettings = orcaFallbackPresets?.let { resolved ->
+                        current.orcaSettings.copy(
+                            printerPreset = resolved.printerPreset,
+                            processPreset = resolved.processPreset,
+                            filamentPreset = resolved.filamentPreset,
+                        ).also { updatedOrcaSettings = it }
+                    } ?: current.orcaSettings
                     current.copy(
+                        orcaSettings = nextOrcaSettings,
                         sliceResultId = result.artifactId,
                         gcodePath = result.gcodeFile.absolutePath,
                         gcodeComplete = result.gcodeComplete,
@@ -7949,6 +7964,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                     )
                 }
+                updatedOrcaSettings?.let(::persistOrcaSettings)
                 // The same facts the status line carries, written down. A safety
                 // alert is a WARNING rather than a failure: the slice is good,
                 // and the one line about it must not read as "your slice broke".

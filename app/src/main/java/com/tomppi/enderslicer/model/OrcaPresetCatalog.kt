@@ -1,6 +1,7 @@
 package com.tomppi.enderslicer.model
 
 import android.content.res.AssetManager
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -49,6 +50,40 @@ object OrcaPresetCatalog {
         val processPreset: String,
         val filamentPreset: String,
     )
+
+    /** Records a saved preset name that no longer exists in the bundled OrcaSlicer tree. */
+    data class PresetFallback(
+        val kind: OrcaPresetKind,
+        val requested: String,
+        val resolved: String,
+    )
+
+    /**
+     * Preset names verified against the bundled OrcaSlicer profile tree before slicing.
+     *
+     * When an app update ships a newer OrcaSlicer whose vendor bundles renamed a preset (for
+     * example `Creality Generic PLA` -> `CR-PLA @Ender-3 V2-all` in 2.5.2), [fallbacks] records
+     * every substitution so the UI can tell the user explicitly rather than silently slicing with
+     * a different profile.
+     */
+    data class ResolvedPresets(
+        val printerPreset: String,
+        val processPreset: String,
+        val filamentPreset: String,
+        val fallbacks: List<PresetFallback> = emptyList(),
+    ) {
+        fun notice(): String? {
+            if (fallbacks.isEmpty()) return null
+            return fallbacks.joinToString("; ") { fb ->
+                val label = when (fb.kind) {
+                    OrcaPresetKind.MACHINE -> "printer"
+                    OrcaPresetKind.PROCESS -> "process"
+                    OrcaPresetKind.FILAMENT -> "filament"
+                }
+                "Orca $label preset \"${fb.requested}\" is not in 2.5.2 — used \"${fb.resolved}\" instead"
+            }
+        }
+    }
 
     /**
      * Machine names in a vendor index, in file order; empty when the index cannot be read.
@@ -189,6 +224,134 @@ object OrcaPresetCatalog {
             }
         }
         return null
+    }
+
+    /**
+     * Verifies [printerPreset], [processPreset], and [filamentPreset] against the extracted
+     * `<datadir>/profiles` directory on disk. Any preset name that no longer exists in the bundle
+     * falls back to the resolved machine's bundled default (or the Creality Ender-3 V2 default if
+     * the machine itself is missing), and every substitution is recorded in [ResolvedPresets.fallbacks].
+     */
+    fun resolveAvailablePresets(
+        profilesDir: File,
+        printerPreset: String,
+        processPreset: String,
+        filamentPreset: String,
+    ): ResolvedPresets {
+        val vendorIds = profilesDir.listFiles { f -> f.isFile && f.extension == "json" }
+            ?.map { it.nameWithoutExtension }
+            ?.sorted()
+            .orEmpty()
+        if (vendorIds.isEmpty()) {
+            return ResolvedPresets(printerPreset, processPreset, filamentPreset)
+        }
+        return resolveAvailablePresets(
+            read = { rel ->
+                val stripped = rel.removePrefix("$PROFILES_DIR/")
+                File(profilesDir, stripped).takeIf { it.isFile }?.readText()
+            },
+            vendorIds = vendorIds,
+            printerPreset = printerPreset,
+            processPreset = processPreset,
+            filamentPreset = filamentPreset,
+        )
+    }
+
+    internal fun resolveAvailablePresets(
+        read: (String) -> String?,
+        vendorIds: List<String>,
+        printerPreset: String,
+        processPreset: String,
+        filamentPreset: String,
+    ): ResolvedPresets {
+        if (vendorIds.isEmpty()) {
+            return ResolvedPresets(printerPreset, processPreset, filamentPreset)
+        }
+        val fallbacks = mutableListOf<PresetFallback>()
+        val indexCache = HashMap<String, JSONObject?>()
+        fun vendorIndex(vendorId: String): JSONObject? =
+            indexCache.getOrPut(vendorId) {
+                read("$PROFILES_DIR/$vendorId.json")?.let(::jsonOrNull)
+            }
+
+        fun findPreset(
+            kind: OrcaPresetKind,
+            name: String,
+            preferredVendors: List<String> = emptyList(),
+        ): Pair<String, JSONObject>? {
+            val target = name.trim()
+            if (target.isEmpty()) return null
+            val ordered = if (preferredVendors.isEmpty()) {
+                vendorIds
+            } else {
+                (preferredVendors.filter { it in vendorIds } + vendorIds).distinct()
+            }
+            for (vendorId in ordered) {
+                val list = vendorIndex(vendorId)?.optJSONArray(kind.listKey) ?: continue
+                for (i in 0 until list.length()) {
+                    val item = list.optJSONObject(i) ?: continue
+                    if (item.optString("name").trim() != target) continue
+                    val subPath = item.optString("sub_path").trim()
+                    if (subPath.isEmpty()) continue
+                    val profile = read("$PROFILES_DIR/$vendorId/$subPath")?.let(::jsonOrNull) ?: continue
+                    if (profile.optString("instantiation").equals("false", ignoreCase = true)) continue
+                    return vendorId to profile
+                }
+            }
+            return null
+        }
+
+        // 1. Printer preset
+        val requestedPrinter = printerPreset.trim()
+        val foundPrinter = if (requestedPrinter.isNotEmpty()) {
+            findPreset(OrcaPresetKind.MACHINE, requestedPrinter)
+        } else {
+            null
+        }
+        val (resolvedPrinter, printerVendor, printerJson) = if (foundPrinter != null || requestedPrinter.isEmpty()) {
+            Triple(requestedPrinter, foundPrinter?.first, foundPrinter?.second)
+        } else {
+            val fallbackName = OrcaSliceSettings.DEFAULT_PRINTER_PRESET
+            val fallbackEntry = findPreset(OrcaPresetKind.MACHINE, fallbackName)
+            fallbacks += PresetFallback(OrcaPresetKind.MACHINE, requestedPrinter, fallbackName)
+            Triple(fallbackName, fallbackEntry?.first, fallbackEntry?.second)
+        }
+
+        val machineDefaults = printerJson?.let { defaultsFromMachineProfile(it.toString()) }
+        val preferred = listOfNotNull(printerVendor)
+
+        // 2. Process preset
+        val requestedProcess = processPreset.trim()
+        val resolvedProcess = if (requestedProcess.isEmpty() ||
+            findPreset(OrcaPresetKind.PROCESS, requestedProcess, preferred) != null
+        ) {
+            requestedProcess
+        } else {
+            val fallbackName = machineDefaults?.processPreset?.takeIf { it.isNotEmpty() }
+                ?: OrcaSliceSettings.DEFAULT_PROCESS_PRESET
+            fallbacks += PresetFallback(OrcaPresetKind.PROCESS, requestedProcess, fallbackName)
+            fallbackName
+        }
+
+        // 3. Filament preset
+        val requestedFilament = filamentPreset.trim()
+        val resolvedFilament = if (requestedFilament.isEmpty() ||
+            findPreset(OrcaPresetKind.FILAMENT, requestedFilament, preferred) != null
+        ) {
+            requestedFilament
+        } else {
+            val fallbackName = machineDefaults?.filamentPreset?.takeIf { it.isNotEmpty() }
+                ?: OrcaSliceSettings.DEFAULT_FILAMENT_PRESET
+            fallbacks += PresetFallback(OrcaPresetKind.FILAMENT, requestedFilament, fallbackName)
+            fallbackName
+        }
+
+        return ResolvedPresets(
+            printerPreset = resolvedPrinter,
+            processPreset = resolvedProcess,
+            filamentPreset = resolvedFilament,
+            fallbacks = fallbacks,
+        )
     }
 
     private fun jsonOrNull(text: String): JSONObject? =

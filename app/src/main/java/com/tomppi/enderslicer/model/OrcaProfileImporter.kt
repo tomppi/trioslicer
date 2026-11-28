@@ -218,7 +218,11 @@ object OrcaProfileImporter {
             skipped += ofKind.drop(1).mapNotNull { it.name }
             for ((key, value) in ofKind.first().values) {
                 when {
-                    key == "enable_arc_fitting" -> if (flagValue(value) == true) {
+                    key == "enable_arc_fitting" -> if (
+                        flagValue(value) == true ||
+                            value.equals("enabled", ignoreCase = true) ||
+                            value.equals("sparse_infill", ignoreCase = true)
+                    ) {
                         notes += "arc fitting stays off: the app's G-code pipeline models linear moves only"
                     }
                     key == "machine_start_gcode" || key == "machine_end_gcode" -> {
