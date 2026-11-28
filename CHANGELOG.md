@@ -1,5 +1,28 @@
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-28
+
+### Added
+
+- **One-tap PC Dataset Export (COLMAP + Photos) in EasyScan & Splat Pipeline.**
+  - Added **Export PC (COLMAP)** / **Export PC** in `PipelineActivity` (`PcDatasetExporter`) to pack
+    any scan's `images/*.jpg`, U2Net `masks/*.png`, text and exact-distortion binary COLMAP
+    `sparse/0/{cameras,images,points3D}.{txt,bin}`, `dense.ply`, `sparse.ply`, laser/mesh exports,
+    `scan.json`, and a quick-start `README.txt` into `Download/EasyScanner/easyscanner-<scan>-colmap.zip`
+    with Android Share sheet support for Postshot, LichtFeld Studio, Brush, gsplat, Nerfstudio,
+    COLMAP, RealityCapture, CloudCompare, MeshLab, and Blender.
+  - Added **Export to PC** after High-Res Splat capture in EasyScan to copy `splat_photos/*.jpg` and
+    `splat_session.json` directly into `Download/EasyScanner/<session>/`.
+
+### Fixed
+
+- **ChArUco board selection & live status in EasyScan Focus and Laser calibration.**
+  - Shows the active ChArUco board and live corner count (or a `⚠ N markers seen, 0 corners — tap
+    Change board` warning when the configured board does not match the printed sheet) and adds a
+    one-tap **Change board** button directly on the Focus and Laser plane steps.
+- **CI Maven Central mirror**: Added Google's Maven Central mirror before `mavenCentral()` to avoid
+  intermittent HTTP 429 rate-limits on GitHub Actions runners.
+
 ## [2.0.1] - 2026-11-28
 
 ### Fixed

@@ -65,8 +65,8 @@ android {
         applicationId = "com.tomppi.enderslicercura"
         minSdk = 29
         targetSdk = 36
-        versionCode = 155
-        versionName = "2.0.1"
+        versionCode = 156
+        versionName = "2.0.2"
 
         // Every engine in this app ships an arm64-v8a binary (the slicer engines, the CAD
         // Python tree, Blender, and now the splat trainer). Pinning the ABI stops dependencies
